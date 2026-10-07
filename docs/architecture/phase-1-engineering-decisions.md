@@ -83,7 +83,9 @@ Choose Spring JDBC only for the initial baseline. Do not add JPA or jOOQ opportu
 | JPMS modules | Compile/runtime module boundaries through `module-info.java`; additional module configuration and library compatibility work. | Do not require initially; reassess if compile-time isolation is needed. |
 | Package-level conventions only | Simple but dependent on reviewer discipline and easy to violate. | Insufficient alone; ArchUnit makes rules executable. |
 
-ArchUnit rules will assert that implemented domain packages do not import Spring, HAPI, web, or persistence infrastructure; adapters depend inward; context internals are not imported by other contexts; dependencies remain acyclic; and shared platform packages do not own domain behavior. A business context communicates through its public API or explicit events when those exist, and never through another context's repository. CI fails on boundary violations.
+ArchUnit rules run against compiled production classes in the ordinary Maven verification lifecycle. Phase 1 actively checks that production packages contain only implemented platform technical concerns, package slices are acyclic, and any domain package remains independent of Spring, persistence APIs, healthcare integrations, and prohibited infrastructure libraries. A minimal test-source fixture with a deliberate domain-to-Spring dependency proves that the domain rule detects the violation; it is excluded from production package checks and is not a fake business module.
+
+Rules for adapter direction, context public APIs, and preventing one business context from importing another context's persistence internals activate when real business contexts exist. Those rules must inspect the actual compiled context packages when introduced. Until then, they are documented constraints, not claimed executable proof. No empty production package is created to make a future rule appear active. CI fails when any active rule is violated.
 
 ### Internal identifiers
 
