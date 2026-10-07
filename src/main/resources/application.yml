@@ -1,0 +1,7 @@
+spring:
+  application:
+    name: ayuvahak
+
+ayuvahak:
+  platform:
+    service-name: AyuVahak
