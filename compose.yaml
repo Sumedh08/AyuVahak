@@ -1,0 +1,38 @@
+services:
+  database:
+    image: postgis/postgis:18-3.6
+    environment:
+      POSTGRES_DB: "${AYUVAHAK_DATABASE_NAME:?Copy .env.example to .env first}"
+      POSTGRES_USER: "${AYUVAHAK_DATABASE_USERNAME:?Copy .env.example to .env first}"
+      POSTGRES_PASSWORD: "${AYUVAHAK_DATABASE_PASSWORD:?Copy .env.example to .env first}"
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      database:
+        condition: service_healthy
+    environment:
+      AYUVAHAK_DATABASE_URL: "jdbc:postgresql://database:5432/${AYUVAHAK_DATABASE_NAME:?Copy .env.example to .env first}"
+      AYUVAHAK_DATABASE_USERNAME: "${AYUVAHAK_DATABASE_USERNAME:?Copy .env.example to .env first}"
+      AYUVAHAK_DATABASE_PASSWORD: "${AYUVAHAK_DATABASE_PASSWORD:?Copy .env.example to .env first}"
+    ports:
+      - "127.0.0.1:${AYUVAHAK_HTTP_PORT:-8080}:8080"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    stop_grace_period: 30s
+
+volumes:
+  postgres-data:

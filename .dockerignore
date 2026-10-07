@@ -1,0 +1,8 @@
+.git
+.scratch
+.env
+.env.*
+.idea
+.vscode
+*.iml
+*.log
