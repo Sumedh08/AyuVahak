@@ -1,0 +1,11 @@
+package org.ayuvahak.platform.api;
+
+public enum PlatformErrorCode {
+  MALFORMED_REQUEST,
+  VALIDATION_FAILED,
+  UNSUPPORTED_MEDIA_TYPE,
+  NOT_FOUND,
+  METHOD_NOT_ALLOWED,
+  REQUEST_FAILED,
+  INTERNAL_ERROR
+}
