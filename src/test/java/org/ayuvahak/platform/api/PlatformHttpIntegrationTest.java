@@ -9,18 +9,23 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.jayway.jsonpath.JsonPath;
+import jakarta.servlet.http.Cookie;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import java.util.Map;
 import java.util.Properties;
 import org.ayuvahak.platform.configuration.PlatformProperties;
+import org.ayuvahak.platform.observability.SafeHttpRequestLoggingFilter;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.info.BuildProperties;
 import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
@@ -43,8 +48,10 @@ import org.springframework.web.bind.annotation.RestController;
 @Import({
   PlatformHttpIntegrationTest.AyuVahakHttpTestConfiguration.class,
   CorrelationIdFilter.class,
+  SafeHttpRequestLoggingFilter.class,
   PlatformExceptionHandler.class
 })
+@ExtendWith(OutputCaptureExtension.class)
 class PlatformHttpIntegrationTest {
 
   private static final String CORRELATION_HEADER = "X-Correlation-ID";
@@ -201,6 +208,32 @@ class PlatformHttpIntegrationTest {
             .andReturn();
 
     assertProblemCorrelationMatchesResponse(result);
+  }
+
+  @Test
+  void requestLogsContainSafeMetadataWithoutBodyHeadersCookiesOrQueryValues(CapturedOutput output)
+      throws Exception {
+    mockMvc
+        .perform(
+            post("/__test/validated")
+                .queryParam("private-filter", "synthetic-query-secret")
+                .header(CORRELATION_HEADER, "safe-correlation-42")
+                .header("Authorization", "Bearer synthetic-credential")
+                .cookie(new Cookie("session", "synthetic-cookie-secret"))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"value\":\"synthetic-body-secret\"}"))
+        .andExpect(status().isOk());
+
+    assertThat(output.getAll())
+        .contains("\"event\":\"http_request\"")
+        .contains("\"http.method\":\"POST\"")
+        .contains("\"http.route\":\"/__test/validated\"")
+        .contains("\"http.status_code\":200")
+        .contains("\"correlationId\":\"safe-correlation-42\"")
+        .doesNotContain("synthetic-query-secret")
+        .doesNotContain("synthetic-body-secret")
+        .doesNotContain("synthetic-credential")
+        .doesNotContain("synthetic-cookie-secret");
   }
 
   private static void assertProblemCorrelationMatchesResponse(MvcResult result) throws Exception {

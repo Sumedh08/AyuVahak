@@ -10,6 +10,40 @@ spring:
   flyway:
     enabled: true
     locations: classpath:db/migration
+management:
+  otlp:
+    metrics:
+      export:
+        enabled: false
+  endpoints:
+    access:
+      default: none
+    web:
+      exposure:
+        include: health,prometheus
+    jmx:
+      exposure:
+        exclude: "*"
+  endpoint:
+    health:
+      access: read-only
+      show-details: never
+      show-components: never
+      probes:
+        enabled: true
+      group:
+        readiness:
+          include: readinessState,db
+    prometheus:
+      access: read-only
+  tracing:
+    export:
+      otlp:
+        enabled: ${AYUVAHAK_OTLP_TRACING_ENABLED:false}
+logging:
+  structured:
+    format:
+      console: logstash
 
 ayuvahak:
   database:
