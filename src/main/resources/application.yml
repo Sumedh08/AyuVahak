@@ -1,7 +1,20 @@
 spring:
   application:
     name: ayuvahak
+  datasource:
+    url: ${ayuvahak.database.url}
+    username: ${ayuvahak.database.username}
+    password: ${ayuvahak.database.password}
+    hikari:
+      maximum-pool-size: ${AYUVAHAK_DATABASE_POOL_MAX_SIZE:10}
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
 
 ayuvahak:
+  database:
+    url: ${AYUVAHAK_DATABASE_URL:}
+    username: ${AYUVAHAK_DATABASE_USERNAME:}
+    password: ${AYUVAHAK_DATABASE_PASSWORD:}
   platform:
     service-name: AyuVahak
