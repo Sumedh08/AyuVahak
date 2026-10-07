@@ -12,13 +12,16 @@ import com.jayway.jsonpath.JsonPath;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import java.util.Map;
+import java.util.Properties;
+import org.ayuvahak.platform.configuration.PlatformProperties;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.info.BuildProperties;
 import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
@@ -29,9 +32,19 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(PlatformHttpIntegrationTest.AyuVahakHttpTestConfiguration.class)
+@WebMvcTest(
+    value = SystemInformationController.class,
+    properties = {
+      "ayuvahak.platform.service-name=AyuVahak",
+      "ayuvahak.database.url=jdbc:postgresql://localhost:5432/unused",
+      "ayuvahak.database.username=test",
+      "ayuvahak.database.password=local-test-only"
+    })
+@Import({
+  PlatformHttpIntegrationTest.AyuVahakHttpTestConfiguration.class,
+  CorrelationIdFilter.class,
+  PlatformExceptionHandler.class
+})
 class PlatformHttpIntegrationTest {
 
   private static final String CORRELATION_HEADER = "X-Correlation-ID";
@@ -198,7 +211,15 @@ class PlatformHttpIntegrationTest {
   }
 
   @TestConfiguration(proxyBeanMethods = false)
+  @EnableConfigurationProperties(PlatformProperties.class)
   static class AyuVahakHttpTestConfiguration {
+
+    @Bean
+    BuildProperties buildProperties() {
+      Properties properties = new Properties();
+      properties.setProperty("version", "0.1.0-SNAPSHOT");
+      return new BuildProperties(properties);
+    }
 
     @Bean
     HttpTestSupportController httpTestSupportController() {
