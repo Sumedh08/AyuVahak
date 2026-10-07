@@ -1,6 +1,5 @@
 # Java and Maven build output
 **/target/
-.mvn/wrapper/maven-wrapper.jar
 
 # Local tooling and editor state
 .scratch/tools/
