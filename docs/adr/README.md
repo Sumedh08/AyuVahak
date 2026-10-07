@@ -19,11 +19,16 @@ ADRs record durable AyuVahak architecture decisions, their context, and the rati
 | [0002](0002-modular-monolith-and-ports-adapters.md) | Modular monolith and ports/adapters | Accepted; amended 2026-10-08 |
 | [0003](0003-java-spring-postgresql-postgis.md) | Java/Spring and PostgreSQL/PostGIS | Accepted; amended 2026-10-08 |
 | [0004](0004-fhir-at-interoperability-boundaries.md) | FHIR at interoperability boundaries | Accepted |
-| [0005](0005-external-identity-and-local-authorization.md) | External authentication, local authorization | Accepted |
+| [0005](0005-external-identity-and-local-authorization.md) | External authentication, local authorization | Accepted; amended 2026-10-08 |
 | [0006](0006-deterministic-advisory-matching.md) | Deterministic, explainable advisory matching | Accepted |
 | [0007](0007-domain-events-and-transactional-outbox.md) | Domain events and transactional outbox | Accepted; amended 2026-10-08 |
 | [0008](0008-lightweight-compose-first-deployment.md) | Lightweight Compose-capable deployment | Accepted |
 | [0009](0009-separate-receiving-confirmations.md) | Historical fixed-role confirmation decision | Superseded by ADR 0011 |
 | [0010](0010-domain-owned-integration-ports.md) | Domain-owned integration ports and adapters | Accepted |
 | [0011](0011-functional-receiving-authorities.md) | Receiving authority functions, locally mapped | Accepted; supersedes ADR 0009 |
+| [0012](0012-audit-capture-and-failure-policy.md) | Atomic audit for mutations; separate durable path for non-mutating security/access records | Accepted |
+| [0013](0013-idempotency-and-consumer-deduplication.md) | Command idempotency and consumer deduplication have separate owners and records | Accepted |
+| [0014](0014-one-shot-local-grant-bootstrap.md) | Provision the first AyuVahak grant through a one-shot local operator command | Accepted |
+
+ADR 0005 and ADR 0007 have dated amendments for the Phase 2 identity/token boundary and at-least-once/per-aggregate event delivery semantics. These amendments clarify the existing decisions; they do not change the Phase 1 baseline or begin Phase 2 implementation.
 

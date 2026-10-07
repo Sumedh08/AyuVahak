@@ -8,13 +8,14 @@ Synthetic identifiers and data are used in examples. Real patient data and produ
 
 ## Identity and authorization
 
-- Authentication is delegated to an external identity provider. AyuVahak does not create or store home-grown passwords.
-- Human and machine subjects use separately scoped identities, issuers, audiences, permissions, and revocation paths. A machine credential does not inherit a human user's authority.
-- Authentication proves a configured identity; it does not by itself grant access to a facility, case, patient context, clinical action, or integration.
-- Initial application authorization is role-based and scoped to organization/facility and action. The policy model must allow future attribute-based rules for case relationship, purpose, location, time, or sensitivity without making ABAC mandatory initially.
-- Role grants are administered by the accountable deployment/health authority, attributable, reviewable, and revocable. Provider registry credentials and application roles are distinct.
+- Authentication is delegated to an external OIDC identity provider. Keycloak is the local reference provider for controlled development/testing; deployments may use a compatible provider. AyuVahak does not create or store home-grown passwords. Keycloak development mode is not a production deployment recipe.
+- AyuVahak acts as an API resource server and validates signed access tokens locally against configured exact issuer, AyuVahak audience, trusted signing keys/signature, and token time bounds. An OIDC ID Token is not an API access token. Validation uncertainty, invalid issuer/audience/signature, or an unusable key fails closed; no per-request IdP introspection is assumed.
+- Human and machine subjects use separately scoped identities, issuers, audiences, permissions, and revocation paths. Machine access uses a separately scoped service identity (including client-credentials flows where configured); a machine credential does not inherit a human user's authority.
+- Authentication proves a configured identity; it does not by itself grant access to an organization, optional facility, case, patient context, clinical action, or integration.
+- AyuVahak owns scoped application grants. Initial authorization is RBAC over functional authorities and is evaluated using actor, explicit validated organization and optional facility, action, target/context, and purpose where relevant. The model must allow future attribute-based rules for case relationship, purpose, location, time, or sensitivity without making ABAC mandatory initially.
+- Role grants are administered by the accountable deployment/health authority, attributable, reviewable, and revocable. Deployment mappings translate local roles/teams/processes to functional authorities; no universal job title or IdP role claim is the sole permission source. Provider registry credentials and application roles are distinct.
 - SMART on FHIR is used when a FHIR launch or FHIR-resource authorization integration supports it; AyuVahak still applies its own workflow authorization.
-- Deny when identity, role, purpose, or applicable policy cannot be established. Any break-glass path is deployment-defined, limited, justified, time-bounded, and audited.
+- Deny when identity, execution context, grant, purpose, trusted signing key, or applicable policy cannot be established. Any break-glass path is deployment-defined, limited, justified, time-bounded, and audited.
 
 ## Privacy and information handling
 
@@ -50,7 +51,9 @@ Synthetic identifiers and data are used in examples. Real patient data and produ
 
 ## Audit and accountability
 
-Every safety- or access-relevant action is attributable to the actor or machine identity, organization/context, action, target reference, timestamp, outcome, and correlation identifier; distinguish event time from recorded time where reports may be delayed. Audit data should establish chronology and responsibility without copying the entire clinical payload. Restrict and monitor audit access; include privileged configuration changes and accesses to patient context. Retention, correction, and tamper-evidence requirements are deployment-specific and must be settled before production.
+Every safety- or access-relevant action is attributable to the human or machine actor, organization and optional facility context, action, target reference, timestamp, outcome, and correlation identifier; distinguish event time from recorded time where reports may be delayed. Audit data should establish chronology and responsibility without copying the entire clinical payload. For protected mutations, required audit evidence commits atomically with the mutation; failure rolls both back. Sensitive successful reads are not disclosed before their required audit record is durable. Denials remain denials if the separate non-mutating security-audit path is unavailable; report the operational failure without claiming a record was persisted. Restrict and monitor audit access; include privileged configuration changes and accesses to patient context. Retention, correction, export, and tamper-evidence requirements are deployment-specific and must be settled before production.
+
+These mechanisms belong to Phase 2, not Phase 1. See the [Phase 2 platform-kernel architecture](phase-2-platform-kernel.md) and [specification](../specs/phase-2-platform-kernel-spec.md).
 
 ## Pre-production governance gates
 

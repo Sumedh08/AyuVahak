@@ -1,29 +1,30 @@
 # Phase 0 Open Architecture Questions
 
-This is a register of genuinely unresolved architecture or deployment-governance questions. Product boundaries, domain terms, interoperability placement, ownership principles, Phase 1 engineering baselines, and the generic Phase 2 identity/authorization architecture are settled in the constitution and linked decisions. The provider/protocol and deployment-specific permission mapping below remain Phase 2 decisions. Patch-version pinning and other reversible implementation details belong to the engineering baseline, not this list.
+This is a register of genuinely unresolved architecture or deployment-governance questions. Product boundaries, domain terms, interoperability placement, ownership principles, Phase 1 engineering baselines, and the generic Phase 2 identity/authorization architecture are settled in the constitution and linked decisions. Deployment-specific provider configuration and role mappings remain governed configuration, not global architecture questions. Patch-version pinning and other reversible implementation details belong to their implementation phase, not this list.
 
 ## Decision timing summary
 
 - **MUST RESOLVE BEFORE PHASE 1: 0.** No remaining question changes the settled product boundary, system-of-record model, business context map, interoperability strategy, trust model, or initial engineering baseline.
 - **CAN RESOLVE DURING PHASE 1: 0.** Phase 1 does not implement authentication or authorization.
-- **CAN RESOLVE DURING PHASE 2: 2.** The identity-provider adapter choice and generic authorization framework are Phase 2 work; deployment-specific role mappings remain configurable by the accountable deployment.
+- **CAN RESOLVE DURING PHASE 2: 0.** The Phase 2 identity and authorization architecture is settled in [Phase 2 platform-kernel architecture](../architecture/phase-2-platform-kernel.md), its [specification](../specs/phase-2-platform-kernel-spec.md), and ADRs 0005, 0012, and 0013. Exact provider patch/configuration is verified before the corresponding adapter is implemented; deployment mappings remain configurable.
 - **DEFERRED TO LATER VOLUME: 5.** These require a target jurisdiction, a partner contract, measured deployment evidence, or an explicitly approved later capability.
 
-## CAN RESOLVE DURING PHASE 2
+## Resolved by Phase 2 architecture design
 
-### P2-01 — Initial identity-provider protocol and product
+### P2-01 — Initial identity-provider protocol and reference product — RESOLVED
 
-- **Why unresolved:** The architecture requires an external identity provider but no first deployment or IdP product/protocol has been selected.
-- **Impact:** Determines the inbound authentication adapter, issuer/audience validation, claim mapping, and local development identity fixture. It does not change local authorization ownership or the no-home-grown-password rule.
-- **Owner / decision point:** Phase 2 identity/security owner with the accountable deployment identity administrator.
-- **Latest safe time:** Before implementing the corresponding Phase 2 authentication adapter. Phase 1 uses no application authentication adapter.
+- **Decision:** Use OIDC as the human authentication protocol and Keycloak as the local reference provider. Deployments may use a compatible external provider. AyuVahak is an API resource server; it validates signed access tokens locally against configured issuer, audience, trusted signing keys, and time bounds. Human-client login flow remains outside Phase 2. Machine clients use separately scoped client credentials.
+- **Why:** This fixes the resource-server and trust contract without imposing a production IdP or client architecture. OIDC ID Tokens are not accepted as API access tokens.
+- **Implementation verification:** Before implementing the authentication adapter, select/pin a supported Keycloak reference image and verify selected deployment-provider compatibility, claim contract, signing-key rotation behavior, and Spring Security support using official sources and local-only tests.
+- **Owner / decision point:** Phase 2 identity/security implementation owner; concrete deployment provider is selected by the accountable deployment identity administrator.
+- **Reference:** [Phase 2 architecture](../architecture/phase-2-platform-kernel.md), [identity research](../research/phase-2-identity-provider-research.md), and [ADR 0005](../adr/0005-external-identity-and-local-authorization.md).
 
-### P2-02 — Generic authorization model and deployment role-to-authority mapping
+### P2-02 — Generic authorization model and deployment role-to-authority mapping — RESOLVED
 
-- **Why unresolved:** Phase 2 must implement the generic authorization model, while Clinical Suitability, Operational Readiness, Acceptance, and other functions remain universal domain functions. Actual job titles and delegations are deployment-specific and need not be globally frozen.
-- **Impact:** The generic model determines how subject, organization, case, action, and purpose are evaluated. Each deployment's configurable mapping determines who may record each separate assessment or Acceptance. Missing mapping must remain denied/pending, never inferred.
-- **Owner / decision point:** Phase 2 identity/security owner defines the generic model with the accountable health authority; deployment administrators and clinical governance configure local mappings.
-- **Latest safe time:** Define the generic model during Phase 2 before authorization behavior is enabled. Configure each deployment's mapping before it is used to authorize a real receiving decision. Generic synthetic grants may be used in local development.
+- **Decision:** Phase 2 implements AyuVahak-owned, scoped, RBAC-first authorization over functional authorities. Each action is evaluated with an authenticated human or machine actor, explicit validated organization and optional facility, action, target/context, and purpose where relevant. Preserve a path to ABAC without requiring a general policy engine. Do not rely solely on IdP role claims.
+- **Deployment configuration:** Each accountable deployment maps its local roles/teams/processes to functional authorities, including Clinical Suitability, Operational Readiness, and Acceptance. Job titles are not global. A missing or unverified grant denies; deployment-specific mappings need not be frozen globally.
+- **Owner / decision point:** Phase 2 identity/security owner owns the generic model; deployment administrators and clinical governance own local mappings and must configure them before live authorization.
+- **Reference:** [Phase 2 architecture](../architecture/phase-2-platform-kernel.md), [security and trust](../architecture/security-and-trust.md), and [ADR 0011](../adr/0011-functional-receiving-authorities.md).
 
 ## DEFERRED TO LATER VOLUME
 

@@ -4,6 +4,8 @@ These scenarios are global architectural constraints, not a single phase's accep
 
 In particular, Phase 1 cannot yet verify Capacity, Referral, Matching, recommendations, Acceptance, Reservation, Transfer, Transport, authorization decisions, outbox delivery, or idempotent business commands. Phase 2 verifies the core domain primitives and platform-kernel, identity, trust, event, outbox, idempotency, audit, provenance, and recovery capabilities it introduces. Later business phases verify workflow behavior such as stale-capacity semantics, pending/confirmed outcomes, recommendation evidence, reservation conflicts, and transfer reconciliation.
 
+Phase 2 activates the kernel portions of QA-05 (internal publication recovery), QA-06 (event duplicate/sequence handling), QA-08 (audit attribution and failure behavior), QA-09 (authentication, scoped authorization, and machine identity), QA-10 (safe diagnostics during kernel failures), QA-12 (outbox/kernel restart recovery), and QA-14 (boundaries among actual kernel modules). It uses synthetic test-only owners and consumers where no business context exists. Later workflow phases separately verify Acceptance, Reservation, stale capacity, external partner delivery/reconciliation, and business-level duplicate outcomes; Phase 2 evidence must not be presented as proof of those later behaviors.
+
 These scenarios are product-level acceptance conditions, not service-level promises. Priority labels are: **CRITICAL** (safety, authorization, or data-integrity invariant), **HIGH** (required platform quality before live deployment), **MEDIUM** (needed when the corresponding capability is selected), and **FUTURE** (retained as a design constraint for a later volume).
 
 No national-scale traffic, uptime, latency, recovery, or storage target is asserted without deployment evidence. Where a number is not currently defensible, the scenario identifies the evidence required before a target is set.
@@ -50,13 +52,13 @@ No national-scale traffic, uptime, latency, recovery, or storage target is asser
 - **Priority:** CRITICAL.
 - **Quantitative target / evidence:** Zero fabricated positive business outcomes. Service-level latency and failure thresholds are TBD after partner and operating-environment measurements.
 
-### QA-05 — A committed action survives failed publication
+### QA-05 — A committed action survives failed internal publication
 
 - **Concern:** Transactional reliability and event recovery.
-- **Scenario:** A receiving authority's Acceptance commits in AyuVahak, then outbound event delivery or a downstream notification fails.
-- **Expected behavior:** Acceptance remains committed; publication remains durably recoverable and traceable; retry does not create another Acceptance; notification failure does not imply that the recipient acted.
-- **Architectural implication:** A transactionally recorded publication intent/outbox is used when a committed fact must be delivered asynchronously. Events identify the committed fact and its version; consumers handle duplicate delivery idempotently. No distributed transaction is assumed.
-- **Verification approach:** Persistence integration tests that fail publication after commit, restart processing, replay duplicates, and reconcile status using local containers and synthetic events.
+- **Scenario:** A receiving authority's Acceptance commits in AyuVahak, then internal event delivery or a downstream notification attempt fails.
+- **Expected behavior:** Acceptance remains committed; internal publication remains durably recoverable and traceable; retry does not create another Acceptance; notification delivery failure does not imply that the recipient acted. External system delivery remains owned by the relevant context adapter and has its own delivery/reconciliation outcome.
+- **Architectural implication:** A transactionally recorded outbox intent is used for asynchronous internal consumers. Events identify the committed fact and its version; consumers handle duplicate delivery idempotently. The shared outbox is not a universal external integration gateway and no distributed transaction is assumed.
+- **Verification approach:** Persistence integration tests that fail internal publication after commit, restart processing, replay duplicates, and reconcile status using local containers and synthetic events; later business phases verify adapter-specific external delivery semantics.
 - **Priority:** CRITICAL.
 - **Quantitative target / evidence:** One business outcome per idempotency identity; every committed event requiring publication has a recoverable delivery record. Delivery latency target is TBD from the partner and workflow deadline.
 

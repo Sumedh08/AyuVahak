@@ -17,6 +17,7 @@ flowchart LR
     Auditor["Auditor"]
     Analyst["Public-health analyst"]
     Dispatcher["EMS / transport dispatcher and crew"]
+    Clients["Human API clients and scoped service clients"]
   end
 
   AV["AyuVahak\nOptional cross-organization coordination system"]
@@ -54,7 +55,9 @@ flowchart LR
   AV -->|"practitioner reference validation"| Provider
   Facility -->|"directory records / updates from authority"| AV
   Capacity <-->|"observations; optional reservation request/confirmation"| AV
-  IdP <-->|"authentication protocol and identity claims"| AV
+  Clients -->|"obtain access token"| IdP
+  Clients -->|"bearer access token"| AV
+  IdP -->|"trusted issuer / signing-key metadata"| AV
   EMS <-->|"purpose-limited request and assignment/status"| AV
   AV -->|"facility locations only; optional estimate"| Route
   AV <-->|"minimal alert and delivery outcome"| Notify
@@ -65,7 +68,7 @@ flowchart LR
   classDef people fill:#eaf4e4,stroke:#4e7b3d
   classDef systems fill:#fce8e6,stroke:#9b3c32
   class AV product
-  class Referrer,Receiving,Patient,District,Operator,Auditor,Analyst,Dispatcher people
+  class Referrer,Receiving,Patient,District,Operator,Auditor,Analyst,Dispatcher,Clients people
   class RefEHR,RecEHR,HIE,MPI,Provider,Facility,Capacity,IdP,EMS,Route,Notify,DHIS2,LMIS,Federation systems
 ```
 
@@ -87,7 +90,7 @@ Solid arrows show a potential interaction; dotted arrows show a deliberate exclu
 | Provider / workforce registry | Validates a practitioner identity or credential reference. | Query/response, generally synchronous or refreshed asynchronously. | Authoritative for the attributes it maintains; not an authorization service. Optional. | No patient-level information. | Minimal identifier/reference and source status. |
 | Facility / service registry | Supplies facility, location, service, practitioner-role, endpoint, and directory identifiers where supported. | Read/query plus scheduled or event-based refresh; write-back is excluded by default. | Authoritative for registry-owned identity; local authority is used where no registry exists. Optional. | No patient-level information. | Attributed directory projection/cache with freshness and source IDs. |
 | Capacity / bed-management source | Supplies time-bounded capacity observations; may receive an explicit Reservation request and return confirmation/conflict. | Observation feed can be asynchronous; reservation may be synchronous request/response or asynchronous. Exact mode is partner-specific. | Receiving facility system or locally designated authority. Optional; manual entry is valid with attribution. | Capacity observations need no patient data; a reservation may carry a minimal case reference/ETA if required and authorized. | Operational observations and reservation outcomes; stale values become unknown. |
-| External identity provider | Authenticates human or machine subjects and supplies configured issuer/subject claims. | Authentication protocol request/response, normally synchronous; revocation/status may be refreshed. | Authority for authentication identity. The concept is required for authenticated use; vendor/protocol are deployment choices. | No clinical or case data in default login claims. | Issuer and subject reference plus security metadata, never passwords or private credentials. |
+| External identity provider | Authenticates human or machine subjects and issues access tokens; AyuVahak uses trusted issuer and signing-key metadata to validate them. Human clients obtain tokens from the IdP; AyuVahak does not perform per-request introspection. | Client-to-IdP token acquisition; AyuVahak may retrieve issuer discovery/JWKS metadata read-only and refresh trusted keys. | Authority for authentication identity. Keycloak is a local reference; a compatible provider is deployment-selected. | No patient-level or case data in default claims or key lookup. | Issuer and subject references may be retained for attribution. No tokens, sessions, passwords, or private credentials are stored. |
 | EMS / transport dispatch | When explicitly authorized, receives a purpose-limited transport request and supplies assignment, availability, and journey status; otherwise human contact and later status entry are used. | Optional request plus asynchronous status updates; a manual dispatcher report is supported conceptually. | EMS/dispatch organization is authoritative for assignment and dispatch. Optional integration. | Minimum patient safety/logistics information may cross when required; no full clinical record. | External assignment reference and minimal case-linked status, not fleet history. |
 | Routing / travel-time provider | Estimates travel time between facility locations for advisory ranking. | Optional synchronous query/response or cached estimate; exact mode depends on provider. | Provider owns its estimate; it is not dispatch or clinical authority. Optional. | No patient identity, summary, or case narrative; origin/destination facility locations only. | Attributed estimate and time if used in a recommendation; no durable patient data. |
 | Notification provider | Delivers a minimal alert and returns delivery status. | Asynchronous delivery and receipt/failure outcome. | Provider is authoritative only for its delivery attempt; receipt does not prove a human read it. Optional. | No patient-level detail by default; use only if channel is approved for minimal content. | Delivery metadata and correlation, not a clinical payload. |

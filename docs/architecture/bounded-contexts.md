@@ -85,23 +85,25 @@ FHIR, IPS, SMART, mCSD, DHIS2, HAPI, Spring, PostgreSQL/PostGIS, a routing provi
 
 ### Identity & Access
 
+- **Classification:** Platform bounded context, not a healthcare workflow context.
 - **Purpose:** Map authenticated subjects to AyuVahak actors and enforce app-specific permissions.
-- **Owns:** External subject references, local role/organization grants, policy decisions, and grant/revocation history.
+- **Owns:** Issuer-scoped subject references, local role/organization grants, authorization decisions, and grant/revocation history. Authentication validates access-token identity; policy checks remain separate and use explicit organization and optional facility execution context.
 - **Does not own:** Passwords, identity proofing, clinical credentials, or external registry identity.
-- **Upstream dependencies:** External IdP through an IdentityProviderPort, deployment administrators, optional provider/workforce registry.
+- **Upstream dependencies:** External IdP through a domain-owned identity-provider port; deployment administrators. Provider/workforce registries may inform credentials but do not confer application permission.
 - **Downstream consumers:** All user-facing and integration contexts.
-- **Allowed communication:** Verify issuer/claims; evaluate scoped permission for actor, organization, action, case, and purpose; emit attributable grant changes. Identity & Access owns the authentication-provider need and local authorization semantics; shared authentication libraries are platform support.
+- **Allowed communication:** Validate configured access-token issuer, audience, signature, and time bounds; evaluate scoped permission for actor, organization, optional facility, action, target/context, and purpose; emit attributable grant changes. Human and machine principals remain distinct. Shared protocol libraries are platform support.
 - **Events potentially published:** AccessGrantChanged, AccessRevoked, AuthorizationDenied.
 - **Prohibited coupling:** Authentication is not authorization; do not trust unverified claims or grant access merely because SMART/FHIR is present.
 
 ### Audit
 
+- **Classification:** Platform bounded context, not a healthcare workflow context.
 - **Purpose:** Preserve an accountable record of AyuVahak actions, access, decisions, and source attribution.
 - **Owns:** The platform's audit chronology and governed audit views.
 - **Does not own:** Partner-system audit logs, clinical documentation, or full payload copies.
 - **Upstream dependencies:** Explicit audit facts from all contexts, Identity & Access, and integration metadata.
 - **Downstream consumers:** Authorized auditors, security operators, and deployment governance.
-- **Allowed communication:** Receive action/access records; expose restricted, purpose-logged queries; identify gaps or failures.
+- **Allowed communication:** Receive minimized action/access records through an explicit boundary; required mutation audit participates in the protected mutation transaction; non-mutating sensitive-read/security records use a separate durable path. Expose restricted audit queries and identify gaps/failures.
 - **Events potentially published:** AuditRecordCaptured, AuditCaptureFailed, AuditAccessed.
 - **Prohibited coupling:** No unbounded patient-content logging and no ordinary workflow path that claims completion when required audit capture failed.
 
@@ -116,7 +118,9 @@ FHIR, IPS, SMART, mCSD, DHIS2, HAPI, Spring, PostgreSQL/PostGIS, a routing provi
 - **Events potentially published:** CoordinationIndicatorProduced, AggregateExportReady, AggregateExportFailed.
 - **Prohibited coupling:** No direct reads across private context storage, no default patient-level case feed, and no feedback loop that changes safety-critical matching from analytics.
 
-## Platform capabilities (not business bounded contexts)
+## Platform capabilities (distinct from healthcare business contexts)
+
+Identity & Access and Audit are platform bounded contexts: they own the semantics and records of application authorization and AyuVahak's own audit chronology. They are not business workflow contexts such as Referral or Transfer. Provenance, correlation, event contracts, outbox delivery, command idempotency, and event-consumer deduplication are platform capabilities or owner-local mechanisms; none is a universal business-data store.
 
 Interoperability is a shared platform capability, not a universal gateway and not a business bounded context. It supplies replaceable technical building blocks to adapters owned by the contexts that need external information or action. Those building blocks may include FHIR client/runtime support, protocol authentication, conformance validation, terminology lookup, external-correlation helpers, provenance metadata, transport-level retry scheduling, and transport observability. A deployment may route an adapter through an HIE/OpenHIM, but that route is optional and does not change semantic ownership.
 
@@ -141,7 +145,7 @@ Transport-level retries may be supplied by shared infrastructure only when dupli
 
 ```mermaid
 flowchart LR
-  subgraph Business["Business bounded contexts — one AyuVahak modular monolith"]
+  subgraph Business["Healthcare coordination bounded contexts — one AyuVahak modular monolith"]
     Referral["Referral"]
     Directory["Directory"]
     Capacity["Capacity"]
@@ -149,9 +153,12 @@ flowchart LR
     Transfer["Transfer"]
     Transport["Transport"]
     Notifications["Notifications"]
+    Analytics["Analytics"]
+  end
+
+  subgraph PlatformContexts["Platform bounded contexts"]
     IAM["Identity & Access"]
     Audit["Audit"]
-    Analytics["Analytics"]
   end
 
   subgraph Adapters["External adapters — owned by the consuming context"]
@@ -171,7 +178,8 @@ flowchart LR
     Auth["Protocol authentication and secret references"]
     Terminology["Terminology lookup and mapping helpers"]
     Provenance["External IDs, provenance and correlation helpers"]
-    Reliability["Transport retry, outbox and delivery telemetry"]
+    Reliability["Internal transactional outbox, retry and telemetry"]
+    Idempotency["Owner-local command idempotency and consumer dedup"]
     Validation["Conformance validation and transport observability"]
   end
 
@@ -229,7 +237,7 @@ flowchart LR
   Notifications -->|NotificationPort| NotifyAdapter
   NotifyAdapter <--> Gateway
   IAM -->|IdentityProviderPort| IdentityAdapter
-  IdentityAdapter <--> IdP
+  IdentityAdapter -.->|trusted issuer/key metadata| IdP
   Analytics -->|AggregateExportPort| DHISAdapter
   DHISAdapter --> DHIS
   Adapters -.->|may use shared technical support| Platform
@@ -240,12 +248,14 @@ flowchart LR
   DispatchAdapter -.-> HIE
 
   classDef business fill:#e7f0ff,stroke:#315a8a,stroke-width:1.5px
+  classDef platformContext fill:#eaf4e4,stroke:#4e7b3d,stroke-width:1.5px
   classDef adapter fill:#fff2cc,stroke:#997300,stroke-width:1.5px
   classDef platform fill:#e8e8e8,stroke:#555,stroke-dasharray:5 3
   classDef external fill:#fce8e6,stroke:#9b3c32
-  class Referral,Directory,Capacity,Matching,Transfer,Transport,Notifications,IAM,Audit,Analytics business
+  class Referral,Directory,Capacity,Matching,Transfer,Transport,Notifications,Analytics business
+  class IAM,Audit platformContext
   class PatientAdapter,DirectoryAdapter,CapacityAdapter,ReservationAdapter,TravelAdapter,DispatchAdapter,NotifyAdapter,IdentityAdapter,DHISAdapter adapter
-  class FHIR,Auth,Terminology,Provenance,Reliability,Validation platform
+  class FHIR,Auth,Terminology,Provenance,Reliability,Idempotency,Validation platform
   class Users,EHR,FReg,PReg,MPI,CapSrc,IdP,EMS,HIE,DHIS,Route,Gateway,LMIS external
 ```
 
@@ -256,7 +266,10 @@ The diagram distinguishes business ownership from adapter implementation and sha
 - Keep contexts in one deployable modular monolith initially, with clear ownership and narrow interfaces.
 - Use direct in-process queries/commands where a synchronous decision needs an answer. Do not distribute contexts into separately deployed services without an identified scaling, isolation, or organizational need.
 - Use domain events when another context needs to react to a committed fact. Events are notifications of facts, not the only record of truth.
-- Use a transactional outbox where a committed action must reliably publish externally or to asynchronous consumers. A pending publication is visible and retryable; it does not roll back a committed referral.
+- Use a transactional outbox where a committed fact must reliably reach an asynchronous internal consumer. A pending publication is visible and retryable; it does not roll back the committed fact. The platform outbox is not a generic external integration gateway; partner delivery remains behind the owning context's adapter and reconciliation boundary.
+- Outbox delivery is at least once. Per-aggregate order is enforced when required; no global event ordering is promised. Consumers deduplicate at their own effect boundary.
+- Command idempotency and consumer deduplication are separate: command owners store scoped command receipts, and each consumer owns receipts for its own effect. No generic cross-context receipt store is exposed.
+- Required audit for a protected mutation commits atomically with that mutation. Non-mutating sensitive-read and security outcomes use a separate durable audit path with explicit fail-closed behavior.
 - Do not use full event sourcing. Keep the current owned state plus an auditable event history appropriate to the domain.
 - Add CQRS only when a query/read view has a demonstrated need; no separate distributed read/write system initially.
 - Keep persistence private to its owning context; avoid shared tables, direct cross-context reads/joins, and cross-context mutation. Use exported interfaces or events/projections.

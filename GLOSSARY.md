@@ -107,6 +107,38 @@ A concise clinical summary supplied by an authoritative clinical source for a pa
 **Coordination Event**  
 A recorded occurrence relevant to the Referral, Transfer Request, assessment, Acceptance, Reservation, Transfer, Transport, Arrival, or Handover lifecycle, attributed to its actor or source and time.
 
+**AyuVahak Actor**
+
+A human or machine identity that performs or reports an action within AyuVahak. It is distinct from the patient and is interpreted with its issuer/source and authorized organizational scope.
+
+**Authentication Identity**
+
+An identity established by an external identity provider for a human or service. It proves which subject presented a valid credential; it does not by itself grant access to an AyuVahak organization, case, or action.
+
+**Service Identity**
+
+A separately governed machine principal used by an integration or background process. It has its own scope and attribution and does not inherit a human's authority.
+
+**Organization Execution Context**
+
+The validated organization and optional facility under which an action is attempted, associated with the authenticated actor and request purpose. A caller's unverified selection is not an execution context.
+
+**Functional Authority**
+
+A decision or action responsibility such as Clinical Suitability, Operational Readiness, or Acceptance. A deployment maps its local roles, teams, or governed processes to these functions; no universal job title is implied.
+
+**Authorization Grant**
+
+An attributable, scoped permission assigned under a deployment's policy. Authentication establishes a subject; a grant determines whether that subject may perform a particular action in context.
+
+**Audit Record**
+
+A restricted record of who or what acted, within which organization/context, on what target, when, with what outcome and correlation. It supports accountability and does not replace a clinical record, operational log, domain fact, or data provenance.
+
+**Domain Event**
+
+A notification that an owning context committed a fact for another AyuVahak context to consume. The producer owns the fact's meaning; delivery does not itself constitute a receiving party's business decision or a publication to an external health system.
+
 ## Ambiguous words resolved
 
 - “Referral” means the request to coordinate care; “Transfer” means the resulting patient movement.
