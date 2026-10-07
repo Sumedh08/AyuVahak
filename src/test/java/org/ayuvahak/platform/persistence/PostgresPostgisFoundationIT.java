@@ -40,7 +40,9 @@ class PostgresPostgisFoundationIT {
   @Container
   private static final PostgreSQLContainer POSTGRES =
       new PostgreSQLContainer(
-              DockerImageName.parse("postgis/postgis:18-3.6").asCompatibleSubstituteFor("postgres"))
+              DockerImageName.parse(
+                      "postgis/postgis:18-3.6@sha256:60f6ad1d21ea86a67d47780b9a0d1e1d200500f62b19293fa834d0dea80b8677")
+                  .asCompatibleSubstituteFor("postgres"))
           .withDatabaseName("ayuvahak")
           .withUsername("ayuvahak")
           .withPassword(LOCAL_TEST_PASSWORD);

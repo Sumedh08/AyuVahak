@@ -27,4 +27,4 @@ Only the owning platform or business context may add migrations for its objects.
 
 ## Verification
 
-`./mvnw verify` (or `mvnw.cmd verify` on Windows) runs `PostgresPostgisFoundationIT` against a disposable `postgis/postgis:18-3.6` container. It starts the real application context, checks Flyway history, calls `PostGIS_Full_Version()`, executes a Spring JDBC query, and verifies Spring-managed transaction rollback. The test uses synthetic platform data and does not contact an external database or healthcare service.
+`./mvnw verify` (or `mvnw.cmd verify` on Windows) runs `PostgresPostgisFoundationIT` against a disposable container pinned to `postgis/postgis:18-3.6@sha256:60f6ad1d21ea86a67d47780b9a0d1e1d200500f62b19293fa834d0dea80b8677`. It starts the real application context, checks Flyway history, calls `PostGIS_Full_Version()`, executes a Spring JDBC query, and verifies Spring-managed transaction rollback. The test uses synthetic platform data and does not contact an external database or healthcare service.

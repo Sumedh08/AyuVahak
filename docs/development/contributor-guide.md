@@ -68,7 +68,7 @@ docker compose ps
 
 On macOS/Linux, copy the file with `cp .env.example .env`; the Compose commands are the same. The first startup may take time while the Java base images, PostGIS image, Maven distribution, and dependencies are downloaded. The app waits for the database health check before starting. It applies the versioned Flyway migration during startup. The build stage installs only the pinned `unzip` utility needed by the Maven Wrapper; the runtime image contains the JRE and application jar only.
 
-The current PostGIS image tag is `postgis/postgis:18-3.6`, matching the Testcontainers integration baseline. The image retrieved for this implementation resolved to PostgreSQL 18.6 and PostGIS 3.6.4. The Maven build image uses Eclipse Temurin Java 25.0.4.1+1 and the runtime image is its JRE counterpart; both base images are pinned by manifest digest in the Dockerfile. Revisit those pins through normal dependency/image maintenance.
+The PostGIS image is pinned by manifest digest as `postgis/postgis:18-3.6@sha256:60f6ad1d21ea86a67d47780b9a0d1e1d200500f62b19293fa834d0dea80b8677`, matching the Testcontainers integration baseline. It resolved to PostgreSQL 18.6 and PostGIS 3.6.4. The Maven build image uses Eclipse Temurin Java 25.0.4.1+1 and the runtime image is its JRE counterpart; both base images are also pinned by manifest digest in the Dockerfile. Revisit those pins through normal dependency/image maintenance.
 
 ## Verify the running application
 
@@ -139,7 +139,7 @@ No telemetry backend or collector is required. Optional OTLP tracing export is d
 | Host port 8080 is already in use | Set `AYUVAHAK_HTTP_PORT` in ignored `.env` to another local port, recreate the app container, and use that port in checks. |
 | App is not ready or exits during startup | Run `docker compose ps` and `docker compose logs database app`. Confirm the database health check succeeds and the app reports no migration/configuration failure. |
 | Database container starts but app cannot connect | Check the Compose service hostname is `database`; do not use `localhost` from inside the app container. |
-| PostGIS migration fails | Confirm the `postgis/postgis:18-3.6` image has completed initialization and check database logs. The image must include the extension files before Flyway enables it. |
+| PostGIS migration fails | Confirm the digest-pinned PostGIS image has completed initialization and check database logs. The image must include the extension files before Flyway enables it. |
 | A changed `.env` value has no effect on an existing database | Initialization variables apply only when the data directory is empty. Back up any needed local data, then explicitly remove the disposable volume with `docker compose down --volumes`. |
 | Integration tests cannot start containers | Start the Docker-compatible runtime and check `docker version`; then rerun `mvnw.cmd verify`. |
 | Host-run JDBC connection fails with timezone error | Set `JAVA_TOOL_OPTIONS=-Duser.timezone=UTC` in the shell starting Maven. |

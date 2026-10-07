@@ -1,6 +1,6 @@
 services:
   database:
-    image: postgis/postgis:18-3.6
+    image: postgis/postgis:18-3.6@sha256:60f6ad1d21ea86a67d47780b9a0d1e1d200500f62b19293fa834d0dea80b8677
     environment:
       POSTGRES_DB: "${AYUVAHAK_DATABASE_NAME:?Copy .env.example to .env first}"
       POSTGRES_USER: "${AYUVAHAK_DATABASE_USERNAME:?Copy .env.example to .env first}"

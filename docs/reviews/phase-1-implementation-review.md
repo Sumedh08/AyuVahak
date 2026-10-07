@@ -3,7 +3,7 @@
 **Review date:** 2026-10-08  
 **Reviewed branch:** phase-1/engineering-platform  
 **Phase 0 baseline:** eecf1215c7a69b479ad51d1c76fe06f74a0fc038  
-**Current review status:** Integrated acceptance passed; final two-axis code review is pending.
+**Current review status:** Integrated acceptance passed; the two-axis code review is complete, and all identified findings are resolved.
 
 ## Delivered scope
 
@@ -20,7 +20,7 @@ The production package tree contains only implemented platform technical concern
 | Maven Wrapper | Wrapper scripts 3.3.4; Maven distribution 3.10.0 |
 | Flyway | 12.4.0, including the PostgreSQL database module |
 | PostgreSQL JDBC driver | 42.7.13 |
-| PostgreSQL/PostGIS | postgis/postgis:18-3.6; verified runtime was PostgreSQL 18.6 / PostGIS 3.6.4 |
+| PostgreSQL/PostGIS | postgis/postgis:18-3.6@sha256:60f6ad1d21ea86a67d47780b9a0d1e1d200500f62b19293fa834d0dea80b8677; verified runtime was PostgreSQL 18.6 / PostGIS 3.6.4 |
 | Testcontainers | 2.0.5 |
 | ArchUnit | 1.5.1 |
 | Micrometer | 1.17.1, including Prometheus registry |
@@ -59,13 +59,15 @@ The integrated root command was mvnw.cmd -B -ntp clean verify on Java 25.0.4.1+1
 
 The local Compose stack was independently built and started. It reported readiness and liveness UP, returned the versioned system-information route and Prometheus metrics, and applied one Flyway migration. When the database was stopped, readiness returned HTTP 503 while liveness remained UP; readiness recovered after database restart. The app ran as UID/GID 10001 in UTC. The stack, network, local database volume, and ignored .env were removed after verification.
 
-Two-axis review against the Phase 0 baseline, the Phase 1 spec, and repository standards is pending. Findings and any follow-up fixes will be recorded here before Phase 1 is frozen.
+The two-axis code review compared the integrated changes with the Phase 0 baseline, Phase 1 specification, and repository standards. The standards axis found zero actionable violations. The specification axis found one MAJOR issue (the invalid-configuration test did not start the canonical application), one MINOR reproducibility issue (the PostGIS version-line tag was mutable), and one DOCUMENTATION status inconsistency. All three were resolved: the configuration test now starts `AyuVahakApplication`, the PostGIS image is pinned by manifest digest in Compose and Testcontainers, and the acceptance/review records now agree. There are zero unresolved BLOCKER or MAJOR findings and no remaining material findings. A nonblocking reviewer observation about repeated error-code switches was a style judgement rather than a standards violation and was left unchanged.
+
+After those fixes, `mvnw.cmd -B -ntp clean verify` completed on Java 25.0.4.1+1. The focused `DatabaseConfigurationTest` and PostGIS Testcontainers integration were also rerun. The acceptance record reports the final integrated test counts and Compose smoke checks.
 
 ## Deviations, limitations, and deferred work
 
 **Phase 0 architectural deviations:** None. The selected Java/Spring, Maven, Flyway, JDBC, PostgreSQL/PostGIS, ArchUnit, UUID, API, and ownership decisions were preserved.
 
-**Limitations:** the CI workflow was structurally checked with local PyYAML assertions but was not run on GitHub; actionlint was unavailable. No external workflow was triggered. Management endpoints are unauthenticated in Phase 1 and share the application listener, so deployment operators must restrict access to trusted networks. No telemetry backend is included. The local PostGIS image uses the version-line tag documented in the development guide, with the tested resolution recorded in the acceptance evidence.
+**Limitations:** the CI workflow was structurally checked with local PyYAML assertions but was not run on GitHub; actionlint was unavailable. No external workflow was triggered. Management endpoints are unauthenticated in Phase 1 and share the application listener, so deployment operators must restrict access to trusted networks. No telemetry backend is included. The PostGIS and Java container images are pinned by manifest digest; updates require coordinated regression verification.
 
 **Deferred by phase boundary:** authentication and authorization; organization/execution context; audit and provenance; domain events, outbox, event dispatch, and idempotency; business contexts and healthcare workflows; FHIR/DHIS2 and other healthcare adapters; production topology and disaster recovery; and real workload performance targets.
 
@@ -73,7 +75,7 @@ Two-axis review against the Phase 0 baseline, the Phase 1 spec, and repository s
 
 **Safe improvements applied:** the project now has one contributor command matching CI, local test and dependency evidence, a local-only planning graph, a deterministic application/database Compose path, safe logging tests, and CI architecture/format/test/package gates.
 
-**Recommendations requiring human review:** consider adding actionlint or another action-specific workflow validator to CI when the maintainers select and review an approved tool; decide whether future supported PostGIS patch updates should pin a manifest digest as well as the current version-line tag; and choose deployment-specific management endpoint network controls before any shared deployment. These are maintenance/security review points, not Phase 1 blockers.
+**Recommendations requiring human review:** consider adding actionlint or another action-specific workflow validator to CI when the maintainers select and review an approved tool, and choose deployment-specific management endpoint network controls before any shared deployment. These are maintenance/security review points, not Phase 1 blockers.
 
 The retrospective did not weaken or replace the permanent external-system safety policy in [AGENTS.md](../../AGENTS.md) or [Agent Safety Policy](../governance/agent-safety-policy.md).
 
