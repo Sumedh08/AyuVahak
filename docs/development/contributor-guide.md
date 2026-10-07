@@ -22,21 +22,19 @@ The wrapper retrieves its pinned Maven distribution and dependencies from Maven 
 
 ## Build and test
 
-Run commands from the repository root. On Windows use `mvnw.cmd`; on macOS/Linux use `./mvnw`.
+Run the complete CI-equivalent Phase 1 verification from the repository root. On Windows:
 
 ```powershell
-.\mvnw.cmd -B -ntp test
-.\mvnw.cmd -B -ntp verify
+.\mvnw.cmd -B -ntp clean verify
 ```
 
 On macOS/Linux:
 
 ```sh
-./mvnw -B -ntp test
-./mvnw -B -ntp verify
+./mvnw -B -ntp clean verify
 ```
 
-`test` runs the unit, HTTP, configuration, and architecture checks. `verify` also runs the PostgreSQL/PostGIS integration tests through Testcontainers and the formatting check, so Docker must be running. The integration tests start disposable local containers and do not use an in-memory database as a PostgreSQL substitute. The `verify` lifecycle packages the application. The full test categories and Phase 1 limits are described in the [quality attributes](../architecture/quality-attributes.md) and [Phase 1 engineering decisions](../architecture/phase-1-engineering-decisions.md).
+This is the same substantive command used by the [least-privilege CI workflow](../../.github/workflows/ci.yml). It compiles, runs unit/HTTP/configuration/architecture tests, starts disposable PostgreSQL/PostGIS through Testcontainers for integration tests, checks formatting, and packages the application. Docker must be running. The integration tests do not use an in-memory database as a PostgreSQL substitute. The full test categories and Phase 1 limits are described in the [quality attributes](../architecture/quality-attributes.md) and [Phase 1 engineering decisions](../architecture/phase-1-engineering-decisions.md).
 
 To run only the architecture checks:
 
