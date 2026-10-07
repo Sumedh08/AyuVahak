@@ -17,7 +17,7 @@ Use an explicit, one-shot local command to provision the initial platform-scoped
 
 - runs as a separate administrative process mode and does not start an HTTP listener;
 - requires explicit operator and grantee references, issuer, confirmation, and platform scope;
-- records the operator reference as deployment-attested bootstrap evidence, identifies the bootstrap authentication context as out-of-band host/DB control, and does not represent it as an OIDC-authenticated application principal;
+- records the operator-supplied reference together with the local operating-system principal and database session principal when available. The reference itself is not independently verified by AyuVahak; the trust assumption is that deployment controls protect host/shell access and database credentials. The audit labels this as out-of-band host/DB control, not OIDC-authenticated application identity or cryptographic attestation;
 - writes the initial grant, its required audit record, the `identity-access.grant-created.v1` outbox event, and a durable bootstrap-completed marker in one PostgreSQL transaction;
 - refuses to run if a successful bootstrap marker or any grant state already exists, including after the initial grant is revoked;
 - exits after success and exposes no network bootstrap endpoint, default AyuVahak administrator, shared application password, or persistent bypass.
