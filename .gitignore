@@ -1,0 +1,22 @@
+# Java and Maven build output
+**/target/
+.mvn/wrapper/maven-wrapper.jar
+
+# Local tooling and editor state
+.scratch/tools/
+.idea/
+.vscode/
+*.iml
+.classpath
+.project
+.settings/
+
+# Local secrets and runtime logs
+.env
+.env.*
+!.env.example
+*.log
+
+# Operating system files
+.DS_Store
+Thumbs.db
