@@ -221,3 +221,17 @@ No national-scale traffic, uptime, latency, recovery, or storage target is asser
 ## Quality-attribute decision gates
 
 Before production, each deployment sets availability, RPO/RTO, retention, stale-data windows, integration deadlines, and performance budgets using local clinical risk, law, infrastructure, partner behavior, and measured workload. Phase 1 verifies only substrate-relevant scenarios and preserves the seams needed for later verification; it does not set unsupported national service targets or claim that later-phase domain scenarios have already been verified.
+
+## Volume II phase activation
+
+These scenarios remain global architectural constraints. A scenario becomes an executable acceptance requirement when the phase implementing its relevant capability begins. A phase verifies only the behavior it owns and does not claim that later business behavior has passed. The Phase 1 substrate gate is recorded in the [Phase 1 engineering decisions](phase-1-engineering-decisions.md); Volume II gates are in the five phase specifications.
+
+| Phase | Quality scenarios activated as executable acceptance requirements |
+| --- | --- |
+| 3 — Directory | Source attribution; active/deactivated history; direct capability assertion; geospatial correctness; bounded deterministic query; no missing location treated as zero; scoped curation and audit; no cross-context table access. |
+| 4 — Capacity | Observed/received/valid times; freshness and expiry; source precedence/conflict; unknown vs explicit zero; deterministic projection/rebuild; readiness explanation; concurrent updates; audit/outbox recovery. |
+| 5 — Referral | Immutable submitted revision; explicit lifecycle; scope and authority; idempotent retries; audit atomicity; minimum PatientReference; no patient data in logs/events/metrics. |
+| 6 — Matching | Hard eligibility; stale/unknown evidence excluded from confirmed rank; deterministic ordered result; structured rationale; policy/evidence versioning; snapshot applicability/invalidation; no patient payload. |
+| 7 — Transfer | Distinct assessments/Acceptance/Reservation/Transfer/Arrival/Handover; one active request/transfer invariant; last-capacity-unit race; cancellation/release/reconciliation; duplicate/delayed messages; event recovery; attributable actions. |
+
+Phase 3 tests use real PostgreSQL/PostGIS for spatial semantics. Phases 4–7 add context-owned state and local failure tests incrementally. Performance targets remain evidence-gated: benchmark Directory geographic search, Capacity current/readiness query, Referral queues, Matching generation, and Transfer incoming/active queues under measured representative synthetic load before setting service budgets. No national throughput target is implied.

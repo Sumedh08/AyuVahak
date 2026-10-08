@@ -10,14 +10,33 @@ A coordination request from a referring facility for care at another facility. I
 **Care Requirement**  
 The requested care capabilities and constraints a destination must satisfy, as stated by the responsible clinical team. It is not a diagnosis or a recommendation from AyuVahak.
 
+**CareCapability**
+
+A governed code describing a stable care-relevant ability that a Facility directly asserts it can provide. A code hierarchy does not imply that a Facility has a child capability unless the assertion is explicit.
+
 **Destination Candidate**  
 A facility considered for a referral. A candidate may be eligible, ineligible, or awaiting evidence; candidate status alone does not mean the facility was contacted or selected.
 
 **Destination Recommendation**  
 An explainable, time-specific advisory ranking of destination candidates using stated requirements and attributed directory, capability, capacity, and travel observations. It is not a clinical decision, a booking, or a guarantee that the destination remains available.
 
+**Recommendation Snapshot**
+
+An immutable record of one matching evaluation: the Referral revision, policy and capability-to-operational-requirement mapping versions, candidate outcomes, evidence references and times, reasons, and ordering at the time. Its historical explanation remains valid as a record even after it is no longer applicable to a new action.
+
+**Capability Operational Requirement Policy**  
+A versioned Matching policy that maps each CareCapability required by a Referral to one or more CapacityDimensions needed to evaluate operational readiness. It does not redefine capability or capacity, and is not stored in Referral, Directory, or Capacity. A missing mapping cannot support a positive recommendation.
+
 **Transfer Request**  
 A directed request to a receiving facility to accept a referral under stated care, timing, and operational conditions. It may be accepted, rejected, allowed to expire, or withdrawn.
+
+**Transfer Request Attempt**
+
+One destination-specific Transfer Request in a Referral's ordered coordination journey. A later destination is a new attempt; rejection, expiry, withdrawal, and prior evidence remain in history.
+
+**Transfer Journey**
+
+The Transfer context's ordered coordination history for one Referral, including destination request attempts and the current or completed Transfer. It does not own the Referral or Capacity records it references.
 
 **Acceptance**  
 An explicit facility-level response that the facility is willing to proceed under stated conditions. It may be recorded only after separate positive Clinical Suitability and Operational Readiness Assessments from authorities designated by local policy. The assessments are distinct facts even if one person is locally authorized to make both. Acceptance does not reserve capacity, constitute admission, or guarantee that circumstances will remain unchanged.
@@ -30,6 +49,10 @@ A person, team, or explicitly governed process authorized by a deployment to mak
 
 **Reservation**  
 A time-bounded operational commitment by an authorized facility or system to hold stated receiving capacity for a transfer. A reservation is not a physical bed assignment or admission unless the authoritative local system explicitly defines it that way.
+
+**Capacity Reservation**
+
+An AyuVahak Capacity-owned coordination hold for a defined resource dimension, quantity/unit, time interval, and Transfer reference. It protects only the coordination quantity represented in AyuVahak; it does not guarantee a physical resource.
 
 **Transfer**  
 The coordinated movement of a patient from a referring facility to a receiving facility after a destination is agreed. Transfer planning and lifecycle are distinct from both the referral request and the transport arrangement.
@@ -86,6 +109,26 @@ A person, team, or explicitly governed process authorized by a deployment to rec
 **Capacity Observation**  
 A time-stamped assertion from a named source about capacity, availability, or readiness. It is evidence available to coordination, not a guarantee of the real-world state.
 
+**Current Capacity Evidence**
+
+The Capacity context's policy-derived view of which observations are usable for a particular dimension and decision time, including freshness, source precedence, and conflict outcome. It is not the source system's live database state.
+
+**Operational Readiness Evaluation**
+
+A deterministic evaluation of current Capacity evidence against stated operational dimensions. It can be READY, NOT_READY, UNKNOWN, STALE, or CONFLICTED and is distinct from a receiving authority's case-specific Operational Readiness Assessment.
+
+**Observed Time**
+
+The time at which a source asserts that an observation applied. It is distinct from the time AyuVahak received or recorded it.
+
+**Received Time**
+
+The server-recorded time AyuVahak accepted an observation or message. It does not make an older observation current.
+
+**Applicability**
+
+Whether a historically recorded Recommendation Snapshot may still be used for a new action. It is determined synchronously at use time from the snapshot's age and material current Referral, Directory, Capacity, and Matching policy facts; it is not a stored boolean invalidated by assumed change events. If any required check is unavailable, applicability is INDETERMINATE. Historical validity is distinct: the snapshot remains a valid record of what its evidence and policy supported when generated.
+
 **Freshness**  
 The relationship between an observation's time and its policy-defined period of validity for a particular decision. Fresh data may still be inaccurate; stale data must not be presented as current.
 
@@ -99,7 +142,7 @@ The system or accountable organization that creates or maintains a particular ca
 An identifier issued by an external system or authority. Its meaning is scoped to that issuer and resource type; it is not interchangeable with an AyuVahak identifier or with another issuer's identifier.
 
 **Patient Context**  
-The minimum case-specific patient identity and clinical/logistical facts needed for a coordination action. It is purpose-limited and is not a copy of the patient's complete record.
+The minimum case-specific patient identity and clinical/logistical facts needed for a coordination action. It is purpose-limited and is not a copy of the patient's complete record. The Volume II default is an opaque source-scoped PatientReference; additional fields require an explicit purpose and privacy decision.
 
 **Patient Summary**  
 A concise clinical summary supplied by an authoritative clinical source for a particular care purpose. An IPS may be one exchange representation of a patient summary; neither is the complete longitudinal record.
@@ -148,6 +191,10 @@ A notification that an owning context committed a fact for another AyuVahak cont
 - “Recommendation” is advisory; a human with appropriate authority chooses whether to contact or proceed with a destination.
 - Use “Transfer Request” for the directed request and its response lifecycle; do not use “offer” as a separate domain concept.
 - “Current” is never inferred from a source label alone; it is evaluated using provenance and freshness policy.
+- A Capacity Observation is evidence; a Current Capacity Evidence projection is an interpretation under a versioned policy. Neither equals a receiving authority's Operational Readiness Assessment.
+- A Recommendation Snapshot explains a past evaluation; current Applicability must be checked again before a Transfer Request.
+- A Transfer Request Attempt belongs to a Transfer Journey; it is not a Referral revision or a Transfer movement.
+- A Capacity Reservation is owned by the Capacity context and is a coordination hold, not an external bed ledger.
 - “Bed,” “slot,” and “available” must not be used as interchangeable measures. Any capacity quantity must name its resource/unit, time interval, source, and meaning.
 
 

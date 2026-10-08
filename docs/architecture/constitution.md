@@ -26,6 +26,10 @@ Authentication is delegated to an external identity provider, and AyuVahak autho
 
 The Phase 2 platform-kernel design is documented in [Phase 2 architecture](phase-2-platform-kernel.md) and its [behavioral specification](../specs/phase-2-platform-kernel-spec.md). Keycloak is a local reference OIDC provider, not a deployment requirement. AyuVahak validates signed access tokens locally and owns scoped authorization grants. Protected mutations and their required audit evidence are atomic; non-mutating sensitive-read/security audit has a separate durable path. Internal events are at-least-once, with no global order and per-aggregate order where required. Command idempotency and consumer deduplication remain distinct and locally owned. Phase 2 is design-approved but not started; it does not authorize business-context implementation.
 
+## Volume II architecture
+
+Phases 3–7 are designed as five business contexts in the sequence Directory → Capacity → Referral → Matching → Transfer. Their authority, application contracts, state machines, stale-evidence rules, recommendation policy, and reservation boundary are defined in the [Volume II core architecture](volume-2-core-care-coordination.md), [context contracts](volume-2-context-contracts.md), [state machines](volume-2-state-machines.md), [Capacity policy](capacity-readiness-policy-v1.md), and [Matching policy](matching-policy-v1.md). The implementation-ready phase boundaries are in the [Phase 3–7 specifications](../specs/). These documents do not authorize implementation by themselves; the owning phase must be separately started and frozen under its execution gate.
+
 ## Agent safety
 
 The permanent external-mutation policy in [AGENTS.md](../../AGENTS.md) applies in every phase. Public/shared healthcare systems and upstream repositories are not test targets; default integration verification uses local containers, deterministic fixtures, mocks, and disposable infrastructure controlled by developers. The rationale and safe test-environment expectations are in [agent safety policy](../governance/agent-safety-policy.md).

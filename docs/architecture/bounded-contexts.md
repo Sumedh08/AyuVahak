@@ -6,62 +6,66 @@ FHIR, IPS, SMART, mCSD, DHIS2, HAPI, Spring, PostgreSQL/PostGIS, a routing provi
 
 ## Context definitions
 
+The active business contexts for Volume II are Directory, Capacity, Referral, Matching, and Transfer. They are implemented sequentially in Phases 3–7. Transport, Notifications, and Analytics remain later-volume contexts and are not implemented or required by Volume II. The [Volume II context map](volume-2-core-care-coordination.md#context-model) shows the current five-context collaboration and the Phase 2 platform boundary.
+
 ### Directory
 
-- **Purpose:** Discover organizations, facilities, locations, healthcare services, endpoints, and operational capability assertions relevant to coordination.
-- **Owns:** The provenance-aware coordination projection and local directory corrections explicitly governed by a deployment.
-- **Does not own:** National facility/provider identity, practitioner credentials, clinical service records, or live capacity.
-- **Upstream dependencies:** Facility/provider registries, facility authorities, and DirectorySourcePort implementations such as an mCSD or local-registry adapter.
-- **Downstream consumers:** Matching, Referral, Transfer, administrators, and authorized users.
-- **Allowed communication:** Queries for candidate facts; attributed directory/capability change notifications; governed curation commands. Directory owns its source port and the meaning/mapping of external directory facts.
-- **Events potentially published:** DirectoryEntryChanged, CapabilityProfileChanged, DirectorySourceBecameStale.
-- **Prohibited coupling:** Do not treat directory presence or a listed service as current capacity/readiness; do not add patient identity matching.
+- **Purpose:** Discover coordination-relevant Organizations, Facilities, Locations, HealthcareServices, and attributed CareCapability assertions.
+- **Owns:** A provenance-aware coordination projection and governed local corrections; issuer-scoped external identifier associations for the Directory concepts.
+- **Does not own:** National facility/provider identity, practitioner credentials, authoritative registry records, patient identity, or Capacity.
+- **Upstream dependencies:** Optional facility/service authorities and a context-owned `DirectorySourcePort`; manual curation remains supported.
+- **Downstream consumers:** Matching and authorized directory users; Referral/Transfer use only the identity/origin facts they need.
+- **Allowed communication:** Scoped curation commands and bounded discovery/fact queries. Directory owns its source mapping and semantics.
+- **Events:** None in the Volume II baseline. Matching queries current Directory facts synchronously; add an event only when a real asynchronous consumer is designed.
+- **Prohibited coupling:** A service/capability assertion is not current Capacity or Readiness; no patient identity matching and no authoritative registry write-back by default.
 
 ### Capacity
 
-- **Purpose:** Maintain and assess time-bounded observations of service capacity, availability, and readiness for coordination.
-- **Owns:** Received/manual Capacity Observations, freshness classification, source attribution, and the current coordination projection.
-- **Does not own:** Physical beds, staffing schedules, hospital resource planning, inventory, clinical admission, or the guarantee of real-world availability.
-- **Upstream dependencies:** Capacity systems or locally designated capacity authorities through CapacitySourcePort implementations; Directory for service/facility identity.
-- **Downstream consumers:** Matching and Transfer, with scoped operational views for authorized coordinators.
-- **Allowed communication:** Accept attributed observations; answer freshness-aware queries; notify consumers when evidence changes or expires. Capacity owns its source port, observation interpretation, and business reconciliation rules.
-- **Events potentially published:** CapacityObserved, CapacityBecameStale, CapacityWithdrawn, ReadinessChanged.
-- **Prohibited coupling:** Never silently turn stale/unknown into available; do not own acceptance or reservation.
+- **Purpose:** Maintain and evaluate time-bounded operational evidence for coordination.
+- **Owns:** Received/manual Capacity Observations, source/freshness/conflict interpretation and current projection; in Phase 7, time-bounded coordination Reservations and their lifecycle.
+- **Does not own:** Physical beds, staffing schedules, resource planning, inventory, clinical admission, or guarantee of real-world availability.
+- **Upstream dependencies:** Optional capacity sources through a Capacity-owned port; Directory's application boundary for Facility identity/reference validation.
+- **Downstream consumers:** Matching and Transfer through freshness-aware query/command contracts; authorized operational views.
+- **Allowed communication:** Observation intake, evidence/readiness queries, and Capacity-owned reservation command/status/release. Capacity owns source mapping and business reconciliation.
+- **Events:** No observation/readiness event is emitted in Phase 4 without a consumer. Phase 7 publishes only reservation-expired and reservation-at-risk events to Transfer.
+- **Prohibited coupling:** Never turn stale/unknown into positive availability; Reservation is a coordination hold, not a bed ledger; do not own receiving Acceptance.
 
 ### Referral
 
-- **Purpose:** Represent the originating team's request to coordinate care at another facility.
-- **Owns:** Referral identity, origin, Care Requirement as supplied by a responsible clinician, minimum Patient Context/reference, urgency as asserted by the source, and the case-level Referral status summary; Transfer remains authoritative for reservation and movement details.
-- **Does not own:** The source clinical chart, clinical assessment itself, destination matching policy, receiving Acceptance, Reservation, detailed Transfer lifecycle, or transport dispatch.
-- **Upstream dependencies:** Authorized user or EHR/HIS through a patient-context adapter; Identity & Access; Directory; and Matching.
-- **Downstream consumers:** Matching, Transfer, Notifications, and Audit.
-- **Allowed communication:** Accept authorized create/update/cancel commands; request candidate evaluation; link to recommendation and Transfer status summary; consume Transfer events without duplicating its lifecycle; publish case facts. Referral owns PatientContextPort and any partner mapping for patient identity references or minimum case summaries.
-- **Events potentially published:** ReferralCreated, CareRequirementChanged, ReferralCancelled, ReferralClosed, PatientContextUpdated.
-- **Prohibited coupling:** Do not embed FHIR resources as the referral model; do not make a recommendation an automatic decision.
+- **Purpose:** Represent the origin team's cross-facility coordination request and structured care requirement.
+- **Owns:** Referral identity/origin, immutable submitted revisions, source-asserted CareRequirement, opaque PatientReference, and Referral status/resolution. Transfer owns attempts, Acceptance and movement details.
+- **Does not own:** Patient identity resolution, clinical chart or summary, diagnosis/inference, Matching policy, Acceptance, Reservation, Transfer lifecycle, or dispatch.
+- **Upstream dependencies:** Authorized origin user/system, Directory for origin/capability validation, and a later context-owned patient-reference adapter only if selected.
+- **Downstream consumers:** Matching and Transfer through narrow queries; Transfer cancellation/completion facts return through idempotent commands/events.
+- **Allowed communication:** Scoped create/submit/amend/cancel/resolve; read immutable revisions; expose only minimum basis fields to Matching/Transfer. Referral owns any future patient-context mapping.
+- **Events:** `referral.cancelled.v1` is published for Transfer. No other Referral event is included until a real consumer exists.
+- **Prohibited coupling:** No FHIR resource as the domain model, no patient warehouse, no automatic recommendation/decision, no direct Transfer internals.
 
 ### Matching
 
-- **Purpose:** Apply deterministic eligibility and ranking rules to a stated Care Requirement and attributed evidence.
-- **Owns:** Versioned policy inputs, eligibility outcomes, ranking explanation, and the recommendation snapshot.
-- **Does not own:** Clinical triage, source data, facility capacity, authorization, referral lifecycle, or the user's destination choice.
-- **Upstream dependencies:** Referral's requirement; Directory; Capacity; TravelTimePort for an optional routing estimate; local matching policy.
-- **Downstream consumers:** Referring clinician/operator through Referral.
-- **Allowed communication:** Read versioned evidence; return eligible/ineligible/unknown reasons and an explainable ordered result; invalidate/recompute on material changes.
-- **Events potentially published:** RecommendationProduced, RecommendationInvalidated.
-- **Prohibited coupling:** No opaque/learned score, no hidden eligibility rule, no capacity mutation, and no autonomous clinical/destination/dispatch decision.
+- **Purpose:** Evaluate explicit hard eligibility and produce a deterministic, advisory ordering from current evidence.
+- **Owns:** Versioned matching policy, including the CareCapability-to-CapacityDimension operational requirement mapping, and immutable structured Recommendation snapshots/outcomes.
+- **Does not own:** Clinical triage/suitability, source Directory/Capacity facts, Referral lifecycle, destination decision, Acceptance, Reservation, or transport.
+- **Upstream dependencies:** Referral revision, Directory candidate/capability/location queries, Capacity readiness query, optional Matching-owned TravelTimePort, deployment policy.
+- **Downstream consumers:** Authorized origin-side users and Transfer's recommendation query.
+- **Allowed communication:** Synchronous context-owned evidence queries; resolve Referral CareCapabilities through the Matching policy, then ask Capacity to evaluate only the resulting dimensions; preserve policy/evidence versions, candidate outcomes, freshness and rationale. Transfer invokes synchronous applicability revalidation before a request.
+- **Events:** None in Volume II. Current applicability is determined by targeted synchronous owner queries; no speculative invalidation event.
+- **Prohibited coupling:** No opaque/learned score, no unknown-as-negative or positive, no direct source tables, no capacity mutation and no autonomous clinical/destination decision.
 
 ### Transfer
 
-- **Purpose:** Coordinate a directed receiving request through response, reservation, movement, arrival, and clinical handover.
-- **Owns:** Transfer Request state, separate clinical-suitability and operational-readiness confirmations, facility Acceptance/Reject/Timeout, Reservation outcome, Transfer lifecycle, cancellation/reroute history, Arrival, and Handover acknowledgement.
-- **Does not own:** Referral's clinical source data, actual bed ledger unless an external system is the authority, vehicle dispatch, or subsequent clinical treatment.
-- **Upstream dependencies:** Referral, Matching-selected destination, Directory, Capacity, locally mapped receiving-side authorities, and optionally a facility reservation system through a Transfer-owned reservation port.
-- **Downstream consumers:** Referral, Transport, Notifications, Audit, and Analytics.
-- **Allowed communication:** Create a Transfer planning record when a destination is selected, before reservation; record each separately attributed assessment and Acceptance; request and confirm a separate reservation; maintain one selected active transfer commitment per Referral; accept factual late arrival/handover reports.
-- **Events potentially published:** TransferRequestIssued, DestinationAccepted, DestinationRejected, TransferReservationConfirmed, ReservationConflict, TransferCancelled, TransferRerouted, PatientArrived, HandoverAcknowledged, TransferCompleted.
-- **Prohibited coupling:** Facility Acceptance follows positive clinical and operational confirmations; it is not a reservation, and a reservation is not admission. Do not let duplicate/delayed messages erase history or create two selected commitments.
+- **Purpose:** Coordinate a directed receiving request through decision, separate reservation, reported movement, Arrival, Handover, and closure.
+- **Owns:** TransferJourney and ordered request attempts, separate receiving assessments and Acceptance, its own Transfer lifecycle/event history, and the referenced outcome of Capacity-owned Reservation.
+- **Does not own:** Referral/clinical source data, Capacity ledger or reservation state, actual bed/admission, transport dispatch/fleet, or subsequent treatment.
+- **Upstream dependencies:** Referral revision/state, current Matching snapshot, Directory destination facts, Capacity reservation application contract, and locally mapped receiving authorities.
+- **Downstream consumers:** Referral (only completion/unfulfilled/cancellation reactions); Transport, Notifications, and Analytics are later-volume consumers.
+- **Allowed communication:** Create one active request at a time, record authority functions separately, invoke Capacity command, reconcile outcomes, preserve reroute and late factual reports.
+- **Events:** Receives `referral.cancelled.v1`, `capacity.reservation-expired.v1`, `capacity.reservation-at-risk.v1`; publishes `transfer.completed.v1` and `transfer.unfulfilled.v1` to Referral.
+- **Prohibited coupling:** Acceptance is not Reservation; Reservation is not admission; no direct Capacity tables; no message delivery changes a receiving decision; no two active destination commitments.
 
 ### Transport
+
+**Volume II status:** Later-volume context; no Transport entity, dispatch adapter, endpoint, schema, or implementation is part of Phases 3–7. In Volume II, Transfer records only a reported `IN_TRANSIT` state and does not claim to coordinate or control transport.
 
 - **Purpose:** Coordinate and display the transport relationship needed for a Transfer.
 - **Owns:** A transport request/reference, reported assignment and journey status, and coordination exceptions.
@@ -73,6 +77,8 @@ FHIR, IPS, SMART, mCSD, DHIS2, HAPI, Spring, PostgreSQL/PostGIS, a routing provi
 - **Prohibited coupling:** Never issue a dispatch command unless a separately authorized future integration explicitly grants that role; transport failure does not silently cancel the Transfer.
 
 ### Notifications
+
+**Volume II status:** Later-volume capability; no notification business logic/provider is implemented or required by Phases 3–7.
 
 - **Purpose:** Deliver coordination alerts and capture channel delivery outcomes.
 - **Owns:** Recipient/channel choice allowed by policy, minimal message envelope, delivery attempts, and delivery/failure status.
@@ -109,6 +115,8 @@ FHIR, IPS, SMART, mCSD, DHIS2, HAPI, Spring, PostgreSQL/PostGIS, a routing provi
 
 ### Analytics
 
+**Volume II status:** Later-volume capability; no analytics context, export, DHIS2 integration, or business metrics are implemented or required by Phases 3–7.
+
 - **Purpose:** Provide coordination-specific operational summaries and governed aggregate exports.
 - **Owns:** Derived, minimized operational measures and aggregation definitions.
 - **Does not own:** Patient-level operational workflow, public-health indicator definitions, generic BI, or clinical outcomes.
@@ -128,7 +136,7 @@ The consuming business context owns its port, the meaning of the data or action 
 
 - Directory owns its directory-source port and mCSD or registry mappings.
 - Referral owns its patient-context port and mapping/extraction of a scoped FHIR or IPS exchange into the minimum context it uses.
-- Capacity owns its capacity-source and reservation semantics, including partner-specific capacity mappings.
+- Capacity owns its source-to-CapacityDimension mappings and reservation semantics. Matching owns CareCapability-to-CapacityDimension operational-requirement policy; Capacity does not infer CareCapability meaning.
 - Matching owns its travel-time port and interpretation of any route estimate as advisory evidence.
 - Transfer owns reservation requests and their business reconciliation; Transport owns dispatch requests and reported assignment/status.
 - Notifications owns the notification-delivery port and the meaning of delivery outcomes.
@@ -142,6 +150,8 @@ Connection and mapping configuration is declared with the adapter that consumes 
 Transport-level retries may be supplied by shared infrastructure only when duplicate delivery is safe and bounded. The owning context decides whether a business operation may be retried, what confirmation is required, how conflicts are reconciled, and when it can be considered complete. An outbox is technical delivery support; it does not transfer business-event ownership out of the publishing context.
 
 ## Context map
+
+This diagram is the longer-term architecture context map. The active Volume II business contexts, phase order and minimal event catalog are shown more precisely in the [Volume II architecture](volume-2-core-care-coordination.md) and [context contracts](volume-2-context-contracts.md). Later contexts below are not Phase 3–7 implementation requirements.
 
 ```mermaid
 flowchart LR
@@ -207,6 +217,8 @@ flowchart LR
   Capacity --> Matching
   Matching --> Referral
   Referral --> Transfer
+  Transfer --> Capacity
+  Transfer --> Matching
   Transfer --> Transport
   Referral --> Notifications
   Transfer --> Notifications
@@ -265,7 +277,7 @@ The diagram distinguishes business ownership from adapter implementation and sha
 
 - Keep contexts in one deployable modular monolith initially, with clear ownership and narrow interfaces.
 - Use direct in-process queries/commands where a synchronous decision needs an answer. Do not distribute contexts into separately deployed services without an identified scaling, isolation, or organizational need.
-- Use domain events when another context needs to react to a committed fact. Events are notifications of facts, not the only record of truth.
+- Use domain events when another context needs to react to a committed fact. Events are notifications of facts, not the only record of truth. An event may precede its executable consumer only when the same approved Volume design freezes the consumer, purpose, ownership, payload/privacy boundary, and delivery/activation behavior; otherwise do not emit for a hypothetical consumer.
 - Use a transactional outbox where a committed fact must reliably reach an asynchronous internal consumer. A pending publication is visible and retryable; it does not roll back the committed fact. The platform outbox is not a generic external integration gateway; partner delivery remains behind the owning context's adapter and reconciliation boundary.
 - Outbox delivery is at least once. Per-aggregate order is enforced when required; no global event ordering is promised. Consumers deduplicate at their own effect boundary.
 - Command idempotency and consumer deduplication are separate: command owners store scoped command receipts, and each consumer owns receipts for its own effect. No generic cross-context receipt store is exposed.

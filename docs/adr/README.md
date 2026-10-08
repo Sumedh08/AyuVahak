@@ -29,6 +29,16 @@ ADRs record durable AyuVahak architecture decisions, their context, and the rati
 | [0012](0012-audit-capture-and-failure-policy.md) | Atomic audit for mutations; separate durable path for non-mutating security/access records | Accepted |
 | [0013](0013-idempotency-and-consumer-deduplication.md) | Command idempotency and consumer deduplication have separate owners and records | Accepted |
 | [0014](0014-one-shot-local-grant-bootstrap.md) | Provision the first AyuVahak grant through a one-shot local operator command | Accepted |
+| [0015](0015-capacity-evidence-and-readiness.md) | Capacity is source-attributed, freshness-aware evidence; unknown is not positive | Accepted |
+| [0016](0016-deterministic-recommendation-snapshots.md) | Deterministic, policy-versioned advisory recommendation snapshots | Accepted |
+| [0017](0017-transfer-journey-and-capacity-reservation.md) | Transfer request attempts and Capacity reservations have separate owners | Accepted |
+| [0018](0018-matching-owns-capability-operational-mapping.md) | Matching owns versioned CareCapability-to-CapacityDimension mapping | Accepted |
+| [0019](0019-synchronous-recommendation-applicability.md) | Recommendation applicability is synchronously revalidated at use time | Accepted |
+| [0020](0020-declared-future-consumer-delivery-state.md) | A declared same-Volume future consumer uses a durable non-replayable waiting state | Accepted |
 
 ADR 0005 and ADR 0007 have dated amendments for the Phase 2 identity/token boundary and at-least-once/per-aggregate event delivery semantics. These amendments clarify the existing decisions; they do not change the Phase 1 baseline or begin Phase 2 implementation.
+
+ADRs 0015–0017 constrain the Volume II Capacity, Matching, and Transfer domains. They do not select external adapters, deployment-specific legal policy, universal freshness/ranking values, or implementation artifacts.
+
+ADRs 0018–0020 resolve cross-phase ownership and event-activation semantics for Volume II. They clarify that operational mapping and current recommendation applicability belong to Matching, and narrowly permit a same-Volume future consumer event to remain durably waiting without automatic replay.
 
