@@ -9,7 +9,7 @@ import org.springframework.context.annotation.Configuration;
 public class AuditClockConfiguration {
 
   @Bean
-  @ConditionalOnMissingBean(Clock.class)
+  @ConditionalOnMissingBean(name = "auditClock")
   Clock auditClock() {
     return Clock.systemUTC();
   }

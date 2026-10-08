@@ -5,6 +5,7 @@ import java.util.Objects;
 import org.ayuvahak.platform.audit.domain.AuditActionKind;
 import org.ayuvahak.platform.audit.domain.AuditEvidence;
 import org.ayuvahak.platform.core.InternalId;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 
@@ -16,7 +17,7 @@ public final class AuditWriter {
   private final AuditRecordAppender appender;
   private final Clock clock;
 
-  public AuditWriter(AuditRecordAppender appender, Clock clock) {
+  public AuditWriter(AuditRecordAppender appender, @Qualifier("auditClock") Clock clock) {
     this.appender = Objects.requireNonNull(appender, "appender");
     this.clock = Objects.requireNonNull(clock, "clock");
   }
