@@ -47,6 +47,26 @@ class CorePrimitivesTest {
   }
 
   @Test
+  void actorReferencePreservesHumanVersusServiceIdentityKind() {
+    IssuerId issuer = new IssuerId("https://identity.example/issuer");
+    ActorReference human = ActorReference.human(issuer, "person-1");
+    ActorReference service = ActorReference.service(issuer, "client-1");
+
+    assertThat(human.kind()).isEqualTo(ActorKind.HUMAN);
+    assertThat(service.kind()).isEqualTo(ActorKind.SERVICE);
+    assertThat(human.identity()).isEqualTo(new ExternalReference(issuer, "subject", "person-1"));
+    assertThat(service.identity())
+        .isEqualTo(new ExternalReference(issuer, "client_id", "client-1"));
+    assertThat(human).isNotEqualTo(service);
+    assertThat(human.toString()).doesNotContain("person-1");
+    assertThatThrownBy(
+            () ->
+                new ActorReference(
+                    ActorKind.HUMAN, new ExternalReference(issuer, "client_id", "client-1")))
+        .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
   void issuerScopedReferencesRejectBlankTrimmedOrControlCharacterValues() {
     assertThatThrownBy(() -> new IssuerId("  ")).isInstanceOf(IllegalArgumentException.class);
     assertThatThrownBy(() -> new IssuerId(" issuer ")).isInstanceOf(IllegalArgumentException.class);
