@@ -48,6 +48,20 @@ Capability assertion verification is explicit: `UNVERIFIED`, `VERIFIED`, `DISPUT
 
 All mutations require owner-local idempotency for retried external commands, explicit validated organization/facility context, and atomic required audit per Phase 2. Source facts retain provenance; manual facts identify the actor, method, time, and reason. No source write-back occurs.
 
+### Functional authorities and scope checks
+
+Directory registers these functional authority codes with Identity & Access; local job roles remain deployment policy and are never inferred from IdP role claims:
+
+| Authority | Permitted grant scope | Use |
+| --- | --- | --- |
+| `DirectoryRead` | `PLATFORM`, `ORGANIZATION`, `FACILITY` | Read one or list Directory projections within the exact authorized scope. |
+| `DirectoryCuration` | `PLATFORM`, `ORGANIZATION`, `FACILITY` | Create/correct/deactivate Organization, Facility, Location, HealthcareService, capability assertions, and external-identifier associations within scope. Organization creation requires `PLATFORM`; a facility-scoped grant must match both owning Organization and Facility. |
+| `DirectoryVocabularyAdministration` | `PLATFORM` | Define/deactivate controlled CareCapability codes. |
+
+The execution scope in each Directory request is explicit and validated. A platform grant may act across the deployment; an organization grant is restricted to that exact Organization and its facilities; a facility grant is restricted to the exact Facility and its matching Organization. A raw caller-proposed identifier is not authority. Facility-to-Organization association is read from the Directory owner and compared to the grant scope; no caller assertion can override it. Vocabulary administration is always a separate platform-scoped authority.
+
+Identity & Access remains the sole owner of grant records and grant/revocation audit. Its protected grant-administration operation continues to require an authenticated actor with platform-scoped `AccessGrantAdministration`; it may create/revoke a registered functional authority at only a scope permitted by that authority. The target grant scope is distinct from the administrator's `PLATFORM` execution scope. Organization and Facility target references are validated against active Directory-owned facts, including the Facility-to-Organization relationship. Grant administration does not become Directory-owned state, and the Directory context never queries grant tables directly. This Phase 3 extension preserves the Phase 2 authorization invariants and is recorded in [ADR 0021](../adr/0021-grant-registered-authorities-at-declared-scope.md).
+
 ### Queries
 
 - `GetOrganization`, `GetFacility`, `GetHealthcareService` return only authorized fields with active/deactivated state, source and version.

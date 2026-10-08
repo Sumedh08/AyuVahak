@@ -1,6 +1,6 @@
 # Volume II — Core Care Coordination Architecture
 
-**Status:** Approved design baseline for Phases 3–7; implementation has not started.  
+**Status:** Approved design baseline for Phases 3–7; Phase 3 implementation is in progress.
 **Scope:** Care Service Directory, Capacity & Operational Readiness, Referral, Destination Matching & Recommendation, and Transfer Coordination.
 
 ## Product capability

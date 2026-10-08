@@ -40,7 +40,7 @@ The product can operate with human-maintained directories and capacity observati
 
 ## Platform kernel context
 
-The approved [Phase 2 platform-kernel architecture](docs/architecture/phase-2-platform-kernel.md) supplies common trust and reliability capabilities before healthcare workflows are implemented. Identity & Access and Audit are platform bounded contexts; provenance, event contracts, outbox delivery, and duplicate protection are shared capabilities or locally owned mechanisms, not a central store of business truth. Domain events remain producer-owned, at-least-once delivery is assumed, and causal order is promised only per aggregate where required. Command retry protection and consumer duplicate protection have separate owners. Phase 2 does not begin automatically from this design.
+The approved [Phase 2 platform-kernel architecture](docs/architecture/phase-2-platform-kernel.md) supplies common trust and reliability capabilities before healthcare workflows are implemented. Identity & Access and Audit are platform bounded contexts; provenance, event contracts, outbox delivery, and duplicate protection are shared capabilities or locally owned mechanisms, not a central store of business truth. Domain events remain producer-owned, at-least-once delivery is assumed, and causal order is promised only per aggregate where required. Command retry protection and consumer duplicate protection have separate owners. Phase 2 is implemented and frozen; business-context implementation remains separately governed by its phase gates.
 
 ## Volume II core care coordination
 
