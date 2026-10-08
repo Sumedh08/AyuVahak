@@ -2,16 +2,24 @@ package org.ayuvahak.directory.application;
 
 import java.time.Clock;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Supplier;
+import java.util.regex.Pattern;
+import org.ayuvahak.directory.domain.CapabilityVerificationStatus;
+import org.ayuvahak.directory.domain.CareCapability;
 import org.ayuvahak.directory.domain.DirectoryAuthorities;
 import org.ayuvahak.directory.domain.DirectoryLifecycleStatus;
 import org.ayuvahak.directory.domain.DirectoryLocation;
 import org.ayuvahak.directory.domain.DirectoryProvenance;
 import org.ayuvahak.directory.domain.DirectorySource;
 import org.ayuvahak.directory.domain.Facility;
+import org.ayuvahak.directory.domain.FacilityCapabilityAssertion;
+import org.ayuvahak.directory.domain.HealthcareService;
 import org.ayuvahak.directory.domain.Organization;
 import org.ayuvahak.directory.domain.Wgs84Coordinate;
 import org.ayuvahak.platform.api.PlatformErrorCode;
@@ -57,6 +65,8 @@ public class DirectoryApplicationService {
   private static final int MAX_SEARCH_PAGE_SIZE = 100;
   private static final int MAX_SEARCH_OFFSET = 10_000;
   private static final double MAX_SEARCH_RADIUS_METERS = 500_000.0;
+  private static final int MAX_REQUIRED_CAPABILITIES = 20;
+  private static final Pattern CAPABILITY_CODE = Pattern.compile("[A-Z][A-Z0-9._-]{0,63}");
   private static final String COMMAND_BUSY_DETAIL =
       "A matching Directory command is still being processed; retry with the same idempotency key.";
 
@@ -476,6 +486,889 @@ public class DirectoryApplicationService {
     }
   }
 
+  public InternalId createHealthcareService(
+      ExecutionContext context,
+      InternalId organizationId,
+      InternalId facilityId,
+      Optional<InternalId> locationId,
+      String name,
+      DirectorySource source,
+      DirectoryProvenance provenance,
+      String rawIdempotencyKey,
+      RequestFingerprint fingerprint) {
+    requireAuthority(
+        context,
+        DirectoryAuthorities.curation().code(),
+        "DIRECTORY_HEALTHCARE_SERVICE_CREATE",
+        "HealthcareService",
+        Optional.empty(),
+        Optional.of(organizationReference(organizationId)));
+    Facility facility =
+        store.findFacility(facilityId).orElseThrow(DirectoryApplicationService::notFound);
+    requireFacilityCurationScope(
+        context, "DIRECTORY_HEALTHCARE_SERVICE_CREATE", "HealthcareService", facility);
+    if (!organizationId.equals(facility.managingOrganizationId())) {
+      denyScope(
+          context,
+          "DIRECTORY_HEALTHCARE_SERVICE_CREATE",
+          "HealthcareService",
+          Optional.empty(),
+          Optional.of(organizationReference(organizationId)),
+          Optional.of(facilityReference(facilityId)));
+      throw scopeMismatch();
+    }
+    requireSourceType(source, "HealthcareService");
+    CommandReceiptKey receiptKey =
+        commandKey(
+            context,
+            "healthcare-service.create",
+            "facilities/" + facilityId + "/healthcare-services",
+            rawIdempotencyKey);
+    return executeIdempotent(
+        receiptKey,
+        fingerprint,
+        201,
+        () -> {
+          Facility currentFacility =
+              store.lockFacility(facilityId).orElseThrow(DirectoryApplicationService::notFound);
+          requireActiveFacilityOwner(currentFacility);
+          requireFacilityCurationScope(
+              context, "DIRECTORY_HEALTHCARE_SERVICE_CREATE", "HealthcareService", currentFacility);
+          if (!organizationId.equals(currentFacility.managingOrganizationId())) {
+            throw scopeMismatch();
+          }
+          validateLocationOwner(locationId, facilityId);
+          InternalId id = InternalId.generate();
+          HealthcareService service =
+              new HealthcareService(
+                  id,
+                  organizationId,
+                  facilityId,
+                  locationId,
+                  normalizedName(name),
+                  source,
+                  provenance,
+                  DirectoryLifecycleStatus.ACTIVE,
+                  1);
+          store.insertHealthcareService(service);
+          auditMutation(
+              context,
+              "DIRECTORY_HEALTHCARE_SERVICE_CREATE",
+              "HealthcareService",
+              id,
+              provenance.reasonCode(),
+              Optional.of(organizationReference(organizationId)),
+              Optional.of(facilityReference(facilityId)));
+          return id;
+        });
+  }
+
+  public HealthcareService getHealthcareService(ExecutionContext context, InternalId id) {
+    requireAuthority(
+        context,
+        DirectoryAuthorities.read().code(),
+        "DIRECTORY_HEALTHCARE_SERVICE_READ",
+        "HealthcareService",
+        Optional.of(id),
+        Optional.empty());
+    HealthcareService service =
+        store.findHealthcareService(id).orElseThrow(DirectoryApplicationService::notFound);
+    Facility facility =
+        store.findFacility(service.facilityId()).orElseThrow(DirectoryApplicationService::notFound);
+    requireFacilityReadScope(
+        context, "DIRECTORY_HEALTHCARE_SERVICE_READ", "HealthcareService", id, facility);
+    auditRead(
+        context,
+        "DIRECTORY_HEALTHCARE_SERVICE_READ",
+        "HealthcareService",
+        id,
+        Optional.of(organizationReference(service.organizationId())),
+        Optional.of(facilityReference(service.facilityId())));
+    return service;
+  }
+
+  public void correctHealthcareService(
+      ExecutionContext context,
+      InternalId id,
+      long expectedVersion,
+      String name,
+      Optional<InternalId> locationId,
+      DirectoryProvenance provenance,
+      String rawIdempotencyKey,
+      RequestFingerprint fingerprint) {
+    HealthcareService reference =
+        store.findHealthcareService(id).orElseThrow(DirectoryApplicationService::notFound);
+    requireAuthority(
+        context,
+        DirectoryAuthorities.curation().code(),
+        "DIRECTORY_HEALTHCARE_SERVICE_CORRECT",
+        "HealthcareService",
+        Optional.of(id),
+        Optional.of(organizationReference(reference.organizationId())));
+    Facility facility =
+        store
+            .findFacility(reference.facilityId())
+            .orElseThrow(DirectoryApplicationService::notFound);
+    requireFacilityCurationScope(
+        context, "DIRECTORY_HEALTHCARE_SERVICE_CORRECT", "HealthcareService", facility);
+    CommandReceiptKey receiptKey =
+        commandKey(
+            context, "healthcare-service.correct", "healthcare-services/" + id, rawIdempotencyKey);
+    executeIdempotent(
+        receiptKey,
+        fingerprint,
+        204,
+        () -> {
+          HealthcareService current =
+              store.lockHealthcareService(id).orElseThrow(DirectoryApplicationService::notFound);
+          Facility currentFacility =
+              store
+                  .lockFacility(current.facilityId())
+                  .orElseThrow(DirectoryApplicationService::notFound);
+          requireFacilityCurationScope(
+              context,
+              "DIRECTORY_HEALTHCARE_SERVICE_CORRECT",
+              "HealthcareService",
+              currentFacility);
+          if (current.status() != DirectoryLifecycleStatus.ACTIVE) {
+            throw inactive();
+          }
+          requireExpectedVersion(current.version(), expectedVersion);
+          validateLocationOwner(locationId, current.facilityId());
+          HealthcareService corrected =
+              current.correct(normalizedName(name), locationId, provenance);
+          store.appendHealthcareServiceRevision(current, provenance.reasonCode());
+          if (!store.updateHealthcareService(corrected, expectedVersion, clock.instant())) {
+            throw versionConflict();
+          }
+          auditMutation(
+              context,
+              "DIRECTORY_HEALTHCARE_SERVICE_CORRECT",
+              "HealthcareService",
+              id,
+              provenance.reasonCode(),
+              Optional.of(organizationReference(current.organizationId())),
+              Optional.of(facilityReference(current.facilityId())));
+          return id;
+        });
+  }
+
+  public void deactivateHealthcareService(
+      ExecutionContext context,
+      InternalId id,
+      long expectedVersion,
+      DirectoryProvenance provenance,
+      String rawIdempotencyKey,
+      RequestFingerprint fingerprint) {
+    HealthcareService reference =
+        store.findHealthcareService(id).orElseThrow(DirectoryApplicationService::notFound);
+    requireAuthority(
+        context,
+        DirectoryAuthorities.curation().code(),
+        "DIRECTORY_HEALTHCARE_SERVICE_DEACTIVATE",
+        "HealthcareService",
+        Optional.of(id),
+        Optional.of(organizationReference(reference.organizationId())));
+    Facility facility =
+        store
+            .findFacility(reference.facilityId())
+            .orElseThrow(DirectoryApplicationService::notFound);
+    requireFacilityCurationScope(
+        context, "DIRECTORY_HEALTHCARE_SERVICE_DEACTIVATE", "HealthcareService", facility);
+    CommandReceiptKey receiptKey =
+        commandKey(
+            context,
+            "healthcare-service.deactivate",
+            "healthcare-services/" + id,
+            rawIdempotencyKey);
+    executeIdempotent(
+        receiptKey,
+        fingerprint,
+        204,
+        () -> {
+          HealthcareService current =
+              store.lockHealthcareService(id).orElseThrow(DirectoryApplicationService::notFound);
+          Facility currentFacility =
+              store
+                  .lockFacility(current.facilityId())
+                  .orElseThrow(DirectoryApplicationService::notFound);
+          requireFacilityCurationScope(
+              context,
+              "DIRECTORY_HEALTHCARE_SERVICE_DEACTIVATE",
+              "HealthcareService",
+              currentFacility);
+          if (current.status() != DirectoryLifecycleStatus.ACTIVE) {
+            throw inactive();
+          }
+          requireExpectedVersion(current.version(), expectedVersion);
+          HealthcareService deactivated = current.deactivate(provenance);
+          store.appendHealthcareServiceRevision(current, provenance.reasonCode());
+          if (!store.updateHealthcareService(deactivated, expectedVersion, clock.instant())) {
+            throw versionConflict();
+          }
+          auditMutation(
+              context,
+              "DIRECTORY_HEALTHCARE_SERVICE_DEACTIVATE",
+              "HealthcareService",
+              id,
+              provenance.reasonCode(),
+              Optional.of(organizationReference(current.organizationId())),
+              Optional.of(facilityReference(current.facilityId())));
+          return id;
+        });
+  }
+
+  public InternalId createCareCapability(
+      ExecutionContext context,
+      String code,
+      String displayName,
+      Optional<InternalId> parentCapabilityId,
+      DirectorySource source,
+      DirectoryProvenance provenance,
+      String rawIdempotencyKey,
+      RequestFingerprint fingerprint) {
+    requireAuthority(
+        context,
+        DirectoryAuthorities.vocabularyAdministration().code(),
+        "DIRECTORY_CARE_CAPABILITY_CREATE",
+        "CareCapability",
+        Optional.empty(),
+        Optional.empty());
+    requirePlatformVocabularyScope(context, "DIRECTORY_CARE_CAPABILITY_CREATE");
+    requireCapabilityCode(code);
+    requireSourceType(source, "CareCapability");
+    CommandReceiptKey receiptKey =
+        commandKey(context, "care-capability.create", "care-capabilities", rawIdempotencyKey);
+    return executeIdempotent(
+        receiptKey,
+        fingerprint,
+        201,
+        () -> {
+          if (store.findCareCapabilityByCode(code).isPresent()) {
+            throw capabilityCodeConflict();
+          }
+          parentCapabilityId.ifPresent(
+              parentId -> {
+                CareCapability parent =
+                    store
+                        .lockCareCapability(parentId)
+                        .orElseThrow(DirectoryApplicationService::notFound);
+                if (parent.status() != DirectoryLifecycleStatus.ACTIVE) {
+                  throw inactive();
+                }
+              });
+          InternalId id = InternalId.generate();
+          CareCapability capability =
+              new CareCapability(
+                  id,
+                  code,
+                  normalizedName(displayName),
+                  parentCapabilityId,
+                  source,
+                  provenance,
+                  DirectoryLifecycleStatus.ACTIVE,
+                  1);
+          store.insertCareCapability(capability);
+          auditMutation(
+              context,
+              "DIRECTORY_CARE_CAPABILITY_CREATE",
+              "CareCapability",
+              id,
+              provenance.reasonCode(),
+              Optional.empty(),
+              Optional.empty());
+          return id;
+        });
+  }
+
+  public List<CareCapability> listCareCapabilities(ExecutionContext context) {
+    requireAuthority(
+        context,
+        DirectoryAuthorities.read().code(),
+        "DIRECTORY_CARE_CAPABILITY_LIST_READ",
+        "CareCapabilityVocabulary",
+        Optional.empty(),
+        Optional.empty());
+    auditVocabularyRead(context);
+    return store.listCareCapabilities(true);
+  }
+
+  public void correctCareCapabilityDisplayName(
+      ExecutionContext context,
+      InternalId id,
+      long expectedVersion,
+      String displayName,
+      DirectoryProvenance provenance,
+      String rawIdempotencyKey,
+      RequestFingerprint fingerprint) {
+    requireAuthority(
+        context,
+        DirectoryAuthorities.vocabularyAdministration().code(),
+        "DIRECTORY_CARE_CAPABILITY_CORRECT",
+        "CareCapability",
+        Optional.of(id),
+        Optional.empty());
+    requirePlatformVocabularyScope(context, "DIRECTORY_CARE_CAPABILITY_CORRECT");
+    CommandReceiptKey receiptKey =
+        commandKey(
+            context, "care-capability.correct", "care-capabilities/" + id, rawIdempotencyKey);
+    executeIdempotent(
+        receiptKey,
+        fingerprint,
+        204,
+        () -> {
+          CareCapability current =
+              store.lockCareCapability(id).orElseThrow(DirectoryApplicationService::notFound);
+          if (current.status() != DirectoryLifecycleStatus.ACTIVE) {
+            throw inactive();
+          }
+          requireExpectedVersion(current.version(), expectedVersion);
+          CareCapability corrected =
+              current.correctDisplayName(normalizedName(displayName), provenance);
+          store.appendCareCapabilityRevision(current, provenance.reasonCode());
+          if (!store.updateCareCapability(corrected, expectedVersion, clock.instant())) {
+            throw versionConflict();
+          }
+          auditMutation(
+              context,
+              "DIRECTORY_CARE_CAPABILITY_CORRECT",
+              "CareCapability",
+              id,
+              provenance.reasonCode(),
+              Optional.empty(),
+              Optional.empty());
+          return id;
+        });
+  }
+
+  public void deactivateCareCapability(
+      ExecutionContext context,
+      InternalId id,
+      long expectedVersion,
+      DirectoryProvenance provenance,
+      String rawIdempotencyKey,
+      RequestFingerprint fingerprint) {
+    requireAuthority(
+        context,
+        DirectoryAuthorities.vocabularyAdministration().code(),
+        "DIRECTORY_CARE_CAPABILITY_DEACTIVATE",
+        "CareCapability",
+        Optional.of(id),
+        Optional.empty());
+    requirePlatformVocabularyScope(context, "DIRECTORY_CARE_CAPABILITY_DEACTIVATE");
+    CommandReceiptKey receiptKey =
+        commandKey(
+            context, "care-capability.deactivate", "care-capabilities/" + id, rawIdempotencyKey);
+    executeIdempotent(
+        receiptKey,
+        fingerprint,
+        204,
+        () -> {
+          CareCapability current =
+              store.lockCareCapability(id).orElseThrow(DirectoryApplicationService::notFound);
+          if (current.status() != DirectoryLifecycleStatus.ACTIVE) {
+            throw inactive();
+          }
+          requireExpectedVersion(current.version(), expectedVersion);
+          CareCapability deactivated = current.deactivate(provenance);
+          store.appendCareCapabilityRevision(current, provenance.reasonCode());
+          if (!store.updateCareCapability(deactivated, expectedVersion, clock.instant())) {
+            throw versionConflict();
+          }
+          auditMutation(
+              context,
+              "DIRECTORY_CARE_CAPABILITY_DEACTIVATE",
+              "CareCapability",
+              id,
+              provenance.reasonCode(),
+              Optional.empty(),
+              Optional.empty());
+          return id;
+        });
+  }
+
+  public InternalId createFacilityCapabilityAssertion(
+      ExecutionContext context,
+      InternalId facilityId,
+      String capabilityCode,
+      Optional<InternalId> healthcareServiceId,
+      CapabilityVerificationStatus verificationStatus,
+      DirectorySource source,
+      DirectoryProvenance provenance,
+      Instant effectiveFrom,
+      Optional<Instant> effectiveUntil,
+      String rawIdempotencyKey,
+      RequestFingerprint fingerprint) {
+    requireAuthority(
+        context,
+        DirectoryAuthorities.curation().code(),
+        "DIRECTORY_CAPABILITY_ASSERTION_CREATE",
+        "FacilityCapabilityAssertion",
+        Optional.empty(),
+        Optional.empty());
+    Facility facility =
+        store.findFacility(facilityId).orElseThrow(DirectoryApplicationService::notFound);
+    requireFacilityCurationScope(
+        context, "DIRECTORY_CAPABILITY_ASSERTION_CREATE", "FacilityCapabilityAssertion", facility);
+    requireCapabilityCode(capabilityCode);
+    requireSourceType(source, "FacilityCapabilityAssertion");
+    CareCapability capability =
+        store
+            .findCareCapabilityByCode(capabilityCode)
+            .orElseThrow(DirectoryApplicationService::capabilityUnknown);
+    if (capability.status() != DirectoryLifecycleStatus.ACTIVE) {
+      throw capabilityInactive();
+    }
+    healthcareServiceId.ifPresent(
+        serviceId -> {
+          HealthcareService service =
+              store
+                  .findHealthcareService(serviceId)
+                  .orElseThrow(DirectoryApplicationService::notFound);
+          if (!service.facilityId().equals(facilityId)) {
+            throw scopeMismatch();
+          }
+          if (service.status() != DirectoryLifecycleStatus.ACTIVE) {
+            throw inactive();
+          }
+        });
+    CommandReceiptKey receiptKey =
+        commandKey(
+            context,
+            "facility-capability-assertion.create",
+            "facilities/" + facilityId + "/capability-assertions",
+            rawIdempotencyKey);
+    return executeIdempotent(
+        receiptKey,
+        fingerprint,
+        201,
+        () -> {
+          Facility currentFacility =
+              store.lockFacility(facilityId).orElseThrow(DirectoryApplicationService::notFound);
+          requireActiveFacilityOwner(currentFacility);
+          requireFacilityCurationScope(
+              context,
+              "DIRECTORY_CAPABILITY_ASSERTION_CREATE",
+              "FacilityCapabilityAssertion",
+              currentFacility);
+          CareCapability currentCapability =
+              store
+                  .lockCareCapability(capability.id())
+                  .orElseThrow(DirectoryApplicationService::capabilityUnknown);
+          if (currentCapability.status() != DirectoryLifecycleStatus.ACTIVE) {
+            throw capabilityInactive();
+          }
+          validateActiveServiceOwner(healthcareServiceId, facilityId);
+          InternalId id = InternalId.generate();
+          FacilityCapabilityAssertion assertion =
+              new FacilityCapabilityAssertion(
+                  id,
+                  facilityId,
+                  currentCapability.id(),
+                  healthcareServiceId,
+                  verificationStatus,
+                  source,
+                  provenance,
+                  effectiveFrom,
+                  effectiveUntil,
+                  1);
+          store.insertFacilityCapabilityAssertion(assertion);
+          auditMutation(
+              context,
+              "DIRECTORY_CAPABILITY_ASSERTION_CREATE",
+              "FacilityCapabilityAssertion",
+              id,
+              provenance.reasonCode(),
+              Optional.of(organizationReference(currentFacility.managingOrganizationId())),
+              Optional.of(facilityReference(facilityId)));
+          return id;
+        });
+  }
+
+  public FacilityCapabilityAssertion getFacilityCapabilityAssertion(
+      ExecutionContext context, InternalId id) {
+    requireAuthority(
+        context,
+        DirectoryAuthorities.read().code(),
+        "DIRECTORY_CAPABILITY_ASSERTION_READ",
+        "FacilityCapabilityAssertion",
+        Optional.of(id),
+        Optional.empty());
+    FacilityCapabilityAssertion assertion =
+        store
+            .findFacilityCapabilityAssertion(id)
+            .orElseThrow(DirectoryApplicationService::notFound);
+    Facility facility =
+        store
+            .findFacility(assertion.facilityId())
+            .orElseThrow(DirectoryApplicationService::notFound);
+    requireFacilityReadScope(
+        context,
+        "DIRECTORY_CAPABILITY_ASSERTION_READ",
+        "FacilityCapabilityAssertion",
+        id,
+        facility);
+    auditRead(
+        context,
+        "DIRECTORY_CAPABILITY_ASSERTION_READ",
+        "FacilityCapabilityAssertion",
+        id,
+        Optional.of(organizationReference(facility.managingOrganizationId())),
+        Optional.of(facilityReference(facility.id())));
+    return assertion;
+  }
+
+  public void correctFacilityCapabilityAssertion(
+      ExecutionContext context,
+      InternalId id,
+      long expectedVersion,
+      CapabilityVerificationStatus verificationStatus,
+      DirectorySource source,
+      DirectoryProvenance provenance,
+      Instant effectiveFrom,
+      Optional<Instant> effectiveUntil,
+      String rawIdempotencyKey,
+      RequestFingerprint fingerprint) {
+    requireAuthority(
+        context,
+        DirectoryAuthorities.curation().code(),
+        "DIRECTORY_CAPABILITY_ASSERTION_CORRECT",
+        "FacilityCapabilityAssertion",
+        Optional.of(id),
+        Optional.empty());
+    FacilityCapabilityAssertion reference =
+        store
+            .findFacilityCapabilityAssertion(id)
+            .orElseThrow(DirectoryApplicationService::notFound);
+    Facility facility =
+        store
+            .findFacility(reference.facilityId())
+            .orElseThrow(DirectoryApplicationService::notFound);
+    requireFacilityCurationScope(
+        context, "DIRECTORY_CAPABILITY_ASSERTION_CORRECT", "FacilityCapabilityAssertion", facility);
+    requireSourceType(source, "FacilityCapabilityAssertion");
+    CommandReceiptKey receiptKey =
+        commandKey(
+            context,
+            "facility-capability-assertion.correct",
+            "capability-assertions/" + id,
+            rawIdempotencyKey);
+    executeIdempotent(
+        receiptKey,
+        fingerprint,
+        204,
+        () -> {
+          FacilityCapabilityAssertion current =
+              store
+                  .lockFacilityCapabilityAssertion(id)
+                  .orElseThrow(DirectoryApplicationService::notFound);
+          Facility currentFacility =
+              store
+                  .lockFacility(current.facilityId())
+                  .orElseThrow(DirectoryApplicationService::notFound);
+          requireFacilityCurationScope(
+              context,
+              "DIRECTORY_CAPABILITY_ASSERTION_CORRECT",
+              "FacilityCapabilityAssertion",
+              currentFacility);
+          if (current.verificationStatus() == CapabilityVerificationStatus.WITHDRAWN
+              || current.verificationStatus() == CapabilityVerificationStatus.SUPERSEDED) {
+            throw inactive();
+          }
+          requireExpectedVersion(current.version(), expectedVersion);
+          FacilityCapabilityAssertion corrected =
+              current.correct(
+                  verificationStatus, source, provenance, effectiveFrom, effectiveUntil);
+          store.appendFacilityCapabilityAssertionRevision(current, provenance.reasonCode());
+          if (!store.updateFacilityCapabilityAssertion(
+              corrected, expectedVersion, clock.instant())) {
+            throw versionConflict();
+          }
+          auditMutation(
+              context,
+              "DIRECTORY_CAPABILITY_ASSERTION_CORRECT",
+              "FacilityCapabilityAssertion",
+              id,
+              provenance.reasonCode(),
+              Optional.of(organizationReference(currentFacility.managingOrganizationId())),
+              Optional.of(facilityReference(currentFacility.id())));
+          return id;
+        });
+  }
+
+  public FacilityCapabilityEvaluation evaluateFacilityCapabilities(
+      ExecutionContext context, InternalId facilityId, List<String> requestedCapabilityCodes) {
+    requireAuthority(
+        context,
+        DirectoryAuthorities.read().code(),
+        "DIRECTORY_FACILITY_CAPABILITY_EVIDENCE_READ",
+        "FacilityCapabilityEvidence",
+        Optional.of(facilityId),
+        Optional.empty());
+    Facility facility =
+        store.findFacility(facilityId).orElseThrow(DirectoryApplicationService::notFound);
+    requireFacilityReadScope(
+        context,
+        "DIRECTORY_FACILITY_CAPABILITY_EVIDENCE_READ",
+        "FacilityCapabilityEvidence",
+        facilityId,
+        facility);
+    List<String> codes = validatedCapabilityRequirements(requestedCapabilityCodes);
+    Instant evaluatedAt = clock.instant();
+    List<CapabilityRequirementAssessment> assessments =
+        codes.stream()
+            .map(code -> assessCapabilityRequirement(facility, code, evaluatedAt))
+            .toList();
+    auditRead(
+        context,
+        "DIRECTORY_FACILITY_CAPABILITY_EVIDENCE_READ",
+        "FacilityCapabilityEvidence",
+        facilityId,
+        Optional.of(organizationReference(facility.managingOrganizationId())),
+        Optional.of(facilityReference(facilityId)));
+    boolean facilityActive = facility.status() == DirectoryLifecycleStatus.ACTIVE;
+    boolean requirementsSatisfied =
+        facilityActive
+            && assessments.stream()
+                .allMatch(item -> item.outcome() == CapabilityRequirementOutcome.SATISFIED);
+    return new FacilityCapabilityEvaluation(
+        facility.id(), facility.status(), evaluatedAt, requirementsSatisfied, assessments);
+  }
+
+  private CapabilityRequirementAssessment assessCapabilityRequirement(
+      Facility facility, String code, Instant evaluatedAt) {
+    Optional<CareCapability> capability = store.findCareCapabilityByCode(code);
+    if (capability.isEmpty()) {
+      return new CapabilityRequirementAssessment(
+          code, CapabilityRequirementOutcome.UNKNOWN_CAPABILITY, List.of());
+    }
+    if (capability.orElseThrow().status() != DirectoryLifecycleStatus.ACTIVE) {
+      return new CapabilityRequirementAssessment(
+          code, CapabilityRequirementOutcome.INACTIVE_CAPABILITY, List.of());
+    }
+    List<FacilityCapabilityAssertion> assertions =
+        store.listFacilityCapabilityAssertions(facility.id(), capability.orElseThrow().id());
+    List<FacilityCapabilityAssertion> qualifying =
+        assertions.stream()
+            .filter(
+                assertion ->
+                    assertion.verificationStatus() == CapabilityVerificationStatus.VERIFIED
+                        && assertion.isEffectiveAt(evaluatedAt)
+                        && serviceIsActive(assertion.healthcareServiceId()))
+            .toList();
+    if (!qualifying.isEmpty()) {
+      return new CapabilityRequirementAssessment(
+          code,
+          CapabilityRequirementOutcome.SATISFIED,
+          qualifying.stream().map(assertion -> assertion.id().toString()).toList());
+    }
+    if (assertions.isEmpty()) {
+      return new CapabilityRequirementAssessment(
+          code, CapabilityRequirementOutcome.NO_ASSERTION, List.of());
+    }
+    if (assertions.stream()
+        .anyMatch(
+            assertion ->
+                assertion.verificationStatus() == CapabilityVerificationStatus.VERIFIED
+                    && assertion.isEffectiveAt(evaluatedAt)
+                    && assertion.healthcareServiceId().isPresent()
+                    && !serviceIsActive(assertion.healthcareServiceId()))) {
+      return new CapabilityRequirementAssessment(
+          code, CapabilityRequirementOutcome.INACTIVE_OFFERING, List.of());
+    }
+    if (assertions.stream()
+        .anyMatch(
+            assertion -> assertion.verificationStatus() == CapabilityVerificationStatus.VERIFIED)) {
+      return new CapabilityRequirementAssessment(
+          code, CapabilityRequirementOutcome.NOT_EFFECTIVE, List.of());
+    }
+    if (assertions.stream()
+        .anyMatch(
+            assertion -> assertion.verificationStatus() == CapabilityVerificationStatus.DISPUTED)) {
+      return new CapabilityRequirementAssessment(
+          code, CapabilityRequirementOutcome.DISPUTED, List.of());
+    }
+    if (assertions.stream()
+        .anyMatch(
+            assertion ->
+                assertion.verificationStatus() == CapabilityVerificationStatus.UNVERIFIED)) {
+      return new CapabilityRequirementAssessment(
+          code, CapabilityRequirementOutcome.UNVERIFIED, List.of());
+    }
+    return new CapabilityRequirementAssessment(
+        code, CapabilityRequirementOutcome.NO_CURRENT_ASSERTION, List.of());
+  }
+
+  private boolean serviceIsActive(Optional<InternalId> serviceId) {
+    return serviceId.isEmpty()
+        || store
+            .findHealthcareService(serviceId.orElseThrow())
+            .map(service -> service.status() == DirectoryLifecycleStatus.ACTIVE)
+            .orElse(false);
+  }
+
+  private void requireFacilityCurationScope(
+      ExecutionContext context, String actionCode, String targetType, Facility facility) {
+    requireActiveFacilityOwner(facility);
+    if (!scopeCanReadFacility(context.scope(), facility)) {
+      denyScope(
+          context,
+          actionCode,
+          targetType,
+          Optional.of(facility.id()),
+          Optional.of(organizationReference(facility.managingOrganizationId())),
+          Optional.of(facilityReference(facility.id())));
+      throw scopeMismatch();
+    }
+  }
+
+  private void requireFacilityReadScope(
+      ExecutionContext context,
+      String actionCode,
+      String targetType,
+      InternalId targetId,
+      Facility facility) {
+    if (!scopeCanReadFacility(context.scope(), facility)) {
+      denyScope(
+          context,
+          actionCode,
+          targetType,
+          Optional.of(targetId),
+          Optional.of(organizationReference(facility.managingOrganizationId())),
+          Optional.of(facilityReference(facility.id())));
+      throw scopeMismatch();
+    }
+  }
+
+  private void requireActiveFacilityOwner(Facility facility) {
+    if (facility.status() != DirectoryLifecycleStatus.ACTIVE) {
+      throw inactive();
+    }
+    Organization organization =
+        store
+            .lockOrganization(facility.managingOrganizationId())
+            .orElseThrow(DirectoryApplicationService::notFound);
+    if (organization.status() != DirectoryLifecycleStatus.ACTIVE) {
+      throw inactive();
+    }
+  }
+
+  private void validateLocationOwner(Optional<InternalId> locationId, InternalId facilityId) {
+    locationId.ifPresent(
+        id -> {
+          DirectoryLocation location =
+              store.findLocation(id).orElseThrow(DirectoryApplicationService::notFound);
+          if (!location.facilityId().equals(facilityId)) {
+            throw scopeMismatch();
+          }
+        });
+  }
+
+  private void validateActiveServiceOwner(Optional<InternalId> serviceId, InternalId facilityId) {
+    serviceId.ifPresent(
+        id -> {
+          HealthcareService service =
+              store.lockHealthcareService(id).orElseThrow(DirectoryApplicationService::notFound);
+          if (!service.facilityId().equals(facilityId)) {
+            throw scopeMismatch();
+          }
+          if (service.status() != DirectoryLifecycleStatus.ACTIVE) {
+            throw inactive();
+          }
+        });
+  }
+
+  private void requirePlatformVocabularyScope(ExecutionContext context, String actionCode) {
+    if (context.scope().kind() != ExecutionScope.Kind.PLATFORM) {
+      denyScope(context, actionCode, "CareCapability", Optional.empty(), Optional.empty());
+      throw scopeMismatch();
+    }
+  }
+
+  private void auditVocabularyRead(ExecutionContext context) {
+    try {
+      auditWriter
+          .getObject()
+          .recordNonMutating(
+              evidence(
+                  context,
+                  AuditActionKind.SENSITIVE_READ,
+                  "DIRECTORY_CARE_CAPABILITY_LIST_READ",
+                  "CareCapabilityVocabulary",
+                  Optional.empty(),
+                  AuditOutcome.SUCCEEDED,
+                  Optional.empty(),
+                  AuditAuthorizationOutcome.ALLOWED,
+                  Optional.empty(),
+                  Optional.empty()));
+    } catch (AuditPersistenceUnavailableException failure) {
+      throw problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          PlatformErrorCode.AUDIT_UNAVAILABLE,
+          "The capability vocabulary is not disclosed because access evidence is unavailable.");
+    }
+  }
+
+  private static List<String> validatedCapabilityRequirements(List<String> requestedCodes) {
+    if (requestedCodes == null
+        || requestedCodes.isEmpty()
+        || requestedCodes.size() > MAX_REQUIRED_CAPABILITIES) {
+      throw validation("Provide between 1 and 20 required CareCapability codes.");
+    }
+    List<String> codes = new ArrayList<>(requestedCodes.size());
+    Set<String> unique = new HashSet<>();
+    for (String code : requestedCodes) {
+      requireCapabilityCode(code);
+      if (!unique.add(code)) {
+        throw validation("Required CareCapability codes must not contain duplicates.");
+      }
+      codes.add(code);
+    }
+    return List.copyOf(codes);
+  }
+
+  private static List<String> optionalCapabilityRequirements(List<String> requestedCodes) {
+    return requestedCodes == null || requestedCodes.isEmpty()
+        ? List.of()
+        : validatedCapabilityRequirements(requestedCodes);
+  }
+
+  private static void requireCapabilityCode(String code) {
+    if (code == null || !CAPABILITY_CODE.matcher(code).matches()) {
+      throw validation("CareCapability code must be a stable uppercase token.");
+    }
+  }
+
+  public enum CapabilityRequirementOutcome {
+    SATISFIED,
+    UNKNOWN_CAPABILITY,
+    INACTIVE_CAPABILITY,
+    NO_ASSERTION,
+    UNVERIFIED,
+    DISPUTED,
+    NOT_EFFECTIVE,
+    INACTIVE_OFFERING,
+    NO_CURRENT_ASSERTION
+  }
+
+  public record CapabilityRequirementAssessment(
+      String code, CapabilityRequirementOutcome outcome, List<String> evidenceAssertionIds) {
+    public CapabilityRequirementAssessment {
+      evidenceAssertionIds = List.copyOf(evidenceAssertionIds);
+    }
+  }
+
+  public record FacilityCapabilityEvaluation(
+      InternalId facilityId,
+      DirectoryLifecycleStatus facilityStatus,
+      Instant evaluatedAt,
+      boolean requirementsSatisfied,
+      List<CapabilityRequirementAssessment> requirements) {
+    public FacilityCapabilityEvaluation {
+      requirements = List.copyOf(requirements);
+    }
+  }
+
   public FacilityDirectoryView getFacility(ExecutionContext context, InternalId id) {
     requireAuthority(
         context,
@@ -510,6 +1403,7 @@ public class DirectoryApplicationService {
       Wgs84Coordinate center,
       double radiusMeters,
       Optional<InternalId> requestedOrganizationId,
+      List<String> requestedCapabilityCodes,
       int requestedPageSize,
       int offset) {
     requireAuthority(
@@ -532,6 +1426,8 @@ public class DirectoryApplicationService {
       throw validation("Search page size must be between 1 and 100 and offset at most 10000.");
     }
     SearchScope searchScope = resolveSearchScope(context, requestedOrganizationId);
+    List<String> requiredCapabilityCodes = optionalCapabilityRequirements(requestedCapabilityCodes);
+    Instant evaluatedAt = clock.instant();
     auditSearchRead(context, searchScope.organizationId());
     List<LocatedFacilitySearchResult> nearby =
         store.findNearbyFacilities(
@@ -539,11 +1435,18 @@ public class DirectoryApplicationService {
             searchScope.facilityId(),
             center,
             radiusMeters,
+            requiredCapabilityCodes,
+            evaluatedAt,
             pageSize + 1,
             offset);
     List<UnlocatedFacilitySearchResult> unlocated =
         store.findUnlocatedFacilities(
-            searchScope.organizationId(), searchScope.facilityId(), pageSize + 1, offset);
+            searchScope.organizationId(),
+            searchScope.facilityId(),
+            requiredCapabilityCodes,
+            evaluatedAt,
+            pageSize + 1,
+            offset);
     boolean hasMoreNearby = nearby.size() > pageSize;
     boolean hasMoreUnlocated = unlocated.size() > pageSize;
     return new NearbyFacilityPage(
@@ -1175,6 +2078,27 @@ public class DirectoryApplicationService {
 
   private static PlatformProblemException coordinateInvalid(String detail) {
     return problem(HttpStatus.BAD_REQUEST, PlatformErrorCode.DIRECTORY_COORDINATE_INVALID, detail);
+  }
+
+  private static PlatformProblemException capabilityUnknown() {
+    return problem(
+        HttpStatus.BAD_REQUEST,
+        PlatformErrorCode.DIRECTORY_CAPABILITY_UNKNOWN,
+        "The requested CareCapability code is not defined in this Directory vocabulary.");
+  }
+
+  private static PlatformProblemException capabilityInactive() {
+    return problem(
+        HttpStatus.CONFLICT,
+        PlatformErrorCode.DIRECTORY_INACTIVE,
+        "The inactive CareCapability cannot be used for this operation.");
+  }
+
+  private static PlatformProblemException capabilityCodeConflict() {
+    return problem(
+        HttpStatus.CONFLICT,
+        PlatformErrorCode.DIRECTORY_CAPABILITY_CODE_CONFLICT,
+        "The CareCapability code is already defined in this Directory vocabulary.");
   }
 
   private static PlatformProblemException problem(

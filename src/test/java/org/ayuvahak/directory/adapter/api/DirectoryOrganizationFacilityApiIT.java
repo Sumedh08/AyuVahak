@@ -129,6 +129,13 @@ class DirectoryOrganizationFacilityApiIT {
   @BeforeEach
   void resetSyntheticState() {
     jdbc.update("DELETE FROM directory.command_receipt");
+    jdbc.update("DELETE FROM directory.facility_capability_assertion_revision");
+    jdbc.update("DELETE FROM directory.facility_capability_assertion");
+    jdbc.update("DELETE FROM directory.healthcare_service_revision");
+    jdbc.update("DELETE FROM directory.healthcare_service");
+    jdbc.update("DELETE FROM directory.care_capability_revision");
+    jdbc.update("UPDATE directory.care_capability SET parent_capability_id = NULL");
+    jdbc.update("DELETE FROM directory.care_capability");
     jdbc.update("DELETE FROM directory.location_revision");
     jdbc.update("DELETE FROM directory.location");
     jdbc.update("DELETE FROM directory.facility_revision");
@@ -870,6 +877,105 @@ class DirectoryOrganizationFacilityApiIT {
                 Double.class))
         .isEqualTo(radiusMeters);
 
+    grant(
+        ADMIN,
+        CURATOR,
+        "DirectoryVocabularyAdministration",
+        "PLATFORM",
+        null,
+        null,
+        "nearby-vocabulary-admin-01");
+    createCareCapability("SEARCH_A", "Search A", null, "nearby-capability-a-01");
+    createCareCapability("SEARCH_B", "Search B", null, "nearby-capability-b-01");
+    for (String facilityId : List.of(closeFacility, boundaryFacilityOne, outsideFacility)) {
+      createCapabilityAssertion(
+          CURATOR, facilityId, "SEARCH_A", null, "VERIFIED", "nearby-a-" + facilityId, null);
+      createCapabilityAssertion(
+          CURATOR, facilityId, "SEARCH_B", null, "VERIFIED", "nearby-b-" + facilityId, null);
+    }
+    String inactiveOffering =
+        createHealthcareService(
+            CURATOR,
+            "PLATFORM",
+            organizationId,
+            boundaryFacilityTwo,
+            null,
+            "Search Offering",
+            "nearby-offering-01");
+    createCapabilityAssertion(
+        CURATOR, boundaryFacilityTwo, "SEARCH_A", null, "VERIFIED", "nearby-a-boundary-two", null);
+    createCapabilityAssertion(
+        CURATOR,
+        boundaryFacilityTwo,
+        "SEARCH_B",
+        inactiveOffering,
+        "VERIFIED",
+        "nearby-b-inactive-offering",
+        null);
+    createCapabilityAssertion(
+        CURATOR,
+        missingCoordinateFacility,
+        "SEARCH_A",
+        null,
+        "VERIFIED",
+        "nearby-a-unlocated",
+        null);
+    createCapabilityAssertion(
+        CURATOR,
+        missingCoordinateFacility,
+        "SEARCH_B",
+        null,
+        "VERIFIED",
+        "nearby-b-unlocated",
+        null);
+    createCapabilityAssertion(
+        CURATOR, noLocationFacility, "SEARCH_A", null, "VERIFIED", "nearby-a-no-location", null);
+    mockMvc
+        .perform(
+            post("/api/v1/directory/healthcare-services/{serviceId}/deactivation", inactiveOffering)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", "nearby-offering-deactivate-01")
+                .contentType("application/json")
+                .content(deactivationBody(1, "SERVICE_RETIRED")))
+        .andExpect(status().isNoContent());
+
+    var capabilityFilteredResponse =
+        mockMvc
+            .perform(
+                get("/api/v1/directory/facilities")
+                    .param("centerLongitude", "0.0")
+                    .param("centerLatitude", "0.0")
+                    .param("radiusMeters", radiusMeters.toString())
+                    .param("pageSize", "10")
+                    .param("requiredCapability", "SEARCH_A", "SEARCH_B")
+                    .header("Authorization", bearer(token(CURATOR)))
+                    .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.nearby.length()").value(2))
+            .andExpect(jsonPath("$.unlocated.length()").value(1))
+            .andReturn();
+    List<String> capabilityFilteredNearby =
+        com.jayway.jsonpath.JsonPath.read(
+            capabilityFilteredResponse.getResponse().getContentAsString(),
+            "$.nearby[*].facilityId");
+    assertThat(capabilityFilteredNearby).containsExactly(closeFacility, boundaryFacilityOne);
+    List<String> capabilityFilteredUnlocated =
+        com.jayway.jsonpath.JsonPath.read(
+            capabilityFilteredResponse.getResponse().getContentAsString(),
+            "$.unlocated[*].facilityId");
+    assertThat(capabilityFilteredUnlocated).containsExactly(missingCoordinateFacility);
+    mockMvc
+        .perform(
+            get(
+                    "/api/v1/directory/facilities/{facilityId}/capability-evidence",
+                    boundaryFacilityTwo)
+                .param("requiredCapability", "SEARCH_B")
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.requirements[0].outcome").value("INACTIVE_OFFERING"));
+
     mockMvc
         .perform(
             get("/api/v1/directory/facilities")
@@ -900,6 +1006,225 @@ class DirectoryOrganizationFacilityApiIT {
                 .header("Authorization", bearer(token(CURATOR)))
                 .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
         .andExpect(status().isBadRequest());
+  }
+
+  @Test
+  void createsAndReadsAServiceWithoutTreatingItsOfferingAsCurrentCapacity() throws Exception {
+    grant(ADMIN, CURATOR, "DirectoryCuration", "PLATFORM", null, null, "service-curator-01");
+    grant(ADMIN, CURATOR, "DirectoryRead", "PLATFORM", null, null, "service-reader-01");
+    String organizationId = createOrganization(CURATOR, "service-org-01", "Service Authority");
+    String facilityId =
+        createFacility(
+            CURATOR, "PLATFORM", "service-facility-01", "Service Facility", organizationId);
+
+    var created =
+        mockMvc
+            .perform(
+                post("/api/v1/directory/healthcare-services")
+                    .header("Authorization", bearer(token(CURATOR)))
+                    .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                    .header("Idempotency-Key", "service-create-01")
+                    .contentType("application/json")
+                    .content(
+                        healthcareServiceBody(organizationId, facilityId, "Emergency Service")))
+            .andExpect(status().isCreated())
+            .andReturn();
+    String serviceId =
+        com.jayway.jsonpath.JsonPath.read(created.getResponse().getContentAsString(), "$.id");
+    var replayed =
+        mockMvc
+            .perform(
+                post("/api/v1/directory/healthcare-services")
+                    .header("Authorization", bearer(token(CURATOR)))
+                    .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                    .header("Idempotency-Key", "service-create-01")
+                    .contentType("application/json")
+                    .content(
+                        healthcareServiceBody(organizationId, facilityId, "Emergency Service")))
+            .andExpect(status().isCreated())
+            .andReturn();
+    String replayedServiceId =
+        com.jayway.jsonpath.JsonPath.read(replayed.getResponse().getContentAsString(), "$.id");
+    assertThat(replayedServiceId).isEqualTo(serviceId);
+
+    mockMvc
+        .perform(
+            get("/api/v1/directory/healthcare-services/{serviceId}", serviceId)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.name").value("Emergency Service"))
+        .andExpect(jsonPath("$.organizationId").value(organizationId))
+        .andExpect(jsonPath("$.facilityId").value(facilityId))
+        .andExpect(jsonPath("$.status").value("ACTIVE"))
+        .andExpect(jsonPath("$.version").value(1))
+        .andExpect(jsonPath("$.capacity").doesNotExist())
+        .andExpect(jsonPath("$.readiness").doesNotExist());
+
+    assertThat(count("SELECT COUNT(*) FROM directory.healthcare_service")).isEqualTo(1);
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM audit.audit_record "
+                    + "WHERE action_code = 'DIRECTORY_HEALTHCARE_SERVICE_CREATE'"))
+        .isEqualTo(1);
+  }
+
+  @Test
+  void onlyDirectVerifiedEffectiveAssertionsSatisfyAllRequiredCapabilities() throws Exception {
+    grant(ADMIN, CURATOR, "DirectoryCuration", "PLATFORM", null, null, "cap-curator-01");
+    grant(ADMIN, CURATOR, "DirectoryRead", "PLATFORM", null, null, "cap-reader-01");
+    grant(
+        ADMIN,
+        CURATOR,
+        "DirectoryVocabularyAdministration",
+        "PLATFORM",
+        null,
+        null,
+        "cap-vocabulary-admin-01");
+    String organizationId = createOrganization(CURATOR, "cap-org-01", "Capability Authority");
+    String facilityId =
+        createFacility(
+            CURATOR, "PLATFORM", "cap-facility-01", "Capability Facility", organizationId);
+    String serviceId =
+        createHealthcareService(
+            CURATOR,
+            "PLATFORM",
+            organizationId,
+            facilityId,
+            null,
+            "Emergency Service",
+            "cap-service-01");
+
+    mockMvc
+        .perform(
+            post("/api/v1/directory/capabilities")
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "ORGANIZATION")
+                .header("X-AyuVahak-Organization-Id", organizationId)
+                .header("Idempotency-Key", "cap-vocabulary-wrong-scope-01")
+                .contentType("application/json")
+                .content(capabilityBody("SCOPE_ONLY", "Scope Only", null)))
+        .andExpect(status().isForbidden());
+    assertThat(count("SELECT COUNT(*) FROM directory.care_capability")).isZero();
+
+    String parent = createCareCapability("PARENT_CAP", "Parent", null, "cap-parent-01");
+    createCareCapability("CHILD_CAP", "Child", parent, "cap-child-01");
+    createCareCapability("DIRECT_A", "Direct capability", null, "cap-direct-a-01");
+    createCareCapability("SERVICE_B", "Service capability", null, "cap-service-b-01");
+    createCareCapability("UNVERIFIED_C", "Unverified capability", null, "cap-unverified-01");
+    createCareCapability("FUTURE_D", "Future capability", null, "cap-future-01");
+    createCareCapability("DISPUTED_E", "Disputed capability", null, "cap-disputed-01");
+    createCareCapability("WITHDRAWN_F", "Withdrawn capability", null, "cap-withdrawn-01");
+    createCareCapability("SUPERSEDED_G", "Superseded capability", null, "cap-superseded-01");
+    String inactiveCapabilityId =
+        createCareCapability("INACTIVE_H", "Inactive capability", null, "cap-inactive-01");
+
+    String parentAssertion =
+        createCapabilityAssertion(
+            CURATOR, facilityId, "PARENT_CAP", null, "VERIFIED", "parent-assertion-01", null);
+    String directAssertion =
+        createCapabilityAssertion(
+            CURATOR, facilityId, "DIRECT_A", null, "VERIFIED", "direct-assertion-01", null);
+    String serviceAssertion =
+        createCapabilityAssertion(
+            CURATOR, facilityId, "SERVICE_B", serviceId, "VERIFIED", "service-assertion-01", null);
+    String unverifiedAssertion =
+        createCapabilityAssertion(
+            CURATOR,
+            facilityId,
+            "UNVERIFIED_C",
+            null,
+            "UNVERIFIED",
+            "unverified-assertion-01",
+            null);
+    createCapabilityAssertion(
+        CURATOR,
+        facilityId,
+        "FUTURE_D",
+        null,
+        "VERIFIED",
+        "future-assertion-01",
+        "2027-01-01T00:00:00Z");
+    createCapabilityAssertion(
+        CURATOR, facilityId, "DISPUTED_E", null, "DISPUTED", "disputed-assertion-01", null);
+    createCapabilityAssertion(
+        CURATOR, facilityId, "WITHDRAWN_F", null, "WITHDRAWN", "withdrawn-assertion-01", null);
+    createCapabilityAssertion(
+        CURATOR, facilityId, "SUPERSEDED_G", null, "SUPERSEDED", "superseded-assertion-01", null);
+    createCapabilityAssertion(
+        CURATOR, facilityId, "INACTIVE_H", null, "VERIFIED", "inactive-assertion-01", null);
+
+    mockMvc
+        .perform(
+            post("/api/v1/directory/capabilities/{capabilityId}/deactivation", inactiveCapabilityId)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", "cap-inactive-deactivate-01")
+                .contentType("application/json")
+                .content(deactivationBody(1, "CAPABILITY_RETIRED")))
+        .andExpect(status().isNoContent());
+
+    mockMvc
+        .perform(
+            get("/api/v1/directory/facilities/{facilityId}/capability-evidence", facilityId)
+                .param("requiredCapability", "DIRECT_A", "SERVICE_B")
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.requirementsSatisfied").value(true))
+        .andExpect(jsonPath("$.requirements.length()").value(2))
+        .andExpect(jsonPath("$.requirements[0].outcome").value("SATISFIED"))
+        .andExpect(jsonPath("$.requirements[1].outcome").value("SATISFIED"));
+
+    assertCapabilityOutcome(facilityId, "CHILD_CAP", "NO_ASSERTION");
+    assertCapabilityOutcome(facilityId, "UNVERIFIED_C", "UNVERIFIED");
+    assertCapabilityOutcome(facilityId, "FUTURE_D", "NOT_EFFECTIVE");
+    assertCapabilityOutcome(facilityId, "DISPUTED_E", "DISPUTED");
+    assertCapabilityOutcome(facilityId, "WITHDRAWN_F", "NO_CURRENT_ASSERTION");
+    assertCapabilityOutcome(facilityId, "SUPERSEDED_G", "NO_CURRENT_ASSERTION");
+    assertCapabilityOutcome(facilityId, "INACTIVE_H", "INACTIVE_CAPABILITY");
+    assertCapabilityOutcome(facilityId, "EMERGENCY", "UNKNOWN_CAPABILITY");
+
+    correctCapabilityAssertion(unverifiedAssertion, 1, "VERIFIED", "cap-unverified-correction-01");
+    assertCapabilityOutcome(facilityId, "UNVERIFIED_C", "SATISFIED");
+    correctCapabilityAssertion(unverifiedAssertion, 2, "WITHDRAWN", "cap-unverified-withdraw-01");
+    assertCapabilityOutcome(facilityId, "UNVERIFIED_C", "NO_CURRENT_ASSERTION");
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM directory.facility_capability_assertion_revision "
+                    + "WHERE assertion_id = '"
+                    + unverifiedAssertion
+                    + "'"))
+        .isEqualTo(2);
+
+    mockMvc
+        .perform(
+            post("/api/v1/directory/healthcare-services/{serviceId}/deactivation", serviceId)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", "cap-service-deactivate-01")
+                .contentType("application/json")
+                .content(deactivationBody(1, "SERVICE_RETIRED")))
+        .andExpect(status().isNoContent());
+    assertCapabilityOutcome(facilityId, "SERVICE_B", "INACTIVE_OFFERING");
+    assertCapabilityOutcome(facilityId, "DIRECT_A", "SATISFIED");
+
+    mockMvc
+        .perform(
+            get("/api/v1/directory/capability-assertions/{assertionId}", serviceAssertion)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.verificationStatus").value("VERIFIED"))
+        .andExpect(jsonPath("$.healthcareServiceId").value(serviceId))
+        .andExpect(jsonPath("$.source.resourceType").value("FacilityCapabilityAssertion"))
+        .andExpect(jsonPath("$.provenance.method").value("MANUAL_REVIEW"));
+
+    assertThat(count("SELECT COUNT(*) FROM directory.healthcare_service")).isEqualTo(1);
+    assertThat(count("SELECT COUNT(*) FROM directory.facility_capability_assertion")).isEqualTo(9);
+    assertThat(count("SELECT COUNT(*) FROM directory.healthcare_service_revision")).isEqualTo(1);
+    assertThat(parentAssertion).isNotBlank();
+    assertThat(directAssertion).isNotBlank();
   }
 
   private String createOrganization(String actor, String key, String name) throws Exception {
@@ -961,6 +1286,100 @@ class DirectoryOrganizationFacilityApiIT {
         com.jayway.jsonpath.JsonPath.read(response.getResponse().getContentAsString(), "$.id");
     assertThat(InternalId.parse(id).value().version()).isEqualTo(4);
     return id;
+  }
+
+  private String createHealthcareService(
+      String actor,
+      String scope,
+      String organizationId,
+      String facilityId,
+      String locationId,
+      String name,
+      String idempotencyKey)
+      throws Exception {
+    var request =
+        post("/api/v1/directory/healthcare-services")
+            .header("Authorization", bearer(token(actor)))
+            .header("X-AyuVahak-Execution-Scope", scope)
+            .header("Idempotency-Key", idempotencyKey)
+            .contentType("application/json")
+            .content(healthcareServiceBody(organizationId, facilityId, locationId, name));
+    if ("ORGANIZATION".equals(scope)) {
+      request.header("X-AyuVahak-Organization-Id", organizationId);
+    }
+    var response = mockMvc.perform(request).andExpect(status().isCreated()).andReturn();
+    return com.jayway.jsonpath.JsonPath.read(response.getResponse().getContentAsString(), "$.id");
+  }
+
+  private String createCareCapability(
+      String code, String displayName, String parentCapabilityId, String idempotencyKey)
+      throws Exception {
+    var response =
+        mockMvc
+            .perform(
+                post("/api/v1/directory/capabilities")
+                    .header("Authorization", bearer(token(CURATOR)))
+                    .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                    .header("Idempotency-Key", idempotencyKey)
+                    .contentType("application/json")
+                    .content(capabilityBody(code, displayName, parentCapabilityId)))
+            .andExpect(status().isCreated())
+            .andReturn();
+    return com.jayway.jsonpath.JsonPath.read(response.getResponse().getContentAsString(), "$.id");
+  }
+
+  private String createCapabilityAssertion(
+      String actor,
+      String facilityId,
+      String capabilityCode,
+      String serviceId,
+      String verificationStatus,
+      String idempotencyKey,
+      String effectiveFromOverride)
+      throws Exception {
+    String body =
+        assertionBody(
+            capabilityCode, serviceId, verificationStatus, effectiveFromOverride, idempotencyKey);
+    var response =
+        mockMvc
+            .perform(
+                post("/api/v1/directory/facilities/{facilityId}/capability-assertions", facilityId)
+                    .header("Authorization", bearer(token(actor)))
+                    .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                    .header("Idempotency-Key", idempotencyKey)
+                    .contentType("application/json")
+                    .content(body))
+            .andExpect(status().isCreated())
+            .andReturn();
+    return com.jayway.jsonpath.JsonPath.read(response.getResponse().getContentAsString(), "$.id");
+  }
+
+  private void correctCapabilityAssertion(
+      String assertionId, long expectedVersion, String status, String idempotencyKey)
+      throws Exception {
+    mockMvc
+        .perform(
+            post("/api/v1/directory/capability-assertions/{assertionId}/corrections", assertionId)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", idempotencyKey)
+                .contentType("application/json")
+                .content(assertionCorrectionBody(expectedVersion, status, idempotencyKey)))
+        .andExpect(status().isNoContent());
+  }
+
+  private void assertCapabilityOutcome(String facilityId, String code, String expectedOutcome)
+      throws Exception {
+    mockMvc
+        .perform(
+            get("/api/v1/directory/facilities/{facilityId}/capability-evidence", facilityId)
+                .param("requiredCapability", code)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.requirementsSatisfied").value("SATISFIED".equals(expectedOutcome)))
+        .andExpect(jsonPath("$.requirements[0].code").value(code))
+        .andExpect(jsonPath("$.requirements[0].outcome").value(expectedOutcome));
   }
 
   private void grant(
@@ -1099,6 +1518,86 @@ class DirectoryOrganizationFacilityApiIT {
         + "}}";
   }
 
+  private static String healthcareServiceBody(
+      String organizationId, String facilityId, String name) {
+    return healthcareServiceBody(organizationId, facilityId, null, name);
+  }
+
+  private static String healthcareServiceBody(
+      String organizationId, String facilityId, String locationId, String name) {
+    return "{\"organizationId\":\""
+        + organizationId
+        + "\",\"facilityId\":\""
+        + facilityId
+        + "\",\"locationId\":"
+        + (locationId == null ? "null" : "\"" + locationId + "\"")
+        + ",\"name\":\""
+        + name
+        + "\",\"source\":{"
+        + sourceJson("HealthcareService")
+        + "},\"provenance\":{"
+        + provenanceJson("SERVICE_ENTRY")
+        + "}}";
+  }
+
+  private static String capabilityBody(String code, String displayName, String parentCapabilityId) {
+    return "{\"code\":\""
+        + code
+        + "\",\"displayName\":\""
+        + displayName
+        + "\",\"parentCapabilityId\":"
+        + (parentCapabilityId == null ? "null" : "\"" + parentCapabilityId + "\"")
+        + ",\"source\":{"
+        + sourceJson("CareCapability", "synthetic-capability-" + code)
+        + "},\"provenance\":{"
+        + provenanceJson("CAPABILITY_ENTRY")
+        + "}}";
+  }
+
+  private static String assertionBody(
+      String capabilityCode,
+      String serviceId,
+      String verificationStatus,
+      String effectiveFromOverride,
+      String sourceReference) {
+    String effectiveFrom =
+        effectiveFromOverride == null ? "2026-01-01T00:00:00Z" : effectiveFromOverride;
+    return "{\"capabilityCode\":\""
+        + capabilityCode
+        + "\",\"healthcareServiceId\":"
+        + (serviceId == null ? "null" : "\"" + serviceId + "\"")
+        + ",\"verificationStatus\":\""
+        + verificationStatus
+        + "\",\"source\":{"
+        + sourceJson("FacilityCapabilityAssertion", "synthetic-assertion-" + sourceReference)
+        + "},\"provenance\":{"
+        + provenanceJson("MANUAL_REVIEW")
+        + "},\"effectiveFrom\":\""
+        + effectiveFrom
+        + "\",\"effectiveUntil\":null}";
+  }
+
+  private static String assertionCorrectionBody(
+      long expectedVersion, String verificationStatus, String reasonCode) {
+    return "{\"expectedVersion\":"
+        + expectedVersion
+        + ",\"verificationStatus\":\""
+        + verificationStatus
+        + "\",\"source\":{"
+        + sourceJson("FacilityCapabilityAssertion", "synthetic-assertion-correction-" + reasonCode)
+        + "},\"provenance\":{"
+        + provenanceJson("ASSERTION_CORRECTION")
+        + "},\"effectiveFrom\":\"2026-01-01T00:00:00Z\",\"effectiveUntil\":null}";
+  }
+
+  private static String deactivationBody(long expectedVersion, String reasonCode) {
+    return "{\"expectedVersion\":"
+        + expectedVersion
+        + ",\"provenance\":{"
+        + provenanceJson(reasonCode)
+        + "}}";
+  }
+
   private static String correctionBody(long expectedVersion, String name, String reasonCode) {
     return "{\"expectedVersion\":"
         + expectedVersion
@@ -1110,11 +1609,15 @@ class DirectoryOrganizationFacilityApiIT {
   }
 
   private static String sourceJson(String resourceType) {
+    return sourceJson(resourceType, "synthetic-" + resourceType.toLowerCase() + "-001");
+  }
+
+  private static String sourceJson(String resourceType, String reference) {
     return "\"issuer\":\"urn:synthetic:facility-registry\",\"resourceType\":\""
         + resourceType
-        + "\",\"reference\":\"synthetic-"
-        + resourceType.toLowerCase()
-        + "-001\"";
+        + "\",\"reference\":\""
+        + reference
+        + "\"";
   }
 
   private static String provenanceJson(String reasonCode) {
