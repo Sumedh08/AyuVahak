@@ -82,12 +82,15 @@ class PostgresPostgisFoundationIT {
   }
 
   @Test
-  void appliesOnlyThePlatformMigrationAndRecordsItsHistory() {
-    assertThat(flyway.info().applied()).hasSize(1);
+  void appliesRequiredMigrationsAndRecordsTheirHistory() {
+    assertThat(flyway.info().applied())
+        .extracting(info -> info.getVersion().getVersion())
+        .contains("1", "2");
     assertThat(
             jdbcTemplate.queryForObject(
-                "SELECT COUNT(*) FROM flyway_schema_history WHERE success", Integer.class))
-        .isEqualTo(1);
+                "SELECT COUNT(*) FROM flyway_schema_history WHERE success AND version IN ('1', '2')",
+                Integer.class))
+        .isEqualTo(2);
     assertThat(
             jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public' "
