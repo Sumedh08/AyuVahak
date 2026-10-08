@@ -138,6 +138,7 @@ class AuditReviewApiIT {
   @Test
   void authorizedReviewerReceivesBoundedMinimizedPageAfterItsReadIsDurablyAudited()
       throws Exception {
+    jdbc.update("DELETE FROM audit.audit_record");
     insertAuditRecord(
         "synthetic-safe-record", "SAFE_ACTION", "safe-correlation", "2026-10-08T12:00:02Z");
     insertAuditRecord(
@@ -149,11 +150,13 @@ class AuditReviewApiIT {
                 get("/api/v1/platform/audit-records")
                     .header("Authorization", bearer(token(REVIEWER_SUBJECT)))
                     .header(PlatformAccessGrantController.EXECUTION_SCOPE_HEADER, "PLATFORM")
-                    .param("limit", "1"))
+                    .param("limit", "2"))
             .andExpect(status().isOk())
-            .andExpect(jsonPath("$.items.length()").value(1))
-            .andExpect(jsonPath("$.items[0].actionCode").value("SAFE_ACTION"))
-            .andExpect(jsonPath("$.items[0].actorReference").value("synthetic-safe-record"))
+            .andExpect(jsonPath("$.items.length()").value(2))
+            .andExpect(jsonPath("$.items[0].actionCode").value("AUDIT_RECORD_LIST"))
+            .andExpect(jsonPath("$.items[0].actorReference").value(REVIEWER_SUBJECT))
+            .andExpect(jsonPath("$.items[1].actionCode").value("SAFE_ACTION"))
+            .andExpect(jsonPath("$.items[1].actorReference").value("synthetic-safe-record"))
             .andExpect(jsonPath("$.nextCursor").isNotEmpty())
             .andReturn();
 
@@ -174,7 +177,7 @@ class AuditReviewApiIT {
             get("/api/v1/platform/audit-records")
                 .header("Authorization", bearer(token(REVIEWER_SUBJECT)))
                 .header(PlatformAccessGrantController.EXECUTION_SCOPE_HEADER, "PLATFORM")
-                .param("limit", "1")
+                .param("limit", "2")
                 .param("cursor", nextCursor))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.items.length()").value(1))
