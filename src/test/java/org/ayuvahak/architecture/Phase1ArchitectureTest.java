@@ -8,6 +8,7 @@ import com.tngtech.archunit.core.importer.ImportOption;
 import com.tngtech.archunit.lang.EvaluationResult;
 import java.nio.file.Path;
 import org.ayuvahak.architecture.fixtures.domain.SpringDependentDomainFixture;
+import org.ayuvahak.platform.core.fixtures.forbidden.SpringDependentCoreFixture;
 import org.junit.jupiter.api.Test;
 
 class Phase1ArchitectureTest {
@@ -43,7 +44,35 @@ class Phase1ArchitectureTest {
 
     assertThat(result.hasViolation()).isTrue();
     assertThat(result.getFailureReport().toString())
-        .contains("Domain code must remain framework-independent")
+        .contains("Domain and platform core code must remain framework-independent")
         .contains("org.springframework.context.ApplicationContext");
+  }
+
+  @Test
+  void compiledCoreValuesRemainIndependentOfFrameworksAndOuterPlatformLayers() {
+    JavaClasses productionClasses =
+        new ClassFileImporter().importPath(Path.of("target", "classes"));
+
+    assertThat(productionClasses.get("org.ayuvahak.platform.core.InternalId")).isNotNull();
+    Phase1ArchitectureRules.domainCodeMustNotDependOnFrameworks().check(productionClasses);
+    Phase1ArchitectureRules.coreCodeMustNotDependOnOuterLayers().check(productionClasses);
+  }
+
+  @Test
+  void coreBoundaryRulesDetectFrameworkPersistenceAndHttpDependenciesInTestFixture() {
+    JavaClasses fixtureClasses =
+        new ClassFileImporter()
+            .withImportOption(ImportOption.Predefined.DO_NOT_INCLUDE_JARS)
+            .importClasses(SpringDependentCoreFixture.class);
+
+    EvaluationResult result =
+        Phase1ArchitectureRules.domainCodeMustNotDependOnFrameworks().evaluate(fixtureClasses);
+
+    assertThat(result.hasViolation()).isTrue();
+    assertThat(result.getFailureReport().toString())
+        .contains("Domain and platform core code must remain framework-independent")
+        .contains("org.springframework.context.ApplicationContext")
+        .contains("java.sql.Connection")
+        .contains("java.net.http.HttpClient");
   }
 }
