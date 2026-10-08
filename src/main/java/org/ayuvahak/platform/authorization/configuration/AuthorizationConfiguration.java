@@ -7,6 +7,7 @@ import org.ayuvahak.platform.authorization.domain.FunctionalAuthorityCatalog;
 import org.ayuvahak.platform.authorization.domain.PhaseTwoAuthorities;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 @Configuration(proxyBeanMethods = false)
@@ -18,11 +19,13 @@ public class AuthorizationConfiguration {
   }
 
   @Bean
+  @Lazy
   AuthorizationGrantLookup authorizationGrantLookup(JdbcTemplate jdbcTemplate) {
     return new JdbcAuthorizationGrantLookup(jdbcTemplate);
   }
 
   @Bean
+  @Lazy
   AuthorizationService authorizationService(
       AuthorizationGrantLookup grantLookup, FunctionalAuthorityCatalog authorities) {
     return new AuthorizationService(grantLookup, authorities);
