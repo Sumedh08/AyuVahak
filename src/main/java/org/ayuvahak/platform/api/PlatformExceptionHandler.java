@@ -222,6 +222,10 @@ public class PlatformExceptionHandler extends ResponseEntityExceptionHandler {
       case GRANT_NOT_FOUND -> "Grant not found";
       case INVALID_EXECUTION_SCOPE -> "Execution scope is invalid";
       case BOOTSTRAP_ALREADY_COMPLETED -> "Initial access is already established";
+      case EVENT_NOT_REPLAYABLE -> "Event delivery is not replayable";
+      case EVENT_HANDLER_UNAVAILABLE -> "Event handler is unavailable";
+      case EVENT_NOT_FOUND -> "Event delivery not found";
+      case EVENT_DELIVERY_UNAVAILABLE -> "Event delivery temporarily unavailable";
       default -> "Request failed";
     };
   }
