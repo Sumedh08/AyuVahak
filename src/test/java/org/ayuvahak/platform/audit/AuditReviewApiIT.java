@@ -122,7 +122,8 @@ class AuditReviewApiIT {
             + ISSUER
             + "\",\"subject\":\""
             + REVIEWER_SUBJECT
-            + "\"},\"authority\":\"AuditReview\",\"reasonCode\":\"ACCESS_SETUP\"}";
+            + "\"},\"authority\":\"AuditReview\",\"scope\":{\"kind\":\"PLATFORM\"},"
+            + "\"reasonCode\":\"ACCESS_SETUP\"}";
     mockMvc
         .perform(
             org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post(
@@ -141,6 +142,12 @@ class AuditReviewApiIT {
     jdbc.update("DELETE FROM audit.audit_record");
     insertAuditRecord(
         "synthetic-safe-record", "SAFE_ACTION", "safe-correlation", "2026-10-08T12:00:02Z");
+    jdbc.update(
+        "UPDATE audit.audit_record SET target_scope_kind = 'ORGANIZATION', "
+            + "target_organization_issuer = 'urn:ayuvahak:directory', "
+            + "target_organization_reference_type = 'Organization', "
+            + "target_organization_reference = 'org-17' WHERE actor_reference = ?",
+        "synthetic-safe-record");
     insertAuditRecord(
         "synthetic-secret-record", "SAFE_ACTION", "safe-correlation-2", "2026-10-08T12:00:01Z");
 
@@ -157,6 +164,8 @@ class AuditReviewApiIT {
             .andExpect(jsonPath("$.items[0].actorReference").value(REVIEWER_SUBJECT))
             .andExpect(jsonPath("$.items[1].actionCode").value("SAFE_ACTION"))
             .andExpect(jsonPath("$.items[1].actorReference").value("synthetic-safe-record"))
+            .andExpect(jsonPath("$.items[1].targetScopeKind").value("ORGANIZATION"))
+            .andExpect(jsonPath("$.items[1].targetOrganizationReference").value("org-17"))
             .andExpect(jsonPath("$.nextCursor").isNotEmpty())
             .andReturn();
 

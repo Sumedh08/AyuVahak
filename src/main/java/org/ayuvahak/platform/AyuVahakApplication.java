@@ -8,7 +8,7 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 
-@SpringBootApplication
+@SpringBootApplication(scanBasePackages = {"org.ayuvahak.platform", "org.ayuvahak.directory"})
 @EnableConfigurationProperties({
   PlatformProperties.class,
   DatabaseProperties.class,

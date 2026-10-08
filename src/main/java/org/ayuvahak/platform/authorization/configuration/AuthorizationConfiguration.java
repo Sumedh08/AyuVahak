@@ -1,13 +1,17 @@
 package org.ayuvahak.platform.authorization.configuration;
 
+import java.util.ArrayList;
+import java.util.List;
 import org.ayuvahak.platform.authorization.adapter.persistence.JdbcAuthorizationGrantLookup;
 import org.ayuvahak.platform.authorization.application.AuthorizationGrantLookup;
 import org.ayuvahak.platform.authorization.application.AuthorizationService;
 import org.ayuvahak.platform.authorization.domain.FunctionalAuthorityCatalog;
 import org.ayuvahak.platform.authorization.domain.PhaseTwoAuthorities;
 import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
+import org.ayuvahak.platform.executioncontext.ExecutionScopeOwnerValidator;
 import org.ayuvahak.platform.executioncontext.ExecutionScopeValidator;
 import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Lazy;
@@ -17,13 +21,26 @@ import org.springframework.jdbc.core.JdbcTemplate;
 public class AuthorizationConfiguration {
 
   @Bean
-  FunctionalAuthorityCatalog functionalAuthorityCatalog() {
-    return PhaseTwoAuthorities.catalog();
+  FunctionalAuthorityCatalog functionalAuthorityCatalog(
+      ObjectProvider<org.ayuvahak.platform.authorization.domain.FunctionalAuthority>
+          registeredAuthorities) {
+    List<org.ayuvahak.platform.authorization.domain.FunctionalAuthority> authorities =
+        new ArrayList<>(PhaseTwoAuthorities.catalog().all());
+    registeredAuthorities.orderedStream().forEach(authorities::add);
+    return new FunctionalAuthorityCatalog(authorities);
   }
 
   @Bean
-  ExecutionScopeValidator platformScopeValidator() {
-    return (actor, requestedScope) -> requestedScope instanceof RequestedExecutionScope.Platform;
+  ExecutionScopeValidator platformScopeValidator(
+      ObjectProvider<ExecutionScopeOwnerValidator> scopeOwners) {
+    return (actor, requestedScope) -> {
+      if (requestedScope instanceof RequestedExecutionScope.Platform) {
+        return true;
+      }
+      var owners =
+          scopeOwners.orderedStream().filter(owner -> owner.supports(requestedScope)).toList();
+      return owners.size() == 1 && owners.getFirst().isValid(requestedScope);
+    };
   }
 
   @Bean

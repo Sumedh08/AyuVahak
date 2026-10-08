@@ -24,4 +24,9 @@ public record AuditRecordView(
     String reasonCode,
     String authenticationEvidence,
     String authorizationOutcome,
-    String correlationId) {}
+    String correlationId,
+    String targetScopeKind,
+    String targetOrganizationIssuer,
+    String targetOrganizationReference,
+    String targetFacilityIssuer,
+    String targetFacilityReference) {}

@@ -1,6 +1,7 @@
 package org.ayuvahak.platform.authorization.domain;
 
 import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -11,11 +12,13 @@ import java.util.stream.Collectors;
 public final class FunctionalAuthorityCatalog {
 
   private final Map<String, FunctionalAuthority> authoritiesByCode;
+  private final List<FunctionalAuthority> authorities;
 
   public FunctionalAuthorityCatalog(Collection<FunctionalAuthority> authorities) {
     Objects.requireNonNull(authorities, "authorities");
+    this.authorities = List.copyOf(authorities);
     this.authoritiesByCode =
-        authorities.stream()
+        this.authorities.stream()
             .collect(
                 Collectors.toUnmodifiableMap(
                     FunctionalAuthority::code,
@@ -28,5 +31,9 @@ public final class FunctionalAuthorityCatalog {
 
   public Optional<FunctionalAuthority> find(String code) {
     return code == null ? Optional.empty() : Optional.ofNullable(authoritiesByCode.get(code));
+  }
+
+  public List<FunctionalAuthority> all() {
+    return authorities;
   }
 }
