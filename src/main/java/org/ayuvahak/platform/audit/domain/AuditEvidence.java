@@ -23,7 +23,37 @@ public record AuditEvidence(
     Optional<String> reasonCode,
     AuditAuthenticationEvidence authenticationEvidence,
     AuditAuthorizationOutcome authorizationOutcome,
-    CorrelationId correlationId) {
+    CorrelationId correlationId,
+    Optional<AuditTargetContext> targetContext) {
+
+  public AuditEvidence(
+      AuditActionKind actionKind,
+      Optional<ActorReference> actor,
+      Optional<ExecutionScope> scope,
+      String actionCode,
+      String targetType,
+      Optional<InternalId> targetId,
+      Instant occurredAt,
+      AuditOutcome outcome,
+      Optional<String> reasonCode,
+      AuditAuthenticationEvidence authenticationEvidence,
+      AuditAuthorizationOutcome authorizationOutcome,
+      CorrelationId correlationId) {
+    this(
+        actionKind,
+        actor,
+        scope,
+        actionCode,
+        targetType,
+        targetId,
+        occurredAt,
+        outcome,
+        reasonCode,
+        authenticationEvidence,
+        authorizationOutcome,
+        correlationId,
+        Optional.empty());
+  }
 
   private static final Pattern ACTION_CODE = Pattern.compile("[A-Z][A-Z0-9_]{0,99}");
   private static final Pattern TARGET_TYPE = Pattern.compile("[A-Z][A-Za-z0-9]{0,63}");
@@ -40,6 +70,7 @@ public record AuditEvidence(
     Objects.requireNonNull(authenticationEvidence, "authenticationEvidence");
     Objects.requireNonNull(authorizationOutcome, "authorizationOutcome");
     Objects.requireNonNull(correlationId, "correlationId");
+    targetContext = Objects.requireNonNull(targetContext, "target context");
     if (actionCode == null || !ACTION_CODE.matcher(actionCode).matches()) {
       throw new IllegalArgumentException("actionCode must be a stable uppercase code");
     }

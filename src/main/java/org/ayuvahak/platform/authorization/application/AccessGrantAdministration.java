@@ -15,10 +15,13 @@ import org.ayuvahak.platform.audit.domain.AuditAuthenticationEvidence;
 import org.ayuvahak.platform.audit.domain.AuditAuthorizationOutcome;
 import org.ayuvahak.platform.audit.domain.AuditEvidence;
 import org.ayuvahak.platform.audit.domain.AuditOutcome;
+import org.ayuvahak.platform.audit.domain.AuditTargetContext;
 import org.ayuvahak.platform.authentication.AuthenticationProperties;
 import org.ayuvahak.platform.authorization.domain.AccessGrant;
 import org.ayuvahak.platform.authorization.domain.AuthorizationDecision;
+import org.ayuvahak.platform.authorization.domain.FunctionalAuthority;
 import org.ayuvahak.platform.authorization.domain.FunctionalAuthorityCatalog;
+import org.ayuvahak.platform.authorization.domain.GrantScope;
 import org.ayuvahak.platform.authorization.domain.GrantStatus;
 import org.ayuvahak.platform.authorization.domain.PhaseTwoAuthorities;
 import org.ayuvahak.platform.core.ActorKind;
@@ -33,6 +36,8 @@ import org.ayuvahak.platform.event.EventType;
 import org.ayuvahak.platform.eventing.application.OutboxWriter;
 import org.ayuvahak.platform.executioncontext.AuthenticationMechanism;
 import org.ayuvahak.platform.executioncontext.ExecutionContext;
+import org.ayuvahak.platform.executioncontext.ExecutionScope;
+import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
 import org.ayuvahak.platform.idempotency.CommandReceiptKey;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
 import org.springframework.beans.factory.ObjectProvider;
@@ -62,6 +67,7 @@ public class AccessGrantAdministration {
   private final ObjectProvider<AuditWriter> auditWriter;
   private final OutboxWriter outboxWriter;
   private final FunctionalAuthorityCatalog authorities;
+  private final ObjectProvider<GrantTargetScopeValidator> targetScopeValidators;
   private final AuthenticationProperties authenticationProperties;
   private final TransactionTemplate transaction;
   private final Clock clock;
@@ -73,6 +79,7 @@ public class AccessGrantAdministration {
       ObjectProvider<AuditWriter> auditWriter,
       OutboxWriter outboxWriter,
       FunctionalAuthorityCatalog authorities,
+      ObjectProvider<GrantTargetScopeValidator> targetScopeValidators,
       AuthenticationProperties authenticationProperties,
       @Lazy PlatformTransactionManager transactionManager,
       @Qualifier("auditClock") Clock clock,
@@ -82,6 +89,8 @@ public class AccessGrantAdministration {
     this.auditWriter = Objects.requireNonNull(auditWriter, "audit writer");
     this.outboxWriter = Objects.requireNonNull(outboxWriter, "outbox writer");
     this.authorities = Objects.requireNonNull(authorities, "authorities");
+    this.targetScopeValidators =
+        Objects.requireNonNull(targetScopeValidators, "target scope validators");
     this.authenticationProperties =
         Objects.requireNonNull(authenticationProperties, "authentication properties");
     this.transaction =
@@ -94,28 +103,32 @@ public class AccessGrantAdministration {
       ExecutionContext context,
       GrantPrincipal principal,
       String authorityCode,
+      RequestedExecutionScope requestedTargetScope,
       String reasonCode,
       String rawIdempotencyKey,
       RequestFingerprint fingerprint) {
     requireAuthority(context, "ACCESS_GRANT_CREATE", Optional.empty());
-    validateGrantee(context, principal, authorityCode, reasonCode, true);
+    FunctionalAuthority authority =
+        validateGrantee(context, principal, authorityCode, reasonCode, true);
+    GrantScope targetScope = validateTargetScope(context, authority, requestedTargetScope);
     CommandReceiptKey key =
         commandKey(context, "access-grant.create", "platform-access-grants", rawIdempotencyKey);
     return withCommandTransaction(
         key,
         fingerprint,
         () -> {
-          if (store.databaseContainsGrant(principal.actorReference(), authorityCode)) {
+          if (store.databaseContainsGrant(principal.actorReference(), authorityCode, targetScope)) {
             throw problem(
                 HttpStatus.CONFLICT,
                 PlatformErrorCode.GRANT_ALREADY_EXISTS,
                 "An active grant already exists for this principal, authority, and scope.");
           }
           InternalId id =
-              store.insertPlatformGrant(principal.actorReference(), authorityCode, clock.instant());
+              store.insertGrant(
+                  principal.actorReference(), authorityCode, targetScope, clock.instant());
           long sequence = store.advanceEventSequence(id);
-          auditMutation(context, "ACCESS_GRANT_CREATE", id, reasonCode);
-          publishGrantEvent(context, id, authorityCode, sequence, "grant-created");
+          auditMutation(context, "ACCESS_GRANT_CREATE", id, reasonCode, targetScope);
+          publishGrantEvent(context, id, authorityCode, targetScope, sequence, "grant-created");
           return new GrantMutationResult(HttpStatus.CREATED.value(), id, false);
         });
   }
@@ -172,8 +185,9 @@ public class AccessGrantAdministration {
                               HttpStatus.CONFLICT,
                               PlatformErrorCode.GRANT_NOT_ACTIVE,
                               "The requested grant is no longer active."));
-          auditMutation(context, "ACCESS_GRANT_REVOKE", grantId, reasonCode);
-          publishGrantEvent(context, grantId, grant.authorityCode(), sequence, "grant-revoked");
+          auditMutation(context, "ACCESS_GRANT_REVOKE", grantId, reasonCode, grant.scope());
+          publishGrantEvent(
+              context, grantId, grant.authorityCode(), grant.scope(), sequence, "grant-revoked");
           return new GrantMutationResult(HttpStatus.NO_CONTENT.value(), grantId, false);
         });
   }
@@ -200,7 +214,7 @@ public class AccessGrantAdministration {
               }
             });
     recordRead(context, "ACCESS_GRANT_LIST");
-    List<AccessGrant> rows = store.listPlatformGrants(afterId, limit + 1);
+    List<AccessGrant> rows = store.listGrants(afterId, limit + 1);
     boolean hasMore = rows.size() > limit;
     List<AccessGrant> page = hasMore ? rows.subList(0, limit) : rows;
     Optional<String> next =
@@ -333,18 +347,19 @@ public class AccessGrantAdministration {
         "The authenticated principal is not authorized for this operation.");
   }
 
-  private void validateGrantee(
+  private FunctionalAuthority validateGrantee(
       ExecutionContext context,
       GrantPrincipal principal,
       String authorityCode,
       String reasonCode,
       boolean creation) {
     validateTrustedPrincipal(principal);
-    if (authorities.find(authorityCode).isEmpty()) {
+    FunctionalAuthority authority = authorities.find(authorityCode).orElse(null);
+    if (authority == null) {
       throw problem(
           HttpStatus.BAD_REQUEST,
           PlatformErrorCode.VALIDATION_FAILED,
-          "The requested authority is not configured for platform administration.");
+          "The requested authority is not registered in this deployment.");
     }
     List<String> allowedReasons =
         creation
@@ -367,10 +382,76 @@ public class AccessGrantAdministration {
           PlatformErrorCode.AUTHORIZATION_DENIED,
           "An administrator cannot grant or change their own access.");
     }
+    return authority;
+  }
+
+  private GrantScope validateTargetScope(
+      ExecutionContext context,
+      FunctionalAuthority authority,
+      RequestedExecutionScope requestedTargetScope) {
+    if (requestedTargetScope == null) {
+      throw invalidTargetScope(context);
+    }
+    ExecutionScope.Kind kind = scopeKind(requestedTargetScope);
+    if (!authority.allowedScopeKinds().contains(kind)) {
+      throw invalidTargetScope(context);
+    }
+    if (kind != ExecutionScope.Kind.PLATFORM) {
+      List<GrantTargetScopeValidator> validators =
+          targetScopeValidators
+              .orderedStream()
+              .filter(candidate -> candidate.supports(authority))
+              .toList();
+      if (validators.size() != 1) {
+        throw scopeValidationUnavailable(context);
+      }
+      boolean valid;
+      try {
+        valid = validators.getFirst().isValid(authority, requestedTargetScope);
+      } catch (RuntimeException failure) {
+        throw scopeValidationUnavailable(context);
+      }
+      if (!valid) {
+        throw invalidTargetScope(context);
+      }
+    }
+    return GrantScope.from(requestedTargetScope);
+  }
+
+  private static ExecutionScope.Kind scopeKind(RequestedExecutionScope requestedScope) {
+    return switch (requestedScope) {
+      case RequestedExecutionScope.Platform ignored -> ExecutionScope.Kind.PLATFORM;
+      case RequestedExecutionScope.Organization ignored -> ExecutionScope.Kind.ORGANIZATION;
+      case RequestedExecutionScope.Facility ignored -> ExecutionScope.Kind.FACILITY;
+    };
+  }
+
+  private PlatformProblemException invalidTargetScope(ExecutionContext context) {
+    recordDenial(context, "ACCESS_GRANT_CREATE", Optional.empty(), "INVALID_GRANT_TARGET_SCOPE");
+    return problem(
+        HttpStatus.BAD_REQUEST,
+        PlatformErrorCode.INVALID_EXECUTION_SCOPE,
+        "The target scope is not valid for this authority or owning context.");
+  }
+
+  private PlatformProblemException scopeValidationUnavailable(ExecutionContext context) {
+    recordDenial(
+        context,
+        "ACCESS_GRANT_CREATE",
+        Optional.empty(),
+        "GRANT_TARGET_SCOPE_VALIDATION_UNAVAILABLE");
+    return problem(
+        HttpStatus.SERVICE_UNAVAILABLE,
+        PlatformErrorCode.AUTHORIZATION_UNAVAILABLE,
+        "The owning context cannot validate the requested grant scope.");
   }
 
   private void auditMutation(
-      ExecutionContext context, String actionCode, InternalId targetId, String reasonCode) {
+      ExecutionContext context,
+      String actionCode,
+      InternalId targetId,
+      String reasonCode,
+      GrantScope targetScope) {
     try {
       auditWriter
           .getObject()
@@ -382,7 +463,8 @@ public class AccessGrantAdministration {
                   Optional.of(targetId),
                   AuditOutcome.SUCCEEDED,
                   Optional.of(reasonCode),
-                  AuditAuthorizationOutcome.ALLOWED));
+                  AuditAuthorizationOutcome.ALLOWED,
+                  Optional.of(auditTargetContext(targetScope))));
     } catch (AuditPersistenceUnavailableException failure) {
       throw failure;
     }
@@ -445,6 +527,26 @@ public class AccessGrantAdministration {
       AuditOutcome outcome,
       Optional<String> reasonCode,
       AuditAuthorizationOutcome authorizationOutcome) {
+    return evidence(
+        context,
+        kind,
+        actionCode,
+        targetId,
+        outcome,
+        reasonCode,
+        authorizationOutcome,
+        Optional.empty());
+  }
+
+  private AuditEvidence evidence(
+      ExecutionContext context,
+      AuditActionKind kind,
+      String actionCode,
+      Optional<InternalId> targetId,
+      AuditOutcome outcome,
+      Optional<String> reasonCode,
+      AuditAuthorizationOutcome authorizationOutcome,
+      Optional<AuditTargetContext> targetContext) {
     return new AuditEvidence(
         kind,
         Optional.of(context.actor()),
@@ -457,18 +559,35 @@ public class AccessGrantAdministration {
         reasonCode,
         auditAuthenticationEvidence(context.authenticationMechanism()),
         authorizationOutcome,
-        context.correlationId());
+        context.correlationId(),
+        targetContext);
   }
 
   private void publishGrantEvent(
       ExecutionContext context,
       InternalId grantId,
       String authorityCode,
+      GrantScope targetScope,
       long sequence,
       String fact) {
     ObjectNode payload = objectMapper.createObjectNode();
     payload.put("grantId", grantId.toString());
     payload.put("authorityCode", authorityCode);
+    payload.put("scopeKind", targetScope.kind().name());
+    targetScope
+        .organization()
+        .ifPresent(
+            organization -> {
+              payload.put("organizationIssuer", organization.issuer().value());
+              payload.put("organizationReference", organization.value());
+            });
+    targetScope
+        .facility()
+        .ifPresent(
+            facility -> {
+              payload.put("facilityIssuer", facility.issuer().value());
+              payload.put("facilityReference", facility.value());
+            });
     Instant now = clock.instant();
     outboxWriter.record(
         new EventEnvelope(
@@ -480,6 +599,11 @@ public class AccessGrantAdministration {
             context,
             Optional.of(new AggregatePosition(grantId.toString(), sequence)),
             payload));
+  }
+
+  private static AuditTargetContext auditTargetContext(GrantScope targetScope) {
+    return new AuditTargetContext(
+        targetScope.kind(), targetScope.organization(), targetScope.facility());
   }
 
   private CommandReceiptKey commandKey(

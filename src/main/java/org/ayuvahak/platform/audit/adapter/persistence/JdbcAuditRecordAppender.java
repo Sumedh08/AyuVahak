@@ -6,6 +6,7 @@ import java.util.Objects;
 import org.ayuvahak.platform.audit.application.AuditPersistenceUnavailableException;
 import org.ayuvahak.platform.audit.application.AuditRecordAppender;
 import org.ayuvahak.platform.audit.domain.AuditEvidence;
+import org.ayuvahak.platform.audit.domain.AuditTargetContext;
 import org.ayuvahak.platform.core.ActorReference;
 import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.InternalId;
@@ -30,8 +31,12 @@ public class JdbcAuditRecordAppender implements AuditRecordAppender {
           + "scope_kind, organization_issuer, organization_reference_type, organization_reference, "
           + "facility_issuer, facility_reference_type, facility_reference, action_code, target_type, "
           + "target_id, occurred_at, recorded_at, outcome, reason_code, authentication_evidence, "
-          + "authorization_outcome, correlation_id) "
-          + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+          + "authorization_outcome, correlation_id, target_scope_kind, "
+          + "target_organization_issuer, target_organization_reference_type, "
+          + "target_organization_reference, target_facility_issuer, "
+          + "target_facility_reference_type, target_facility_reference) "
+          + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+          + "?, ?, ?, ?, ?, ?)";
 
   private final JdbcTemplate jdbcTemplate;
   private final TransactionTemplate independentTransaction;
@@ -82,6 +87,11 @@ public class JdbcAuditRecordAppender implements AuditRecordAppender {
     ExecutionScope scope = evidence.scope().orElse(null);
     ExternalReference organization = scope == null ? null : scope.organization().orElse(null);
     ExternalReference facility = scope == null ? null : scope.facility().orElse(null);
+    AuditTargetContext targetContext = evidence.targetContext().orElse(null);
+    ExternalReference targetOrganization =
+        targetContext == null ? null : targetContext.organization().orElse(null);
+    ExternalReference targetFacility =
+        targetContext == null ? null : targetContext.facility().orElse(null);
 
     try {
       jdbcTemplate.update(
@@ -108,7 +118,14 @@ public class JdbcAuditRecordAppender implements AuditRecordAppender {
           evidence.reasonCode().orElse(null),
           evidence.authenticationEvidence().name(),
           evidence.authorizationOutcome().name(),
-          evidence.correlationId().value());
+          evidence.correlationId().value(),
+          targetContext == null ? null : targetContext.kind().name(),
+          targetOrganization == null ? null : targetOrganization.issuer().value(),
+          targetOrganization == null ? null : targetOrganization.resourceType(),
+          targetOrganization == null ? null : targetOrganization.value(),
+          targetFacility == null ? null : targetFacility.issuer().value(),
+          targetFacility == null ? null : targetFacility.resourceType(),
+          targetFacility == null ? null : targetFacility.value());
     } catch (RuntimeException failure) {
       throw new AuditPersistenceUnavailableException(failure);
     }

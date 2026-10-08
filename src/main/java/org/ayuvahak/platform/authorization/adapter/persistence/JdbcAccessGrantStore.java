@@ -9,6 +9,7 @@ import java.util.OptionalLong;
 import java.util.UUID;
 import org.ayuvahak.platform.authorization.application.AccessGrantStore;
 import org.ayuvahak.platform.authorization.domain.AccessGrant;
+import org.ayuvahak.platform.authorization.domain.GrantScope;
 import org.ayuvahak.platform.authorization.domain.GrantStatus;
 import org.ayuvahak.platform.core.ActorKind;
 import org.ayuvahak.platform.core.ActorReference;
@@ -28,7 +29,9 @@ public class JdbcAccessGrantStore implements AccessGrantStore {
 
   private static final String GRANT_COLUMNS =
       "grant_id, principal_kind, principal_issuer, principal_identifier_type, "
-          + "principal_identifier, authority_code, grant_status, created_at, revoked_at";
+          + "principal_identifier, authority_code, scope_kind, organization_issuer, "
+          + "organization_identifier_type, organization_identifier, facility_issuer, "
+          + "facility_identifier_type, facility_identifier, grant_status, created_at, revoked_at";
   private static final RowMapper<AccessGrant> GRANT_ROW_MAPPER =
       (result, rowNumber) -> {
         ActorKind kind = ActorKind.valueOf(result.getString("principal_kind"));
@@ -46,6 +49,7 @@ public class JdbcAccessGrantStore implements AccessGrantStore {
             new InternalId(result.getObject("grant_id", UUID.class)),
             principal,
             result.getString("authority_code"),
+            grantScope(result),
             GrantStatus.valueOf(status),
             result.getTimestamp("created_at").toInstant(),
             Optional.ofNullable(revoked).map(Timestamp::toInstant));
@@ -77,20 +81,33 @@ public class JdbcAccessGrantStore implements AccessGrantStore {
   }
 
   @Override
-  public InternalId insertPlatformGrant(
-      ActorReference principal, String authorityCode, Instant createdAt) {
+  public InternalId insertGrant(
+      ActorReference principal, String authorityCode, GrantScope scope, Instant createdAt) {
     Objects.requireNonNull(principal, "principal");
+    Objects.requireNonNull(scope, "scope");
+    ExternalReference organization = scope.organization().orElse(null);
+    ExternalReference facility = scope.facility().orElse(null);
     InternalId id = InternalId.generate();
     jdbc.update(
         "INSERT INTO identity_access.authorization_grant (grant_id, principal_kind, "
             + "principal_issuer, principal_identifier_type, principal_identifier, authority_code, "
-            + "scope_kind, grant_status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'PLATFORM', 'ACTIVE', ?)",
+            + "scope_kind, organization_issuer, organization_identifier_type, "
+            + "organization_identifier, facility_issuer, facility_identifier_type, "
+            + "facility_identifier, grant_status, created_at) "
+            + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?)",
         id.value(),
         principal.kind().name(),
         principal.identity().issuer().value(),
         principal.identity().resourceType(),
         principal.identity().value(),
         authorityCode,
+        scope.kind().name(),
+        organization == null ? null : organization.issuer().value(),
+        organization == null ? null : organization.resourceType(),
+        organization == null ? null : organization.value(),
+        facility == null ? null : facility.issuer().value(),
+        facility == null ? null : facility.resourceType(),
+        facility == null ? null : facility.value(),
         Timestamp.from(createdAt));
     return id;
   }
@@ -199,14 +216,13 @@ public class JdbcAccessGrantStore implements AccessGrantStore {
   }
 
   @Override
-  public List<AccessGrant> listPlatformGrants(Optional<UUID> afterId, int limit) {
+  public List<AccessGrant> listGrants(Optional<UUID> afterId, int limit) {
     Objects.requireNonNull(afterId, "afterId");
     String sql =
         "SELECT "
             + GRANT_COLUMNS
             + " FROM identity_access.authorization_grant "
-            + "WHERE scope_kind = 'PLATFORM' "
-            + "AND authority_code IN ('AccessGrantAdministration', 'AuditReview', 'EventDeliveryOperations') "
+            + "WHERE TRUE "
             + (afterId.isPresent() ? "AND grant_id > ? " : "")
             + "ORDER BY grant_id LIMIT ?";
     if (afterId.isPresent()) {
@@ -242,19 +258,58 @@ public class JdbcAccessGrantStore implements AccessGrantStore {
   }
 
   @Override
-  public boolean databaseContainsGrant(ActorReference principal, String authorityCode) {
+  public boolean databaseContainsGrant(
+      ActorReference principal, String authorityCode, GrantScope scope) {
+    Objects.requireNonNull(scope, "scope");
+    ExternalReference organization = scope.organization().orElse(null);
+    ExternalReference facility = scope.facility().orElse(null);
     Boolean exists =
         jdbc.queryForObject(
             "SELECT EXISTS (SELECT 1 FROM identity_access.authorization_grant "
                 + "WHERE principal_kind = ? AND principal_issuer = ? "
                 + "AND principal_identifier_type = ? AND principal_identifier = ? "
-                + "AND authority_code = ? AND scope_kind = 'PLATFORM' AND grant_status = 'ACTIVE')",
+                + "AND authority_code = ? AND scope_kind = ? "
+                + "AND organization_issuer IS NOT DISTINCT FROM ? "
+                + "AND organization_identifier_type IS NOT DISTINCT FROM ? "
+                + "AND organization_identifier IS NOT DISTINCT FROM ? "
+                + "AND facility_issuer IS NOT DISTINCT FROM ? "
+                + "AND facility_identifier_type IS NOT DISTINCT FROM ? "
+                + "AND facility_identifier IS NOT DISTINCT FROM ? AND grant_status = 'ACTIVE')",
             Boolean.class,
             principal.kind().name(),
             principal.identity().issuer().value(),
             principal.identity().resourceType(),
             principal.identity().value(),
-            authorityCode);
+            authorityCode,
+            scope.kind().name(),
+            organization == null ? null : organization.issuer().value(),
+            organization == null ? null : organization.resourceType(),
+            organization == null ? null : organization.value(),
+            facility == null ? null : facility.issuer().value(),
+            facility == null ? null : facility.resourceType(),
+            facility == null ? null : facility.value());
     return Boolean.TRUE.equals(exists);
+  }
+
+  private static GrantScope grantScope(java.sql.ResultSet result) throws java.sql.SQLException {
+    String kind = result.getString("scope_kind");
+    ExternalReference organization =
+        result.getString("organization_issuer") == null
+            ? null
+            : new ExternalReference(
+                new IssuerId(result.getString("organization_issuer")),
+                result.getString("organization_identifier_type"),
+                result.getString("organization_identifier"));
+    ExternalReference facility =
+        result.getString("facility_issuer") == null
+            ? null
+            : new ExternalReference(
+                new IssuerId(result.getString("facility_issuer")),
+                result.getString("facility_identifier_type"),
+                result.getString("facility_identifier"));
+    return new GrantScope(
+        org.ayuvahak.platform.executioncontext.ExecutionScope.Kind.valueOf(kind),
+        Optional.ofNullable(organization),
+        Optional.ofNullable(facility));
   }
 }

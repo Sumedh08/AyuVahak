@@ -14,12 +14,15 @@ import org.ayuvahak.platform.authorization.application.GrantMutationResult;
 import org.ayuvahak.platform.authorization.application.GrantPage;
 import org.ayuvahak.platform.authorization.application.GrantPrincipal;
 import org.ayuvahak.platform.authorization.domain.AccessGrant;
+import org.ayuvahak.platform.authorization.domain.GrantScope;
 import org.ayuvahak.platform.core.ActorKind;
 import org.ayuvahak.platform.core.ActorReference;
 import org.ayuvahak.platform.core.CorrelationId;
+import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.IssuerId;
 import org.ayuvahak.platform.executioncontext.ExecutionContext;
 import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
+import org.ayuvahak.platform.executioncontext.ExecutionScope;
 import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
 import org.slf4j.MDC;
@@ -67,18 +70,37 @@ public class PlatformAccessGrantController {
       @Valid @RequestBody CreateGrantRequest request) {
     ExecutionContext context = context(actor, requestedScope);
     GrantPrincipal principal = request.principal().toGrantPrincipal();
+    RequestedExecutionScope targetScope = request.scope().toRequestedScope();
+    GrantScope normalizedScope = GrantScope.from(targetScope);
     ObjectNode normalized = objectMapper.createObjectNode();
     normalized.put("kind", principal.kind().name());
     normalized.put("issuer", principal.issuer().value());
     normalized.put("identifier", principal.identifier());
     normalized.put("authority", request.authority());
-    normalized.put("scope", "PLATFORM");
+    normalized.put("scopeKind", normalizedScope.kind().name());
+    normalizedScope
+        .organization()
+        .ifPresent(
+            organization -> {
+              normalized.put("organizationIssuer", organization.issuer().value());
+              normalized.put("organizationResourceType", organization.resourceType());
+              normalized.put("organizationReference", organization.value());
+            });
+    normalizedScope
+        .facility()
+        .ifPresent(
+            facility -> {
+              normalized.put("facilityIssuer", facility.issuer().value());
+              normalized.put("facilityResourceType", facility.resourceType());
+              normalized.put("facilityReference", facility.value());
+            });
     normalized.put("reasonCode", request.reasonCode());
     GrantMutationResult result =
         administration.create(
             context,
             principal,
             request.authority(),
+            targetScope,
             request.reasonCode(),
             idempotencyKey,
             RequestFingerprint.from(normalized));
@@ -154,7 +176,56 @@ public class PlatformAccessGrantController {
   public record CreateGrantRequest(
       @Valid @NotNull PrincipalRequest principal,
       @NotBlank String authority,
+      @Valid @NotNull TargetScopeRequest scope,
       @NotBlank String reasonCode) {}
+
+  public record TargetScopeRequest(
+      @NotBlank String kind,
+      @Valid ScopeReferenceRequest organization,
+      @Valid ScopeReferenceRequest facility) {
+
+    RequestedExecutionScope toRequestedScope() {
+      try {
+        return switch (ExecutionScope.Kind.valueOf(kind)) {
+          case PLATFORM -> {
+            requireReferencesAbsent();
+            yield RequestedExecutionScope.platform();
+          }
+          case ORGANIZATION -> {
+            if (organization == null || facility != null) {
+              throw new IllegalArgumentException("organization target scope shape is invalid");
+            }
+            yield RequestedExecutionScope.organization(organization.toReference("Organization"));
+          }
+          case FACILITY -> {
+            if (organization == null || facility == null) {
+              throw new IllegalArgumentException("facility target scope shape is invalid");
+            }
+            yield RequestedExecutionScope.facility(
+                organization.toReference("Organization"), facility.toReference("Facility"));
+          }
+        };
+      } catch (IllegalArgumentException exception) {
+        throw new PlatformProblemException(
+            HttpStatus.BAD_REQUEST,
+            PlatformErrorCode.INVALID_EXECUTION_SCOPE,
+            "The target scope is malformed or unsupported.");
+      }
+    }
+
+    private void requireReferencesAbsent() {
+      if (organization != null || facility != null) {
+        throw new IllegalArgumentException("platform target scope cannot contain references");
+      }
+    }
+  }
+
+  public record ScopeReferenceRequest(@NotBlank String issuer, @NotBlank String identifier) {
+
+    ExternalReference toReference(String resourceType) {
+      return new ExternalReference(new IssuerId(issuer), resourceType, identifier);
+    }
+  }
 
   public record PrincipalRequest(
       @NotBlank String kind, @NotBlank String issuer, String subject, String clientId) {
@@ -204,6 +275,10 @@ public class PlatformAccessGrantController {
       String clientId,
       String authority,
       String scope,
+      String organizationIssuer,
+      String organizationIdentifier,
+      String facilityIssuer,
+      String facilityIdentifier,
       String status,
       java.time.Instant createdAt,
       Optional<java.time.Instant> revokedAt) {
@@ -216,7 +291,11 @@ public class PlatformAccessGrantController {
           human ? grant.principal().identity().value() : null,
           human ? null : grant.principal().identity().value(),
           grant.authorityCode(),
-          "PLATFORM",
+          grant.scope().kind().name(),
+          grant.scope().organization().map(reference -> reference.issuer().value()).orElse(null),
+          grant.scope().organization().map(ExternalReference::value).orElse(null),
+          grant.scope().facility().map(reference -> reference.issuer().value()).orElse(null),
+          grant.scope().facility().map(ExternalReference::value).orElse(null),
           grant.status().name(),
           grant.createdAt(),
           grant.revokedAt());

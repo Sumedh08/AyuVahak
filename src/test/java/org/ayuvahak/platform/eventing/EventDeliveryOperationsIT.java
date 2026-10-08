@@ -329,7 +329,8 @@ class EventDeliveryOperationsIT {
                         + ISSUER
                         + "\",\"subject\":\""
                         + OPERATOR
-                        + "\"},\"authority\":\"EventDeliveryOperations\",\"reasonCode\":\"ACCESS_SETUP\"}"))
+                        + "\"},\"authority\":\"EventDeliveryOperations\","
+                        + "\"scope\":{\"kind\":\"PLATFORM\"},\"reasonCode\":\"ACCESS_SETUP\"}"))
         .andExpect(status().isCreated());
   }
 

@@ -11,6 +11,7 @@ public record AccessGrant(
     InternalId id,
     ActorReference principal,
     String authorityCode,
+    GrantScope scope,
     GrantStatus status,
     Instant createdAt,
     Optional<Instant> revokedAt) {
@@ -21,6 +22,7 @@ public record AccessGrant(
     if (authorityCode == null || authorityCode.isBlank()) {
       throw new IllegalArgumentException("authority code must be nonblank");
     }
+    Objects.requireNonNull(scope, "scope");
     Objects.requireNonNull(status, "status");
     Objects.requireNonNull(createdAt, "createdAt");
     Objects.requireNonNull(revokedAt, "revokedAt");

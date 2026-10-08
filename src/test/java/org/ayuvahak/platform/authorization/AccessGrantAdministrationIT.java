@@ -22,11 +22,20 @@ import java.net.InetSocketAddress;
 import java.time.Instant;
 import java.util.Date;
 import java.util.Map;
+import org.ayuvahak.directory.application.DirectoryGrantTargetScopeValidator;
+import org.ayuvahak.directory.application.DirectoryScopeReferenceLookup;
 import org.ayuvahak.platform.authorization.adapter.api.PlatformAccessGrantController;
 import org.ayuvahak.platform.authorization.adapter.cli.BootstrapGrantApplication;
 import org.ayuvahak.platform.authorization.application.BootstrapGrantProperties;
 import org.ayuvahak.platform.authorization.application.BootstrapGrantService;
+import org.ayuvahak.platform.authorization.domain.FunctionalAuthorityCatalog;
 import org.ayuvahak.platform.core.ActorKind;
+import org.ayuvahak.platform.core.ActorReference;
+import org.ayuvahak.platform.core.CorrelationId;
+import org.ayuvahak.platform.core.ExternalReference;
+import org.ayuvahak.platform.core.IssuerId;
+import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
+import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -35,9 +44,12 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.WebApplicationType;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.web.server.context.WebServerApplicationContext;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -57,6 +69,7 @@ import org.testcontainers.utility.DockerImageName;
 @AutoConfigureMockMvc
 @Testcontainers
 @ExtendWith(OutputCaptureExtension.class)
+@Import(AccessGrantAdministrationIT.DirectoryGrantScopeFixtureConfiguration.class)
 class AccessGrantAdministrationIT {
 
   private static final String TEST_PASSWORD = "local-test-only";
@@ -81,6 +94,8 @@ class AccessGrantAdministrationIT {
   @Autowired private MockMvc mockMvc;
   @Autowired private JdbcTemplate jdbc;
   @Autowired private BootstrapGrantService bootstrapService;
+  @Autowired private FunctionalAuthorityCatalog authorities;
+  @Autowired private ExecutionContextFactory executionContexts;
 
   @BeforeAll
   static void startLocalJwksServer() throws Exception {
@@ -180,7 +195,8 @@ class AccessGrantAdministrationIT {
         "{\"principal\":{\"kind\":\"HUMAN\",\"issuer\":\""
             + ISSUER
             + "\",\"subject\":\"synthetic-coordinator-31\"},"
-            + "\"authority\":\"AuditReview\",\"reasonCode\":\"ACCESS_SETUP\"}";
+            + "\"authority\":\"AuditReview\",\"scope\":{\"kind\":\"PLATFORM\"},"
+            + "\"reasonCode\":\"ACCESS_SETUP\"}";
     var created =
         mockMvc
             .perform(
@@ -269,7 +285,8 @@ class AccessGrantAdministrationIT {
         "{\"principal\":{\"kind\":\"HUMAN\",\"issuer\":\""
             + ISSUER
             + "\",\"subject\":\"synthetic-coordinator-32\"},"
-            + "\"authority\":\"AuditReview\",\"reasonCode\":\"ACCESS_SETUP\"}";
+            + "\"authority\":\"AuditReview\",\"scope\":{\"kind\":\"PLATFORM\"},"
+            + "\"reasonCode\":\"ACCESS_SETUP\"}";
     var first =
         mockMvc
             .perform(
@@ -299,7 +316,10 @@ class AccessGrantAdministrationIT {
             + ISSUER
             + "\",\"subject\":\""
             + ADMIN_SUBJECT
-            + "\"},\"authority\":\"AuditReview\",\"reasonCode\":\"ACCESS_SETUP\"}";
+            + "\"},\"authority\":\"DirectoryRead\",\"scope\":{"
+            + "\"kind\":\"ORGANIZATION\",\"organization\":{"
+            + "\"issuer\":\"urn:ayuvahak:directory\",\"identifier\":\"org-17\"}},"
+            + "\"reasonCode\":\"ACCESS_SETUP\"}";
     mockMvc
         .perform(
             post("/api/v1/platform/access-grants")
@@ -311,6 +331,24 @@ class AccessGrantAdministrationIT {
         .andExpect(status().isForbidden())
         .andExpect(jsonPath("$.code").value("AUTHORIZATION_DENIED"));
 
+    java.util.UUID administratorGrantId =
+        jdbc.queryForObject(
+            "SELECT grant_id FROM identity_access.authorization_grant "
+                + "WHERE principal_identifier = ? "
+                + "AND authority_code = 'AccessGrantAdministration'",
+            java.util.UUID.class,
+            ADMIN_SUBJECT);
+    mockMvc
+        .perform(
+            delete("/api/v1/platform/access-grants/" + administratorGrantId)
+                .header("Authorization", bearer(token(ADMIN_SUBJECT, Map.of())))
+                .header(PlatformAccessGrantController.EXECUTION_SCOPE_HEADER, EXECUTION_SCOPE)
+                .header("Idempotency-Key", "self-revoke-01")
+                .contentType("application/json")
+                .content("{\"reasonCode\":\"ACCESS_REMOVAL\"}"))
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.code").value("AUTHORIZATION_DENIED"));
+
     mockMvc
         .perform(
             get("/api/v1/platform/access-grants")
@@ -318,7 +356,7 @@ class AccessGrantAdministrationIT {
         .andExpect(status().isForbidden())
         .andExpect(jsonPath("$.code").value("INVALID_EXECUTION_SCOPE"));
     assertThat(count("SELECT COUNT(*) FROM audit.audit_record WHERE outcome = 'DENIED'"))
-        .isEqualTo(2);
+        .isEqualTo(3);
     assertThat(first.getResponse().getContentAsString()).contains("grantId");
   }
 
@@ -330,7 +368,8 @@ class AccessGrantAdministrationIT {
         "{\"principal\":{\"kind\":\"HUMAN\",\"issuer\":\""
             + ISSUER
             + "\",\"subject\":\"synthetic-coordinator-34\"},"
-            + "\"authority\":\"AuditReview\",\"reasonCode\":\"ACCESS_SETUP\"}";
+            + "\"authority\":\"AuditReview\",\"scope\":{\"kind\":\"PLATFORM\"},"
+            + "\"reasonCode\":\"ACCESS_SETUP\"}";
 
     mockMvc
         .perform(
@@ -375,7 +414,8 @@ class AccessGrantAdministrationIT {
         "{\"principal\":{\"kind\":\"HUMAN\",\"issuer\":\""
             + ISSUER
             + "\",\"subject\":\"synthetic-coordinator-33\"},"
-            + "\"authority\":\"AuditReview\",\"reasonCode\":\"ACCESS_SETUP\"}";
+            + "\"authority\":\"AuditReview\",\"scope\":{\"kind\":\"PLATFORM\"},"
+            + "\"reasonCode\":\"ACCESS_SETUP\"}";
 
     mockMvc
         .perform(
@@ -398,6 +438,271 @@ class AccessGrantAdministrationIT {
             count(
                 "SELECT COUNT(*) FROM platform_eventing.internal_event WHERE event_type = 'identity-access.grant-created.v1'"))
         .isEqualTo(1);
+  }
+
+  @Test
+  void provisionsOnlyRegisteredAuthoritiesAtValidatedTargetScope() throws Exception {
+    bootstrapService.provisionFirstGrant(bootstrapProperties(), "synthetic-host");
+
+    assertThat(authorities.find("DirectoryRead")).isPresent();
+    assertThat(authorities.find("DirectoryCuration")).isPresent();
+    assertThat(authorities.find("DirectoryVocabularyAdministration")).isPresent();
+
+    String organizationBody = directoryGrantBody("synthetic-directory-reader-01", "DirectoryRead");
+    var created =
+        mockMvc
+            .perform(
+                post("/api/v1/platform/access-grants")
+                    .header("Authorization", bearer(token(ADMIN_SUBJECT, Map.of())))
+                    .header(PlatformAccessGrantController.EXECUTION_SCOPE_HEADER, EXECUTION_SCOPE)
+                    .header("Idempotency-Key", "directory-org-grant-01")
+                    .contentType("application/json")
+                    .content(organizationBody))
+            .andExpect(status().isCreated())
+            .andReturn();
+    String grantId =
+        com.jayway.jsonpath.JsonPath.read(created.getResponse().getContentAsString(), "$.grantId");
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT scope_kind || ':' || organization_identifier "
+                    + "FROM identity_access.authorization_grant WHERE grant_id = ?",
+                String.class,
+                java.util.UUID.fromString(grantId)))
+        .isEqualTo("ORGANIZATION:org-17");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT target_scope_kind || ':' || target_organization_reference "
+                    + "FROM audit.audit_record WHERE action_code = 'ACCESS_GRANT_CREATE'",
+                String.class))
+        .isEqualTo("ORGANIZATION:org-17");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT scope_kind FROM audit.audit_record "
+                    + "WHERE action_code = 'ACCESS_GRANT_CREATE'",
+                String.class))
+        .isEqualTo("PLATFORM");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT envelope -> 'payload' ->> 'scopeKind' "
+                    + "FROM platform_eventing.internal_event "
+                    + "WHERE event_type = 'identity-access.grant-created.v1' "
+                    + "AND envelope -> 'payload' ->> 'grantId' = ?",
+                String.class,
+                grantId))
+        .isEqualTo("ORGANIZATION");
+
+    String facilityBody =
+        "{\"principal\":{\"kind\":\"HUMAN\",\"issuer\":\""
+            + ISSUER
+            + "\",\"subject\":\"synthetic-facility-reader-01\"},"
+            + "\"authority\":\"DirectoryCuration\",\"scope\":{\"kind\":\"FACILITY\","
+            + "\"organization\":{\"issuer\":\"urn:ayuvahak:directory\","
+            + "\"identifier\":\"org-17\"},\"facility\":{"
+            + "\"issuer\":\"urn:ayuvahak:directory\",\"identifier\":\"facility-23\"}},"
+            + "\"reasonCode\":\"ACCESS_SETUP\"}";
+    mockMvc
+        .perform(
+            post("/api/v1/platform/access-grants")
+                .header("Authorization", bearer(token(ADMIN_SUBJECT, Map.of())))
+                .header(PlatformAccessGrantController.EXECUTION_SCOPE_HEADER, EXECUTION_SCOPE)
+                .header("Idempotency-Key", "directory-facility-grant-01")
+                .contentType("application/json")
+                .content(facilityBody))
+        .andExpect(status().isCreated());
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT target_scope_kind || ':' || target_organization_reference || ':' "
+                    + "|| target_facility_reference FROM audit.audit_record "
+                    + "WHERE action_code = 'ACCESS_GRANT_CREATE' "
+                    + "AND target_scope_kind = 'FACILITY'",
+                String.class))
+        .isEqualTo("FACILITY:org-17:facility-23");
+
+    mockMvc
+        .perform(
+            get("/api/v1/platform/access-grants")
+                .header("Authorization", bearer(token(ADMIN_SUBJECT, Map.of())))
+                .header(PlatformAccessGrantController.EXECUTION_SCOPE_HEADER, EXECUTION_SCOPE))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.items[*].grantId", org.hamcrest.Matchers.hasItem(grantId)))
+        .andExpect(jsonPath("$.items[*].scope", org.hamcrest.Matchers.hasItem("ORGANIZATION")))
+        .andExpect(
+            jsonPath("$.items[*].organizationIdentifier", org.hamcrest.Matchers.hasItem("org-17")));
+
+    mockMvc
+        .perform(
+            delete("/api/v1/platform/access-grants/" + grantId)
+                .header("Authorization", bearer(token(ADMIN_SUBJECT, Map.of())))
+                .header(PlatformAccessGrantController.EXECUTION_SCOPE_HEADER, EXECUTION_SCOPE)
+                .header("Idempotency-Key", "directory-org-revoke-01")
+                .contentType("application/json")
+                .content("{\"reasonCode\":\"ACCESS_REMOVAL\"}"))
+        .andExpect(status().isNoContent());
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT target_scope_kind || ':' || target_organization_reference "
+                    + "FROM audit.audit_record WHERE action_code = 'ACCESS_GRANT_REVOKE'",
+                String.class))
+        .isEqualTo("ORGANIZATION:org-17");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT envelope -> 'payload' ->> 'scopeKind' "
+                    + "FROM platform_eventing.internal_event "
+                    + "WHERE event_type = 'identity-access.grant-revoked.v1' "
+                    + "AND envelope -> 'payload' ->> 'grantId' = ?",
+                String.class,
+                grantId))
+        .isEqualTo("ORGANIZATION");
+
+    mockMvc
+        .perform(
+            post("/api/v1/platform/access-grants")
+                .header("Authorization", bearer(token(ADMIN_SUBJECT, Map.of())))
+                .header(PlatformAccessGrantController.EXECUTION_SCOPE_HEADER, EXECUTION_SCOPE)
+                .header("Idempotency-Key", "directory-org-grant-01")
+                .contentType("application/json")
+                .content(organizationBody))
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.grantId").value(grantId));
+
+    String changedScope = organizationBody.replace("org-17", "org-18");
+    mockMvc
+        .perform(
+            post("/api/v1/platform/access-grants")
+                .header("Authorization", bearer(token(ADMIN_SUBJECT, Map.of())))
+                .header(PlatformAccessGrantController.EXECUTION_SCOPE_HEADER, EXECUTION_SCOPE)
+                .header("Idempotency-Key", "directory-org-grant-01")
+                .contentType("application/json")
+                .content(changedScope))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("IDEMPOTENCY_KEY_REUSED"));
+
+    mockMvc
+        .perform(
+            post("/api/v1/platform/access-grants")
+                .header("Authorization", bearer(token(ADMIN_SUBJECT, Map.of())))
+                .header(PlatformAccessGrantController.EXECUTION_SCOPE_HEADER, EXECUTION_SCOPE)
+                .header("Idempotency-Key", "invalid-directory-target-01")
+                .contentType("application/json")
+                .content(organizationBody.replace("org-17", "org-99")))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("INVALID_EXECUTION_SCOPE"));
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = "
+                    + "'ACCESS_GRANT_CREATE' AND outcome = 'DENIED' "
+                    + "AND reason_code = 'INVALID_GRANT_TARGET_SCOPE'"))
+        .isEqualTo(1);
+
+    String forbiddenAuthorityScope =
+        directoryGrantBody("synthetic-vocabulary-admin-01", "DirectoryVocabularyAdministration");
+    mockMvc
+        .perform(
+            post("/api/v1/platform/access-grants")
+                .header("Authorization", bearer(token(ADMIN_SUBJECT, Map.of())))
+                .header(PlatformAccessGrantController.EXECUTION_SCOPE_HEADER, EXECUTION_SCOPE)
+                .header("Idempotency-Key", "directory-vocab-org-01")
+                .contentType("application/json")
+                .content(forbiddenAuthorityScope))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("INVALID_EXECUTION_SCOPE"));
+  }
+
+  @Test
+  void executionContextFactoryAcceptsOnlyDirectoryValidatedOrganizationAndFacilityScopes() {
+    var actor = ActorReference.human(new IssuerId(ISSUER), "synthetic-context-operator-01");
+    var organization =
+        new ExternalReference(new IssuerId("urn:ayuvahak:directory"), "Organization", "org-17");
+    var facility =
+        new ExternalReference(new IssuerId("urn:ayuvahak:directory"), "Facility", "facility-23");
+
+    var organizationContext =
+        executionContexts.forInteractiveRequest(
+            actor,
+            RequestedExecutionScope.organization(organization),
+            new CorrelationId("directory-context-organization-01"));
+    var facilityContext =
+        executionContexts.forInteractiveRequest(
+            actor,
+            RequestedExecutionScope.facility(organization, facility),
+            new CorrelationId("directory-context-facility-01"));
+
+    assertThat(organizationContext.scope().kind())
+        .isEqualTo(org.ayuvahak.platform.executioncontext.ExecutionScope.Kind.ORGANIZATION);
+    assertThat(facilityContext.scope().kind())
+        .isEqualTo(org.ayuvahak.platform.executioncontext.ExecutionScope.Kind.FACILITY);
+    assertThatThrownBy(
+            () ->
+                executionContexts.forInteractiveRequest(
+                    actor,
+                    RequestedExecutionScope.facility(
+                        organization,
+                        new ExternalReference(
+                            new IssuerId("urn:ayuvahak:directory"),
+                            "Facility",
+                            "facility-not-in-org")),
+                    new CorrelationId("directory-context-invalid-facility-01")))
+        .isInstanceOf(org.ayuvahak.platform.executioncontext.ExecutionScopeDeniedException.class);
+  }
+
+  @Test
+  void unauthorizedActorCannotUseTheGrantAdministrationBoundary() throws Exception {
+    bootstrapService.provisionFirstGrant(bootstrapProperties(), "synthetic-host");
+
+    mockMvc
+        .perform(
+            post("/api/v1/platform/access-grants")
+                .header("Authorization", bearer(token("synthetic-ungranted-actor", Map.of())))
+                .header(PlatformAccessGrantController.EXECUTION_SCOPE_HEADER, EXECUTION_SCOPE)
+                .header("Idempotency-Key", "unauthorized-directory-grant-01")
+                .contentType("application/json")
+                .content(directoryGrantBody("synthetic-reader-02", "DirectoryRead")))
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.code").value("AUTHORIZATION_DENIED"));
+  }
+
+  private String directoryGrantBody(String subject, String authority) {
+    return "{\"principal\":{\"kind\":\"HUMAN\",\"issuer\":\""
+        + ISSUER
+        + "\",\"subject\":\""
+        + subject
+        + "\"},\"authority\":\""
+        + authority
+        + "\",\"scope\":{\"kind\":\"ORGANIZATION\",\"organization\":{"
+        + "\"issuer\":\"urn:ayuvahak:directory\",\"identifier\":\"org-17\"}},"
+        + "\"reasonCode\":\"ACCESS_SETUP\"}";
+  }
+
+  @TestConfiguration(proxyBeanMethods = false)
+  static class DirectoryGrantScopeFixtureConfiguration {
+
+    @Bean
+    DirectoryGrantTargetScopeValidator directoryGrantScopeFixture() {
+      return new DirectoryGrantTargetScopeValidator(
+          new DirectoryScopeReferenceLookup() {
+            @Override
+            public boolean isActiveOrganization(ExternalReference organization) {
+              return organization.equals(
+                      new ExternalReference(
+                          new IssuerId("urn:ayuvahak:directory"), "Organization", "org-17"))
+                  || organization.equals(
+                      new ExternalReference(
+                          new IssuerId("urn:ayuvahak:directory"), "Organization", "org-18"));
+            }
+
+            @Override
+            public boolean isActiveFacilityInOrganization(
+                ExternalReference organization, ExternalReference facility) {
+              return organization.equals(
+                      new ExternalReference(
+                          new IssuerId("urn:ayuvahak:directory"), "Organization", "org-17"))
+                  && facility.equals(
+                      new ExternalReference(
+                          new IssuerId("urn:ayuvahak:directory"), "Facility", "facility-23"));
+            }
+          });
+    }
   }
 
   private BootstrapGrantProperties bootstrapProperties() {

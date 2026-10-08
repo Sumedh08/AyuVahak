@@ -20,7 +20,9 @@ public class JdbcAuditRecordQuery implements AuditRecordQuery {
       "id, action_kind, actor_kind, actor_issuer, actor_reference, scope_kind, "
           + "organization_issuer, organization_reference, facility_issuer, facility_reference, "
           + "action_code, target_type, target_id, occurred_at, recorded_at, outcome, reason_code, "
-          + "authentication_evidence, authorization_outcome, correlation_id";
+          + "authentication_evidence, authorization_outcome, correlation_id, target_scope_kind, "
+          + "target_organization_issuer, target_organization_reference, "
+          + "target_facility_issuer, target_facility_reference";
 
   private final JdbcTemplate jdbc;
 
@@ -73,6 +75,11 @@ public class JdbcAuditRecordQuery implements AuditRecordQuery {
         result.getString("reason_code"),
         result.getString("authentication_evidence"),
         result.getString("authorization_outcome"),
-        result.getString("correlation_id"));
+        result.getString("correlation_id"),
+        result.getString("target_scope_kind"),
+        result.getString("target_organization_issuer"),
+        result.getString("target_organization_reference"),
+        result.getString("target_facility_issuer"),
+        result.getString("target_facility_reference"));
   }
 }
