@@ -15,10 +15,14 @@ import org.ayuvahak.directory.application.DirectoryScopeLookupUnavailableExcepti
 import org.ayuvahak.directory.application.FacilityDirectoryView;
 import org.ayuvahak.directory.application.LocatedFacilitySearchResult;
 import org.ayuvahak.directory.application.UnlocatedFacilitySearchResult;
+import org.ayuvahak.directory.domain.CapabilityVerificationStatus;
+import org.ayuvahak.directory.domain.CareCapability;
 import org.ayuvahak.directory.domain.DirectoryLocation;
 import org.ayuvahak.directory.domain.DirectoryProvenance;
 import org.ayuvahak.directory.domain.DirectorySource;
 import org.ayuvahak.directory.domain.Facility;
+import org.ayuvahak.directory.domain.FacilityCapabilityAssertion;
+import org.ayuvahak.directory.domain.HealthcareService;
 import org.ayuvahak.directory.domain.Organization;
 import org.ayuvahak.directory.domain.Wgs84Coordinate;
 import org.ayuvahak.platform.api.CorrelationIdFilter;
@@ -222,6 +226,275 @@ public class DirectoryOrganizationFacilityController {
     return ResponseEntity.noContent().build();
   }
 
+  @PostMapping("/healthcare-services")
+  public ResponseEntity<ResourceCreated> createHealthcareService(
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
+      @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationScope,
+      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityScope,
+      @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+      @Valid @RequestBody CreateHealthcareServiceRequest request) {
+    ExecutionContext context =
+        context(
+            actor, scope, organizationScope, facilityScope, "DIRECTORY_HEALTHCARE_SERVICE_CREATE");
+    InternalId id =
+        directory.createHealthcareService(
+            context,
+            parseId(request.organizationId()),
+            parseId(request.facilityId()),
+            optionalInternalId(request.locationId()),
+            request.name(),
+            request.source().toSource("HealthcareService"),
+            request.provenance().toProvenance(context, clock.instant()),
+            idempotencyKey,
+            fingerprint(healthcareServiceCommand(request)));
+    return ResponseEntity.created(URI.create("/api/v1/directory/healthcare-services/" + id))
+        .body(new ResourceCreated(id.toString()));
+  }
+
+  @GetMapping("/healthcare-services/{serviceId}")
+  public HealthcareServiceRepresentation getHealthcareService(
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
+      @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationScope,
+      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityScope,
+      @PathVariable String serviceId) {
+    ExecutionContext context =
+        context(
+            actor, scope, organizationScope, facilityScope, "DIRECTORY_HEALTHCARE_SERVICE_READ");
+    return HealthcareServiceRepresentation.from(
+        directory.getHealthcareService(context, parseId(serviceId)));
+  }
+
+  @PatchMapping("/healthcare-services/{serviceId}")
+  public ResponseEntity<Void> correctHealthcareService(
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
+      @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationScope,
+      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityScope,
+      @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+      @PathVariable String serviceId,
+      @Valid @RequestBody HealthcareServiceCorrectionRequest request) {
+    ExecutionContext context =
+        context(
+            actor, scope, organizationScope, facilityScope, "DIRECTORY_HEALTHCARE_SERVICE_CORRECT");
+    directory.correctHealthcareService(
+        context,
+        parseId(serviceId),
+        request.expectedVersion(),
+        request.name(),
+        optionalInternalId(request.locationId()),
+        request.provenance().toProvenance(context, clock.instant()),
+        idempotencyKey,
+        fingerprint(healthcareServiceCorrectionCommand(request)));
+    return ResponseEntity.noContent().build();
+  }
+
+  @PostMapping("/healthcare-services/{serviceId}/deactivation")
+  public ResponseEntity<Void> deactivateHealthcareService(
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
+      @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationScope,
+      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityScope,
+      @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+      @PathVariable String serviceId,
+      @Valid @RequestBody DeactivationRequest request) {
+    ExecutionContext context =
+        context(
+            actor,
+            scope,
+            organizationScope,
+            facilityScope,
+            "DIRECTORY_HEALTHCARE_SERVICE_DEACTIVATE");
+    directory.deactivateHealthcareService(
+        context,
+        parseId(serviceId),
+        request.expectedVersion(),
+        request.provenance().toProvenance(context, clock.instant()),
+        idempotencyKey,
+        fingerprint(deactivationCommand(request)));
+    return ResponseEntity.noContent().build();
+  }
+
+  @PostMapping("/capabilities")
+  public ResponseEntity<ResourceCreated> createCareCapability(
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
+      @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationScope,
+      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityScope,
+      @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+      @Valid @RequestBody CreateCareCapabilityRequest request) {
+    ExecutionContext context =
+        context(actor, scope, organizationScope, facilityScope, "DIRECTORY_CARE_CAPABILITY_CREATE");
+    InternalId id =
+        directory.createCareCapability(
+            context,
+            request.code(),
+            request.displayName(),
+            optionalInternalId(request.parentCapabilityId()),
+            request.source().toSource("CareCapability"),
+            request.provenance().toProvenance(context, clock.instant()),
+            idempotencyKey,
+            fingerprint(capabilityCommand(request)));
+    return ResponseEntity.created(URI.create("/api/v1/directory/capabilities/" + id))
+        .body(new ResourceCreated(id.toString()));
+  }
+
+  @GetMapping("/capabilities")
+  public List<CareCapabilityRepresentation> listCareCapabilities(
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
+      @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationScope,
+      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityScope) {
+    ExecutionContext context =
+        context(
+            actor, scope, organizationScope, facilityScope, "DIRECTORY_CARE_CAPABILITY_LIST_READ");
+    return directory.listCareCapabilities(context).stream()
+        .map(CareCapabilityRepresentation::from)
+        .toList();
+  }
+
+  @PatchMapping("/capabilities/{capabilityId}")
+  public ResponseEntity<Void> correctCareCapability(
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
+      @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationScope,
+      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityScope,
+      @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+      @PathVariable String capabilityId,
+      @Valid @RequestBody CareCapabilityCorrectionRequest request) {
+    ExecutionContext context =
+        context(
+            actor, scope, organizationScope, facilityScope, "DIRECTORY_CARE_CAPABILITY_CORRECT");
+    directory.correctCareCapabilityDisplayName(
+        context,
+        parseId(capabilityId),
+        request.expectedVersion(),
+        request.displayName(),
+        request.provenance().toProvenance(context, clock.instant()),
+        idempotencyKey,
+        fingerprint(capabilityCorrectionCommand(request)));
+    return ResponseEntity.noContent().build();
+  }
+
+  @PostMapping("/capabilities/{capabilityId}/deactivation")
+  public ResponseEntity<Void> deactivateCareCapability(
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
+      @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationScope,
+      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityScope,
+      @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+      @PathVariable String capabilityId,
+      @Valid @RequestBody DeactivationRequest request) {
+    ExecutionContext context =
+        context(
+            actor, scope, organizationScope, facilityScope, "DIRECTORY_CARE_CAPABILITY_DEACTIVATE");
+    directory.deactivateCareCapability(
+        context,
+        parseId(capabilityId),
+        request.expectedVersion(),
+        request.provenance().toProvenance(context, clock.instant()),
+        idempotencyKey,
+        fingerprint(deactivationCommand(request)));
+    return ResponseEntity.noContent().build();
+  }
+
+  @PostMapping("/facilities/{facilityId}/capability-assertions")
+  public ResponseEntity<ResourceCreated> createFacilityCapabilityAssertion(
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
+      @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationScope,
+      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityScope,
+      @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+      @PathVariable String facilityId,
+      @Valid @RequestBody CreateFacilityCapabilityAssertionRequest request) {
+    ExecutionContext context =
+        context(
+            actor,
+            scope,
+            organizationScope,
+            facilityScope,
+            "DIRECTORY_CAPABILITY_ASSERTION_CREATE");
+    InternalId id =
+        directory.createFacilityCapabilityAssertion(
+            context,
+            parseId(facilityId),
+            request.capabilityCode(),
+            optionalInternalId(request.healthcareServiceId()),
+            request.verificationStatus(),
+            request.source().toSource("FacilityCapabilityAssertion"),
+            request.provenance().toProvenance(context, clock.instant()),
+            request.effectiveFrom(),
+            Optional.ofNullable(request.effectiveUntil()),
+            idempotencyKey,
+            fingerprint(assertionCommand(request)));
+    return ResponseEntity.created(URI.create("/api/v1/directory/capability-assertions/" + id))
+        .body(new ResourceCreated(id.toString()));
+  }
+
+  @GetMapping("/capability-assertions/{assertionId}")
+  public FacilityCapabilityAssertionRepresentation getFacilityCapabilityAssertion(
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
+      @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationScope,
+      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityScope,
+      @PathVariable String assertionId) {
+    ExecutionContext context =
+        context(
+            actor, scope, organizationScope, facilityScope, "DIRECTORY_CAPABILITY_ASSERTION_READ");
+    return FacilityCapabilityAssertionRepresentation.from(
+        directory.getFacilityCapabilityAssertion(context, parseId(assertionId)));
+  }
+
+  @PostMapping("/capability-assertions/{assertionId}/corrections")
+  public ResponseEntity<Void> correctFacilityCapabilityAssertion(
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
+      @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationScope,
+      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityScope,
+      @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+      @PathVariable String assertionId,
+      @Valid @RequestBody CapabilityAssertionCorrectionRequest request) {
+    ExecutionContext context =
+        context(
+            actor,
+            scope,
+            organizationScope,
+            facilityScope,
+            "DIRECTORY_CAPABILITY_ASSERTION_CORRECT");
+    directory.correctFacilityCapabilityAssertion(
+        context,
+        parseId(assertionId),
+        request.expectedVersion(),
+        request.verificationStatus(),
+        request.source().toSource("FacilityCapabilityAssertion"),
+        request.provenance().toProvenance(context, clock.instant()),
+        request.effectiveFrom(),
+        Optional.ofNullable(request.effectiveUntil()),
+        idempotencyKey,
+        fingerprint(assertionCorrectionCommand(request)));
+    return ResponseEntity.noContent().build();
+  }
+
+  @GetMapping("/facilities/{facilityId}/capability-evidence")
+  public FacilityCapabilityEvaluationRepresentation evaluateFacilityCapabilities(
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
+      @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationScope,
+      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityScope,
+      @PathVariable String facilityId,
+      @RequestParam("requiredCapability") List<String> requiredCapabilities) {
+    ExecutionContext context =
+        context(
+            actor,
+            scope,
+            organizationScope,
+            facilityScope,
+            "DIRECTORY_FACILITY_CAPABILITY_EVIDENCE_READ");
+    return FacilityCapabilityEvaluationRepresentation.from(
+        directory.evaluateFacilityCapabilities(context, parseId(facilityId), requiredCapabilities));
+  }
+
   @GetMapping("/facilities")
   public NearbyFacilitiesRepresentation findNearbyFacilities(
       @AuthenticationPrincipal ActorReference actor,
@@ -232,6 +505,8 @@ public class DirectoryOrganizationFacilityController {
       @RequestParam Double centerLatitude,
       @RequestParam Double radiusMeters,
       @RequestParam(required = false) String organizationId,
+      @RequestParam(name = "requiredCapability", required = false)
+          List<String> requiredCapabilityCodes,
       @RequestParam(required = false, defaultValue = "0") int pageSize,
       @RequestParam(required = false, defaultValue = "0") int offset) {
     ExecutionContext context =
@@ -242,6 +517,7 @@ public class DirectoryOrganizationFacilityController {
             coordinate(centerLongitude, centerLatitude).orElseThrow(),
             radiusMeters,
             organizationId == null ? Optional.empty() : Optional.of(parseId(organizationId)),
+            requiredCapabilityCodes,
             pageSize,
             offset);
     return new NearbyFacilitiesRepresentation(
@@ -434,6 +710,92 @@ public class DirectoryOrganizationFacilityController {
     return normalized;
   }
 
+  private ObjectNode healthcareServiceCommand(CreateHealthcareServiceRequest request) {
+    ObjectNode normalized = objectMapper.createObjectNode();
+    normalized.put("organizationId", request.organizationId());
+    normalized.put("facilityId", request.facilityId());
+    if (request.locationId() == null) {
+      normalized.putNull("locationId");
+    } else {
+      normalized.put("locationId", request.locationId());
+    }
+    normalized.put("name", request.name());
+    normalized.set("source", sourceNode(request.source()));
+    normalized.set("provenance", provenanceNode(request.provenance()));
+    return normalized;
+  }
+
+  private ObjectNode healthcareServiceCorrectionCommand(
+      HealthcareServiceCorrectionRequest request) {
+    ObjectNode normalized = objectMapper.createObjectNode();
+    normalized.put("expectedVersion", request.expectedVersion());
+    normalized.put("name", request.name());
+    if (request.locationId() == null) {
+      normalized.putNull("locationId");
+    } else {
+      normalized.put("locationId", request.locationId());
+    }
+    normalized.set("provenance", provenanceNode(request.provenance()));
+    return normalized;
+  }
+
+  private ObjectNode capabilityCommand(CreateCareCapabilityRequest request) {
+    ObjectNode normalized = objectMapper.createObjectNode();
+    normalized.put("code", request.code());
+    normalized.put("displayName", request.displayName());
+    if (request.parentCapabilityId() == null) {
+      normalized.putNull("parentCapabilityId");
+    } else {
+      normalized.put("parentCapabilityId", request.parentCapabilityId());
+    }
+    normalized.set("source", sourceNode(request.source()));
+    normalized.set("provenance", provenanceNode(request.provenance()));
+    return normalized;
+  }
+
+  private ObjectNode capabilityCorrectionCommand(CareCapabilityCorrectionRequest request) {
+    ObjectNode normalized = objectMapper.createObjectNode();
+    normalized.put("expectedVersion", request.expectedVersion());
+    normalized.put("displayName", request.displayName());
+    normalized.set("provenance", provenanceNode(request.provenance()));
+    return normalized;
+  }
+
+  private ObjectNode assertionCommand(CreateFacilityCapabilityAssertionRequest request) {
+    ObjectNode normalized = objectMapper.createObjectNode();
+    normalized.put("capabilityCode", request.capabilityCode());
+    if (request.healthcareServiceId() == null) {
+      normalized.putNull("healthcareServiceId");
+    } else {
+      normalized.put("healthcareServiceId", request.healthcareServiceId());
+    }
+    normalized.put("verificationStatus", request.verificationStatus().name());
+    normalized.set("source", sourceNode(request.source()));
+    normalized.set("provenance", provenanceNode(request.provenance()));
+    normalized.put("effectiveFrom", request.effectiveFrom().toString());
+    if (request.effectiveUntil() == null) {
+      normalized.putNull("effectiveUntil");
+    } else {
+      normalized.put("effectiveUntil", request.effectiveUntil().toString());
+    }
+    return normalized;
+  }
+
+  private ObjectNode assertionCorrectionCommand(CapabilityAssertionCorrectionRequest request) {
+    ObjectNode normalized = objectMapper.createObjectNode();
+    normalized.put("expectedVersion", request.expectedVersion());
+    normalized.put("verificationStatus", request.verificationStatus().name());
+    normalized.set("source", sourceNode(request.source()));
+    normalized.set("provenance", provenanceNode(request.provenance()));
+    normalized.put("effectiveFrom", request.effectiveFrom().toString());
+    if (request.effectiveUntil() == null) {
+      normalized.putNull("effectiveUntil");
+    } else {
+      normalized.put("effectiveUntil", request.effectiveUntil().toString());
+    }
+    return normalized;
+  }
+
   private static void addCoordinate(ObjectNode normalized, Double longitude, Double latitude) {
     if (longitude == null) {
       normalized.putNull("longitude");
@@ -517,6 +879,49 @@ public class DirectoryOrganizationFacilityController {
       Double latitude,
       @NotNull Boolean primary,
       @Valid @NotNull ProvenanceRequest provenance) {}
+
+  public record CreateHealthcareServiceRequest(
+      @NotBlank String organizationId,
+      @NotBlank String facilityId,
+      String locationId,
+      @NotBlank String name,
+      @Valid @NotNull SourceRequest source,
+      @Valid @NotNull ProvenanceRequest provenance) {}
+
+  public record HealthcareServiceCorrectionRequest(
+      @Positive long expectedVersion,
+      @NotBlank String name,
+      String locationId,
+      @Valid @NotNull ProvenanceRequest provenance) {}
+
+  public record CreateCareCapabilityRequest(
+      @NotBlank @Pattern(regexp = "[A-Z][A-Z0-9._-]{0,63}") String code,
+      @NotBlank String displayName,
+      String parentCapabilityId,
+      @Valid @NotNull SourceRequest source,
+      @Valid @NotNull ProvenanceRequest provenance) {}
+
+  public record CareCapabilityCorrectionRequest(
+      @Positive long expectedVersion,
+      @NotBlank String displayName,
+      @Valid @NotNull ProvenanceRequest provenance) {}
+
+  public record CreateFacilityCapabilityAssertionRequest(
+      @NotBlank @Pattern(regexp = "[A-Z][A-Z0-9._-]{0,63}") String capabilityCode,
+      String healthcareServiceId,
+      @NotNull CapabilityVerificationStatus verificationStatus,
+      @Valid @NotNull SourceRequest source,
+      @Valid @NotNull ProvenanceRequest provenance,
+      @NotNull Instant effectiveFrom,
+      Instant effectiveUntil) {}
+
+  public record CapabilityAssertionCorrectionRequest(
+      @Positive long expectedVersion,
+      @NotNull CapabilityVerificationStatus verificationStatus,
+      @Valid @NotNull SourceRequest source,
+      @Valid @NotNull ProvenanceRequest provenance,
+      @NotNull Instant effectiveFrom,
+      Instant effectiveUntil) {}
 
   public record SourceRequest(
       @NotBlank String issuer,
@@ -642,6 +1047,105 @@ public class DirectoryOrganizationFacilityController {
           location.version(),
           SourceRepresentation.from(location.source()),
           ProvenanceRepresentation.from(location.provenance()));
+    }
+  }
+
+  public record HealthcareServiceRepresentation(
+      String id,
+      String organizationId,
+      String facilityId,
+      Optional<String> locationId,
+      String name,
+      String status,
+      long version,
+      SourceRepresentation source,
+      ProvenanceRepresentation provenance) {
+    static HealthcareServiceRepresentation from(HealthcareService service) {
+      return new HealthcareServiceRepresentation(
+          service.id().toString(),
+          service.organizationId().toString(),
+          service.facilityId().toString(),
+          service.locationId().map(InternalId::toString),
+          service.name(),
+          service.status().name(),
+          service.version(),
+          SourceRepresentation.from(service.source()),
+          ProvenanceRepresentation.from(service.provenance()));
+    }
+  }
+
+  public record CareCapabilityRepresentation(
+      String id,
+      String code,
+      String displayName,
+      Optional<String> parentCapabilityId,
+      String status,
+      long version,
+      SourceRepresentation source,
+      ProvenanceRepresentation provenance) {
+    static CareCapabilityRepresentation from(CareCapability capability) {
+      return new CareCapabilityRepresentation(
+          capability.id().toString(),
+          capability.code(),
+          capability.displayName(),
+          capability.parentCapabilityId().map(InternalId::toString),
+          capability.status().name(),
+          capability.version(),
+          SourceRepresentation.from(capability.source()),
+          ProvenanceRepresentation.from(capability.provenance()));
+    }
+  }
+
+  public record FacilityCapabilityAssertionRepresentation(
+      String id,
+      String facilityId,
+      String capabilityId,
+      Optional<String> healthcareServiceId,
+      String verificationStatus,
+      SourceRepresentation source,
+      ProvenanceRepresentation provenance,
+      Instant effectiveFrom,
+      Optional<Instant> effectiveUntil,
+      long version) {
+    static FacilityCapabilityAssertionRepresentation from(FacilityCapabilityAssertion assertion) {
+      return new FacilityCapabilityAssertionRepresentation(
+          assertion.id().toString(),
+          assertion.facilityId().toString(),
+          assertion.capabilityId().toString(),
+          assertion.healthcareServiceId().map(InternalId::toString),
+          assertion.verificationStatus().name(),
+          SourceRepresentation.from(assertion.source()),
+          ProvenanceRepresentation.from(assertion.provenance()),
+          assertion.effectiveFrom(),
+          assertion.effectiveUntil(),
+          assertion.version());
+    }
+  }
+
+  public record CapabilityRequirementRepresentation(
+      String code, String outcome, List<String> evidenceAssertionIds) {}
+
+  public record FacilityCapabilityEvaluationRepresentation(
+      String facilityId,
+      String facilityStatus,
+      Instant evaluatedAt,
+      boolean requirementsSatisfied,
+      List<CapabilityRequirementRepresentation> requirements) {
+    static FacilityCapabilityEvaluationRepresentation from(
+        DirectoryApplicationService.FacilityCapabilityEvaluation evaluation) {
+      return new FacilityCapabilityEvaluationRepresentation(
+          evaluation.facilityId().toString(),
+          evaluation.facilityStatus().name(),
+          evaluation.evaluatedAt(),
+          evaluation.requirementsSatisfied(),
+          evaluation.requirements().stream()
+              .map(
+                  assessment ->
+                      new CapabilityRequirementRepresentation(
+                          assessment.code(),
+                          assessment.outcome().name(),
+                          assessment.evidenceAssertionIds()))
+              .toList());
     }
   }
 

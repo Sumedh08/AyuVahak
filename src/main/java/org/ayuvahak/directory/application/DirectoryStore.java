@@ -3,8 +3,11 @@ package org.ayuvahak.directory.application;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import org.ayuvahak.directory.domain.CareCapability;
 import org.ayuvahak.directory.domain.DirectoryLocation;
 import org.ayuvahak.directory.domain.Facility;
+import org.ayuvahak.directory.domain.FacilityCapabilityAssertion;
+import org.ayuvahak.directory.domain.HealthcareService;
 import org.ayuvahak.directory.domain.Organization;
 import org.ayuvahak.directory.domain.Wgs84Coordinate;
 import org.ayuvahak.platform.core.InternalId;
@@ -46,16 +49,63 @@ public interface DirectoryStore extends DirectoryScopeReferenceLookup {
 
   boolean updateLocation(DirectoryLocation corrected, long expectedVersion, Instant updatedAt);
 
+  void insertHealthcareService(HealthcareService service);
+
+  Optional<HealthcareService> findHealthcareService(InternalId id);
+
+  Optional<HealthcareService> lockHealthcareService(InternalId id);
+
+  void appendHealthcareServiceRevision(HealthcareService current, String reasonCode);
+
+  boolean updateHealthcareService(
+      HealthcareService corrected, long expectedVersion, Instant updatedAt);
+
+  void insertCareCapability(CareCapability capability);
+
+  Optional<CareCapability> findCareCapability(InternalId id);
+
+  Optional<CareCapability> findCareCapabilityByCode(String code);
+
+  Optional<CareCapability> lockCareCapability(InternalId id);
+
+  List<CareCapability> listCareCapabilities(boolean activeOnly);
+
+  void appendCareCapabilityRevision(CareCapability current, String reasonCode);
+
+  boolean updateCareCapability(CareCapability corrected, long expectedVersion, Instant updatedAt);
+
+  void insertFacilityCapabilityAssertion(FacilityCapabilityAssertion assertion);
+
+  Optional<FacilityCapabilityAssertion> findFacilityCapabilityAssertion(InternalId id);
+
+  Optional<FacilityCapabilityAssertion> lockFacilityCapabilityAssertion(InternalId id);
+
+  List<FacilityCapabilityAssertion> listFacilityCapabilityAssertions(
+      InternalId facilityId, InternalId capabilityId);
+
+  void appendFacilityCapabilityAssertionRevision(
+      FacilityCapabilityAssertion current, String reasonCode);
+
+  boolean updateFacilityCapabilityAssertion(
+      FacilityCapabilityAssertion corrected, long expectedVersion, Instant updatedAt);
+
   List<LocatedFacilitySearchResult> findNearbyFacilities(
       Optional<InternalId> organizationId,
       Optional<InternalId> facilityId,
       Wgs84Coordinate center,
       double radiusMeters,
+      List<String> requiredCapabilityCodes,
+      Instant evaluatedAt,
       int limit,
       int offset);
 
   List<UnlocatedFacilitySearchResult> findUnlocatedFacilities(
-      Optional<InternalId> organizationId, Optional<InternalId> facilityId, int limit, int offset);
+      Optional<InternalId> organizationId,
+      Optional<InternalId> facilityId,
+      List<String> requiredCapabilityCodes,
+      Instant evaluatedAt,
+      int limit,
+      int offset);
 
   ReceiptClaim claimReceipt(
       CommandReceiptKey key, RequestFingerprint fingerprint, Instant recordedAt);

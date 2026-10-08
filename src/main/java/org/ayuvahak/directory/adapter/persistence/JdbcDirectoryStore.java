@@ -2,6 +2,7 @@ package org.ayuvahak.directory.adapter.persistence;
 
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -10,11 +11,15 @@ import org.ayuvahak.directory.application.DirectoryScopeLookupUnavailableExcepti
 import org.ayuvahak.directory.application.DirectoryStore;
 import org.ayuvahak.directory.application.LocatedFacilitySearchResult;
 import org.ayuvahak.directory.application.UnlocatedFacilitySearchResult;
+import org.ayuvahak.directory.domain.CapabilityVerificationStatus;
+import org.ayuvahak.directory.domain.CareCapability;
 import org.ayuvahak.directory.domain.DirectoryLifecycleStatus;
 import org.ayuvahak.directory.domain.DirectoryLocation;
 import org.ayuvahak.directory.domain.DirectoryProvenance;
 import org.ayuvahak.directory.domain.DirectorySource;
 import org.ayuvahak.directory.domain.Facility;
+import org.ayuvahak.directory.domain.FacilityCapabilityAssertion;
+import org.ayuvahak.directory.domain.HealthcareService;
 import org.ayuvahak.directory.domain.Organization;
 import org.ayuvahak.directory.domain.Wgs84Coordinate;
 import org.ayuvahak.platform.core.ActorKind;
@@ -58,6 +63,24 @@ public class JdbcDirectoryStore implements DirectoryStore {
           + "l.provenance_observed_at, l.provenance_recorded_at, l.provenance_actor_kind, "
           + "l.provenance_actor_issuer, l.provenance_actor_identifier_type, "
           + "l.provenance_actor_identifier, l.provenance_reason_code, l.version";
+  private static final String HEALTHCARE_SERVICE_COLUMNS =
+      "healthcare_service_id, organization_id, facility_id, location_id, name, source_issuer, "
+          + "source_resource_type, source_reference, provenance_method, provenance_observed_at, "
+          + "provenance_recorded_at, provenance_actor_kind, provenance_actor_issuer, "
+          + "provenance_actor_identifier_type, provenance_actor_identifier, provenance_reason_code, "
+          + "lifecycle_status, version";
+  private static final String CARE_CAPABILITY_COLUMNS =
+      "care_capability_id, code, display_name, parent_capability_id, source_issuer, "
+          + "source_resource_type, source_reference, provenance_method, provenance_observed_at, "
+          + "provenance_recorded_at, provenance_actor_kind, provenance_actor_issuer, "
+          + "provenance_actor_identifier_type, provenance_actor_identifier, provenance_reason_code, "
+          + "lifecycle_status, version";
+  private static final String FACILITY_CAPABILITY_ASSERTION_COLUMNS =
+      "assertion_id, facility_id, care_capability_id, healthcare_service_id, verification_status, "
+          + "source_issuer, source_resource_type, source_reference, provenance_method, "
+          + "provenance_observed_at, provenance_recorded_at, provenance_actor_kind, "
+          + "provenance_actor_issuer, provenance_actor_identifier_type, provenance_actor_identifier, "
+          + "provenance_reason_code, effective_from, effective_until, version";
   private static final String FACILITY_SEARCH_COLUMNS =
       "f.facility_id AS f_id, f.managing_organization_id AS f_organization_id, "
           + "f.name AS f_name, f.source_issuer AS f_source_issuer, "
@@ -107,6 +130,44 @@ public class JdbcDirectoryStore implements DirectoryStore {
               result.getLong("version"));
   private static final RowMapper<DirectoryLocation> LOCATION_MAPPER =
       (result, rowNumber) -> locationFrom(result);
+  private static final RowMapper<HealthcareService> HEALTHCARE_SERVICE_MAPPER =
+      (result, rowNumber) ->
+          new HealthcareService(
+              new InternalId(result.getObject("healthcare_service_id", UUID.class)),
+              new InternalId(result.getObject("organization_id", UUID.class)),
+              new InternalId(result.getObject("facility_id", UUID.class)),
+              Optional.ofNullable(result.getObject("location_id", UUID.class)).map(InternalId::new),
+              result.getString("name"),
+              source(result),
+              provenance(result),
+              DirectoryLifecycleStatus.valueOf(result.getString("lifecycle_status")),
+              result.getLong("version"));
+  private static final RowMapper<CareCapability> CARE_CAPABILITY_MAPPER =
+      (result, rowNumber) ->
+          new CareCapability(
+              new InternalId(result.getObject("care_capability_id", UUID.class)),
+              result.getString("code"),
+              result.getString("display_name"),
+              Optional.ofNullable(result.getObject("parent_capability_id", UUID.class))
+                  .map(InternalId::new),
+              source(result),
+              provenance(result),
+              DirectoryLifecycleStatus.valueOf(result.getString("lifecycle_status")),
+              result.getLong("version"));
+  private static final RowMapper<FacilityCapabilityAssertion> FACILITY_CAPABILITY_ASSERTION_MAPPER =
+      (result, rowNumber) ->
+          new FacilityCapabilityAssertion(
+              new InternalId(result.getObject("assertion_id", UUID.class)),
+              new InternalId(result.getObject("facility_id", UUID.class)),
+              new InternalId(result.getObject("care_capability_id", UUID.class)),
+              Optional.ofNullable(result.getObject("healthcare_service_id", UUID.class))
+                  .map(InternalId::new),
+              CapabilityVerificationStatus.valueOf(result.getString("verification_status")),
+              source(result),
+              provenance(result),
+              result.getTimestamp("effective_from").toInstant(),
+              Optional.ofNullable(result.getTimestamp("effective_until")).map(Timestamp::toInstant),
+              result.getLong("version"));
 
   private final JdbcTemplate jdbc;
   private final ObjectMapper objectMapper;
@@ -343,83 +404,381 @@ public class JdbcDirectoryStore implements DirectoryStore {
   }
 
   @Override
+  public void insertHealthcareService(HealthcareService service) {
+    Object[] sourceParameters =
+        sourceAndProvenanceParameters(service.source(), service.provenance());
+    Object[] parameters = new Object[5 + sourceParameters.length + 2];
+    parameters[0] = service.id().value();
+    parameters[1] = service.organizationId().value();
+    parameters[2] = service.facilityId().value();
+    parameters[3] = service.locationId().map(InternalId::value).orElse(null);
+    parameters[4] = service.name();
+    System.arraycopy(sourceParameters, 0, parameters, 5, sourceParameters.length);
+    parameters[5 + sourceParameters.length] = Timestamp.from(service.provenance().recordedAt());
+    parameters[6 + sourceParameters.length] = Timestamp.from(service.provenance().recordedAt());
+    jdbc.update(
+        "INSERT INTO directory.healthcare_service (healthcare_service_id, organization_id, "
+            + "facility_id, location_id, name, "
+            + sourceColumns()
+            + ", lifecycle_status, version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, "
+            + "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', 1, ?, ?)",
+        parameters);
+  }
+
+  @Override
+  public Optional<HealthcareService> findHealthcareService(InternalId id) {
+    return findHealthcareService(id, false);
+  }
+
+  @Override
+  public Optional<HealthcareService> lockHealthcareService(InternalId id) {
+    return findHealthcareService(id, true);
+  }
+
+  @Override
+  public void appendHealthcareServiceRevision(HealthcareService current, String reasonCode) {
+    jdbc.update(
+        "INSERT INTO directory.healthcare_service_revision (revision_id, healthcare_service_id, "
+            + "superseded_version, snapshot, changed_at, reason_code) "
+            + "VALUES (?, ?, ?, ?::jsonb, CURRENT_TIMESTAMP, ?)",
+        InternalId.generate().value(),
+        current.id().value(),
+        current.version(),
+        snapshot(current),
+        reasonCode);
+  }
+
+  @Override
+  public boolean updateHealthcareService(
+      HealthcareService corrected, long expectedVersion, Instant updatedAt) {
+    Object[] provenanceParameters = provenanceParameters(corrected.provenance());
+    return jdbc.update(
+            "UPDATE directory.healthcare_service SET name = ?, location_id = ?, "
+                + "provenance_method = ?, provenance_observed_at = ?, provenance_recorded_at = ?, "
+                + "provenance_actor_kind = ?, provenance_actor_issuer = ?, "
+                + "provenance_actor_identifier_type = ?, provenance_actor_identifier = ?, "
+                + "provenance_reason_code = ?, lifecycle_status = ?, version = ?, updated_at = ? "
+                + "WHERE healthcare_service_id = ? AND version = ?",
+            corrected.name(),
+            corrected.locationId().map(InternalId::value).orElse(null),
+            provenanceParameters[0],
+            provenanceParameters[1],
+            provenanceParameters[2],
+            provenanceParameters[3],
+            provenanceParameters[4],
+            provenanceParameters[5],
+            provenanceParameters[6],
+            provenanceParameters[7],
+            corrected.status().name(),
+            corrected.version(),
+            Timestamp.from(updatedAt),
+            corrected.id().value(),
+            expectedVersion)
+        == 1;
+  }
+
+  @Override
+  public void insertCareCapability(CareCapability capability) {
+    Object[] sourceParameters =
+        sourceAndProvenanceParameters(capability.source(), capability.provenance());
+    Object[] parameters = new Object[4 + sourceParameters.length + 2];
+    parameters[0] = capability.id().value();
+    parameters[1] = capability.code();
+    parameters[2] = capability.displayName();
+    parameters[3] = capability.parentCapabilityId().map(InternalId::value).orElse(null);
+    System.arraycopy(sourceParameters, 0, parameters, 4, sourceParameters.length);
+    parameters[4 + sourceParameters.length] = Timestamp.from(capability.provenance().recordedAt());
+    parameters[5 + sourceParameters.length] = Timestamp.from(capability.provenance().recordedAt());
+    jdbc.update(
+        "INSERT INTO directory.care_capability (care_capability_id, code, display_name, "
+            + "parent_capability_id, "
+            + sourceColumns()
+            + ", lifecycle_status, version, created_at, updated_at) VALUES (?, ?, ?, ?, "
+            + "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', 1, ?, ?)",
+        parameters);
+  }
+
+  @Override
+  public Optional<CareCapability> findCareCapability(InternalId id) {
+    return findCareCapability(id, false);
+  }
+
+  @Override
+  public Optional<CareCapability> findCareCapabilityByCode(String code) {
+    return jdbc
+        .query(
+            "SELECT " + CARE_CAPABILITY_COLUMNS + " FROM directory.care_capability WHERE code = ?",
+            CARE_CAPABILITY_MAPPER,
+            code)
+        .stream()
+        .findFirst();
+  }
+
+  @Override
+  public Optional<CareCapability> lockCareCapability(InternalId id) {
+    return findCareCapability(id, true);
+  }
+
+  @Override
+  public List<CareCapability> listCareCapabilities(boolean activeOnly) {
+    return jdbc.query(
+        "SELECT "
+            + CARE_CAPABILITY_COLUMNS
+            + " FROM directory.care_capability WHERE (? = false OR lifecycle_status = 'ACTIVE') "
+            + "ORDER BY code, care_capability_id LIMIT 500",
+        CARE_CAPABILITY_MAPPER,
+        activeOnly);
+  }
+
+  @Override
+  public void appendCareCapabilityRevision(CareCapability current, String reasonCode) {
+    jdbc.update(
+        "INSERT INTO directory.care_capability_revision (revision_id, care_capability_id, "
+            + "superseded_version, snapshot, changed_at, reason_code) "
+            + "VALUES (?, ?, ?, ?::jsonb, CURRENT_TIMESTAMP, ?)",
+        InternalId.generate().value(),
+        current.id().value(),
+        current.version(),
+        snapshot(current),
+        reasonCode);
+  }
+
+  @Override
+  public boolean updateCareCapability(
+      CareCapability corrected, long expectedVersion, Instant updatedAt) {
+    Object[] provenanceParameters = provenanceParameters(corrected.provenance());
+    return jdbc.update(
+            "UPDATE directory.care_capability SET display_name = ?, provenance_method = ?, "
+                + "provenance_observed_at = ?, provenance_recorded_at = ?, provenance_actor_kind = ?, "
+                + "provenance_actor_issuer = ?, provenance_actor_identifier_type = ?, "
+                + "provenance_actor_identifier = ?, provenance_reason_code = ?, lifecycle_status = ?, "
+                + "version = ?, updated_at = ? WHERE care_capability_id = ? AND version = ?",
+            corrected.displayName(),
+            provenanceParameters[0],
+            provenanceParameters[1],
+            provenanceParameters[2],
+            provenanceParameters[3],
+            provenanceParameters[4],
+            provenanceParameters[5],
+            provenanceParameters[6],
+            provenanceParameters[7],
+            corrected.status().name(),
+            corrected.version(),
+            Timestamp.from(updatedAt),
+            corrected.id().value(),
+            expectedVersion)
+        == 1;
+  }
+
+  @Override
+  public void insertFacilityCapabilityAssertion(FacilityCapabilityAssertion assertion) {
+    Object[] sourceParameters =
+        sourceAndProvenanceParameters(assertion.source(), assertion.provenance());
+    Object[] parameters = new Object[5 + sourceParameters.length + 4];
+    parameters[0] = assertion.id().value();
+    parameters[1] = assertion.facilityId().value();
+    parameters[2] = assertion.capabilityId().value();
+    parameters[3] = assertion.healthcareServiceId().map(InternalId::value).orElse(null);
+    parameters[4] = assertion.verificationStatus().name();
+    System.arraycopy(sourceParameters, 0, parameters, 5, sourceParameters.length);
+    parameters[5 + sourceParameters.length] = Timestamp.from(assertion.effectiveFrom());
+    parameters[6 + sourceParameters.length] =
+        assertion.effectiveUntil().map(Timestamp::from).orElse(null);
+    parameters[7 + sourceParameters.length] = Timestamp.from(assertion.provenance().recordedAt());
+    parameters[8 + sourceParameters.length] = Timestamp.from(assertion.provenance().recordedAt());
+    jdbc.update(
+        "INSERT INTO directory.facility_capability_assertion (assertion_id, facility_id, "
+            + "care_capability_id, healthcare_service_id, verification_status, "
+            + sourceColumns()
+            + ", effective_from, effective_until, version, created_at, updated_at) "
+            + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+        parameters);
+  }
+
+  @Override
+  public Optional<FacilityCapabilityAssertion> findFacilityCapabilityAssertion(InternalId id) {
+    return findFacilityCapabilityAssertion(id, false);
+  }
+
+  @Override
+  public Optional<FacilityCapabilityAssertion> lockFacilityCapabilityAssertion(InternalId id) {
+    return findFacilityCapabilityAssertion(id, true);
+  }
+
+  @Override
+  public List<FacilityCapabilityAssertion> listFacilityCapabilityAssertions(
+      InternalId facilityId, InternalId capabilityId) {
+    return jdbc.query(
+        "SELECT "
+            + FACILITY_CAPABILITY_ASSERTION_COLUMNS
+            + " FROM directory.facility_capability_assertion WHERE facility_id = ? "
+            + "AND care_capability_id = ? ORDER BY assertion_id",
+        FACILITY_CAPABILITY_ASSERTION_MAPPER,
+        facilityId.value(),
+        capabilityId.value());
+  }
+
+  @Override
+  public void appendFacilityCapabilityAssertionRevision(
+      FacilityCapabilityAssertion current, String reasonCode) {
+    jdbc.update(
+        "INSERT INTO directory.facility_capability_assertion_revision (revision_id, assertion_id, "
+            + "superseded_version, snapshot, changed_at, reason_code) "
+            + "VALUES (?, ?, ?, ?::jsonb, CURRENT_TIMESTAMP, ?)",
+        InternalId.generate().value(),
+        current.id().value(),
+        current.version(),
+        snapshot(current),
+        reasonCode);
+  }
+
+  @Override
+  public boolean updateFacilityCapabilityAssertion(
+      FacilityCapabilityAssertion corrected, long expectedVersion, Instant updatedAt) {
+    Object[] sourceParameters =
+        sourceAndProvenanceParameters(corrected.source(), corrected.provenance());
+    Object[] parameters = new Object[1 + sourceParameters.length + 6];
+    parameters[0] = corrected.verificationStatus().name();
+    System.arraycopy(sourceParameters, 0, parameters, 1, sourceParameters.length);
+    parameters[1 + sourceParameters.length] = Timestamp.from(corrected.effectiveFrom());
+    parameters[2 + sourceParameters.length] =
+        corrected.effectiveUntil().map(Timestamp::from).orElse(null);
+    parameters[3 + sourceParameters.length] = corrected.version();
+    parameters[4 + sourceParameters.length] = Timestamp.from(updatedAt);
+    parameters[5 + sourceParameters.length] = corrected.id().value();
+    parameters[6 + sourceParameters.length] = expectedVersion;
+    return jdbc.update(
+            "UPDATE directory.facility_capability_assertion SET verification_status = ?, "
+                + "source_issuer = ?, source_resource_type = ?, source_reference = ?, "
+                + "provenance_method = ?, provenance_observed_at = ?, provenance_recorded_at = ?, "
+                + "provenance_actor_kind = ?, provenance_actor_issuer = ?, "
+                + "provenance_actor_identifier_type = ?, provenance_actor_identifier = ?, "
+                + "provenance_reason_code = ?, effective_from = ?, effective_until = ?, version = ?, "
+                + "updated_at = ? WHERE assertion_id = ? AND version = ?",
+            parameters)
+        == 1;
+  }
+
+  @Override
   public List<LocatedFacilitySearchResult> findNearbyFacilities(
       Optional<InternalId> organizationId,
       Optional<InternalId> facilityId,
       Wgs84Coordinate center,
       double radiusMeters,
+      List<String> requiredCapabilityCodes,
+      Instant evaluatedAt,
       int limit,
       int offset) {
     String point =
         "ST_SetSRID(ST_MakePoint(?::double precision, ?::double precision), 4326)::geography";
+    StringBuilder query =
+        new StringBuilder(
+            "SELECT "
+                + FACILITY_SEARCH_COLUMNS
+                + ", "
+                + LOCATION_SEARCH_COLUMNS
+                + ", ST_Distance(l.coordinates, "
+                + point
+                + ") AS distance_meters FROM directory.facility f "
+                + "JOIN directory.organization o ON o.organization_id = f.managing_organization_id "
+                + "JOIN directory.location l ON l.facility_id = f.facility_id AND l.is_primary "
+                + "WHERE f.lifecycle_status = 'ACTIVE' AND o.lifecycle_status = 'ACTIVE' "
+                + "AND l.coordinates IS NOT NULL AND ST_DWithin(l.coordinates, "
+                + point
+                + ", ? + "
+                + DISTANCE_PREFILTER_BUFFER_METERS
+                + ") AND ST_Distance(l.coordinates, "
+                + point
+                + ") <= ? AND (?::uuid IS NULL OR f.managing_organization_id = ?) "
+                + "AND (?::uuid IS NULL OR f.facility_id = ?) ");
+    List<Object> parameters = new ArrayList<>();
+    parameters.add(center.longitude());
+    parameters.add(center.latitude());
+    parameters.add(center.longitude());
+    parameters.add(center.latitude());
+    parameters.add(radiusMeters);
+    parameters.add(center.longitude());
+    parameters.add(center.latitude());
+    parameters.add(radiusMeters);
+    parameters.add(organizationId.map(InternalId::value).orElse(null));
+    parameters.add(organizationId.map(InternalId::value).orElse(null));
+    parameters.add(facilityId.map(InternalId::value).orElse(null));
+    parameters.add(facilityId.map(InternalId::value).orElse(null));
+    appendCapabilityEligibility(query, parameters, requiredCapabilityCodes, evaluatedAt);
+    query.append("ORDER BY distance_meters, f.facility_id LIMIT ? OFFSET ?");
+    parameters.add(limit);
+    parameters.add(offset);
     return jdbc.query(
-        "SELECT "
-            + FACILITY_SEARCH_COLUMNS
-            + ", "
-            + LOCATION_SEARCH_COLUMNS
-            + ", ST_Distance(l.coordinates, "
-            + point
-            + ") AS distance_meters FROM directory.facility f "
-            + "JOIN directory.organization o ON o.organization_id = f.managing_organization_id "
-            + "JOIN directory.location l ON l.facility_id = f.facility_id AND l.is_primary "
-            + "WHERE f.lifecycle_status = 'ACTIVE' AND o.lifecycle_status = 'ACTIVE' "
-            + "AND l.coordinates IS NOT NULL AND ST_DWithin(l.coordinates, "
-            + point
-            + ", ? + "
-            + DISTANCE_PREFILTER_BUFFER_METERS
-            + ") AND ST_Distance(l.coordinates, "
-            + point
-            + ") <= ? AND (?::uuid IS NULL OR f.managing_organization_id = ?) "
-            + "AND (?::uuid IS NULL OR f.facility_id = ?) "
-            + "ORDER BY distance_meters, f.facility_id LIMIT ? OFFSET ?",
+        query.toString(),
         (result, row) ->
             new LocatedFacilitySearchResult(
                 facilityFromSearch(result),
                 locationFromSearch(result),
                 result.getDouble("distance_meters")),
-        center.longitude(),
-        center.latitude(),
-        center.longitude(),
-        center.latitude(),
-        radiusMeters,
-        center.longitude(),
-        center.latitude(),
-        radiusMeters,
-        organizationId.map(InternalId::value).orElse(null),
-        organizationId.map(InternalId::value).orElse(null),
-        facilityId.map(InternalId::value).orElse(null),
-        facilityId.map(InternalId::value).orElse(null),
-        limit,
-        offset);
+        parameters.toArray());
   }
 
   @Override
   public List<UnlocatedFacilitySearchResult> findUnlocatedFacilities(
-      Optional<InternalId> organizationId, Optional<InternalId> facilityId, int limit, int offset) {
+      Optional<InternalId> organizationId,
+      Optional<InternalId> facilityId,
+      List<String> requiredCapabilityCodes,
+      Instant evaluatedAt,
+      int limit,
+      int offset) {
+    StringBuilder query =
+        new StringBuilder(
+            "SELECT "
+                + FACILITY_SEARCH_COLUMNS
+                + ", "
+                + LOCATION_SEARCH_COLUMNS
+                + " FROM directory.facility f "
+                + "JOIN directory.organization o ON o.organization_id = f.managing_organization_id "
+                + "LEFT JOIN directory.location l ON l.facility_id = f.facility_id AND l.is_primary "
+                + "WHERE f.lifecycle_status = 'ACTIVE' AND o.lifecycle_status = 'ACTIVE' "
+                + "AND (l.location_id IS NULL OR l.coordinates IS NULL) "
+                + "AND (?::uuid IS NULL OR f.managing_organization_id = ?) "
+                + "AND (?::uuid IS NULL OR f.facility_id = ?) ");
+    List<Object> parameters = new ArrayList<>();
+    parameters.add(organizationId.map(InternalId::value).orElse(null));
+    parameters.add(organizationId.map(InternalId::value).orElse(null));
+    parameters.add(facilityId.map(InternalId::value).orElse(null));
+    parameters.add(facilityId.map(InternalId::value).orElse(null));
+    appendCapabilityEligibility(query, parameters, requiredCapabilityCodes, evaluatedAt);
+    query.append("ORDER BY f.facility_id LIMIT ? OFFSET ?");
+    parameters.add(limit);
+    parameters.add(offset);
     return jdbc.query(
-        "SELECT "
-            + FACILITY_SEARCH_COLUMNS
-            + ", "
-            + LOCATION_SEARCH_COLUMNS
-            + " FROM directory.facility f "
-            + "JOIN directory.organization o ON o.organization_id = f.managing_organization_id "
-            + "LEFT JOIN directory.location l ON l.facility_id = f.facility_id AND l.is_primary "
-            + "WHERE f.lifecycle_status = 'ACTIVE' AND o.lifecycle_status = 'ACTIVE' "
-            + "AND (l.location_id IS NULL OR l.coordinates IS NULL) "
-            + "AND (?::uuid IS NULL OR f.managing_organization_id = ?) "
-            + "AND (?::uuid IS NULL OR f.facility_id = ?) ORDER BY f.facility_id LIMIT ? OFFSET ?",
+        query.toString(),
         (result, row) ->
             new UnlocatedFacilitySearchResult(
                 facilityFromSearch(result),
                 result.getObject("l_id", UUID.class) == null
                     ? Optional.empty()
                     : Optional.of(locationFromSearch(result))),
-        organizationId.map(InternalId::value).orElse(null),
-        organizationId.map(InternalId::value).orElse(null),
-        facilityId.map(InternalId::value).orElse(null),
-        facilityId.map(InternalId::value).orElse(null),
-        limit,
-        offset);
+        parameters.toArray());
+  }
+
+  private static void appendCapabilityEligibility(
+      StringBuilder query,
+      List<Object> parameters,
+      List<String> requiredCapabilityCodes,
+      Instant evaluatedAt) {
+    for (String code : requiredCapabilityCodes) {
+      query.append(
+          "AND EXISTS (SELECT 1 FROM directory.facility_capability_assertion a "
+              + "JOIN directory.care_capability c ON c.care_capability_id = a.care_capability_id "
+              + "LEFT JOIN directory.healthcare_service s "
+              + "ON s.healthcare_service_id = a.healthcare_service_id "
+              + "WHERE a.facility_id = f.facility_id AND c.code = ? "
+              + "AND c.lifecycle_status = 'ACTIVE' AND a.verification_status = 'VERIFIED' "
+              + "AND a.effective_from <= ? AND (a.effective_until IS NULL OR a.effective_until > ?) "
+              + "AND (a.healthcare_service_id IS NULL OR s.lifecycle_status = 'ACTIVE')) ");
+      Timestamp evaluatedAtTimestamp = Timestamp.from(evaluatedAt);
+      parameters.add(code);
+      parameters.add(evaluatedAtTimestamp);
+      parameters.add(evaluatedAtTimestamp);
+    }
   }
 
   @Override
@@ -570,6 +929,49 @@ public class JdbcDirectoryStore implements DirectoryStore {
         .findFirst();
   }
 
+  private Optional<HealthcareService> findHealthcareService(InternalId id, boolean forUpdate) {
+    String lock = forUpdate ? " FOR UPDATE" : "";
+    return jdbc
+        .query(
+            "SELECT "
+                + HEALTHCARE_SERVICE_COLUMNS
+                + " FROM directory.healthcare_service WHERE healthcare_service_id = ?"
+                + lock,
+            HEALTHCARE_SERVICE_MAPPER,
+            id.value())
+        .stream()
+        .findFirst();
+  }
+
+  private Optional<CareCapability> findCareCapability(InternalId id, boolean forUpdate) {
+    String lock = forUpdate ? " FOR UPDATE" : "";
+    return jdbc
+        .query(
+            "SELECT "
+                + CARE_CAPABILITY_COLUMNS
+                + " FROM directory.care_capability WHERE care_capability_id = ?"
+                + lock,
+            CARE_CAPABILITY_MAPPER,
+            id.value())
+        .stream()
+        .findFirst();
+  }
+
+  private Optional<FacilityCapabilityAssertion> findFacilityCapabilityAssertion(
+      InternalId id, boolean forUpdate) {
+    String lock = forUpdate ? " FOR UPDATE" : "";
+    return jdbc
+        .query(
+            "SELECT "
+                + FACILITY_CAPABILITY_ASSERTION_COLUMNS
+                + " FROM directory.facility_capability_assertion WHERE assertion_id = ?"
+                + lock,
+            FACILITY_CAPABILITY_ASSERTION_MAPPER,
+            id.value())
+        .stream()
+        .findFirst();
+  }
+
   private static String sourceColumns() {
     return "source_issuer, source_resource_type, source_reference, provenance_method, "
         + "provenance_observed_at, provenance_recorded_at, provenance_actor_kind, "
@@ -585,6 +987,20 @@ public class JdbcDirectoryStore implements DirectoryStore {
       sourceReference.issuer().value(),
       sourceReference.resourceType(),
       sourceReference.value(),
+      provenance.method(),
+      Timestamp.from(provenance.observedAt()),
+      Timestamp.from(provenance.recordedAt()),
+      actor.kind().name(),
+      actor.identity().issuer().value(),
+      actor.identity().resourceType(),
+      actor.identity().value(),
+      provenance.reasonCode()
+    };
+  }
+
+  private static Object[] provenanceParameters(DirectoryProvenance provenance) {
+    ActorReference actor = provenance.recordedBy();
+    return new Object[] {
       provenance.method(),
       Timestamp.from(provenance.observedAt()),
       Timestamp.from(provenance.recordedAt()),
@@ -790,6 +1206,90 @@ public class JdbcDirectoryStore implements DirectoryStore {
         "provenanceActorIdentifier", location.provenance().recordedBy().identity().value());
     snapshot.put("provenanceReasonCode", location.provenance().reasonCode());
     snapshot.put("version", location.version());
+    return json(snapshot);
+  }
+
+  private String snapshot(HealthcareService service) {
+    ObjectNode snapshot = objectMapper.createObjectNode();
+    snapshot.put("id", service.id().toString());
+    snapshot.put("organizationId", service.organizationId().toString());
+    snapshot.put("facilityId", service.facilityId().toString());
+    service.locationId().ifPresent(id -> snapshot.put("locationId", id.toString()));
+    snapshot.put("name", service.name());
+    snapshot.put("sourceIssuer", service.source().reference().issuer().value());
+    snapshot.put("sourceResourceType", service.source().reference().resourceType());
+    snapshot.put("sourceReference", service.source().reference().value());
+    snapshot.put("provenanceMethod", service.provenance().method());
+    snapshot.put("provenanceObservedAt", service.provenance().observedAt().toString());
+    snapshot.put("provenanceRecordedAt", service.provenance().recordedAt().toString());
+    snapshot.put("provenanceActorKind", service.provenance().recordedBy().kind().name());
+    snapshot.put(
+        "provenanceActorIssuer", service.provenance().recordedBy().identity().issuer().value());
+    snapshot.put(
+        "provenanceActorIdentifierType",
+        service.provenance().recordedBy().identity().resourceType());
+    snapshot.put("provenanceActorIdentifier", service.provenance().recordedBy().identity().value());
+    snapshot.put("provenanceReasonCode", service.provenance().reasonCode());
+    snapshot.put("status", service.status().name());
+    snapshot.put("version", service.version());
+    return json(snapshot);
+  }
+
+  private String snapshot(CareCapability capability) {
+    ObjectNode snapshot = objectMapper.createObjectNode();
+    snapshot.put("id", capability.id().toString());
+    snapshot.put("code", capability.code());
+    snapshot.put("displayName", capability.displayName());
+    capability
+        .parentCapabilityId()
+        .ifPresent(id -> snapshot.put("parentCapabilityId", id.toString()));
+    snapshot.put("sourceIssuer", capability.source().reference().issuer().value());
+    snapshot.put("sourceResourceType", capability.source().reference().resourceType());
+    snapshot.put("sourceReference", capability.source().reference().value());
+    snapshot.put("provenanceMethod", capability.provenance().method());
+    snapshot.put("provenanceObservedAt", capability.provenance().observedAt().toString());
+    snapshot.put("provenanceRecordedAt", capability.provenance().recordedAt().toString());
+    snapshot.put("provenanceActorKind", capability.provenance().recordedBy().kind().name());
+    snapshot.put(
+        "provenanceActorIssuer", capability.provenance().recordedBy().identity().issuer().value());
+    snapshot.put(
+        "provenanceActorIdentifierType",
+        capability.provenance().recordedBy().identity().resourceType());
+    snapshot.put(
+        "provenanceActorIdentifier", capability.provenance().recordedBy().identity().value());
+    snapshot.put("provenanceReasonCode", capability.provenance().reasonCode());
+    snapshot.put("status", capability.status().name());
+    snapshot.put("version", capability.version());
+    return json(snapshot);
+  }
+
+  private String snapshot(FacilityCapabilityAssertion assertion) {
+    ObjectNode snapshot = objectMapper.createObjectNode();
+    snapshot.put("id", assertion.id().toString());
+    snapshot.put("facilityId", assertion.facilityId().toString());
+    snapshot.put("capabilityId", assertion.capabilityId().toString());
+    assertion
+        .healthcareServiceId()
+        .ifPresent(id -> snapshot.put("healthcareServiceId", id.toString()));
+    snapshot.put("verificationStatus", assertion.verificationStatus().name());
+    snapshot.put("sourceIssuer", assertion.source().reference().issuer().value());
+    snapshot.put("sourceResourceType", assertion.source().reference().resourceType());
+    snapshot.put("sourceReference", assertion.source().reference().value());
+    snapshot.put("provenanceMethod", assertion.provenance().method());
+    snapshot.put("provenanceObservedAt", assertion.provenance().observedAt().toString());
+    snapshot.put("provenanceRecordedAt", assertion.provenance().recordedAt().toString());
+    snapshot.put("provenanceActorKind", assertion.provenance().recordedBy().kind().name());
+    snapshot.put(
+        "provenanceActorIssuer", assertion.provenance().recordedBy().identity().issuer().value());
+    snapshot.put(
+        "provenanceActorIdentifierType",
+        assertion.provenance().recordedBy().identity().resourceType());
+    snapshot.put(
+        "provenanceActorIdentifier", assertion.provenance().recordedBy().identity().value());
+    snapshot.put("provenanceReasonCode", assertion.provenance().reasonCode());
+    snapshot.put("effectiveFrom", assertion.effectiveFrom().toString());
+    assertion.effectiveUntil().ifPresent(until -> snapshot.put("effectiveUntil", until.toString()));
+    snapshot.put("version", assertion.version());
     return json(snapshot);
   }
 
