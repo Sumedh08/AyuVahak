@@ -94,6 +94,19 @@ public final class ExecutionContext {
         scopeValidator);
   }
 
+  static ExecutionContext forLocalOperatorBootstrap(
+      ActorReference operator, CorrelationId correlationId) {
+    requireActorKind(
+        operator, ActorKind.HUMAN, "local operator bootstrap requires an operator reference");
+    return new ExecutionContext(
+        operator,
+        ExecutionScope.platform(),
+        correlationId,
+        Optional.empty(),
+        SourceKind.LOCAL_OPERATOR_COMMAND,
+        AuthenticationMechanism.LOCAL_OPERATOR_CONTROL);
+  }
+
   private static ExecutionContext create(
       ActorReference actor,
       RequestedExecutionScope requestedScope,

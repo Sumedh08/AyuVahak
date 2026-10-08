@@ -12,6 +12,7 @@ import org.ayuvahak.platform.core.InternalId;
 import org.ayuvahak.platform.executioncontext.ExecutionScope;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DataSourceUtils;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
@@ -47,6 +48,15 @@ public class JdbcAuditRecordAppender implements AuditRecordAppender {
     if (!TransactionSynchronizationManager.isActualTransactionActive()) {
       throw new IllegalStateException(
           "Mutation audit requires the protected operation's active transaction");
+    }
+    var connection = DataSourceUtils.getConnection(jdbcTemplate.getDataSource());
+    try {
+      if (!DataSourceUtils.isConnectionTransactional(connection, jdbcTemplate.getDataSource())) {
+        throw new IllegalStateException(
+            "Mutation audit must use the protected operation's transaction-bound database connection");
+      }
+    } finally {
+      DataSourceUtils.releaseConnection(connection, jdbcTemplate.getDataSource());
     }
     insert(id, evidence, recordedAt);
   }

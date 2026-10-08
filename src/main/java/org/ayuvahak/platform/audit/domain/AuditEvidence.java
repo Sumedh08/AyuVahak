@@ -80,7 +80,8 @@ public record AuditEvidence(
 
     ActorKind actorKind = actor.orElseThrow().kind();
     boolean humanEvidence =
-        authenticationEvidence == AuditAuthenticationEvidence.HUMAN_ACCESS_TOKEN;
+        authenticationEvidence == AuditAuthenticationEvidence.HUMAN_ACCESS_TOKEN
+            || authenticationEvidence == AuditAuthenticationEvidence.LOCAL_OPERATOR_CONTROL;
     boolean serviceEvidence =
         authenticationEvidence == AuditAuthenticationEvidence.SERVICE_ACCESS_TOKEN
             || authenticationEvidence == AuditAuthenticationEvidence.CONFIGURED_SERVICE_IDENTITY;

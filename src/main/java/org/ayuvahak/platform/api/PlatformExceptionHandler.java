@@ -124,6 +124,16 @@ public class PlatformExceptionHandler extends ResponseEntityExceptionHandler {
     return internalError();
   }
 
+  @ExceptionHandler(PlatformProblemException.class)
+  public ResponseEntity<Object> handlePlatformProblem(PlatformProblemException exception) {
+    return problemResponse(
+        exception.status(),
+        titleFor(exception.code()),
+        exception.getMessage(),
+        exception.code(),
+        null);
+  }
+
   @Override
   protected ResponseEntity<Object> createResponseEntity(
       Object body, HttpHeaders headers, HttpStatusCode status, WebRequest request) {
@@ -201,6 +211,17 @@ public class PlatformExceptionHandler extends ResponseEntityExceptionHandler {
       case UNSUPPORTED_MEDIA_TYPE -> "Unsupported media type";
       case MALFORMED_REQUEST -> "Malformed request";
       case INTERNAL_ERROR -> "Internal server error";
+      case AUTHORIZATION_DENIED -> "Authorization denied";
+      case AUTHORIZATION_UNAVAILABLE -> "Authorization temporarily unavailable";
+      case AUDIT_UNAVAILABLE -> "Audit temporarily unavailable";
+      case EVENT_PUBLICATION_UNAVAILABLE -> "Event publication temporarily unavailable";
+      case IDEMPOTENCY_KEY_REUSED -> "Idempotency key conflict";
+      case IDEMPOTENCY_IN_PROGRESS -> "Command is still in progress";
+      case GRANT_ALREADY_EXISTS -> "Grant already exists";
+      case GRANT_NOT_ACTIVE -> "Grant is not active";
+      case GRANT_NOT_FOUND -> "Grant not found";
+      case INVALID_EXECUTION_SCOPE -> "Execution scope is invalid";
+      case BOOTSTRAP_ALREADY_COMPLETED -> "Initial access is already established";
       default -> "Request failed";
     };
   }

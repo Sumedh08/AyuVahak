@@ -45,4 +45,10 @@ public final class ExecutionContextFactory {
     return ExecutionContext.forBackgroundWork(
         configuredServiceActor, requestedScope, correlationId, causationId, scopeValidator);
   }
+
+  /** Creates the explicit out-of-band context used only by the one-shot local grant bootstrap. */
+  public ExecutionContext forLocalOperatorBootstrap(
+      ActorReference operator, CorrelationId correlationId) {
+    return ExecutionContext.forLocalOperatorBootstrap(operator, correlationId);
+  }
 }

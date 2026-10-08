@@ -4,5 +4,6 @@ package org.ayuvahak.platform.executioncontext;
 public enum AuthenticationMechanism {
   HUMAN_ACCESS_TOKEN,
   SERVICE_CLIENT_CREDENTIALS,
-  CONFIGURED_SERVICE_IDENTITY
+  CONFIGURED_SERVICE_IDENTITY,
+  LOCAL_OPERATOR_CONTROL
 }
