@@ -69,3 +69,7 @@ The host `Invoke-WebRequest` attempt timed out through its configured Windows `H
 ## Acceptance result
 
 **PASS** for Phase 2 implementation acceptance. This is based on the commands and tests above; it does not claim production compliance, a production recovery objective, or measured operational capacity.
+
+## Freeze record
+
+The local Phase 2 freeze commit is `17350c67948600677ccc92c41769b198d7037b6c`. It contains the accepted implementation, remediation, and evidence. This hash is recorded in a subsequent documentation-only commit to avoid self-reference. No remote is configured or used.
