@@ -52,3 +52,9 @@ ayuvahak:
     password: ${AYUVAHAK_DATABASE_PASSWORD:}
   platform:
     service-name: AyuVahak
+  authentication:
+    issuer: ${AYUVAHAK_OIDC_ISSUER:}
+    jwk-set-uri: ${AYUVAHAK_OIDC_JWK_SET_URI:}
+    audience: ${AYUVAHAK_OIDC_AUDIENCE:}
+    service-client-ids: ${AYUVAHAK_OIDC_SERVICE_CLIENT_IDS:}
+    allow-http: ${AYUVAHAK_OIDC_ALLOW_HTTP:false}

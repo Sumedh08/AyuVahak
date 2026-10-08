@@ -29,7 +29,15 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
 
-@SpringBootTest(properties = "management.tracing.sampling.probability=1.0")
+@SpringBootTest(
+    properties = {
+      "management.tracing.sampling.probability=1.0",
+      "ayuvahak.authentication.issuer=https://identity.example.test/realms/test",
+      "ayuvahak.authentication.jwk-set-uri=http://127.0.0.1:9/jwks",
+      "ayuvahak.authentication.audience=ayuvahak-api",
+      "ayuvahak.authentication.service-client-ids=synthetic-worker",
+      "ayuvahak.authentication.allow-http=true"
+    })
 @AutoConfigureMockMvc
 @ExtendWith(OutputCaptureExtension.class)
 @Testcontainers

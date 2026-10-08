@@ -35,6 +35,10 @@
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
         <dependency>
@@ -149,13 +153,12 @@
                                 </requireReleaseDeps>
                                 <bannedDependencies>
                                     <searchTransitive>true</searchTransitive>
-                                    <message>A Phase 1 dependency introduces a forbidden future-domain, integration, persistence, or infrastructure capability.</message>
+                                    <message>A Phase 2 dependency introduces a forbidden future-domain, integration, persistence, or infrastructure capability.</message>
                                     <excludes>
                                         <exclude>ca.uhn.hapi.fhir:*</exclude>
                                         <exclude>org.hl7.fhir:*</exclude>
                                         <exclude>org.dhis2:*</exclude>
                                         <exclude>org.keycloak:*</exclude>
-                                        <exclude>org.springframework.security:*</exclude>
                                         <exclude>org.apache.kafka:*</exclude>
                                         <exclude>org.springframework.kafka:*</exclude>
                                         <exclude>org.hibernate.orm:*</exclude>

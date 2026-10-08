@@ -43,7 +43,12 @@ import org.springframework.web.bind.annotation.RestController;
       "ayuvahak.platform.service-name=AyuVahak",
       "ayuvahak.database.url=jdbc:postgresql://localhost:5432/unused",
       "ayuvahak.database.username=test",
-      "ayuvahak.database.password=local-test-only"
+      "ayuvahak.database.password=local-test-only",
+      "ayuvahak.authentication.issuer=https://identity.example.test/realms/test",
+      "ayuvahak.authentication.jwk-set-uri=http://127.0.0.1:9/jwks",
+      "ayuvahak.authentication.audience=ayuvahak-api",
+      "ayuvahak.authentication.service-client-ids=synthetic-worker",
+      "ayuvahak.authentication.allow-http=true"
     })
 @Import({
   PlatformHttpIntegrationTest.AyuVahakHttpTestConfiguration.class,
@@ -248,6 +253,8 @@ class PlatformHttpIntegrationTest {
   static class AyuVahakHttpTestConfiguration {
 
     @Bean
+    @org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean(
+        BuildProperties.class)
     BuildProperties buildProperties() {
       Properties properties = new Properties();
       properties.setProperty("version", "0.1.0-SNAPSHOT");

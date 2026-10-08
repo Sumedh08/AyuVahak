@@ -1,6 +1,6 @@
 # Contributor guide
 
-This guide covers the Phase 1 engineering platform. Product scope and enduring architecture decisions live in the [architecture constitution](../architecture/constitution.md), [Phase 1 engineering decisions](../architecture/phase-1-engineering-decisions.md), and [ADR register](../adr/README.md); this guide links to them instead of restating them.
+This guide covers the engineering platform and the implemented Phase 2 authentication boundary. Product scope and enduring architecture decisions live in the [architecture constitution](../architecture/constitution.md), [Phase 1 engineering decisions](../architecture/phase-1-engineering-decisions.md), [Phase 2 platform-kernel architecture](../architecture/phase-2-platform-kernel.md), and [ADR register](../adr/README.md); this guide links to them instead of restating them.
 
 ## Prerequisites
 
@@ -22,7 +22,7 @@ The wrapper retrieves its pinned Maven distribution and dependencies from Maven 
 
 ## Build and test
 
-Run the complete CI-equivalent Phase 1 verification from the repository root. On Windows:
+Run the complete CI-equivalent verification from the repository root. On Windows:
 
 ```powershell
 .\mvnw.cmd -B -ntp clean verify
@@ -34,7 +34,7 @@ On macOS/Linux:
 ./mvnw -B -ntp clean verify
 ```
 
-This is the same substantive command used by the [least-privilege CI workflow](../../.github/workflows/ci.yml). It compiles, runs unit/HTTP/configuration/architecture tests, starts disposable PostgreSQL/PostGIS through Testcontainers for integration tests, checks formatting, and packages the application. Docker must be running. The integration tests do not use an in-memory database as a PostgreSQL substitute. The full test categories and Phase 1 limits are described in the [quality attributes](../architecture/quality-attributes.md) and [Phase 1 engineering decisions](../architecture/phase-1-engineering-decisions.md).
+This is the same substantive command used by the [least-privilege CI workflow](../../.github/workflows/ci.yml). It compiles, runs unit/HTTP/configuration/architecture tests, starts disposable PostgreSQL/PostGIS and Keycloak containers through Testcontainers, checks formatting, and packages the application. Docker must be running. The integration tests use only local containers and do not use an in-memory database as a PostgreSQL substitute or contact an external identity or healthcare service. Phase boundaries and later quality scenarios are described in the [quality attributes](../architecture/quality-attributes.md), [Phase 1 engineering decisions](../architecture/phase-1-engineering-decisions.md), and [Phase 2 specification](../specs/phase-2-platform-kernel-spec.md).
 
 To run only the architecture checks:
 
@@ -48,7 +48,7 @@ The executable rules are in `src/test/java/org/ayuvahak/architecture/`. They ins
 
 ## Start the local Compose stack
 
-Compose runs the application and PostgreSQL/PostGIS. The database is reachable by the application on the private Compose network and its port is not published to the host. Only the application port is published, bound to `127.0.0.1`.
+Compose runs the application, PostgreSQL/PostGIS, and the local Keycloak reference provider. The database and Keycloak are reachable by the application on the private Compose network; their host ports are bound to `127.0.0.1`. The ports needed for local development are published only to loopback.
 
 Create the ignored local environment file once:
 
@@ -56,7 +56,7 @@ Create the ignored local environment file once:
 Copy-Item .env.example .env
 ```
 
-The checked-in values are synthetic local-only examples. In particular, the database password is not a secret and must never be reused outside this disposable local environment. The local PostGIS image initializes that user as its bootstrap database administrator; the app uses it only inside the local Compose network so the initial migration can enable PostGIS. This convenience is not a production role design. Later deployment provisioning must use deployment-controlled credentials and least-privileged roles appropriate to its migrations. The application and database both receive the example value from `.env`; no value is baked into the image. Do not place real credentials in `.env.example`, source files, Docker build arguments, or committed Compose configuration.
+The checked-in values are synthetic local-only examples. Database and Keycloak administrator values are not secrets and must never be reused outside this disposable local environment. The local PostGIS image initializes its user as a bootstrap database administrator; the app uses it only inside the local Compose network so the initial migration can enable PostGIS. This convenience is not a production role design. Later deployment provisioning must use deployment-controlled credentials and least-privileged roles appropriate to its migrations. Services receive example values from `.env`; no value is baked into the application image. Do not place real credentials in `.env.example`, source files, Docker build arguments, or committed Compose configuration.
 
 Validate and start:
 
@@ -66,9 +66,9 @@ docker compose up --build --detach
 docker compose ps
 ```
 
-On macOS/Linux, copy the file with `cp .env.example .env`; the Compose commands are the same. The first startup may take time while the Java base images, PostGIS image, Maven distribution, and dependencies are downloaded. The app waits for the database health check before starting. It applies the versioned Flyway migration during startup. The build stage installs only the pinned `unzip` utility needed by the Maven Wrapper; the runtime image contains the JRE and application jar only.
+On macOS/Linux, copy the file with `cp .env.example .env`; the Compose commands are the same. The first startup may take time while the Java base images, PostGIS and Keycloak images, Maven distribution, and dependencies are downloaded. Keycloak starts in development mode with the synthetic realm in `infra/keycloak/realm-export.json`; this is a local reference provider, not a production deployment recipe. The app waits for the database health check before starting and does not require Keycloak at startup. It applies the versioned Flyway migration during startup. The build stage installs only the pinned `unzip` utility needed by the Maven Wrapper; the runtime image contains the JRE and application jar only.
 
-The PostGIS image is pinned by manifest digest as `postgis/postgis:18-3.6@sha256:60f6ad1d21ea86a67d47780b9a0d1e1d200500f62b19293fa834d0dea80b8677`, matching the Testcontainers integration baseline. It resolved to PostgreSQL 18.6 and PostGIS 3.6.4. The Maven build image uses Eclipse Temurin Java 25.0.4.1+1 and the runtime image is its JRE counterpart; both base images are also pinned by manifest digest in the Dockerfile. Revisit those pins through normal dependency/image maintenance.
+The PostGIS image is pinned by manifest digest as `postgis/postgis:18-3.6@sha256:60f6ad1d21ea86a67d47780b9a0d1e1d200500f62b19293fa834d0dea80b8677`, matching the Testcontainers integration baseline. It resolved to PostgreSQL 18.6 and PostGIS 3.6.4. Keycloak is pinned as `quay.io/keycloak/keycloak:26.8.0@sha256:b0f60d489d51c5d113390bdf5461d4c06e6051be026c05549f2e1e10ec352bcc`. The Maven build image uses Eclipse Temurin Java 25.0.4.1+1 and the runtime image is its JRE counterpart; both base images are also pinned by manifest digest in the Dockerfile. Revisit those pins through normal dependency/image maintenance.
 
 ## Verify the running application
 
@@ -83,7 +83,7 @@ Invoke-WebRequest http://localhost:8080/actuator/prometheus -Method Get
 
 If `.env` selects a non-default `AYUVAHAK_HTTP_PORT`, substitute that port in each URL.
 
-The readiness response should report `UP` only after the PostgreSQL health contributor is ready. Liveness is process-local and does not require the database. The application route reports non-sensitive service and build information. Prometheus metrics are served as scrape text. Other Actuator endpoints are not exposed. See [HTTP API conventions](http-api.md) and [operational observability](observability.md) for response and privacy details.
+The readiness response should report `UP` only after the PostgreSQL health contributor is ready. Liveness is process-local and does not require the database. The application route reports non-sensitive service and build information. Prometheus metrics are served as scrape text. Other Actuator endpoints are not exposed. Keycloak discovery is available at `http://localhost:8081/realms/ayuvahak/.well-known/openid-configuration` by default. The application does not require Keycloak to start; token verification uses the configured issuer and JWK-set URI when a protected request arrives. The realm contains synthetic identities, disables the Resource Owner Password Credentials grant, and uses client credentials only for the service-token integration seam. See [HTTP API conventions](http-api.md) and [operational observability](observability.md) for response and privacy details.
 
 To inspect application startup and operational request logs:
 
@@ -112,7 +112,7 @@ The second command sequence permanently deletes this local Compose database volu
 
 ## Configuration and migrations
 
-The application requires `AYUVAHAK_DATABASE_URL`, `AYUVAHAK_DATABASE_USERNAME`, and `AYUVAHAK_DATABASE_PASSWORD`; missing values prevent startup. Compose supplies these values to the container from the local `.env` file. `AYUVAHAK_HTTP_PORT` selects the loopback-bound host port and defaults to `8080`. The Compose network hostname is `database`; host-run configuration uses `localhost` as the database host only if the Compose file is deliberately changed to publish the database port locally.
+The application requires the database settings and `AYUVAHAK_OIDC_ISSUER`, `AYUVAHAK_OIDC_JWK_SET_URI`, `AYUVAHAK_OIDC_AUDIENCE`, and `AYUVAHAK_OIDC_SERVICE_CLIENT_IDS`; missing or invalid trust configuration prevents startup. `AYUVAHAK_OIDC_ALLOW_HTTP` defaults to `false`; `.env.example` sets it to `true` only for the synthetic local Compose Keycloak endpoints. Deployed configuration must use HTTPS and leave this exception disabled. Compose supplies these values from `.env`. The issuer is the exact token issuer (`http://localhost:8081/realms/ayuvahak` by default); the JWK-set URI uses the private Compose hostname (`http://keycloak:8080/realms/ayuvahak/protocol/openid-connect/certs`). `AYUVAHAK_HTTP_PORT` defaults to `8080`; `AYUVAHAK_KEYCLOAK_PORT` defaults to `8081`. The Compose network hostnames are `database` and `keycloak`; host-run configuration must use a developer-controlled database and identity provider, not a public service.
 
 Migrations are versioned SQL files in `src/main/resources/db/migration/`. The initial migration enables the PostGIS extension already included in the image and creates no AyuVahak business schema or table. Read [Database and migrations](database-and-migrations.md) before changing migrations. Do not edit an applied migration; add a forward migration. Business schemas are created only when their owning context is implemented.
 
@@ -129,7 +129,7 @@ The Compose stack publishes these endpoints on the local app port:
 | `/actuator/health/readiness` | Whether database-dependent platform work can be served. |
 | `/actuator/prometheus` | Pull-based platform, JVM, HTTP, and database-pool metrics. |
 
-No telemetry backend or collector is required. Optional OTLP tracing export is disabled unless explicitly configured. Do not configure it to send telemetry to an unapproved endpoint. Keep management access on a trusted operator network in any later deployment; Phase 1 does not implement authentication for management paths. Full logging, metrics, tracing, and safe-field guidance is in [Operational observability](observability.md).
+No telemetry backend or collector is required. Optional OTLP tracing export is disabled unless explicitly configured. Do not configure it to send telemetry to an unapproved endpoint. Management paths retain the existing public local Phase 1 behavior; later deployment network controls must protect them. Full logging, metrics, tracing, and safe-field guidance is in [Operational observability](observability.md).
 
 ## Troubleshooting
 
@@ -146,4 +146,4 @@ No telemetry backend or collector is required. Optional OTLP tracing export is d
 
 ## Scope and safety
 
-This is a local developer environment, not a production deployment recipe. It has synthetic credentials and no authentication or authorization. It contains no healthcare workflow or patient data. The permanent restrictions on external writes, credentials, and healthcare test targets are in [AGENTS.md](../../AGENTS.md) and the [agent safety policy](../governance/agent-safety-policy.md). Follow them for all later phases.
+This is a local developer environment, not a production deployment recipe. It has synthetic credentials and a local authentication reference provider; it does not yet implement AyuVahak authorization grants or healthcare workflows. It contains no patient data. The permanent restrictions on external writes, credentials, and healthcare test targets are in [AGENTS.md](../../AGENTS.md) and the [agent safety policy](../governance/agent-safety-policy.md). Follow them for all later phases.
