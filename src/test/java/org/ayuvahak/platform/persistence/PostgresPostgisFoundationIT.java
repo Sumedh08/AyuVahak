@@ -82,8 +82,10 @@ class PostgresPostgisFoundationIT {
   }
 
   @Test
-  void appliesRequiredMigrationsAndRecordsTheirHistory() {
-    assertThat(flyway.info().applied()).hasSizeGreaterThanOrEqualTo(1);
+  void appliesPostgisAndPlatformOwnedMigrationsAndRecordsTheirHistory() {
+    assertThat(flyway.info().applied())
+        .extracting(migration -> migration.getVersion().getVersion())
+        .contains("1");
     assertThat(
             jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM flyway_schema_history WHERE success", Integer.class))
