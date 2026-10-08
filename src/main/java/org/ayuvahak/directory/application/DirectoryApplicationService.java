@@ -2,15 +2,18 @@ package org.ayuvahak.directory.application;
 
 import java.time.Clock;
 import java.time.Instant;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Supplier;
 import org.ayuvahak.directory.domain.DirectoryAuthorities;
 import org.ayuvahak.directory.domain.DirectoryLifecycleStatus;
+import org.ayuvahak.directory.domain.DirectoryLocation;
 import org.ayuvahak.directory.domain.DirectoryProvenance;
 import org.ayuvahak.directory.domain.DirectorySource;
 import org.ayuvahak.directory.domain.Facility;
 import org.ayuvahak.directory.domain.Organization;
+import org.ayuvahak.directory.domain.Wgs84Coordinate;
 import org.ayuvahak.platform.api.PlatformErrorCode;
 import org.ayuvahak.platform.api.PlatformProblemException;
 import org.ayuvahak.platform.audit.application.AuditPersistenceUnavailableException;
@@ -50,6 +53,10 @@ import org.springframework.transaction.support.TransactionTemplate;
 public class DirectoryApplicationService {
 
   private static final String DIRECTORY_ISSUER = "urn:ayuvahak:directory";
+  private static final int DEFAULT_SEARCH_PAGE_SIZE = 50;
+  private static final int MAX_SEARCH_PAGE_SIZE = 100;
+  private static final int MAX_SEARCH_OFFSET = 10_000;
+  private static final double MAX_SEARCH_RADIUS_METERS = 500_000.0;
   private static final String COMMAND_BUSY_DETAIL =
       "A matching Directory command is still being processed; retry with the same idempotency key.";
 
@@ -283,7 +290,193 @@ public class DirectoryApplicationService {
         });
   }
 
-  public Facility getFacility(ExecutionContext context, InternalId id) {
+  public InternalId createLocation(
+      ExecutionContext context,
+      InternalId facilityId,
+      String name,
+      Optional<Wgs84Coordinate> coordinate,
+      boolean primary,
+      DirectorySource source,
+      DirectoryProvenance provenance,
+      String rawIdempotencyKey,
+      RequestFingerprint fingerprint) {
+    requireAuthority(
+        context,
+        DirectoryAuthorities.curation().code(),
+        "DIRECTORY_LOCATION_CREATE",
+        "Location",
+        Optional.empty(),
+        Optional.empty());
+    Facility owner =
+        store.findFacility(facilityId).orElseThrow(DirectoryApplicationService::notFound);
+    if (!scopeCanReadFacility(context.scope(), owner)) {
+      denyScope(
+          context,
+          "DIRECTORY_LOCATION_CREATE",
+          "Location",
+          Optional.empty(),
+          Optional.of(organizationReference(owner.managingOrganizationId())),
+          Optional.of(facilityReference(facilityId)));
+      throw scopeMismatch();
+    }
+    requireSourceType(source, "Location");
+    CommandReceiptKey receiptKey =
+        commandKey(
+            context,
+            "location.create",
+            "facilities/" + facilityId + "/locations",
+            rawIdempotencyKey);
+    return executeIdempotent(
+        receiptKey,
+        fingerprint,
+        201,
+        () -> {
+          Facility lockedFacility =
+              store.lockFacility(facilityId).orElseThrow(DirectoryApplicationService::notFound);
+          if (!scopeCanReadFacility(context.scope(), lockedFacility)) {
+            denyScope(
+                context,
+                "DIRECTORY_LOCATION_CREATE",
+                "Location",
+                Optional.empty(),
+                Optional.of(organizationReference(lockedFacility.managingOrganizationId())),
+                Optional.of(facilityReference(facilityId)));
+            throw scopeMismatch();
+          }
+          if (lockedFacility.status() != DirectoryLifecycleStatus.ACTIVE) {
+            throw inactive();
+          }
+          Organization organization =
+              store
+                  .lockOrganization(lockedFacility.managingOrganizationId())
+                  .orElseThrow(DirectoryApplicationService::notFound);
+          if (organization.status() != DirectoryLifecycleStatus.ACTIVE) {
+            throw inactive();
+          }
+          if (primary) {
+            demotePrimaryLocation(facilityId, Optional.empty(), provenance);
+          }
+          InternalId id = InternalId.generate();
+          store.insertLocation(
+              new DirectoryLocation(
+                  id,
+                  facilityId,
+                  normalizedName(name),
+                  coordinate,
+                  primary,
+                  source,
+                  provenance,
+                  1));
+          auditMutation(
+              context,
+              "DIRECTORY_LOCATION_CREATE",
+              "Location",
+              id,
+              provenance.reasonCode(),
+              Optional.of(organizationReference(lockedFacility.managingOrganizationId())),
+              Optional.of(facilityReference(facilityId)));
+          return id;
+        });
+  }
+
+  public void correctLocation(
+      ExecutionContext context,
+      InternalId locationId,
+      long expectedVersion,
+      String name,
+      Optional<Wgs84Coordinate> coordinate,
+      boolean primary,
+      DirectoryProvenance provenance,
+      String rawIdempotencyKey,
+      RequestFingerprint fingerprint) {
+    requireAuthority(
+        context,
+        DirectoryAuthorities.curation().code(),
+        "DIRECTORY_LOCATION_CORRECT",
+        "Location",
+        Optional.of(locationId),
+        Optional.empty());
+    DirectoryLocation reference =
+        store.findLocation(locationId).orElseThrow(DirectoryApplicationService::notFound);
+    Facility owner =
+        store
+            .findFacility(reference.facilityId())
+            .orElseThrow(DirectoryApplicationService::notFound);
+    if (!scopeCanReadFacility(context.scope(), owner)) {
+      denyScope(
+          context,
+          "DIRECTORY_LOCATION_CORRECT",
+          "Location",
+          Optional.of(locationId),
+          Optional.of(organizationReference(owner.managingOrganizationId())),
+          Optional.of(facilityReference(owner.id())));
+      throw scopeMismatch();
+    }
+    CommandReceiptKey receiptKey =
+        commandKey(context, "location.correct", "locations/" + locationId, rawIdempotencyKey);
+    executeIdempotent(
+        receiptKey,
+        fingerprint,
+        204,
+        () -> {
+          Facility lockedFacility =
+              store
+                  .lockFacility(reference.facilityId())
+                  .orElseThrow(DirectoryApplicationService::notFound);
+          if (!scopeCanReadFacility(context.scope(), lockedFacility)) {
+            denyScope(
+                context,
+                "DIRECTORY_LOCATION_CORRECT",
+                "Location",
+                Optional.of(locationId),
+                Optional.of(organizationReference(lockedFacility.managingOrganizationId())),
+                Optional.of(facilityReference(lockedFacility.id())));
+            throw scopeMismatch();
+          }
+          if (lockedFacility.status() != DirectoryLifecycleStatus.ACTIVE) {
+            throw inactive();
+          }
+          DirectoryLocation current =
+              store.lockLocation(locationId).orElseThrow(DirectoryApplicationService::notFound);
+          if (!current.facilityId().equals(lockedFacility.id())) {
+            throw DirectoryApplicationService.notFound();
+          }
+          requireExpectedVersion(current.version(), expectedVersion);
+          if (primary) {
+            demotePrimaryLocation(lockedFacility.id(), Optional.of(locationId), provenance);
+          }
+          store.appendLocationRevision(current, provenance.reasonCode());
+          DirectoryLocation corrected =
+              current.correct(normalizedName(name), coordinate, primary, provenance);
+          if (!store.updateLocation(corrected, expectedVersion, clock.instant())) {
+            throw versionConflict();
+          }
+          auditMutation(
+              context,
+              "DIRECTORY_LOCATION_CORRECT",
+              "Location",
+              locationId,
+              provenance.reasonCode(),
+              Optional.of(organizationReference(lockedFacility.managingOrganizationId())),
+              Optional.of(facilityReference(lockedFacility.id())));
+          return locationId;
+        });
+  }
+
+  private void demotePrimaryLocation(
+      InternalId facilityId, Optional<InternalId> exceptLocation, DirectoryProvenance provenance) {
+    for (DirectoryLocation current : store.listLocations(facilityId)) {
+      if (current.primary() && !exceptLocation.filter(current.id()::equals).isPresent()) {
+        store.appendLocationRevision(current, provenance.reasonCode());
+        if (!store.updateLocation(
+            current.withPrimary(false, provenance), current.version(), clock.instant())) {
+          throw versionConflict();
+        }
+      }
+    }
+  }
+
+  public FacilityDirectoryView getFacility(ExecutionContext context, InternalId id) {
     requireAuthority(
         context,
         DirectoryAuthorities.read().code(),
@@ -309,7 +502,146 @@ public class DirectoryApplicationService {
         id,
         Optional.of(organizationReference(facility.managingOrganizationId())),
         Optional.of(facilityReference(id)));
-    return facility;
+    return new FacilityDirectoryView(facility, store.listLocations(facility.id()));
+  }
+
+  public NearbyFacilityPage findNearbyFacilities(
+      ExecutionContext context,
+      Wgs84Coordinate center,
+      double radiusMeters,
+      Optional<InternalId> requestedOrganizationId,
+      int requestedPageSize,
+      int offset) {
+    requireAuthority(
+        context,
+        DirectoryAuthorities.read().code(),
+        "DIRECTORY_FACILITY_NEARBY_READ",
+        "FacilitySearch",
+        Optional.empty(),
+        requestedOrganizationId.map(DirectoryApplicationService::organizationReference));
+    if (!Double.isFinite(radiusMeters)
+        || radiusMeters <= 0.0
+        || radiusMeters > MAX_SEARCH_RADIUS_METERS) {
+      throw coordinateInvalid("Radius must be greater than zero and no more than 500000 meters.");
+    }
+    int pageSize = requestedPageSize == 0 ? DEFAULT_SEARCH_PAGE_SIZE : requestedPageSize;
+    if (pageSize < 1
+        || pageSize > MAX_SEARCH_PAGE_SIZE
+        || offset < 0
+        || offset > MAX_SEARCH_OFFSET) {
+      throw validation("Search page size must be between 1 and 100 and offset at most 10000.");
+    }
+    SearchScope searchScope = resolveSearchScope(context, requestedOrganizationId);
+    auditSearchRead(context, searchScope.organizationId());
+    List<LocatedFacilitySearchResult> nearby =
+        store.findNearbyFacilities(
+            searchScope.organizationId(),
+            searchScope.facilityId(),
+            center,
+            radiusMeters,
+            pageSize + 1,
+            offset);
+    List<UnlocatedFacilitySearchResult> unlocated =
+        store.findUnlocatedFacilities(
+            searchScope.organizationId(), searchScope.facilityId(), pageSize + 1, offset);
+    boolean hasMoreNearby = nearby.size() > pageSize;
+    boolean hasMoreUnlocated = unlocated.size() > pageSize;
+    return new NearbyFacilityPage(
+        nearby.stream().limit(pageSize).toList(),
+        unlocated.stream().limit(pageSize).toList(),
+        pageSize,
+        offset,
+        hasMoreNearby,
+        hasMoreUnlocated);
+  }
+
+  private SearchScope resolveSearchScope(
+      ExecutionContext context, Optional<InternalId> requestedOrganizationId) {
+    return switch (context.scope().kind()) {
+      case PLATFORM -> new SearchScope(requestedOrganizationId, Optional.empty());
+      case ORGANIZATION -> {
+        InternalId scopeOrganizationId =
+            referenceId(context.scope().organization().orElseThrow(), "Organization");
+        if (requestedOrganizationId.isPresent()
+            && !requestedOrganizationId.orElseThrow().equals(scopeOrganizationId)) {
+          denyScope(
+              context,
+              "DIRECTORY_FACILITY_NEARBY_READ",
+              "FacilitySearch",
+              Optional.empty(),
+              requestedOrganizationId.map(DirectoryApplicationService::organizationReference));
+          throw scopeMismatch();
+        }
+        yield new SearchScope(Optional.of(scopeOrganizationId), Optional.empty());
+      }
+      case FACILITY -> {
+        InternalId scopeOrganizationId =
+            referenceId(context.scope().organization().orElseThrow(), "Organization");
+        if (requestedOrganizationId.isPresent()
+            && !requestedOrganizationId.orElseThrow().equals(scopeOrganizationId)) {
+          denyScope(
+              context,
+              "DIRECTORY_FACILITY_NEARBY_READ",
+              "FacilitySearch",
+              Optional.empty(),
+              requestedOrganizationId.map(DirectoryApplicationService::organizationReference));
+          throw scopeMismatch();
+        }
+        yield new SearchScope(
+            Optional.of(scopeOrganizationId),
+            Optional.of(referenceId(context.scope().facility().orElseThrow(), "Facility")));
+      }
+    };
+  }
+
+  private static InternalId referenceId(ExternalReference reference, String expectedType) {
+    if (!DIRECTORY_ISSUER.equals(reference.issuer().value())
+        || !expectedType.equals(reference.resourceType())) {
+      throw new IllegalStateException("validated Directory scope has an unexpected reference");
+    }
+    return InternalId.parse(reference.value());
+  }
+
+  private void auditSearchRead(ExecutionContext context, Optional<InternalId> organizationId) {
+    try {
+      auditWriter
+          .getObject()
+          .recordNonMutating(
+              evidence(
+                  context,
+                  AuditActionKind.SENSITIVE_READ,
+                  "DIRECTORY_FACILITY_NEARBY_READ",
+                  "FacilitySearch",
+                  Optional.empty(),
+                  AuditOutcome.SUCCEEDED,
+                  Optional.empty(),
+                  AuditAuthorizationOutcome.ALLOWED,
+                  organizationId.map(DirectoryApplicationService::organizationReference),
+                  context.scope().kind() == ExecutionScope.Kind.FACILITY
+                      ? context.scope().facility()
+                      : Optional.empty()));
+    } catch (AuditPersistenceUnavailableException failure) {
+      throw problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          PlatformErrorCode.AUDIT_UNAVAILABLE,
+          "The requested Directory results are not disclosed because access evidence is unavailable.");
+    }
+  }
+
+  private record SearchScope(
+      Optional<InternalId> organizationId, Optional<InternalId> facilityId) {}
+
+  public record NearbyFacilityPage(
+      List<LocatedFacilitySearchResult> nearby,
+      List<UnlocatedFacilitySearchResult> unlocated,
+      int pageSize,
+      int offset,
+      boolean hasMoreNearby,
+      boolean hasMoreUnlocated) {
+    public NearbyFacilityPage {
+      nearby = List.copyOf(nearby);
+      unlocated = List.copyOf(unlocated);
+    }
   }
 
   public void correctFacility(
@@ -839,6 +1171,10 @@ public class DirectoryApplicationService {
 
   private static PlatformProblemException validation(String detail) {
     return problem(HttpStatus.BAD_REQUEST, PlatformErrorCode.DIRECTORY_VALIDATION_FAILED, detail);
+  }
+
+  private static PlatformProblemException coordinateInvalid(String detail) {
+    return problem(HttpStatus.BAD_REQUEST, PlatformErrorCode.DIRECTORY_COORDINATE_INVALID, detail);
   }
 
   private static PlatformProblemException problem(

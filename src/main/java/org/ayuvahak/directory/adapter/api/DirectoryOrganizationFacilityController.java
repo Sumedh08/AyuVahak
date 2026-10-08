@@ -8,13 +8,19 @@ import jakarta.validation.constraints.Positive;
 import java.net.URI;
 import java.time.Clock;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import org.ayuvahak.directory.application.DirectoryApplicationService;
 import org.ayuvahak.directory.application.DirectoryScopeLookupUnavailableException;
+import org.ayuvahak.directory.application.FacilityDirectoryView;
+import org.ayuvahak.directory.application.LocatedFacilitySearchResult;
+import org.ayuvahak.directory.application.UnlocatedFacilitySearchResult;
+import org.ayuvahak.directory.domain.DirectoryLocation;
 import org.ayuvahak.directory.domain.DirectoryProvenance;
 import org.ayuvahak.directory.domain.DirectorySource;
 import org.ayuvahak.directory.domain.Facility;
 import org.ayuvahak.directory.domain.Organization;
+import org.ayuvahak.directory.domain.Wgs84Coordinate;
 import org.ayuvahak.platform.api.CorrelationIdFilter;
 import org.ayuvahak.platform.api.PlatformErrorCode;
 import org.ayuvahak.platform.api.PlatformProblemException;
@@ -42,6 +48,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ObjectNode;
@@ -164,6 +171,86 @@ public class DirectoryOrganizationFacilityController {
     ExecutionContext context =
         context(actor, scope, organizationScope, facilityScope, "DIRECTORY_FACILITY_READ");
     return FacilityRepresentation.from(directory.getFacility(context, parseId(facilityId)));
+  }
+
+  @PostMapping("/locations")
+  public ResponseEntity<ResourceCreated> createLocation(
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
+      @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationScope,
+      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityScope,
+      @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+      @Valid @RequestBody CreateLocationRequest request) {
+    ExecutionContext context =
+        context(actor, scope, organizationScope, facilityScope, "DIRECTORY_LOCATION_CREATE");
+    InternalId id =
+        directory.createLocation(
+            context,
+            parseId(request.facilityId()),
+            request.name(),
+            coordinate(request.longitude(), request.latitude()),
+            request.primary(),
+            request.source().toSource("Location"),
+            request.provenance().toProvenance(context, clock.instant()),
+            idempotencyKey,
+            fingerprint(locationCommand(request)));
+    return ResponseEntity.created(URI.create("/api/v1/directory/locations/" + id))
+        .body(new ResourceCreated(id.toString()));
+  }
+
+  @PatchMapping("/locations/{locationId}")
+  public ResponseEntity<Void> correctLocation(
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
+      @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationScope,
+      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityScope,
+      @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+      @PathVariable String locationId,
+      @Valid @RequestBody LocationCorrectionRequest request) {
+    ExecutionContext context =
+        context(actor, scope, organizationScope, facilityScope, "DIRECTORY_LOCATION_CORRECT");
+    directory.correctLocation(
+        context,
+        parseId(locationId),
+        request.expectedVersion(),
+        request.name(),
+        coordinate(request.longitude(), request.latitude()),
+        request.primary(),
+        request.provenance().toProvenance(context, clock.instant()),
+        idempotencyKey,
+        fingerprint(locationCorrectionCommand(request)));
+    return ResponseEntity.noContent().build();
+  }
+
+  @GetMapping("/facilities")
+  public NearbyFacilitiesRepresentation findNearbyFacilities(
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
+      @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationScope,
+      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityScope,
+      @RequestParam Double centerLongitude,
+      @RequestParam Double centerLatitude,
+      @RequestParam Double radiusMeters,
+      @RequestParam(required = false) String organizationId,
+      @RequestParam(required = false, defaultValue = "0") int pageSize,
+      @RequestParam(required = false, defaultValue = "0") int offset) {
+    ExecutionContext context =
+        context(actor, scope, organizationScope, facilityScope, "DIRECTORY_FACILITY_NEARBY_READ");
+    var result =
+        directory.findNearbyFacilities(
+            context,
+            coordinate(centerLongitude, centerLatitude).orElseThrow(),
+            radiusMeters,
+            organizationId == null ? Optional.empty() : Optional.of(parseId(organizationId)),
+            pageSize,
+            offset);
+    return new NearbyFacilitiesRepresentation(
+        result.nearby().stream().map(NearbyFacilityRepresentation::from).toList(),
+        result.unlocated().stream().map(UnlocatedFacilityRepresentation::from).toList(),
+        result.pageSize(),
+        result.offset(),
+        result.hasMoreNearby(),
+        result.hasMoreUnlocated());
   }
 
   @PatchMapping("/facilities/{facilityId}")
@@ -326,6 +413,58 @@ public class DirectoryOrganizationFacilityController {
     return normalized;
   }
 
+  private ObjectNode locationCommand(CreateLocationRequest request) {
+    ObjectNode normalized = objectMapper.createObjectNode();
+    normalized.put("facilityId", request.facilityId());
+    normalized.put("name", request.name());
+    addCoordinate(normalized, request.longitude(), request.latitude());
+    normalized.put("primary", request.primary());
+    normalized.set("source", sourceNode(request.source()));
+    normalized.set("provenance", provenanceNode(request.provenance()));
+    return normalized;
+  }
+
+  private ObjectNode locationCorrectionCommand(LocationCorrectionRequest request) {
+    ObjectNode normalized = objectMapper.createObjectNode();
+    normalized.put("expectedVersion", request.expectedVersion());
+    normalized.put("name", request.name());
+    addCoordinate(normalized, request.longitude(), request.latitude());
+    normalized.put("primary", request.primary());
+    normalized.set("provenance", provenanceNode(request.provenance()));
+    return normalized;
+  }
+
+  private static void addCoordinate(ObjectNode normalized, Double longitude, Double latitude) {
+    if (longitude == null) {
+      normalized.putNull("longitude");
+      normalized.putNull("latitude");
+    } else {
+      normalized.put("longitude", longitude);
+      normalized.put("latitude", latitude);
+    }
+  }
+
+  private static Optional<Wgs84Coordinate> coordinate(Double longitude, Double latitude) {
+    if (longitude == null && latitude == null) {
+      return Optional.empty();
+    }
+    if (longitude == null || latitude == null) {
+      throw coordinateInvalid();
+    }
+    try {
+      return Optional.of(new Wgs84Coordinate(longitude, latitude));
+    } catch (IllegalArgumentException invalid) {
+      throw coordinateInvalid();
+    }
+  }
+
+  private static PlatformProblemException coordinateInvalid() {
+    return new PlatformProblemException(
+        HttpStatus.BAD_REQUEST,
+        PlatformErrorCode.DIRECTORY_COORDINATE_INVALID,
+        "Coordinates must be finite WGS84 longitude and latitude in that order.");
+  }
+
   private ObjectNode sourceNode(SourceRequest request) {
     ObjectNode normalized = objectMapper.createObjectNode();
     normalized.put("issuer", request.issuer());
@@ -361,6 +500,23 @@ public class DirectoryOrganizationFacilityController {
 
   public record DeactivationRequest(
       @Positive long expectedVersion, @Valid @NotNull ProvenanceRequest provenance) {}
+
+  public record CreateLocationRequest(
+      @NotBlank String facilityId,
+      @NotBlank String name,
+      Double longitude,
+      Double latitude,
+      @NotNull Boolean primary,
+      @Valid @NotNull SourceRequest source,
+      @Valid @NotNull ProvenanceRequest provenance) {}
+
+  public record LocationCorrectionRequest(
+      @Positive long expectedVersion,
+      @NotBlank String name,
+      Double longitude,
+      Double latitude,
+      @NotNull Boolean primary,
+      @Valid @NotNull ProvenanceRequest provenance) {}
 
   public record SourceRequest(
       @NotBlank String issuer,
@@ -443,8 +599,11 @@ public class DirectoryOrganizationFacilityController {
       String status,
       long version,
       SourceRepresentation source,
-      ProvenanceRepresentation provenance) {
-    static FacilityRepresentation from(Facility facility) {
+      ProvenanceRepresentation provenance,
+      Optional<String> primaryLocationId,
+      List<LocationRepresentation> locations) {
+    static FacilityRepresentation from(FacilityDirectoryView view) {
+      Facility facility = view.facility();
       return new FacilityRepresentation(
           facility.id().toString(),
           facility.managingOrganizationId().toString(),
@@ -452,7 +611,75 @@ public class DirectoryOrganizationFacilityController {
           facility.status().name(),
           facility.version(),
           SourceRepresentation.from(facility.source()),
-          ProvenanceRepresentation.from(facility.provenance()));
+          ProvenanceRepresentation.from(facility.provenance()),
+          view.primaryLocation().map(location -> location.id().toString()),
+          view.locations().stream().map(LocationRepresentation::from).toList());
+    }
+  }
+
+  public record CoordinateRepresentation(double longitude, double latitude) {
+    static CoordinateRepresentation from(Wgs84Coordinate coordinate) {
+      return new CoordinateRepresentation(coordinate.longitude(), coordinate.latitude());
+    }
+  }
+
+  public record LocationRepresentation(
+      String id,
+      String facilityId,
+      String name,
+      Optional<CoordinateRepresentation> coordinates,
+      boolean isPrimary,
+      long version,
+      SourceRepresentation source,
+      ProvenanceRepresentation provenance) {
+    static LocationRepresentation from(DirectoryLocation location) {
+      return new LocationRepresentation(
+          location.id().toString(),
+          location.facilityId().toString(),
+          location.name(),
+          location.coordinate().map(CoordinateRepresentation::from),
+          location.primary(),
+          location.version(),
+          SourceRepresentation.from(location.source()),
+          ProvenanceRepresentation.from(location.provenance()));
+    }
+  }
+
+  public record NearbyFacilitiesRepresentation(
+      List<NearbyFacilityRepresentation> nearby,
+      List<UnlocatedFacilityRepresentation> unlocated,
+      int pageSize,
+      int offset,
+      boolean hasMoreNearby,
+      boolean hasMoreUnlocated) {}
+
+  public record NearbyFacilityRepresentation(
+      String facilityId,
+      String managingOrganizationId,
+      String facilityName,
+      LocationRepresentation location,
+      double distanceMeters) {
+    static NearbyFacilityRepresentation from(LocatedFacilitySearchResult result) {
+      return new NearbyFacilityRepresentation(
+          result.facility().id().toString(),
+          result.facility().managingOrganizationId().toString(),
+          result.facility().name(),
+          LocationRepresentation.from(result.location()),
+          result.distanceMeters());
+    }
+  }
+
+  public record UnlocatedFacilityRepresentation(
+      String facilityId,
+      String managingOrganizationId,
+      String facilityName,
+      Optional<LocationRepresentation> primaryLocation) {
+    static UnlocatedFacilityRepresentation from(UnlocatedFacilitySearchResult result) {
+      return new UnlocatedFacilityRepresentation(
+          result.facility().id().toString(),
+          result.facility().managingOrganizationId().toString(),
+          result.facility().name(),
+          result.primaryLocation().map(LocationRepresentation::from));
     }
   }
 }

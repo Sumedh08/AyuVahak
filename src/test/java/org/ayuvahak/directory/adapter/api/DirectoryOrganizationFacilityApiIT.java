@@ -129,6 +129,8 @@ class DirectoryOrganizationFacilityApiIT {
   @BeforeEach
   void resetSyntheticState() {
     jdbc.update("DELETE FROM directory.command_receipt");
+    jdbc.update("DELETE FROM directory.location_revision");
+    jdbc.update("DELETE FROM directory.location");
     jdbc.update("DELETE FROM directory.facility_revision");
     jdbc.update("DELETE FROM directory.organization_revision");
     jdbc.update("DELETE FROM directory.facility");
@@ -540,6 +542,366 @@ class DirectoryOrganizationFacilityApiIT {
     assertThat(count("SELECT COUNT(*) FROM directory.facility_revision")).isEqualTo(2);
   }
 
+  @Test
+  void createsCorrectsAndSelectsOnePrimaryLocation() throws Exception {
+    grant(ADMIN, CURATOR, "DirectoryCuration", "PLATFORM", null, null, "seed-location-curator-01");
+    grant(ADMIN, CURATOR, "DirectoryRead", "PLATFORM", null, null, "seed-location-reader-01");
+    String organizationId = createOrganization(CURATOR, "location-org-01", "Location Authority");
+    String facilityId =
+        createFacility(
+            CURATOR, "PLATFORM", "location-facility-01", "Main Facility", organizationId);
+
+    String firstLocationId =
+        createLocation(
+            CURATOR,
+            facilityId,
+            "North Entrance",
+            "-73.9857",
+            "40.7484",
+            true,
+            "location-create-01");
+    String secondLocationId =
+        createLocation(
+            CURATOR,
+            facilityId,
+            "Emergency Entrance",
+            "-73.9840",
+            "40.7490",
+            true,
+            "location-create-02");
+
+    var firstLocationSummary =
+        mockMvc
+            .perform(
+                get("/api/v1/directory/facilities/{id}", facilityId)
+                    .header("Authorization", bearer(token(CURATOR)))
+                    .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.primaryLocationId").value(secondLocationId))
+            .andExpect(jsonPath("$.locations[*].isPrimary", org.hamcrest.Matchers.hasItem(false)))
+            .andExpect(jsonPath("$.locations[*].isPrimary", org.hamcrest.Matchers.hasItem(true)))
+            .andExpect(
+                jsonPath("$.locations[?(@.id == '" + firstLocationId + "')].version").value(2))
+            .andExpect(
+                jsonPath("$.locations[?(@.id == '" + secondLocationId + "')].version").value(1))
+            .andReturn();
+    List<Boolean> firstPrimaryFlags =
+        com.jayway.jsonpath.JsonPath.read(
+            firstLocationSummary.getResponse().getContentAsString(), "$.locations[*].isPrimary");
+    assertThat(firstPrimaryFlags).containsExactlyInAnyOrder(false, true);
+
+    mockMvc
+        .perform(
+            patch("/api/v1/directory/locations/{id}", firstLocationId)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", "location-correction-01")
+                .contentType("application/json")
+                .content(
+                    locationCorrectionBody(
+                        2, "North Entrance Corrected", "-73.9800", "40.7500", true)))
+        .andExpect(status().isNoContent());
+
+    var correctedLocationSummary =
+        mockMvc
+            .perform(
+                get("/api/v1/directory/facilities/{id}", facilityId)
+                    .header("Authorization", bearer(token(CURATOR)))
+                    .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.primaryLocationId").value(firstLocationId))
+            .andExpect(
+                jsonPath("$.locations[?(@.id == '" + firstLocationId + "')].name")
+                    .value("North Entrance Corrected"))
+            .andExpect(
+                jsonPath("$.locations[?(@.id == '" + firstLocationId + "')].coordinates.longitude")
+                    .value(-73.98))
+            .andExpect(
+                jsonPath("$.locations[?(@.id == '" + firstLocationId + "')].coordinates.latitude")
+                    .value(40.75))
+            .andExpect(
+                jsonPath("$.locations[?(@.id == '" + firstLocationId + "')].version").value(3))
+            .andExpect(
+                jsonPath("$.locations[?(@.id == '" + secondLocationId + "')].version").value(2))
+            .andReturn();
+    List<Boolean> correctedPrimaryFlags =
+        com.jayway.jsonpath.JsonPath.read(
+            correctedLocationSummary.getResponse().getContentAsString(),
+            "$.locations[*].isPrimary");
+    assertThat(correctedPrimaryFlags).containsExactlyInAnyOrder(false, true);
+    assertThat(secondLocationId).isNotEqualTo(firstLocationId);
+  }
+
+  @Test
+  void rejectsInvalidOrIncompleteWgs84Coordinates() throws Exception {
+    grant(
+        ADMIN,
+        CURATOR,
+        "DirectoryCuration",
+        "PLATFORM",
+        null,
+        null,
+        "seed-invalid-location-curator-01");
+    String organizationId =
+        createOrganization(CURATOR, "invalid-location-org-01", "Coordinate Authority");
+    String facilityId =
+        createFacility(
+            CURATOR,
+            "PLATFORM",
+            "invalid-location-facility-01",
+            "Coordinate Facility",
+            organizationId);
+
+    mockMvc
+        .perform(
+            post("/api/v1/directory/locations")
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", "invalid-location-out-of-range-01")
+                .contentType("application/json")
+                .content(locationBody(facilityId, "Invalid Longitude", "181", "40", true)))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("DIRECTORY_COORDINATE_INVALID"));
+
+    mockMvc
+        .perform(
+            post("/api/v1/directory/locations")
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", "invalid-location-latitude-01")
+                .contentType("application/json")
+                .content(locationBody(facilityId, "Invalid Latitude", "72.8", "91", true)))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("DIRECTORY_COORDINATE_INVALID"));
+
+    mockMvc
+        .perform(
+            post("/api/v1/directory/locations")
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", "invalid-location-non-finite-01")
+                .contentType("application/json")
+                .content(locationBody(facilityId, "Non-finite Coordinate", "1e309", "40", true)))
+        .andExpect(status().isBadRequest());
+
+    mockMvc
+        .perform(
+            post("/api/v1/directory/locations")
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", "invalid-location-incomplete-01")
+                .contentType("application/json")
+                .content(locationBody(facilityId, "Incomplete Coordinate", "null", "40", true)))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("DIRECTORY_COORDINATE_INVALID"));
+
+    assertThat(count("SELECT COUNT(*) FROM directory.location")).isZero();
+  }
+
+  @Test
+  void rejectsLocationCreationOutsideFacilityExecutionScope() throws Exception {
+    grant(
+        ADMIN,
+        CURATOR,
+        "DirectoryCuration",
+        "PLATFORM",
+        null,
+        null,
+        "seed-location-scope-platform-curator-01");
+    String organizationId =
+        createOrganization(CURATOR, "location-scope-org-01", "Scoped Location Authority");
+    String authorizedFacility =
+        createFacility(
+            CURATOR,
+            "PLATFORM",
+            "location-scope-facility-01",
+            "Authorized Facility",
+            organizationId);
+    String otherFacility =
+        createFacility(
+            CURATOR, "PLATFORM", "location-scope-facility-02", "Other Facility", organizationId);
+    grant(
+        ADMIN,
+        FACILITY_CURATOR,
+        "DirectoryCuration",
+        "FACILITY",
+        organizationId,
+        authorizedFacility,
+        "seed-location-scope-facility-curator-01");
+
+    mockMvc
+        .perform(
+            post("/api/v1/directory/locations")
+                .header("Authorization", bearer(token(FACILITY_CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", organizationId)
+                .header("X-AyuVahak-Facility-Id", authorizedFacility)
+                .header("Idempotency-Key", "location-scope-violation-01")
+                .contentType("application/json")
+                .content(locationBody(otherFacility, "Out of Scope", "72.8", "19.1", true)))
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.code").value("DIRECTORY_SCOPE_MISMATCH"));
+
+    assertThat(count("SELECT COUNT(*) FROM directory.location")).isZero();
+  }
+
+  @Test
+  void nearbySearchUsesInclusivePostgisMetersStableUuidTieBreakAndSeparateUnlocatedResults()
+      throws Exception {
+    grant(ADMIN, CURATOR, "DirectoryCuration", "PLATFORM", null, null, "seed-nearby-curator-01");
+    grant(ADMIN, CURATOR, "DirectoryRead", "PLATFORM", null, null, "seed-nearby-reader-01");
+    String organizationId = createOrganization(CURATOR, "nearby-org-01", "Nearby Authority");
+
+    String closeFacility =
+        createFacility(
+            CURATOR, "PLATFORM", "nearby-close-facility-01", "Closer Facility", organizationId);
+    createLocation(
+        CURATOR, closeFacility, "Primary", "0.0005", "0.0", true, "nearby-close-location-01");
+
+    String boundaryFacilityOne =
+        createFacility(
+            CURATOR, "PLATFORM", "nearby-boundary-facility-01", "Boundary One", organizationId);
+    createLocation(
+        CURATOR,
+        boundaryFacilityOne,
+        "Primary",
+        "0.001",
+        "0.0",
+        true,
+        "nearby-boundary-location-01");
+    String boundaryFacilityTwo =
+        createFacility(
+            CURATOR, "PLATFORM", "nearby-boundary-facility-02", "Boundary Two", organizationId);
+    createLocation(
+        CURATOR,
+        boundaryFacilityTwo,
+        "Primary",
+        "0.001",
+        "0.0",
+        true,
+        "nearby-boundary-location-02");
+
+    String outsideFacility =
+        createFacility(
+            CURATOR, "PLATFORM", "nearby-outside-facility-01", "Outside Facility", organizationId);
+    createLocation(
+        CURATOR,
+        outsideFacility,
+        "Primary",
+        "0.00100001",
+        "0.0",
+        true,
+        "nearby-outside-location-01");
+
+    String missingCoordinateFacility =
+        createFacility(
+            CURATOR,
+            "PLATFORM",
+            "nearby-unlocated-facility-01",
+            "Unlocated Facility",
+            organizationId);
+    createLocation(
+        CURATOR,
+        missingCoordinateFacility,
+        "Address Not Geocoded",
+        "null",
+        "null",
+        true,
+        "nearby-unlocated-location-01");
+    String noLocationFacility =
+        createFacility(
+            CURATOR,
+            "PLATFORM",
+            "nearby-no-location-facility-01",
+            "No Location Facility",
+            organizationId);
+
+    Double radiusMeters =
+        jdbc.queryForObject(
+            "SELECT ST_Distance("
+                + "ST_SetSRID(ST_MakePoint(0.001::double precision, 0.0::double precision), 4326)::geography, "
+                + "ST_SetSRID(ST_MakePoint(0.0::double precision, 0.0::double precision), 4326)::geography)",
+            Double.class);
+    assertThat(radiusMeters).isNotNull().isPositive();
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT ST_Distance("
+                    + "ST_SetSRID(ST_MakePoint(0.001::double precision, 0.0::double precision), 4326)::geography, "
+                    + "ST_SetSRID(ST_MakePoint(0.0::double precision, 0.0::double precision), 4326)::geography) <= ?",
+                Boolean.class,
+                radiusMeters))
+        .isTrue();
+
+    var response =
+        mockMvc
+            .perform(
+                get("/api/v1/directory/facilities")
+                    .param("centerLongitude", "0.0")
+                    .param("centerLatitude", "0.0")
+                    .param("radiusMeters", radiusMeters.toString())
+                    .param("pageSize", "10")
+                    .header("Authorization", bearer(token(CURATOR)))
+                    .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.nearby.length()").value(3))
+            .andExpect(jsonPath("$.nearby[1].distanceMeters").value(radiusMeters))
+            .andExpect(jsonPath("$.nearby[2].distanceMeters").value(radiusMeters))
+            .andExpect(jsonPath("$.unlocated.length()").value(2))
+            .andReturn();
+
+    List<String> actualOrder =
+        com.jayway.jsonpath.JsonPath.read(
+            response.getResponse().getContentAsString(), "$.nearby[*].facilityId");
+    List<String> boundaryOrder =
+        java.util.stream.Stream.of(boundaryFacilityOne, boundaryFacilityTwo).sorted().toList();
+    assertThat(actualOrder)
+        .containsExactly(closeFacility, boundaryOrder.getFirst(), boundaryOrder.getLast());
+    List<String> unlocatedIds =
+        com.jayway.jsonpath.JsonPath.read(
+            response.getResponse().getContentAsString(), "$.unlocated[*].facilityId");
+    List<String> expectedUnlocatedOrder =
+        java.util.stream.Stream.of(noLocationFacility, missingCoordinateFacility).sorted().toList();
+    assertThat(unlocatedIds).containsExactlyElementsOf(expectedUnlocatedOrder);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT ST_Distance("
+                    + "ST_SetSRID(ST_MakePoint(0.001::double precision, 0.0::double precision), 4326)::geography, "
+                    + "ST_SetSRID(ST_MakePoint(0.0::double precision, 0.0::double precision), 4326)::geography)",
+                Double.class))
+        .isEqualTo(radiusMeters);
+
+    mockMvc
+        .perform(
+            get("/api/v1/directory/facilities")
+                .param("centerLongitude", "0.0")
+                .param("centerLatitude", "0.0")
+                .param("radiusMeters", radiusMeters.toString())
+                .param("pageSize", "101")
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+        .andExpect(status().isBadRequest());
+
+    mockMvc
+        .perform(
+            get("/api/v1/directory/facilities")
+                .param("centerLongitude", "0.0")
+                .param("centerLatitude", "0.0")
+                .param("radiusMeters", "500001")
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+        .andExpect(status().isBadRequest());
+
+    mockMvc
+        .perform(
+            get("/api/v1/directory/facilities")
+                .param("centerLongitude", "0.0")
+                .param("centerLatitude", "0.0")
+                .param("radiusMeters", "0")
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+        .andExpect(status().isBadRequest());
+  }
+
   private String createOrganization(String actor, String key, String name) throws Exception {
     var response =
         mockMvc
@@ -672,6 +1034,68 @@ class DirectoryOrganizationFacilityApiIT {
         + sourceJson("Facility")
         + "},\"provenance\":{"
         + provenanceJson("INITIAL_ENTRY")
+        + "}}";
+  }
+
+  private String createLocation(
+      String actor,
+      String facilityId,
+      String name,
+      String longitude,
+      String latitude,
+      boolean primary,
+      String idempotencyKey)
+      throws Exception {
+    var response =
+        mockMvc
+            .perform(
+                post("/api/v1/directory/locations")
+                    .header("Authorization", bearer(token(actor)))
+                    .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                    .header("Idempotency-Key", idempotencyKey)
+                    .contentType("application/json")
+                    .content(locationBody(facilityId, name, longitude, latitude, primary)))
+            .andExpect(status().isCreated())
+            .andReturn();
+    String id =
+        com.jayway.jsonpath.JsonPath.read(response.getResponse().getContentAsString(), "$.id");
+    assertThat(InternalId.parse(id).value().version()).isEqualTo(4);
+    return id;
+  }
+
+  private static String locationBody(
+      String facilityId, String name, String longitude, String latitude, boolean primary) {
+    return "{\"facilityId\":\""
+        + facilityId
+        + "\",\"name\":\""
+        + name
+        + "\",\"longitude\":"
+        + longitude
+        + ",\"latitude\":"
+        + latitude
+        + ",\"primary\":"
+        + primary
+        + ",\"source\":{"
+        + sourceJson("Location")
+        + "},\"provenance\":{"
+        + provenanceJson("LOCATION_ENTRY")
+        + "}}";
+  }
+
+  private static String locationCorrectionBody(
+      long expectedVersion, String name, String longitude, String latitude, boolean primary) {
+    return "{\"expectedVersion\":"
+        + expectedVersion
+        + ",\"name\":\""
+        + name
+        + "\",\"longitude\":"
+        + longitude
+        + ",\"latitude\":"
+        + latitude
+        + ",\"primary\":"
+        + primary
+        + ",\"provenance\":{"
+        + provenanceJson("LOCATION_CORRECTION")
         + "}}";
   }
 
