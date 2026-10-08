@@ -25,6 +25,10 @@ public final class ExecutionScope {
     validateShape();
   }
 
+  public static ExecutionScope platform() {
+    return new ExecutionScope(Kind.PLATFORM, null, null);
+  }
+
   static ExecutionScope validateFor(
       ActorReference verifiedActor,
       RequestedExecutionScope requestedScope,
