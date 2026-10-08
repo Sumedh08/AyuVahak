@@ -1,0 +1,747 @@
+package org.ayuvahak.directory.adapter.api;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+import com.nimbusds.jose.JOSEObjectType;
+import com.nimbusds.jose.JWSAlgorithm;
+import com.nimbusds.jose.JWSHeader;
+import com.nimbusds.jose.crypto.RSASSASigner;
+import com.nimbusds.jose.jwk.JWKSet;
+import com.nimbusds.jose.jwk.RSAKey;
+import com.nimbusds.jose.jwk.gen.RSAKeyGenerator;
+import com.nimbusds.jwt.JWTClaimsSet;
+import com.nimbusds.jwt.SignedJWT;
+import com.sun.net.httpserver.HttpServer;
+import java.net.InetSocketAddress;
+import java.time.Instant;
+import java.util.Date;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import org.ayuvahak.platform.AyuVahakApplication;
+import org.ayuvahak.platform.authorization.adapter.api.PlatformAccessGrantController;
+import org.ayuvahak.platform.core.ExternalReference;
+import org.ayuvahak.platform.core.InternalId;
+import org.ayuvahak.platform.core.IssuerId;
+import org.ayuvahak.platform.executioncontext.ExecutionScopeOwnerValidator;
+import org.ayuvahak.platform.executioncontext.ExecutionScopeValidator;
+import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
+import org.testcontainers.postgresql.PostgreSQLContainer;
+import org.testcontainers.utility.DockerImageName;
+
+@SpringBootTest(
+    classes = AyuVahakApplication.class,
+    properties = {
+      "management.tracing.sampling.probability=0.0",
+      "ayuvahak.authentication.audience=ayuvahak-api",
+      "ayuvahak.authentication.service-client-ids=synthetic-worker",
+      "ayuvahak.authentication.allow-http=true"
+    })
+@AutoConfigureMockMvc
+@Testcontainers
+class DirectoryOrganizationFacilityApiIT {
+
+  private static final String TEST_PASSWORD = "local-test-only";
+  private static final String ISSUER = "https://identity.example.test/realms/ayuvahak";
+  private static final String AUDIENCE = "ayuvahak-api";
+  private static final String DIRECTORY_ISSUER = "urn:ayuvahak:directory";
+  private static final String ADMIN = "synthetic-admin-17";
+  private static final String CURATOR = "synthetic-curator-21";
+  private static final String ORG_CURATOR = "synthetic-org-curator-22";
+  private static final String FACILITY_CURATOR = "synthetic-facility-curator-23";
+  private static final String UNAUTHORIZED = "synthetic-unprivileged-24";
+  private static final RSAKey SIGNING_KEY = newSigningKey("directory-api-fixture");
+  private static final PostgreSQLContainer POSTGRES =
+      new PostgreSQLContainer(
+              DockerImageName.parse(
+                      "postgis/postgis:18-3.6@sha256:60f6ad1d21ea86a67d47780b9a0d1e1d200500f62b19293fa834d0dea80b8677")
+                  .asCompatibleSubstituteFor("postgres"))
+          .withDatabaseName("ayuvahak")
+          .withUsername("ayuvahak")
+          .withPassword(TEST_PASSWORD);
+
+  @Container private static final PostgreSQLContainer CONTAINER = POSTGRES;
+  private static HttpServer jwksServer;
+
+  @Autowired private MockMvc mockMvc;
+  @Autowired private JdbcTemplate jdbc;
+  @Autowired private List<ExecutionScopeOwnerValidator> scopeOwners;
+  @Autowired private ExecutionScopeValidator executionScopeValidator;
+
+  @BeforeAll
+  static void startLocalJwksServer() throws Exception {
+    jwksServer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    jwksServer.createContext(
+        "/jwks",
+        exchange -> {
+          byte[] body =
+              new JWKSet(SIGNING_KEY.toPublicJWK())
+                  .toString()
+                  .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+          exchange.getResponseHeaders().set("Content-Type", "application/json");
+          exchange.sendResponseHeaders(200, body.length);
+          try (var response = exchange.getResponseBody()) {
+            response.write(body);
+          }
+        });
+    jwksServer.start();
+  }
+
+  @AfterAll
+  static void stopLocalJwksServer() {
+    if (jwksServer != null) {
+      jwksServer.stop(0);
+    }
+  }
+
+  @DynamicPropertySource
+  static void localInfrastructure(DynamicPropertyRegistry registry) {
+    registry.add("AYUVAHAK_DATABASE_URL", POSTGRES::getJdbcUrl);
+    registry.add("AYUVAHAK_DATABASE_USERNAME", POSTGRES::getUsername);
+    registry.add("AYUVAHAK_DATABASE_PASSWORD", POSTGRES::getPassword);
+    registry.add("ayuvahak.authentication.issuer", () -> ISSUER);
+    registry.add(
+        "ayuvahak.authentication.jwk-set-uri",
+        () -> "http://127.0.0.1:" + jwksServer.getAddress().getPort() + "/jwks");
+  }
+
+  @BeforeEach
+  void resetSyntheticState() {
+    jdbc.update("DELETE FROM directory.command_receipt");
+    jdbc.update("DELETE FROM directory.facility_revision");
+    jdbc.update("DELETE FROM directory.organization_revision");
+    jdbc.update("DELETE FROM directory.facility");
+    jdbc.update("DELETE FROM directory.organization");
+    jdbc.update("DELETE FROM audit.audit_record");
+    jdbc.update("DELETE FROM platform_eventing.outbox_delivery");
+    jdbc.update("DELETE FROM platform_eventing.internal_event");
+    jdbc.update("DELETE FROM identity_access.grant_command_receipt");
+    jdbc.update("DELETE FROM identity_access.bootstrap_marker");
+    jdbc.update("DELETE FROM identity_access.authorization_grant");
+    jdbc.execute("DROP TRIGGER IF EXISTS test_fail_audit_insert ON audit.audit_record");
+    jdbc.execute("DROP FUNCTION IF EXISTS test_fail_audit_insert()");
+    seedPlatformAdministrator();
+  }
+
+  @Test
+  void createsAndReadsProvenanceBackedOrganizationAndFacilityAtExactScopes() throws Exception {
+    grant(ADMIN, CURATOR, "DirectoryCuration", "PLATFORM", null, null, "seed-curator-01");
+    String organizationId = createOrganization(CURATOR, "org-create-01", "North Coordination");
+    grant(
+        ADMIN,
+        ORG_CURATOR,
+        "DirectoryCuration",
+        "ORGANIZATION",
+        organizationId,
+        null,
+        "seed-org-curator-01");
+    grant(
+        ADMIN,
+        ORG_CURATOR,
+        "DirectoryRead",
+        "ORGANIZATION",
+        organizationId,
+        null,
+        "seed-org-reader-01");
+
+    String facilityId =
+        createFacility(
+            ORG_CURATOR,
+            "ORGANIZATION",
+            "facility-create-01",
+            "North Receiving Site",
+            organizationId);
+    assertThat(
+            createFacility(
+                ORG_CURATOR,
+                "ORGANIZATION",
+                "facility-create-01",
+                "North Receiving Site",
+                organizationId))
+        .isEqualTo(facilityId);
+    grant(
+        ADMIN,
+        FACILITY_CURATOR,
+        "DirectoryRead",
+        "FACILITY",
+        organizationId,
+        facilityId,
+        "seed-facility-reader-01");
+
+    mockMvc
+        .perform(
+            get("/api/v1/directory/organizations/{id}", organizationId)
+                .header("Authorization", bearer(token(ORG_CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "ORGANIZATION")
+                .header("X-AyuVahak-Organization-Id", organizationId))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.id").value(organizationId))
+        .andExpect(jsonPath("$.name").value("North Coordination"))
+        .andExpect(jsonPath("$.status").value("ACTIVE"))
+        .andExpect(jsonPath("$.version").value(1))
+        .andExpect(jsonPath("$.source.issuer").value("urn:synthetic:facility-registry"))
+        .andExpect(jsonPath("$.provenance.method").value("MANUAL_REVIEW"));
+
+    mockMvc
+        .perform(
+            get("/api/v1/directory/facilities/{id}", facilityId)
+                .header("Authorization", bearer(token(FACILITY_CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", organizationId)
+                .header("X-AyuVahak-Facility-Id", facilityId))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.id").value(facilityId))
+        .andExpect(jsonPath("$.managingOrganizationId").value(organizationId))
+        .andExpect(jsonPath("$.name").value("North Receiving Site"))
+        .andExpect(jsonPath("$.version").value(1));
+
+    assertThat(count("SELECT COUNT(*) FROM directory.organization")).isEqualTo(1);
+    assertThat(count("SELECT COUNT(*) FROM directory.facility")).isEqualTo(1);
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code IN "
+                    + "('DIRECTORY_ORGANIZATION_CREATE', 'DIRECTORY_FACILITY_CREATE')"))
+        .isEqualTo(2);
+  }
+
+  @Test
+  void replaysCreateAndCorrectionCommandsAndRejectsStaleVersions() throws Exception {
+    grant(ADMIN, CURATOR, "DirectoryCuration", "PLATFORM", null, null, "seed-curator-02");
+    grant(ADMIN, CURATOR, "DirectoryRead", "PLATFORM", null, null, "seed-reader-02");
+    String organizationId = createOrganization(CURATOR, "org-idempotency-01", "West Coordination");
+    assertThat(createOrganization(CURATOR, "org-idempotency-01", "West Coordination"))
+        .isEqualTo(organizationId);
+    assertThat(count("SELECT COUNT(*) FROM directory.organization")).isEqualTo(1);
+
+    mockMvc
+        .perform(
+            patch("/api/v1/directory/organizations/{id}", organizationId)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", "org-correction-01")
+                .contentType("application/json")
+                .content(correctionBody(1, "West Regional Coordination", "CORRECTION_01")))
+        .andExpect(status().isNoContent());
+    mockMvc
+        .perform(
+            patch("/api/v1/directory/organizations/{id}", organizationId)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", "org-correction-01")
+                .contentType("application/json")
+                .content(correctionBody(1, "West Regional Coordination", "CORRECTION_01")))
+        .andExpect(status().isNoContent());
+
+    mockMvc
+        .perform(
+            get("/api/v1/directory/organizations/{id}", organizationId)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.name").value("West Regional Coordination"))
+        .andExpect(jsonPath("$.version").value(2));
+
+    mockMvc
+        .perform(
+            patch("/api/v1/directory/organizations/{id}", organizationId)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", "org-correction-stale-01")
+                .contentType("application/json")
+                .content(correctionBody(1, "Stale Update", "CORRECTION_02")))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("DIRECTORY_VERSION_CONFLICT"));
+    assertThat(count("SELECT COUNT(*) FROM directory.organization_revision")).isEqualTo(1);
+
+    mockMvc
+        .perform(
+            patch("/api/v1/directory/organizations/{id}", organizationId)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", "org-correction-reused-01")
+                .contentType("application/json")
+                .content(correctionBody(2, "Another Name", "CORRECTION_03")))
+        .andExpect(status().isNoContent());
+    mockMvc
+        .perform(
+            patch("/api/v1/directory/organizations/{id}", organizationId)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", "org-correction-reused-01")
+                .contentType("application/json")
+                .content(correctionBody(2, "Different Name", "CORRECTION_03")))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("IDEMPOTENCY_KEY_REUSED"));
+  }
+
+  @Test
+  void concurrentCreateRetryProducesOneOrganizationAndOneAuditRecord() throws Exception {
+    grant(ADMIN, CURATOR, "DirectoryCuration", "PLATFORM", null, null, "seed-curator-concurrent");
+    String authorization = bearer(token(CURATOR));
+    String body = organizationBody("Concurrent Coordination");
+    CountDownLatch ready = new CountDownLatch(2);
+    CountDownLatch start = new CountDownLatch(1);
+    ExecutorService workers = Executors.newFixedThreadPool(2);
+    try {
+      var first = workers.submit(() -> concurrentCreate(authorization, body, ready, start));
+      var second = workers.submit(() -> concurrentCreate(authorization, body, ready, start));
+      assertThat(ready.await(10, TimeUnit.SECONDS)).isTrue();
+      start.countDown();
+
+      MvcResult firstResult = first.get(10, TimeUnit.SECONDS);
+      MvcResult secondResult = second.get(10, TimeUnit.SECONDS);
+      assertThat(firstResult.getResponse().getStatus()).isEqualTo(201);
+      assertThat(secondResult.getResponse().getStatus()).isEqualTo(201);
+      String firstId =
+          com.jayway.jsonpath.JsonPath.read(firstResult.getResponse().getContentAsString(), "$.id");
+      String secondId =
+          com.jayway.jsonpath.JsonPath.read(
+              secondResult.getResponse().getContentAsString(), "$.id");
+      assertThat(secondId).isEqualTo(firstId);
+      assertThat(count("SELECT COUNT(*) FROM directory.organization")).isEqualTo(1);
+      assertThat(
+              count(
+                  "SELECT COUNT(*) FROM audit.audit_record "
+                      + "WHERE action_code = 'DIRECTORY_ORGANIZATION_CREATE'"))
+          .isEqualTo(1);
+    } finally {
+      workers.shutdownNow();
+    }
+  }
+
+  @Test
+  void directoryOwnedScopesRejectMismatchedTargetsAndGrantAdministrationFailsClosed()
+      throws Exception {
+    grant(ADMIN, CURATOR, "DirectoryCuration", "PLATFORM", null, null, "seed-curator-03");
+    String organizationId = createOrganization(CURATOR, "org-scope-a", "Scope A");
+    String otherOrganizationId = createOrganization(CURATOR, "org-scope-b", "Scope B");
+    String facilityId =
+        createFacility(CURATOR, "PLATFORM", "facility-scope-a", "Facility A", organizationId);
+    var mismatchedFacilityScope =
+        RequestedExecutionScope.facility(
+            new ExternalReference(
+                new IssuerId(DIRECTORY_ISSUER), "Organization", otherOrganizationId),
+            new ExternalReference(new IssuerId(DIRECTORY_ISSUER), "Facility", facilityId));
+    assertThat(scopeOwners).hasSize(1);
+    assertThat(scopeOwners.getFirst().isValid(mismatchedFacilityScope)).isFalse();
+    assertThat(executionScopeValidator.isValidFor(null, mismatchedFacilityScope)).isFalse();
+
+    grant(
+        ADMIN,
+        ORG_CURATOR,
+        "DirectoryCuration",
+        "ORGANIZATION",
+        organizationId,
+        null,
+        "seed-org-curator-03");
+    mockMvc
+        .perform(
+            post("/api/v1/directory/facilities")
+                .header("Authorization", bearer(token(ORG_CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "ORGANIZATION")
+                .header("X-AyuVahak-Organization-Id", organizationId)
+                .header("Idempotency-Key", "facility-wrong-org-01")
+                .contentType("application/json")
+                .content(facilityBody(otherOrganizationId, "Rejected Facility")))
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.code").value("DIRECTORY_SCOPE_MISMATCH"));
+
+    String missingOrganizationId = InternalId.generate().toString();
+    mockMvc
+        .perform(
+            post("/api/v1/directory/facilities")
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", "facility-missing-org-01")
+                .contentType("application/json")
+                .content(facilityBody(missingOrganizationId, "Missing Owner Site")))
+        .andExpect(status().isNotFound())
+        .andExpect(jsonPath("$.code").value("DIRECTORY_NOT_FOUND"));
+
+    String inactiveOrganizationId =
+        createOrganization(CURATOR, "org-inactive-owner-01", "Inactive Owner");
+    jdbc.update(
+        "UPDATE directory.organization SET lifecycle_status = 'INACTIVE' "
+            + "WHERE organization_id = ?",
+        java.util.UUID.fromString(inactiveOrganizationId));
+    mockMvc
+        .perform(
+            post("/api/v1/directory/facilities")
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", "facility-inactive-org-01")
+                .contentType("application/json")
+                .content(facilityBody(inactiveOrganizationId, "Inactive Owner Site")))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("DIRECTORY_INACTIVE"));
+
+    String invalidFacilityGrant =
+        grantBody(
+            "synthetic-reader-25", "DirectoryRead", "FACILITY", otherOrganizationId, facilityId);
+    mockMvc
+        .perform(
+            post("/api/v1/platform/access-grants")
+                .header("Authorization", bearer(token(ADMIN)))
+                .header(PlatformAccessGrantController.EXECUTION_SCOPE_HEADER, "PLATFORM")
+                .header("Idempotency-Key", "invalid-owner-grant-01")
+                .contentType("application/json")
+                .content(invalidFacilityGrant))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("INVALID_EXECUTION_SCOPE"));
+
+    mockMvc
+        .perform(
+            post("/api/v1/platform/access-grants")
+                .header("Authorization", bearer(token(ADMIN)))
+                .header(PlatformAccessGrantController.EXECUTION_SCOPE_HEADER, "PLATFORM")
+                .header("Idempotency-Key", "self-grant-directory-01")
+                .contentType("application/json")
+                .content(grantBody(ADMIN, "DirectoryRead", "ORGANIZATION", organizationId, null)))
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.code").value("AUTHORIZATION_DENIED"));
+
+    mockMvc
+        .perform(
+            post("/api/v1/platform/access-grants")
+                .header("Authorization", bearer(token(UNAUTHORIZED)))
+                .header(PlatformAccessGrantController.EXECUTION_SCOPE_HEADER, "PLATFORM")
+                .header("Idempotency-Key", "unauthorized-grant-directory-01")
+                .contentType("application/json")
+                .content(
+                    grantBody(
+                        "synthetic-reader-26",
+                        "DirectoryRead",
+                        "ORGANIZATION",
+                        organizationId,
+                        null)))
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.code").value("AUTHORIZATION_DENIED"));
+
+    mockMvc
+        .perform(
+            get("/api/v1/directory/facilities/{id}", facilityId)
+                .header("Authorization", bearer(token(ORG_CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", otherOrganizationId)
+                .header("X-AyuVahak-Facility-Id", facilityId))
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.code").value("INVALID_EXECUTION_SCOPE"));
+
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM identity_access.authorization_grant WHERE authority_code='DirectoryRead'"))
+        .isZero();
+    assertThat(count("SELECT COUNT(*) FROM directory.facility")).isEqualTo(1);
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE outcome = 'DENIED' "
+                    + "AND action_code IN ('ACCESS_GRANT_CREATE', 'DIRECTORY_FACILITY_CREATE')"))
+        .isGreaterThanOrEqualTo(3);
+  }
+
+  @Test
+  void failedRequiredAuditRollsBackTheFactAndItsOwnerLocalReceipt() throws Exception {
+    grant(ADMIN, CURATOR, "DirectoryCuration", "PLATFORM", null, null, "seed-curator-04");
+    jdbc.execute(
+        "CREATE FUNCTION test_fail_audit_insert() RETURNS trigger LANGUAGE plpgsql AS "
+            + "'BEGIN RAISE EXCEPTION ''synthetic audit failure''; END'");
+    jdbc.execute(
+        "CREATE TRIGGER test_fail_audit_insert BEFORE INSERT ON audit.audit_record "
+            + "FOR EACH ROW EXECUTE FUNCTION test_fail_audit_insert()");
+
+    mockMvc
+        .perform(
+            post("/api/v1/directory/organizations")
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", "audit-failure-org-01")
+                .contentType("application/json")
+                .content(organizationBody("Audit Must Roll Back")))
+        .andExpect(status().isServiceUnavailable())
+        .andExpect(jsonPath("$.code").value("AUDIT_UNAVAILABLE"));
+
+    assertThat(count("SELECT COUNT(*) FROM directory.organization")).isZero();
+    assertThat(count("SELECT COUNT(*) FROM directory.command_receipt")).isZero();
+  }
+
+  @Test
+  void deactivationPreservesTheFacilityAndAdvancesItsVersion() throws Exception {
+    grant(ADMIN, CURATOR, "DirectoryCuration", "PLATFORM", null, null, "seed-curator-05");
+    grant(ADMIN, CURATOR, "DirectoryRead", "PLATFORM", null, null, "seed-reader-05");
+    String organizationId =
+        createOrganization(CURATOR, "org-deactivate-01", "Central Coordination");
+    String facilityId =
+        createFacility(
+            CURATOR, "PLATFORM", "facility-deactivate-01", "Central Site", organizationId);
+
+    String correction = correctionBody(1, "Central Hospital Annex", "FACILITY_CORRECTION_01");
+    mockMvc
+        .perform(
+            patch("/api/v1/directory/facilities/{id}", facilityId)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", "facility-correction-01")
+                .contentType("application/json")
+                .content(correction))
+        .andExpect(status().isNoContent());
+    mockMvc
+        .perform(
+            patch("/api/v1/directory/facilities/{id}", facilityId)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", "facility-correction-01")
+                .contentType("application/json")
+                .content(correction))
+        .andExpect(status().isNoContent());
+
+    mockMvc
+        .perform(
+            post("/api/v1/directory/facilities/{id}/deactivation", facilityId)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", "facility-deactivate-01")
+                .contentType("application/json")
+                .content(
+                    "{\"expectedVersion\":2,\"provenance\":{" + provenanceJson("RETIRED") + "}}"))
+        .andExpect(status().isNoContent());
+
+    mockMvc
+        .perform(
+            get("/api/v1/directory/facilities/{id}", facilityId)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.status").value("INACTIVE"))
+        .andExpect(jsonPath("$.name").value("Central Hospital Annex"))
+        .andExpect(jsonPath("$.version").value(3));
+
+    assertThat(count("SELECT COUNT(*) FROM directory.facility")).isEqualTo(1);
+    assertThat(count("SELECT COUNT(*) FROM directory.facility_revision")).isEqualTo(2);
+  }
+
+  private String createOrganization(String actor, String key, String name) throws Exception {
+    var response =
+        mockMvc
+            .perform(
+                post("/api/v1/directory/organizations")
+                    .header("Authorization", bearer(token(actor)))
+                    .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                    .header("Idempotency-Key", key)
+                    .contentType("application/json")
+                    .content(organizationBody(name)))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.id").isNotEmpty())
+            .andReturn();
+    String id =
+        com.jayway.jsonpath.JsonPath.read(response.getResponse().getContentAsString(), "$.id");
+    assertThat(InternalId.parse(id).value().version()).isEqualTo(4);
+    return id;
+  }
+
+  private MvcResult concurrentCreate(
+      String authorization, String body, CountDownLatch ready, CountDownLatch start)
+      throws Exception {
+    ready.countDown();
+    if (!start.await(10, TimeUnit.SECONDS)) {
+      throw new IllegalStateException("concurrent Directory test did not start");
+    }
+    return mockMvc
+        .perform(
+            post("/api/v1/directory/organizations")
+                .header("Authorization", authorization)
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", "org-concurrent-create-01")
+                .contentType("application/json")
+                .content(body))
+        .andReturn();
+  }
+
+  private String createFacility(
+      String actor, String scopeKind, String key, String name, String organizationId)
+      throws Exception {
+    var request =
+        post("/api/v1/directory/facilities")
+            .header("Authorization", bearer(token(actor)))
+            .header("X-AyuVahak-Execution-Scope", scopeKind)
+            .header("Idempotency-Key", key)
+            .contentType("application/json")
+            .content(facilityBody(organizationId, name));
+    if ("ORGANIZATION".equals(scopeKind)) {
+      request.header("X-AyuVahak-Organization-Id", organizationId);
+    }
+    if ("FACILITY".equals(scopeKind)) {
+      throw new IllegalArgumentException(
+          "facility-scoped creation is not valid for a new Facility");
+    }
+    var response = mockMvc.perform(request).andExpect(status().isCreated()).andReturn();
+    String id =
+        com.jayway.jsonpath.JsonPath.read(response.getResponse().getContentAsString(), "$.id");
+    assertThat(InternalId.parse(id).value().version()).isEqualTo(4);
+    return id;
+  }
+
+  private void grant(
+      String administrator,
+      String grantee,
+      String authority,
+      String scope,
+      String organizationId,
+      String facilityId,
+      String key)
+      throws Exception {
+    mockMvc
+        .perform(
+            post("/api/v1/platform/access-grants")
+                .header("Authorization", bearer(token(administrator)))
+                .header(PlatformAccessGrantController.EXECUTION_SCOPE_HEADER, "PLATFORM")
+                .header("Idempotency-Key", key)
+                .contentType("application/json")
+                .content(grantBody(grantee, authority, scope, organizationId, facilityId)))
+        .andExpect(status().isCreated());
+  }
+
+  private static String grantBody(
+      String grantee, String authority, String scope, String organizationId, String facilityId) {
+    String scopeJson =
+        switch (scope) {
+          case "PLATFORM" -> "\"kind\":\"PLATFORM\"";
+          case "ORGANIZATION" ->
+              "\"kind\":\"ORGANIZATION\",\"organization\":{"
+                  + ref(organizationId, "Organization")
+                  + "}";
+          case "FACILITY" ->
+              "\"kind\":\"FACILITY\",\"organization\":{"
+                  + ref(organizationId, "Organization")
+                  + "},\"facility\":{"
+                  + ref(facilityId, "Facility")
+                  + "}";
+          default -> throw new IllegalArgumentException("unknown grant scope");
+        };
+    return "{\"principal\":{\"kind\":\"HUMAN\",\"issuer\":\""
+        + ISSUER
+        + "\",\"subject\":\""
+        + grantee
+        + "\"},\"authority\":\""
+        + authority
+        + "\",\"scope\":{"
+        + scopeJson
+        + "},\"reasonCode\":\"ACCESS_SETUP\"}";
+  }
+
+  private static String ref(String id, String type) {
+    return "\"issuer\":\"" + DIRECTORY_ISSUER + "\",\"identifier\":\"" + id + "\"";
+  }
+
+  private static String organizationBody(String name) {
+    return "{\"name\":\""
+        + name
+        + "\",\"source\":{"
+        + sourceJson("Organization")
+        + "},\"provenance\":{"
+        + provenanceJson("INITIAL_ENTRY")
+        + "}}";
+  }
+
+  private static String facilityBody(String organizationId, String name) {
+    return "{\"name\":\""
+        + name
+        + "\",\"managingOrganizationId\":\""
+        + organizationId
+        + "\",\"source\":{"
+        + sourceJson("Facility")
+        + "},\"provenance\":{"
+        + provenanceJson("INITIAL_ENTRY")
+        + "}}";
+  }
+
+  private static String correctionBody(long expectedVersion, String name, String reasonCode) {
+    return "{\"expectedVersion\":"
+        + expectedVersion
+        + ",\"name\":\""
+        + name
+        + "\",\"provenance\":{"
+        + provenanceJson(reasonCode)
+        + "}}";
+  }
+
+  private static String sourceJson(String resourceType) {
+    return "\"issuer\":\"urn:synthetic:facility-registry\",\"resourceType\":\""
+        + resourceType
+        + "\",\"reference\":\"synthetic-"
+        + resourceType.toLowerCase()
+        + "-001\"";
+  }
+
+  private static String provenanceJson(String reasonCode) {
+    return "\"method\":\"MANUAL_REVIEW\",\"observedAt\":\"2026-10-08T09:00:00Z\",\"reasonCode\":\""
+        + reasonCode
+        + "\"";
+  }
+
+  private void seedPlatformAdministrator() {
+    jdbc.update(
+        "INSERT INTO identity_access.authorization_grant (grant_id, principal_kind, "
+            + "principal_issuer, principal_identifier_type, principal_identifier, authority_code, "
+            + "scope_kind, grant_status, created_at) VALUES (gen_random_uuid(), 'HUMAN', ?, "
+            + "'subject', ?, 'AccessGrantAdministration', 'PLATFORM', 'ACTIVE', CURRENT_TIMESTAMP)",
+        ISSUER,
+        ADMIN);
+  }
+
+  private int count(String sql) {
+    return jdbc.queryForObject(sql, Integer.class);
+  }
+
+  private String token(String subject) throws Exception {
+    SignedJWT jwt =
+        new SignedJWT(
+            new JWSHeader.Builder(JWSAlgorithm.RS256)
+                .type(JOSEObjectType.JWT)
+                .keyID(SIGNING_KEY.getKeyID())
+                .build(),
+            new JWTClaimsSet.Builder()
+                .issuer(ISSUER)
+                .subject(subject)
+                .audience(AUDIENCE)
+                .issueTime(Date.from(Instant.now().minusSeconds(5)))
+                .notBeforeTime(Date.from(Instant.now().minusSeconds(1)))
+                .expirationTime(Date.from(Instant.now().plusSeconds(300)))
+                .claim("typ", "Bearer")
+                .build());
+    jwt.sign(new RSASSASigner(SIGNING_KEY));
+    return jwt.serialize();
+  }
+
+  private static RSAKey newSigningKey(String keyId) {
+    try {
+      return new RSAKeyGenerator(2048).keyID(keyId).generate();
+    } catch (Exception exception) {
+      throw new IllegalStateException("Could not create a synthetic signing key.", exception);
+    }
+  }
+
+  private static String bearer(String token) {
+    return "Bearer " + token;
+  }
+}
