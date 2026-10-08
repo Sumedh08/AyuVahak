@@ -22,20 +22,17 @@ import java.time.Instant;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
-import java.util.Properties;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.ayuvahak.platform.api.CorrelationIdFilter;
 import org.ayuvahak.platform.api.PlatformExceptionHandler;
 import org.ayuvahak.platform.api.SystemInformationController;
+import org.ayuvahak.testsupport.authentication.AuthenticationTestConfiguration;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.context.properties.EnableConfigurationProperties;
-import org.springframework.boot.info.BuildProperties;
-import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
@@ -67,7 +64,7 @@ import org.springframework.web.bind.annotation.RestController;
   CorrelationIdFilter.class,
   PlatformExceptionHandler.class,
   AuthenticationHttpIntegrationTest.ActorProbe.class,
-  AuthenticationHttpIntegrationTest.AuthenticationTestConfiguration.class
+  AuthenticationTestConfiguration.class
 })
 @ExtendWith(OutputCaptureExtension.class)
 class AuthenticationHttpIntegrationTest {
@@ -79,6 +76,12 @@ class AuthenticationHttpIntegrationTest {
   private static HttpServer jwksServer;
 
   @Autowired private MockMvc mockMvc;
+  @Autowired private AuthenticationTestConfiguration.TestAuditRecordAppender auditAppender;
+
+  @org.junit.jupiter.api.BeforeEach
+  void resetAuditFixture() {
+    auditAppender.reset();
+  }
 
   @AfterEach
   void restoreLocalJwksAvailability() {
@@ -139,6 +142,24 @@ class AuthenticationHttpIntegrationTest {
         .andExpect(jsonPath("$.code").value("AUTHENTICATION_REQUIRED"))
         .andExpect(jsonPath("$.correlationId").value("auth-corr-1"))
         .andExpect(header().string("X-Correlation-ID", "auth-corr-1"));
+    assertThat(auditAppender.lastEvidence())
+        .satisfies(
+            evidence -> {
+              assertThat(evidence.actionCode()).isEqualTo("AUTHENTICATION_FAILURE");
+              assertThat(evidence.authenticationEvidence())
+                  .isEqualTo(org.ayuvahak.platform.audit.domain.AuditAuthenticationEvidence.NONE);
+              assertThat(evidence.correlationId().value()).isEqualTo("auth-corr-1");
+            });
+  }
+
+  @Test
+  void returnsAuditUnavailableWhenAuthenticationFailureCannotBeRecorded() throws Exception {
+    auditAppender.failWrites();
+
+    mockMvc
+        .perform(get("/api/v1/platform/__test/actor"))
+        .andExpect(status().isServiceUnavailable())
+        .andExpect(jsonPath("$.code").value("AUDIT_UNAVAILABLE"));
   }
 
   @Test
@@ -383,19 +404,6 @@ class AuthenticationHttpIntegrationTest {
     } catch (Exception exception) {
       throw new IllegalStateException(
           "Could not create a deterministic local test key.", exception);
-    }
-  }
-
-  @TestConfiguration(proxyBeanMethods = false)
-  @EnableConfigurationProperties(AuthenticationProperties.class)
-  static class AuthenticationTestConfiguration {
-    @org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean(
-        BuildProperties.class)
-    @org.springframework.context.annotation.Bean
-    BuildProperties buildProperties() {
-      Properties properties = new Properties();
-      properties.setProperty("version", "0.1.0-SNAPSHOT");
-      return new BuildProperties(properties);
     }
   }
 

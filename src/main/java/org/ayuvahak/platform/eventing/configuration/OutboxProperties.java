@@ -14,6 +14,7 @@ public class OutboxProperties {
   private Duration leaseRenewalInterval = Duration.ofSeconds(20);
   private Duration retryBaseDelay = Duration.ofSeconds(1);
   private Duration retryMaximumDelay = Duration.ofMinutes(5);
+  private Duration deliveredEventRetention;
   private Duration pollInterval = Duration.ofSeconds(1);
   private int maximumAttempts = 10;
   private int batchSize = 10;
@@ -45,6 +46,14 @@ public class OutboxProperties {
 
   public Duration getRetryMaximumDelay() {
     return retryMaximumDelay;
+  }
+
+  public Duration getDeliveredEventRetention() {
+    return deliveredEventRetention;
+  }
+
+  public void setDeliveredEventRetention(Duration deliveredEventRetention) {
+    this.deliveredEventRetention = deliveredEventRetention;
   }
 
   public void setRetryMaximumDelay(Duration retryMaximumDelay) {
@@ -91,6 +100,7 @@ public class OutboxProperties {
         && positive(retryBaseDelay)
         && positive(retryMaximumDelay)
         && retryMaximumDelay.compareTo(retryBaseDelay) >= 0
+        && positive(deliveredEventRetention)
         && positive(pollInterval)
         && maximumAttempts >= 1
         && maximumAttempts <= 100

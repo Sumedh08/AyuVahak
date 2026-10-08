@@ -1,9 +1,20 @@
 package org.ayuvahak.platform.authentication;
 
 import java.time.Duration;
+import java.time.Instant;
+import java.util.Optional;
 import org.ayuvahak.platform.api.CorrelationIdFilter;
 import org.ayuvahak.platform.api.PlatformErrorCode;
+import org.ayuvahak.platform.audit.application.AuditPersistenceUnavailableException;
+import org.ayuvahak.platform.audit.application.AuditWriter;
+import org.ayuvahak.platform.audit.domain.AuditActionKind;
+import org.ayuvahak.platform.audit.domain.AuditAuthenticationEvidence;
+import org.ayuvahak.platform.audit.domain.AuditAuthorizationOutcome;
+import org.ayuvahak.platform.audit.domain.AuditEvidence;
+import org.ayuvahak.platform.audit.domain.AuditOutcome;
+import org.ayuvahak.platform.core.CorrelationId;
 import org.ayuvahak.platform.core.IssuerId;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -125,10 +136,50 @@ public class AyuVahakSecurityConfiguration {
   }
 
   @Bean
-  AuthenticationEntryPoint problemAuthenticationEntryPoint(ObjectMapper objectMapper) {
+  AuthenticationEntryPoint problemAuthenticationEntryPoint(
+      ObjectMapper objectMapper, ObjectProvider<AuditWriter> auditWriters) {
     return (request, response, exception) -> {
       boolean keySourceUnavailable =
           hasCause(exception, TrustedKeySourceUnavailableException.class);
+      boolean credentialPresented = request.getHeader("Authorization") != null;
+      String correlationValue = response.getHeader(CorrelationIdFilter.HEADER_NAME);
+      CorrelationId correlationId =
+          correlationValue == null ? CorrelationId.generate() : new CorrelationId(correlationValue);
+      try {
+        auditWriters
+            .getObject()
+            .recordNonMutating(
+                new AuditEvidence(
+                    AuditActionKind.SECURITY_OUTCOME,
+                    Optional.empty(),
+                    Optional.empty(),
+                    "AUTHENTICATION_FAILURE",
+                    "ApiRequest",
+                    Optional.empty(),
+                    Instant.now(),
+                    AuditOutcome.DENIED,
+                    Optional.of(
+                        keySourceUnavailable
+                            ? "TRUST_SOURCE_UNAVAILABLE"
+                            : credentialPresented ? "INVALID_CREDENTIAL" : "MISSING_CREDENTIAL"),
+                    keySourceUnavailable
+                        ? AuditAuthenticationEvidence.TRUST_SOURCE_UNAVAILABLE
+                        : credentialPresented
+                            ? AuditAuthenticationEvidence.INVALID_CREDENTIAL
+                            : AuditAuthenticationEvidence.NONE,
+                    AuditAuthorizationOutcome.NOT_EVALUATED,
+                    correlationId));
+      } catch (AuditPersistenceUnavailableException auditUnavailable) {
+        writeProblem(
+            request,
+            response,
+            objectMapper,
+            HttpStatus.SERVICE_UNAVAILABLE,
+            PlatformErrorCode.AUDIT_UNAVAILABLE,
+            "Authentication audit unavailable",
+            "The request remains denied because required security evidence could not be recorded.");
+        return;
+      }
       HttpStatus status =
           keySourceUnavailable ? HttpStatus.SERVICE_UNAVAILABLE : HttpStatus.UNAUTHORIZED;
       PlatformErrorCode code =

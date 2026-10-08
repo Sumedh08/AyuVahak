@@ -11,6 +11,7 @@ import org.ayuvahak.platform.eventing.application.DeliveryReceiptClaim;
 import org.ayuvahak.platform.eventing.application.EventDeliveryOperationsStore;
 import org.ayuvahak.platform.eventing.application.EventDeliverySummary;
 import org.ayuvahak.platform.eventing.application.ReplayCandidate;
+import org.ayuvahak.platform.idempotency.configuration.CommandIdempotencyProperties;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
@@ -21,9 +22,13 @@ import org.springframework.stereotype.Repository;
 public class PostgresEventDeliveryOperationsStore implements EventDeliveryOperationsStore {
 
   private final JdbcTemplate jdbc;
+  private final CommandIdempotencyProperties idempotencyProperties;
 
-  public PostgresEventDeliveryOperationsStore(JdbcTemplate jdbc) {
-    this.jdbc = jdbc;
+  public PostgresEventDeliveryOperationsStore(
+      JdbcTemplate jdbc, CommandIdempotencyProperties idempotencyProperties) {
+    this.jdbc = java.util.Objects.requireNonNull(jdbc, "jdbc");
+    this.idempotencyProperties =
+        java.util.Objects.requireNonNull(idempotencyProperties, "idempotencyProperties");
   }
 
   @Override
@@ -81,7 +86,10 @@ public class PostgresEventDeliveryOperationsStore implements EventDeliveryOperat
 
   @Override
   public void configureBoundedReceiptWait() {
-    jdbc.execute("SET LOCAL lock_timeout = '2s'");
+    jdbc.execute(
+        "SET LOCAL lock_timeout = '"
+            + idempotencyProperties.getReceiptLockWait().toMillis()
+            + "ms'");
   }
 
   @Override

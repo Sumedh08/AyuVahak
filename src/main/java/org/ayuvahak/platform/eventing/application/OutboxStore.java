@@ -20,6 +20,8 @@ public interface OutboxStore {
 
   boolean markDelivered(LeaseToken token, Instant now);
 
+  int purgeDeliveredBefore(Instant cutoff, int limit);
+
   DeliveryFailureResult markFailed(
       LeaseToken token, Instant failedAt, Instant nextAttemptAt, int maximumAttempts);
 }

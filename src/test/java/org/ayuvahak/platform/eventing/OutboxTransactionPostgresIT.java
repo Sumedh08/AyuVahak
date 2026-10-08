@@ -63,7 +63,8 @@ import tools.jackson.databind.ObjectMapper;
       "ayuvahak.authentication.service-client-ids=synthetic-worker",
       "ayuvahak.authentication.allow-http=true",
       "ayuvahak.eventing.outbox.dispatcher-enabled=false",
-      "ayuvahak.eventing.outbox.batch-size=1"
+      "ayuvahak.eventing.outbox.batch-size=1",
+      "ayuvahak.eventing.outbox.delivered-event-retention=PT24H"
     })
 @Import(OutboxTransactionPostgresIT.TestBeans.class)
 @Testcontainers
@@ -105,6 +106,7 @@ class OutboxTransactionPostgresIT {
         "CREATE TABLE IF NOT EXISTS test_outbox_owner.synthetic_fact "
             + "(fact_id uuid PRIMARY KEY)");
     jdbcTemplate.update("DELETE FROM test_outbox_owner.synthetic_fact");
+    jdbcTemplate.update("DELETE FROM platform_eventing.delivery_command_receipt");
     jdbcTemplate.update("DELETE FROM platform_eventing.outbox_delivery");
     jdbcTemplate.update("DELETE FROM platform_eventing.internal_event");
     clock.set(Instant.parse("2026-10-08T00:00:00Z"));
@@ -173,6 +175,59 @@ class OutboxTransactionPostgresIT {
               assertThat(delivered.eventId()).isEqualTo(event.eventId());
               assertThat(delivered.eventType()).isEqualTo(createdEventType());
             });
+  }
+
+  @Test
+  void purgesOnlyDeliveredEventsAfterExplicitRetention() {
+    EventEnvelope stalled =
+        event(InternalId.generate(), 1, "grant/retention-stalled", createdEventType());
+    record(stalled);
+    handler.failNext(10);
+    for (int attempt = 1; attempt <= 10; attempt++) {
+      if (attempt > 1) {
+        clock.advance(Duration.ofMinutes(5));
+      }
+      dispatcher.dispatchAvailable(clock.instant());
+    }
+    assertThat(deliveryState(stalled.eventId())).isEqualTo("STALLED");
+
+    EventEnvelope delivered =
+        event(InternalId.generate(), 1, "grant/retention-delivered", createdEventType());
+    EventEnvelope unhandled =
+        event(InternalId.generate(), 1, "grant/retention-unhandled", revokedEventType());
+    record(delivered);
+    record(unhandled);
+    dispatcher.dispatchAvailable(clock.instant());
+    dispatcher.dispatchAvailable(clock.instant());
+    dispatcher.dispatchAvailable(clock.instant());
+    assertThat(deliveryState(delivered.eventId())).isEqualTo("DELIVERED");
+    assertThat(deliveryState(unhandled.eventId())).isEqualTo("UNHANDLED");
+
+    jdbcTemplate.update(
+        "INSERT INTO platform_eventing.delivery_command_receipt "
+            + "(scope_digest, idempotency_key_digest, request_fingerprint, receipt_state, "
+            + "response_status, event_id, delivery_generation, recorded_at) "
+            + "VALUES (?, ?, ?, 'COMPLETED', 202, ?, 1, ?)",
+        "a".repeat(64),
+        "b".repeat(64),
+        "c".repeat(64),
+        delivered.eventId().value(),
+        java.sql.Timestamp.from(clock.instant()));
+
+    clock.advance(Duration.ofHours(48));
+    dispatcher.dispatchAvailable(clock.instant());
+
+    assertThat(eventCount(delivered.eventId())).isZero();
+    assertThat(
+            jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM platform_eventing.delivery_command_receipt WHERE event_id = ?",
+                Integer.class,
+                delivered.eventId().value()))
+        .isZero();
+    assertThat(eventCount(unhandled.eventId())).isEqualTo(1);
+    assertThat(deliveryState(unhandled.eventId())).isEqualTo("UNHANDLED");
+    assertThat(eventCount(stalled.eventId())).isEqualTo(1);
+    assertThat(deliveryState(stalled.eventId())).isEqualTo("STALLED");
   }
 
   @Test

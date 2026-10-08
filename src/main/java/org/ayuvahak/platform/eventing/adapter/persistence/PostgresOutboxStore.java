@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.UUID;
 import org.ayuvahak.platform.core.InternalId;
 import org.ayuvahak.platform.event.AggregatePosition;
 import org.ayuvahak.platform.event.EventEnvelope;
@@ -220,6 +221,38 @@ public class PostgresOutboxStore implements OutboxStore {
             token.leaseGeneration(),
             Timestamp.from(now))
         == 1;
+  }
+
+  @Override
+  public int purgeDeliveredBefore(Instant cutoff, int limit) {
+    Objects.requireNonNull(cutoff, "cutoff");
+    if (limit < 1 || limit > 1000) {
+      throw new IllegalArgumentException("purge limit must be between 1 and 1000");
+    }
+    return transaction.execute(
+        status -> {
+          List<UUID> expired =
+              jdbcTemplate.query(
+                  "SELECT e.event_id FROM platform_eventing.internal_event e "
+                      + "JOIN platform_eventing.outbox_delivery d "
+                      + "ON d.event_id = e.event_id "
+                      + "AND d.delivery_generation = e.current_delivery_generation "
+                      + "WHERE d.state = 'DELIVERED' AND d.updated_at <= ? "
+                      + "ORDER BY d.updated_at, e.event_id LIMIT ? FOR UPDATE OF e SKIP LOCKED",
+                  (rs, rowNum) -> rs.getObject("event_id", UUID.class),
+                  Timestamp.from(cutoff),
+                  limit);
+          for (UUID eventId : expired) {
+            jdbcTemplate.update(
+                "DELETE FROM platform_eventing.delivery_command_receipt WHERE event_id = ?",
+                eventId);
+            jdbcTemplate.update(
+                "DELETE FROM platform_eventing.outbox_delivery WHERE event_id = ?", eventId);
+            jdbcTemplate.update(
+                "DELETE FROM platform_eventing.internal_event WHERE event_id = ?", eventId);
+          }
+          return expired.size();
+        });
   }
 
   @Override

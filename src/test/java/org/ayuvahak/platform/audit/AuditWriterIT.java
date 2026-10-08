@@ -2,6 +2,10 @@ package org.ayuvahak.platform.audit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.time.Instant;
 import java.util.Optional;
@@ -26,9 +30,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.junit.jupiter.Container;
@@ -44,6 +50,7 @@ import org.testcontainers.utility.DockerImageName;
       "ayuvahak.authentication.service-client-ids=synthetic-worker",
       "ayuvahak.authentication.allow-http=true"
     })
+@AutoConfigureMockMvc
 @Testcontainers
 class AuditWriterIT {
 
@@ -80,6 +87,8 @@ class AuditWriterIT {
   @Autowired private PlatformTransactionManager transactionManager;
 
   @Autowired private Flyway flyway;
+
+  @Autowired private MockMvc mockMvc;
 
   @BeforeEach
   void prepareTestFixture() {
@@ -212,6 +221,49 @@ class AuditWriterIT {
         .hasMessage("Audit evidence could not be persisted");
 
     assertThat(protectedResultDisclosed).isFalse();
+  }
+
+  @Test
+  void unauthenticatedProtectedRequestDurablyRecordsMinimizedSecurityEvidence() throws Exception {
+    mockMvc
+        .perform(
+            get("/api/v1/platform/access-grants")
+                .header("X-Correlation-ID", "unauthenticated-audit-test"))
+        .andExpect(status().isUnauthorized())
+        .andExpect(content().contentTypeCompatibleWith("application/problem+json"))
+        .andExpect(jsonPath("$.code").value("AUTHENTICATION_REQUIRED"));
+
+    assertThat(
+            jdbcTemplate.queryForMap(
+                "SELECT action_kind, actor_kind, action_code, target_type, outcome, reason_code, "
+                    + "authentication_evidence, authorization_outcome, correlation_id "
+                    + "FROM audit.audit_record WHERE correlation_id = ?",
+                "unauthenticated-audit-test"))
+        .containsEntry("action_kind", "SECURITY_OUTCOME")
+        .containsEntry("actor_kind", null)
+        .containsEntry("action_code", "AUTHENTICATION_FAILURE")
+        .containsEntry("target_type", "ApiRequest")
+        .containsEntry("outcome", "DENIED")
+        .containsEntry("reason_code", "MISSING_CREDENTIAL")
+        .containsEntry("authentication_evidence", "NONE")
+        .containsEntry("authorization_outcome", "NOT_EVALUATED")
+        .containsEntry("correlation_id", "unauthenticated-audit-test");
+  }
+
+  @Test
+  void authenticationDenialReturnsAuditUnavailableWhenDurableCaptureFails() throws Exception {
+    jdbcTemplate.execute(
+        "CREATE OR REPLACE FUNCTION audit_test.reject_audit_insert() RETURNS trigger "
+            + "LANGUAGE plpgsql AS $$ BEGIN "
+            + "IF NEW.action_code IN ('TEST_FORCE_FAILURE', 'AUTHENTICATION_FAILURE') THEN "
+            + "RAISE EXCEPTION 'synthetic audit persistence failure'; END IF; "
+            + "RETURN NEW; END $$");
+
+    mockMvc
+        .perform(get("/api/v1/platform/access-grants"))
+        .andExpect(status().isServiceUnavailable())
+        .andExpect(content().contentTypeCompatibleWith("application/problem+json"))
+        .andExpect(jsonPath("$.code").value("AUDIT_UNAVAILABLE"));
   }
 
   @Test

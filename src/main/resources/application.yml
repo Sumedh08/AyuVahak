@@ -58,3 +58,8 @@ ayuvahak:
     audience: ${AYUVAHAK_OIDC_AUDIENCE:}
     service-client-ids: ${AYUVAHAK_OIDC_SERVICE_CLIENT_IDS:}
     allow-http: ${AYUVAHAK_OIDC_ALLOW_HTTP:false}
+  eventing:
+    outbox:
+      delivered-event-retention: ${AYUVAHAK_OUTBOX_DELIVERED_EVENT_RETENTION:}
+  idempotency:
+    receipt-lock-wait: ${AYUVAHAK_IDEMPOTENCY_RECEIPT_LOCK_WAIT:PT5S}

@@ -48,6 +48,8 @@ public final class OutboxDispatcher {
   /** Exposed to the local recovery harness so due work can be driven with a controlled instant. */
   public DispatchReport dispatchAvailable(Instant now) {
     Objects.requireNonNull(now, "now");
+    store.purgeDeliveredBefore(
+        now.minus(properties.getDeliveredEventRetention()), properties.getBatchSize());
     DispatchReport report = new DispatchReport(0, 0, 0, 0, 0);
     for (int index = 0; index < properties.getBatchSize(); index++) {
       Instant claimTime = index == 0 ? now : clock.instant();

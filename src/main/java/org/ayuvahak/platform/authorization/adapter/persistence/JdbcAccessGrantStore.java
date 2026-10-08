@@ -15,6 +15,7 @@ import org.ayuvahak.platform.core.ActorReference;
 import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.InternalId;
 import org.ayuvahak.platform.core.IssuerId;
+import org.ayuvahak.platform.idempotency.configuration.CommandIdempotencyProperties;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
@@ -51,9 +52,13 @@ public class JdbcAccessGrantStore implements AccessGrantStore {
       };
 
   private final JdbcTemplate jdbc;
+  private final CommandIdempotencyProperties idempotencyProperties;
 
-  public JdbcAccessGrantStore(JdbcTemplate jdbc) {
+  public JdbcAccessGrantStore(
+      JdbcTemplate jdbc, CommandIdempotencyProperties idempotencyProperties) {
     this.jdbc = Objects.requireNonNull(jdbc, "jdbc");
+    this.idempotencyProperties =
+        Objects.requireNonNull(idempotencyProperties, "idempotencyProperties");
   }
 
   @Override
@@ -168,7 +173,10 @@ public class JdbcAccessGrantStore implements AccessGrantStore {
 
   @Override
   public void configureBoundedReceiptWait() {
-    jdbc.execute("SET LOCAL lock_timeout = '2s'");
+    jdbc.execute(
+        "SET LOCAL lock_timeout = '"
+            + idempotencyProperties.getReceiptLockWait().toMillis()
+            + "ms'");
   }
 
   @Override

@@ -22,6 +22,7 @@ class DatabaseConfigurationTest {
             "ayuvahak.authentication.audience=ayuvahak-api",
             "ayuvahak.authentication.service-client-ids=synthetic-worker",
             "ayuvahak.authentication.allow-http=true",
+            "ayuvahak.eventing.outbox.delivered-event-retention=PT24H",
             "ayuvahak.database.url=",
             "ayuvahak.database.username=",
             "ayuvahak.database.password=")

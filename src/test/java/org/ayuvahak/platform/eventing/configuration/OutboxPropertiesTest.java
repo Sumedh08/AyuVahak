@@ -13,11 +13,13 @@ class OutboxPropertiesTest {
   @Test
   void usesTheApprovedBoundedRetryAndLeaseDefaults() {
     OutboxProperties properties = new OutboxProperties();
+    properties.setDeliveredEventRetention(Duration.ofDays(30));
 
     assertThat(properties.getLeaseDuration()).isEqualTo(Duration.ofSeconds(60));
     assertThat(properties.getLeaseRenewalInterval()).isEqualTo(Duration.ofSeconds(20));
     assertThat(properties.getRetryBaseDelay()).isEqualTo(Duration.ofSeconds(1));
     assertThat(properties.getRetryMaximumDelay()).isEqualTo(Duration.ofMinutes(5));
+    assertThat(properties.getDeliveredEventRetention()).isEqualTo(Duration.ofDays(30));
     assertThat(properties.getMaximumAttempts()).isEqualTo(10);
     assertThat(properties.isValid()).isTrue();
   }
@@ -29,6 +31,7 @@ class OutboxPropertiesTest {
     properties.setRetryBaseDelay(Duration.ofMinutes(6));
     properties.setMaximumAttempts(0);
     properties.setBatchSize(1001);
+    properties.setDeliveredEventRetention(Duration.ZERO);
 
     assertThat(properties.isValid()).isFalse();
   }
@@ -42,6 +45,7 @@ class OutboxPropertiesTest {
     properties.setRetryMaximumDelay(Duration.ofMinutes(2));
     properties.setMaximumAttempts(8);
     properties.setBatchSize(5);
+    properties.setDeliveredEventRetention(Duration.ofDays(7));
 
     assertThat(properties.isValid()).isTrue();
   }
@@ -59,6 +63,17 @@ class OutboxPropertiesTest {
               assertThat(context.getStartupFailure())
                   .hasStackTraceContaining("outbox timing and batch settings");
             });
+  }
+
+  @Test
+  void deliveredEventRetentionMustBeExplicitAndPositive() {
+    OutboxProperties properties = new OutboxProperties();
+
+    assertThat(properties.isValid()).isFalse();
+
+    properties.setDeliveredEventRetention(Duration.ofHours(24));
+
+    assertThat(properties.isValid()).isTrue();
   }
 
   @Configuration(proxyBeanMethods = false)
