@@ -22,7 +22,6 @@ import java.net.InetSocketAddress;
 import java.time.Instant;
 import java.util.Date;
 import java.util.Map;
-import org.ayuvahak.directory.application.DirectoryGrantTargetScopeValidator;
 import org.ayuvahak.directory.application.DirectoryScopeReferenceLookup;
 import org.ayuvahak.platform.authorization.adapter.api.PlatformAccessGrantController;
 import org.ayuvahak.platform.authorization.adapter.cli.BootstrapGrantApplication;
@@ -50,6 +49,7 @@ import org.springframework.boot.web.server.context.WebServerApplicationContext;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
+import org.springframework.context.annotation.Primary;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -678,30 +678,30 @@ class AccessGrantAdministrationIT {
   static class DirectoryGrantScopeFixtureConfiguration {
 
     @Bean
-    DirectoryGrantTargetScopeValidator directoryGrantScopeFixture() {
-      return new DirectoryGrantTargetScopeValidator(
-          new DirectoryScopeReferenceLookup() {
-            @Override
-            public boolean isActiveOrganization(ExternalReference organization) {
-              return organization.equals(
-                      new ExternalReference(
-                          new IssuerId("urn:ayuvahak:directory"), "Organization", "org-17"))
-                  || organization.equals(
-                      new ExternalReference(
-                          new IssuerId("urn:ayuvahak:directory"), "Organization", "org-18"));
-            }
+    @Primary
+    DirectoryScopeReferenceLookup directoryGrantScopeFixture() {
+      return new DirectoryScopeReferenceLookup() {
+        @Override
+        public boolean isActiveOrganization(ExternalReference organization) {
+          return organization.equals(
+                  new ExternalReference(
+                      new IssuerId("urn:ayuvahak:directory"), "Organization", "org-17"))
+              || organization.equals(
+                  new ExternalReference(
+                      new IssuerId("urn:ayuvahak:directory"), "Organization", "org-18"));
+        }
 
-            @Override
-            public boolean isActiveFacilityInOrganization(
-                ExternalReference organization, ExternalReference facility) {
-              return organization.equals(
-                      new ExternalReference(
-                          new IssuerId("urn:ayuvahak:directory"), "Organization", "org-17"))
-                  && facility.equals(
-                      new ExternalReference(
-                          new IssuerId("urn:ayuvahak:directory"), "Facility", "facility-23"));
-            }
-          });
+        @Override
+        public boolean isActiveFacilityInOrganization(
+            ExternalReference organization, ExternalReference facility) {
+          return organization.equals(
+                  new ExternalReference(
+                      new IssuerId("urn:ayuvahak:directory"), "Organization", "org-17"))
+              && facility.equals(
+                  new ExternalReference(
+                      new IssuerId("urn:ayuvahak:directory"), "Facility", "facility-23"));
+        }
+      };
     }
   }
 
