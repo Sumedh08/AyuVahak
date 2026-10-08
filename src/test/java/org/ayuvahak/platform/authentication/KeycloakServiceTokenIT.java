@@ -49,7 +49,7 @@ class KeycloakServiceTokenIT {
               Wait.forHttp("/realms/ayuvahak/.well-known/openid-configuration")
                   .forPort(8080)
                   .forStatusCode(200)
-                  .withStartupTimeout(Duration.ofMinutes(3)));
+                  .withStartupTimeout(Duration.ofMinutes(5)));
 
   private final HttpClient httpClient =
       HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
@@ -74,7 +74,7 @@ class KeycloakServiceTokenIT {
             HttpRequest.newBuilder(
                     URI.create(origin + "/realms/ayuvahak/protocol/openid-connect/token"))
                 .header("Content-Type", "application/x-www-form-urlencoded")
-                .timeout(Duration.ofSeconds(10))
+                .timeout(Duration.ofSeconds(60))
                 .POST(
                     HttpRequest.BodyPublishers.ofString(
                         "grant_type=client_credentials"

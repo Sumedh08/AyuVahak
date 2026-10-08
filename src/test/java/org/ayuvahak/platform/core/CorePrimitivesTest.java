@@ -110,6 +110,7 @@ class CorePrimitivesTest {
             SourceKind.INTEGRATION,
             SourceKind.SCHEDULED_WORK,
             SourceKind.BACKGROUND_WORK,
+            SourceKind.LOCAL_OPERATOR_COMMAND,
             SourceKind.OTHER_GOVERNED);
   }
 }

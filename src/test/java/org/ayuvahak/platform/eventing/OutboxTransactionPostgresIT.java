@@ -112,7 +112,7 @@ class OutboxTransactionPostgresIT {
   }
 
   @Test
-  void createsOnlyOutboxOwnedTablesInItsMigration() {
+  void createsOnlyEventingOwnedTablesInItsMigrations() {
     assertThat(flyway.info().applied())
         .extracting(migration -> migration.getVersion().getVersion())
         .contains("4");
@@ -121,7 +121,7 @@ class OutboxTransactionPostgresIT {
                 "SELECT table_name FROM information_schema.tables "
                     + "WHERE table_schema = 'platform_eventing' AND table_type = 'BASE TABLE'",
                 String.class))
-        .containsExactlyInAnyOrder("internal_event", "outbox_delivery");
+        .containsExactlyInAnyOrder("internal_event", "outbox_delivery", "delivery_command_receipt");
   }
 
   @Test

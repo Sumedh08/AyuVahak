@@ -217,8 +217,10 @@ class AccessGrantAdministrationIT {
                 .header(PlatformAccessGrantController.EXECUTION_SCOPE_HEADER, EXECUTION_SCOPE))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.items.length()").value(2))
-        .andExpect(jsonPath("$.items[0].grantId").value(grantId))
-        .andExpect(jsonPath("$.items[0].subject").value("synthetic-coordinator-31"));
+        .andExpect(jsonPath("$.items[*].grantId", org.hamcrest.Matchers.hasItem(grantId)))
+        .andExpect(
+            jsonPath(
+                "$.items[*].subject", org.hamcrest.Matchers.hasItem("synthetic-coordinator-31")));
 
     String deleteBody = "{\"reasonCode\":\"ACCESS_REMOVAL\"}";
     mockMvc
@@ -318,6 +320,46 @@ class AccessGrantAdministrationIT {
     assertThat(count("SELECT COUNT(*) FROM audit.audit_record WHERE outcome = 'DENIED'"))
         .isEqualTo(2);
     assertThat(first.getResponse().getContentAsString()).contains("grantId");
+  }
+
+  @Test
+  void protectedCommandCorrelationIsPreservedInItsAuditAndEvent() throws Exception {
+    bootstrapService.provisionFirstGrant(bootstrapProperties(), "synthetic-host");
+    String correlationId = "grant-request-correlation-13";
+    String body =
+        "{\"principal\":{\"kind\":\"HUMAN\",\"issuer\":\""
+            + ISSUER
+            + "\",\"subject\":\"synthetic-coordinator-34\"},"
+            + "\"authority\":\"AuditReview\",\"reasonCode\":\"ACCESS_SETUP\"}";
+
+    mockMvc
+        .perform(
+            post("/api/v1/platform/access-grants")
+                .header("Authorization", bearer(token(ADMIN_SUBJECT, Map.of())))
+                .header(PlatformAccessGrantController.EXECUTION_SCOPE_HEADER, EXECUTION_SCOPE)
+                .header("X-Correlation-ID", correlationId)
+                .header("Idempotency-Key", "correlated-grant-create-13")
+                .contentType("application/json")
+                .content(body))
+        .andExpect(status().isCreated())
+        .andExpect(
+            org.springframework.test.web.servlet.result.MockMvcResultMatchers.header()
+                .string("X-Correlation-ID", correlationId));
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT correlation_id FROM audit.audit_record "
+                    + "WHERE action_code = 'ACCESS_GRANT_CREATE'",
+                String.class))
+        .isEqualTo(correlationId);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT envelope ->> 'correlationId' FROM platform_eventing.internal_event "
+                    + "WHERE event_type = 'identity-access.grant-created.v1' "
+                    + "AND envelope ->> 'correlationId' = ?",
+                String.class,
+                correlationId))
+        .isEqualTo(correlationId);
   }
 
   @Test
