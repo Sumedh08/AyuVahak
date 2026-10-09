@@ -11,12 +11,16 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import org.ayuvahak.directory.application.DirectoryApplicationService;
+import org.ayuvahak.directory.application.DirectoryExternalIdentifierHistoryEntry;
+import org.ayuvahak.directory.application.DirectoryExternalIdentifierPage;
 import org.ayuvahak.directory.application.DirectoryScopeLookupUnavailableException;
 import org.ayuvahak.directory.application.FacilityDirectoryView;
 import org.ayuvahak.directory.application.LocatedFacilitySearchResult;
 import org.ayuvahak.directory.application.UnlocatedFacilitySearchResult;
 import org.ayuvahak.directory.domain.CapabilityVerificationStatus;
 import org.ayuvahak.directory.domain.CareCapability;
+import org.ayuvahak.directory.domain.DirectoryConceptType;
+import org.ayuvahak.directory.domain.DirectoryExternalIdentifier;
 import org.ayuvahak.directory.domain.DirectoryLocation;
 import org.ayuvahak.directory.domain.DirectoryProvenance;
 import org.ayuvahak.directory.domain.DirectorySource;
@@ -82,6 +86,109 @@ public class DirectoryOrganizationFacilityController {
     this.contextFactory = contextFactory;
     this.objectMapper = objectMapper;
     this.clock = clock;
+  }
+
+  @PostMapping("/concepts/{conceptType}/{conceptId}/external-identifiers")
+  public ResponseEntity<ResourceCreated> addExternalIdentifier(
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
+      @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationScope,
+      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityScope,
+      @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+      @PathVariable String conceptType,
+      @PathVariable String conceptId,
+      @Valid @RequestBody ExternalIdentifierRequest request) {
+    DirectoryConceptType type = parseConceptType(conceptType);
+    InternalId id = parseId(conceptId);
+    ExecutionContext context =
+        context(
+            actor, scope, organizationScope, facilityScope, "DIRECTORY_EXTERNAL_IDENTIFIER_ADD");
+    InternalId identifierId =
+        directory.addExternalIdentifier(
+            context,
+            type,
+            id,
+            request.toExternalReference(),
+            request.provenance().toProvenance(context, clock.instant()),
+            idempotencyKey,
+            fingerprint(externalIdentifierCommand(type, id, request)));
+    return ResponseEntity.created(
+            URI.create("/api/v1/directory/external-identifiers/" + identifierId))
+        .body(new ResourceCreated(identifierId.toString()));
+  }
+
+  @GetMapping("/concepts/{conceptType}/{conceptId}/external-identifiers")
+  public ExternalIdentifierPageRepresentation listExternalIdentifiers(
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
+      @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationScope,
+      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityScope,
+      @PathVariable String conceptType,
+      @PathVariable String conceptId,
+      @RequestParam(defaultValue = "false") boolean includeHistory,
+      @RequestParam(defaultValue = "0") int limit,
+      @RequestParam(defaultValue = "0") int offset) {
+    DirectoryConceptType type = parseConceptType(conceptType);
+    InternalId id = parseId(conceptId);
+    ExecutionContext context =
+        context(
+            actor, scope, organizationScope, facilityScope, "DIRECTORY_EXTERNAL_IDENTIFIER_READ");
+    return ExternalIdentifierPageRepresentation.from(
+        directory.listExternalIdentifiers(context, type, id, includeHistory, limit, offset));
+  }
+
+  @PostMapping("/external-identifiers/{identifierId}/removal")
+  public ResponseEntity<Void> removeExternalIdentifier(
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
+      @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationScope,
+      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityScope,
+      @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+      @PathVariable String identifierId,
+      @Valid @RequestBody ExternalIdentifierTransitionRequest request) {
+    InternalId id = parseId(identifierId);
+    ExecutionContext context =
+        context(
+            actor, scope, organizationScope, facilityScope, "DIRECTORY_EXTERNAL_IDENTIFIER_REMOVE");
+    directory.removeExternalIdentifier(
+        context,
+        id,
+        request.expectedVersion(),
+        request.provenance().toProvenance(context, clock.instant()),
+        idempotencyKey,
+        fingerprint(externalIdentifierTransitionCommand(request)));
+    return ResponseEntity.noContent().build();
+  }
+
+  @PostMapping("/external-identifiers/{identifierId}/supersession")
+  public ResponseEntity<ResourceCreated> supersedeExternalIdentifier(
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
+      @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationScope,
+      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityScope,
+      @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+      @PathVariable String identifierId,
+      @Valid @RequestBody ExternalIdentifierSupersessionRequest request) {
+    InternalId id = parseId(identifierId);
+    ExecutionContext context =
+        context(
+            actor,
+            scope,
+            organizationScope,
+            facilityScope,
+            "DIRECTORY_EXTERNAL_IDENTIFIER_SUPERSEDE");
+    InternalId replacementId =
+        directory.supersedeExternalIdentifier(
+            context,
+            id,
+            request.expectedVersion(),
+            request.toExternalReference(),
+            request.provenance().toProvenance(context, clock.instant()),
+            idempotencyKey,
+            fingerprint(externalIdentifierSupersessionCommand(id, request)));
+    return ResponseEntity.created(
+            URI.create("/api/v1/directory/external-identifiers/" + replacementId))
+        .body(new ResourceCreated(replacementId.toString()));
   }
 
   @PostMapping("/organizations")
@@ -641,6 +748,17 @@ public class DirectoryOrganizationFacilityController {
     }
   }
 
+  private static DirectoryConceptType parseConceptType(String serializedType) {
+    try {
+      return DirectoryConceptType.valueOf(serializedType);
+    } catch (IllegalArgumentException | NullPointerException malformed) {
+      throw new PlatformProblemException(
+          HttpStatus.BAD_REQUEST,
+          PlatformErrorCode.DIRECTORY_VALIDATION_FAILED,
+          "The requested Directory concept type does not support external identifiers.");
+    }
+  }
+
   private static Optional<InternalId> optionalInternalId(String serializedId) {
     return serializedId == null ? Optional.empty() : Optional.of(parseId(serializedId));
   }
@@ -652,6 +770,38 @@ public class DirectoryOrganizationFacilityController {
 
   private RequestFingerprint fingerprint(ObjectNode normalized) {
     return RequestFingerprint.from(normalized);
+  }
+
+  private ObjectNode externalIdentifierCommand(
+      DirectoryConceptType conceptType, InternalId conceptId, ExternalIdentifierRequest request) {
+    ObjectNode normalized = objectMapper.createObjectNode();
+    normalized.put("conceptType", conceptType.name());
+    normalized.put("conceptId", conceptId.toString());
+    normalized.put("issuer", request.issuer());
+    normalized.put("resourceType", request.resourceType());
+    normalized.put("value", request.value());
+    normalized.set("provenance", provenanceNode(request.provenance()));
+    return normalized;
+  }
+
+  private ObjectNode externalIdentifierTransitionCommand(
+      ExternalIdentifierTransitionRequest request) {
+    ObjectNode normalized = objectMapper.createObjectNode();
+    normalized.put("expectedVersion", request.expectedVersion());
+    normalized.set("provenance", provenanceNode(request.provenance()));
+    return normalized;
+  }
+
+  private ObjectNode externalIdentifierSupersessionCommand(
+      InternalId identifierId, ExternalIdentifierSupersessionRequest request) {
+    ObjectNode normalized = objectMapper.createObjectNode();
+    normalized.put("identifierId", identifierId.toString());
+    normalized.put("expectedVersion", request.expectedVersion());
+    normalized.put("issuer", request.issuer());
+    normalized.put("resourceType", request.resourceType());
+    normalized.put("value", request.value());
+    normalized.set("provenance", provenanceNode(request.provenance()));
+    return normalized;
   }
 
   private ObjectNode organizationCommand(CreateOrganizationRequest request) {
@@ -923,6 +1073,38 @@ public class DirectoryOrganizationFacilityController {
       @NotNull Instant effectiveFrom,
       Instant effectiveUntil) {}
 
+  public record ExternalIdentifierRequest(
+      @NotBlank String issuer,
+      @NotBlank @Pattern(regexp = "[A-Za-z][A-Za-z0-9._-]{0,63}") String resourceType,
+      @NotBlank String value,
+      @Valid @NotNull ProvenanceRequest provenance) {
+    ExternalReference toExternalReference() {
+      try {
+        return new ExternalReference(new IssuerId(issuer), resourceType, value);
+      } catch (IllegalArgumentException malformed) {
+        throw new PlatformProblemException(
+            HttpStatus.BAD_REQUEST,
+            PlatformErrorCode.DIRECTORY_VALIDATION_FAILED,
+            "The external identifier issuer, resource type, or value is invalid.");
+      }
+    }
+  }
+
+  public record ExternalIdentifierTransitionRequest(
+      @Positive long expectedVersion, @Valid @NotNull ProvenanceRequest provenance) {}
+
+  public record ExternalIdentifierSupersessionRequest(
+      @Positive long expectedVersion,
+      @NotBlank String issuer,
+      @NotBlank @Pattern(regexp = "[A-Za-z][A-Za-z0-9._-]{0,63}") String resourceType,
+      @NotBlank String value,
+      @Valid @NotNull ProvenanceRequest provenance) {
+    ExternalReference toExternalReference() {
+      return new ExternalIdentifierRequest(issuer, resourceType, value, provenance)
+          .toExternalReference();
+    }
+  }
+
   public record SourceRequest(
       @NotBlank String issuer,
       @NotBlank @Pattern(regexp = "[A-Za-z][A-Za-z0-9._-]{0,63}") String resourceType,
@@ -956,6 +1138,57 @@ public class DirectoryOrganizationFacilityController {
   }
 
   public record ResourceCreated(String id) {}
+
+  public record ExternalIdentifierPageRepresentation(
+      List<ExternalIdentifierHistoryRepresentation> items, int limit, int offset, boolean hasMore) {
+    static ExternalIdentifierPageRepresentation from(DirectoryExternalIdentifierPage page) {
+      return new ExternalIdentifierPageRepresentation(
+          page.items().stream().map(ExternalIdentifierHistoryRepresentation::from).toList(),
+          page.limit(),
+          page.offset(),
+          page.hasMore());
+    }
+  }
+
+  public record ExternalIdentifierHistoryRepresentation(
+      String id,
+      String conceptType,
+      String conceptId,
+      ExternalIdentifierValueRepresentation externalIdentifier,
+      String status,
+      Optional<String> supersedesIdentifierId,
+      ProvenanceRepresentation provenance,
+      long version,
+      boolean current,
+      Instant recordedAt,
+      Optional<String> changeReasonCode) {
+    static ExternalIdentifierHistoryRepresentation from(
+        DirectoryExternalIdentifierHistoryEntry entry) {
+      DirectoryExternalIdentifier identifier = entry.identifier();
+      return new ExternalIdentifierHistoryRepresentation(
+          identifier.id().toString(),
+          identifier.conceptType().name(),
+          identifier.conceptId().toString(),
+          ExternalIdentifierValueRepresentation.from(identifier.externalIdentifier()),
+          identifier.status().name(),
+          identifier.supersedesIdentifierId().map(InternalId::toString),
+          ProvenanceRepresentation.from(identifier.provenance()),
+          identifier.version(),
+          entry.current(),
+          entry.recordedAt(),
+          entry.changeReasonCode());
+    }
+  }
+
+  public record ExternalIdentifierValueRepresentation(
+      String issuer, String resourceType, String value) {
+    static ExternalIdentifierValueRepresentation from(ExternalReference externalIdentifier) {
+      return new ExternalIdentifierValueRepresentation(
+          externalIdentifier.issuer().value(),
+          externalIdentifier.resourceType(),
+          externalIdentifier.value());
+    }
+  }
 
   public record SourceRepresentation(String issuer, String resourceType, String reference) {
     static SourceRepresentation from(DirectorySource source) {

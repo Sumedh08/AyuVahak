@@ -13,10 +13,13 @@ import java.util.regex.Pattern;
 import org.ayuvahak.directory.domain.CapabilityVerificationStatus;
 import org.ayuvahak.directory.domain.CareCapability;
 import org.ayuvahak.directory.domain.DirectoryAuthorities;
+import org.ayuvahak.directory.domain.DirectoryConceptType;
+import org.ayuvahak.directory.domain.DirectoryExternalIdentifier;
 import org.ayuvahak.directory.domain.DirectoryLifecycleStatus;
 import org.ayuvahak.directory.domain.DirectoryLocation;
 import org.ayuvahak.directory.domain.DirectoryProvenance;
 import org.ayuvahak.directory.domain.DirectorySource;
+import org.ayuvahak.directory.domain.ExternalIdentifierStatus;
 import org.ayuvahak.directory.domain.Facility;
 import org.ayuvahak.directory.domain.FacilityCapabilityAssertion;
 import org.ayuvahak.directory.domain.HealthcareService;
@@ -66,6 +69,9 @@ public class DirectoryApplicationService {
   private static final int MAX_SEARCH_OFFSET = 10_000;
   private static final double MAX_SEARCH_RADIUS_METERS = 500_000.0;
   private static final int MAX_REQUIRED_CAPABILITIES = 20;
+  private static final int DEFAULT_EXTERNAL_IDENTIFIER_PAGE_SIZE = 50;
+  private static final int MAX_EXTERNAL_IDENTIFIER_PAGE_SIZE = 100;
+  private static final int MAX_EXTERNAL_IDENTIFIER_OFFSET = 10_000;
   private static final Pattern CAPABILITY_CODE = Pattern.compile("[A-Z][A-Z0-9._-]{0,63}");
   private static final String COMMAND_BUSY_DETAIL =
       "A matching Directory command is still being processed; retry with the same idempotency key.";
@@ -88,6 +94,328 @@ public class DirectoryApplicationService {
     this.transaction =
         new TransactionTemplate(Objects.requireNonNull(transactionManager, "transactionManager"));
     this.clock = Objects.requireNonNull(clock, "clock");
+  }
+
+  public InternalId addExternalIdentifier(
+      ExecutionContext context,
+      DirectoryConceptType conceptType,
+      InternalId conceptId,
+      ExternalReference externalIdentifier,
+      DirectoryProvenance provenance,
+      String rawIdempotencyKey,
+      RequestFingerprint fingerprint) {
+    String actionCode = "DIRECTORY_EXTERNAL_IDENTIFIER_ADD";
+    requireAuthority(
+        context,
+        DirectoryAuthorities.curation().code(),
+        actionCode,
+        "ExternalIdentifier",
+        Optional.of(conceptId),
+        Optional.empty());
+    CommandReceiptKey receiptKey =
+        commandKey(
+            context,
+            "external-identifier.add",
+            conceptType.name() + "/" + conceptId,
+            rawIdempotencyKey);
+    try {
+      return executeIdempotent(
+          receiptKey,
+          fingerprint,
+          201,
+          () -> {
+            DirectoryConceptOwner owner =
+                lockActiveConceptOwner(context, conceptType, conceptId, actionCode);
+            InternalId id = InternalId.generate();
+            Instant now = clock.instant();
+            DirectoryExternalIdentifier identifier =
+                new DirectoryExternalIdentifier(
+                    id,
+                    conceptType,
+                    conceptId,
+                    externalIdentifier,
+                    ExternalIdentifierStatus.ACTIVE,
+                    Optional.empty(),
+                    provenance,
+                    1,
+                    now,
+                    now);
+            store.insertExternalIdentifier(identifier);
+            auditMutation(
+                context,
+                actionCode,
+                "ExternalIdentifier",
+                id,
+                provenance.reasonCode(),
+                owner.organizationId().map(DirectoryApplicationService::organizationReference),
+                owner.facilityId().map(DirectoryApplicationService::facilityReference));
+            return id;
+          });
+    } catch (ActiveExternalIdentifierConflictException conflict) {
+      throw identifierConflict();
+    }
+  }
+
+  public void removeExternalIdentifier(
+      ExecutionContext context,
+      InternalId identifierId,
+      long expectedVersion,
+      DirectoryProvenance provenance,
+      String rawIdempotencyKey,
+      RequestFingerprint fingerprint) {
+    String actionCode = "DIRECTORY_EXTERNAL_IDENTIFIER_REMOVE";
+    requireAuthority(
+        context,
+        DirectoryAuthorities.curation().code(),
+        actionCode,
+        "ExternalIdentifier",
+        Optional.of(identifierId),
+        Optional.empty());
+    CommandReceiptKey receiptKey =
+        commandKey(
+            context,
+            "external-identifier.remove",
+            "external-identifiers/" + identifierId,
+            rawIdempotencyKey);
+    executeIdempotent(
+        receiptKey,
+        fingerprint,
+        204,
+        () -> {
+          DirectoryExternalIdentifier current =
+              store
+                  .lockExternalIdentifier(identifierId)
+                  .orElseThrow(DirectoryApplicationService::notFound);
+          DirectoryConceptOwner owner =
+              lockActiveConceptOwner(
+                  context, current.conceptType(), current.conceptId(), actionCode);
+          if (current.status() != ExternalIdentifierStatus.ACTIVE) {
+            throw versionConflict();
+          }
+          requireExpectedVersion(current.version(), expectedVersion);
+          Instant changedAt = clock.instant();
+          DirectoryExternalIdentifier removed =
+              current.transition(ExternalIdentifierStatus.REMOVED, provenance, changedAt);
+          store.appendExternalIdentifierRevision(current, provenance.reasonCode(), changedAt);
+          if (!store.updateExternalIdentifier(removed, expectedVersion, changedAt)) {
+            throw versionConflict();
+          }
+          auditMutation(
+              context,
+              actionCode,
+              "ExternalIdentifier",
+              identifierId,
+              provenance.reasonCode(),
+              owner.organizationId().map(DirectoryApplicationService::organizationReference),
+              owner.facilityId().map(DirectoryApplicationService::facilityReference));
+          return identifierId;
+        });
+  }
+
+  public InternalId supersedeExternalIdentifier(
+      ExecutionContext context,
+      InternalId identifierId,
+      long expectedVersion,
+      ExternalReference replacement,
+      DirectoryProvenance provenance,
+      String rawIdempotencyKey,
+      RequestFingerprint fingerprint) {
+    String actionCode = "DIRECTORY_EXTERNAL_IDENTIFIER_SUPERSEDE";
+    requireAuthority(
+        context,
+        DirectoryAuthorities.curation().code(),
+        actionCode,
+        "ExternalIdentifier",
+        Optional.of(identifierId),
+        Optional.empty());
+    CommandReceiptKey receiptKey =
+        commandKey(
+            context,
+            "external-identifier.supersede",
+            "external-identifiers/" + identifierId,
+            rawIdempotencyKey);
+    try {
+      return executeIdempotent(
+          receiptKey,
+          fingerprint,
+          201,
+          () -> {
+            DirectoryExternalIdentifier current =
+                store
+                    .lockExternalIdentifier(identifierId)
+                    .orElseThrow(DirectoryApplicationService::notFound);
+            DirectoryConceptOwner owner =
+                lockActiveConceptOwner(
+                    context, current.conceptType(), current.conceptId(), actionCode);
+            if (current.status() != ExternalIdentifierStatus.ACTIVE) {
+              throw versionConflict();
+            }
+            requireExpectedVersion(current.version(), expectedVersion);
+            if (current.externalIdentifier().equals(replacement)) {
+              throw validation(
+                  "A superseding identifier must have a different issuer, type, or value.");
+            }
+            Instant changedAt = clock.instant();
+            DirectoryExternalIdentifier superseded =
+                current.transition(ExternalIdentifierStatus.SUPERSEDED, provenance, changedAt);
+            store.appendExternalIdentifierRevision(current, provenance.reasonCode(), changedAt);
+            if (!store.updateExternalIdentifier(superseded, expectedVersion, changedAt)) {
+              throw versionConflict();
+            }
+            InternalId replacementId = InternalId.generate();
+            DirectoryExternalIdentifier successor =
+                new DirectoryExternalIdentifier(
+                    replacementId,
+                    current.conceptType(),
+                    current.conceptId(),
+                    replacement,
+                    ExternalIdentifierStatus.ACTIVE,
+                    Optional.of(current.id()),
+                    provenance,
+                    1,
+                    changedAt,
+                    changedAt);
+            store.insertExternalIdentifier(successor);
+            auditMutation(
+                context,
+                actionCode,
+                "ExternalIdentifier",
+                identifierId,
+                provenance.reasonCode(),
+                owner.organizationId().map(DirectoryApplicationService::organizationReference),
+                owner.facilityId().map(DirectoryApplicationService::facilityReference));
+            return replacementId;
+          });
+    } catch (ActiveExternalIdentifierConflictException conflict) {
+      throw identifierConflict();
+    }
+  }
+
+  public DirectoryExternalIdentifierPage listExternalIdentifiers(
+      ExecutionContext context,
+      DirectoryConceptType conceptType,
+      InternalId conceptId,
+      boolean includeHistory,
+      int requestedLimit,
+      int offset) {
+    String actionCode = "DIRECTORY_EXTERNAL_IDENTIFIER_READ";
+    requireAuthority(
+        context,
+        DirectoryAuthorities.read().code(),
+        actionCode,
+        "ExternalIdentifierCollection",
+        Optional.of(conceptId),
+        Optional.empty());
+    DirectoryConceptOwner owner =
+        store
+            .findConceptOwner(conceptType, conceptId)
+            .orElseThrow(DirectoryApplicationService::notFound);
+    requireConceptReadScope(context, conceptType, conceptId, owner, actionCode);
+    int limit = requestedLimit == 0 ? DEFAULT_EXTERNAL_IDENTIFIER_PAGE_SIZE : requestedLimit;
+    if (limit < 1
+        || limit > MAX_EXTERNAL_IDENTIFIER_PAGE_SIZE
+        || offset < 0
+        || offset > MAX_EXTERNAL_IDENTIFIER_OFFSET) {
+      throw validation("External identifier page size must be 1 to 100 and offset at most 10000.");
+    }
+    auditRead(
+        context,
+        actionCode,
+        "ExternalIdentifierCollection",
+        conceptId,
+        owner.organizationId().map(DirectoryApplicationService::organizationReference),
+        owner.facilityId().map(DirectoryApplicationService::facilityReference));
+    List<DirectoryExternalIdentifierHistoryEntry> entries =
+        store.listExternalIdentifiers(conceptType, conceptId, includeHistory, limit + 1, offset);
+    return new DirectoryExternalIdentifierPage(
+        entries.stream().limit(limit).toList(), limit, offset, entries.size() > limit);
+  }
+
+  private DirectoryConceptOwner lockActiveConceptOwner(
+      ExecutionContext context,
+      DirectoryConceptType conceptType,
+      InternalId conceptId,
+      String actionCode) {
+    DirectoryConceptOwner owner =
+        store
+            .lockConceptOwner(conceptType, conceptId)
+            .orElseThrow(DirectoryApplicationService::notFound);
+    requireConceptCurationScope(context, conceptType, conceptId, owner, actionCode);
+    if (!owner.active()) {
+      throw inactive();
+    }
+    return owner;
+  }
+
+  private void requireConceptCurationScope(
+      ExecutionContext context,
+      DirectoryConceptType conceptType,
+      InternalId conceptId,
+      DirectoryConceptOwner owner,
+      String actionCode) {
+    if (!scopeAllowsConcept(context.scope(), owner, false)) {
+      denyScope(
+          context,
+          actionCode,
+          "DirectoryConcept",
+          Optional.of(conceptId),
+          owner.organizationId().map(DirectoryApplicationService::organizationReference),
+          owner.facilityId().map(DirectoryApplicationService::facilityReference));
+      throw scopeMismatch();
+    }
+  }
+
+  private void requireConceptReadScope(
+      ExecutionContext context,
+      DirectoryConceptType conceptType,
+      InternalId conceptId,
+      DirectoryConceptOwner owner,
+      String actionCode) {
+    if (!scopeAllowsConcept(context.scope(), owner, true)) {
+      denyScope(
+          context,
+          actionCode,
+          "DirectoryConcept",
+          Optional.of(conceptId),
+          owner.organizationId().map(DirectoryApplicationService::organizationReference),
+          owner.facilityId().map(DirectoryApplicationService::facilityReference));
+      throw scopeMismatch();
+    }
+  }
+
+  private static boolean scopeAllowsConcept(
+      ExecutionScope scope, DirectoryConceptOwner owner, boolean allowGlobalConceptRead) {
+    if (owner.facilityId().isPresent()) {
+      return switch (scope.kind()) {
+        case PLATFORM -> true;
+        case ORGANIZATION ->
+            scope
+                .organization()
+                .orElseThrow()
+                .equals(organizationReference(owner.organizationId().orElseThrow()));
+        case FACILITY ->
+            scope
+                    .organization()
+                    .orElseThrow()
+                    .equals(organizationReference(owner.organizationId().orElseThrow()))
+                && scope
+                    .facility()
+                    .orElseThrow()
+                    .equals(facilityReference(owner.facilityId().orElseThrow()));
+      };
+    }
+    if (owner.organizationId().isPresent()) {
+      return switch (scope.kind()) {
+        case PLATFORM -> true;
+        case ORGANIZATION ->
+            scope
+                .organization()
+                .orElseThrow()
+                .equals(organizationReference(owner.organizationId().orElseThrow()));
+        case FACILITY -> false;
+      };
+    }
+    return allowGlobalConceptRead || scope.kind() == ExecutionScope.Kind.PLATFORM;
   }
 
   public InternalId createOrganization(
@@ -2099,6 +2427,13 @@ public class DirectoryApplicationService {
         HttpStatus.CONFLICT,
         PlatformErrorCode.DIRECTORY_CAPABILITY_CODE_CONFLICT,
         "The CareCapability code is already defined in this Directory vocabulary.");
+  }
+
+  private static PlatformProblemException identifierConflict() {
+    return problem(
+        HttpStatus.CONFLICT,
+        PlatformErrorCode.DIRECTORY_IDENTIFIER_CONFLICT,
+        "An active external identifier with this issuer, resource type, and value already exists for this Directory concept type.");
   }
 
   private static PlatformProblemException problem(

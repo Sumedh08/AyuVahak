@@ -7,16 +7,22 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import org.ayuvahak.directory.application.ActiveExternalIdentifierConflictException;
+import org.ayuvahak.directory.application.DirectoryConceptOwner;
+import org.ayuvahak.directory.application.DirectoryExternalIdentifierHistoryEntry;
 import org.ayuvahak.directory.application.DirectoryScopeLookupUnavailableException;
 import org.ayuvahak.directory.application.DirectoryStore;
 import org.ayuvahak.directory.application.LocatedFacilitySearchResult;
 import org.ayuvahak.directory.application.UnlocatedFacilitySearchResult;
 import org.ayuvahak.directory.domain.CapabilityVerificationStatus;
 import org.ayuvahak.directory.domain.CareCapability;
+import org.ayuvahak.directory.domain.DirectoryConceptType;
+import org.ayuvahak.directory.domain.DirectoryExternalIdentifier;
 import org.ayuvahak.directory.domain.DirectoryLifecycleStatus;
 import org.ayuvahak.directory.domain.DirectoryLocation;
 import org.ayuvahak.directory.domain.DirectoryProvenance;
 import org.ayuvahak.directory.domain.DirectorySource;
+import org.ayuvahak.directory.domain.ExternalIdentifierStatus;
 import org.ayuvahak.directory.domain.Facility;
 import org.ayuvahak.directory.domain.FacilityCapabilityAssertion;
 import org.ayuvahak.directory.domain.HealthcareService;
@@ -32,6 +38,7 @@ import org.ayuvahak.platform.idempotency.RequestFingerprint;
 import org.ayuvahak.platform.idempotency.configuration.CommandIdempotencyProperties;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.dao.DataAccessException;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
@@ -168,6 +175,14 @@ public class JdbcDirectoryStore implements DirectoryStore {
               result.getTimestamp("effective_from").toInstant(),
               Optional.ofNullable(result.getTimestamp("effective_until")).map(Timestamp::toInstant),
               result.getLong("version"));
+  private static final RowMapper<DirectoryExternalIdentifierHistoryEntry>
+      EXTERNAL_IDENTIFIER_HISTORY_MAPPER =
+          (result, rowNumber) ->
+              new DirectoryExternalIdentifierHistoryEntry(
+                  externalIdentifier(result),
+                  result.getBoolean("is_current"),
+                  result.getTimestamp("recorded_at").toInstant(),
+                  Optional.ofNullable(result.getString("change_reason")));
 
   private final JdbcTemplate jdbc;
   private final ObjectMapper objectMapper;
@@ -660,6 +675,213 @@ public class JdbcDirectoryStore implements DirectoryStore {
   }
 
   @Override
+  public Optional<DirectoryConceptOwner> findConceptOwner(
+      DirectoryConceptType conceptType, InternalId id) {
+    return findConceptOwner(conceptType, id, false);
+  }
+
+  @Override
+  public Optional<DirectoryConceptOwner> lockConceptOwner(
+      DirectoryConceptType conceptType, InternalId id) {
+    return findConceptOwner(conceptType, id, true);
+  }
+
+  private Optional<DirectoryConceptOwner> findConceptOwner(
+      DirectoryConceptType conceptType, InternalId id, boolean forUpdate) {
+    String query =
+        switch (conceptType) {
+          case ORGANIZATION ->
+              "SELECT organization_id, NULL::uuid AS facility_id, "
+                  + "(lifecycle_status = 'ACTIVE') AS owner_active FROM directory.organization "
+                  + "WHERE organization_id = ?";
+          case FACILITY ->
+              "SELECT f.managing_organization_id AS organization_id, f.facility_id AS facility_id, "
+                  + "(f.lifecycle_status = 'ACTIVE' AND o.lifecycle_status = 'ACTIVE') AS owner_active "
+                  + "FROM directory.facility f JOIN directory.organization o "
+                  + "ON o.organization_id = f.managing_organization_id WHERE f.facility_id = ?";
+          case LOCATION ->
+              "SELECT f.managing_organization_id AS organization_id, f.facility_id AS facility_id, "
+                  + "(f.lifecycle_status = 'ACTIVE' AND o.lifecycle_status = 'ACTIVE') AS owner_active "
+                  + "FROM directory.location l JOIN directory.facility f ON f.facility_id = l.facility_id "
+                  + "JOIN directory.organization o ON o.organization_id = f.managing_organization_id "
+                  + "WHERE l.location_id = ?";
+          case HEALTHCARE_SERVICE ->
+              "SELECT s.organization_id, s.facility_id, "
+                  + "(s.lifecycle_status = 'ACTIVE' AND f.lifecycle_status = 'ACTIVE' "
+                  + "AND o.lifecycle_status = 'ACTIVE') AS owner_active "
+                  + "FROM directory.healthcare_service s JOIN directory.facility f "
+                  + "ON f.facility_id = s.facility_id JOIN directory.organization o "
+                  + "ON o.organization_id = s.organization_id WHERE s.healthcare_service_id = ?";
+          case CARE_CAPABILITY ->
+              "SELECT NULL::uuid AS organization_id, NULL::uuid AS facility_id, "
+                  + "(lifecycle_status = 'ACTIVE') AS owner_active "
+                  + "FROM directory.care_capability WHERE care_capability_id = ?";
+          case FACILITY_CAPABILITY_ASSERTION ->
+              "SELECT f.managing_organization_id AS organization_id, f.facility_id AS facility_id, "
+                  + "(a.verification_status NOT IN ('WITHDRAWN', 'SUPERSEDED') "
+                  + "AND f.lifecycle_status = 'ACTIVE' AND o.lifecycle_status = 'ACTIVE') AS owner_active "
+                  + "FROM directory.facility_capability_assertion a JOIN directory.facility f "
+                  + "ON f.facility_id = a.facility_id JOIN directory.organization o "
+                  + "ON o.organization_id = f.managing_organization_id WHERE a.assertion_id = ?";
+        };
+    return jdbc
+        .query(
+            query + (forUpdate ? " FOR UPDATE" : ""),
+            (result, rowNumber) ->
+                new DirectoryConceptOwner(
+                    Optional.ofNullable(result.getObject("organization_id", UUID.class))
+                        .map(InternalId::new),
+                    Optional.ofNullable(result.getObject("facility_id", UUID.class))
+                        .map(InternalId::new),
+                    result.getBoolean("owner_active")),
+            id.value())
+        .stream()
+        .findFirst();
+  }
+
+  @Override
+  public void insertExternalIdentifier(DirectoryExternalIdentifier identifier) {
+    try {
+      jdbc.update(
+          "INSERT INTO directory.external_identifier (identifier_id, concept_type, concept_id, "
+              + "issuer, resource_type, identifier_value, lifecycle_status, "
+              + "supersedes_identifier_id, provenance_method, provenance_observed_at, "
+              + "provenance_recorded_at, provenance_actor_kind, provenance_actor_issuer, "
+              + "provenance_actor_identifier_type, provenance_actor_identifier, "
+              + "provenance_reason_code, version, created_at, updated_at) "
+              + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          identifier.id().value(),
+          identifier.conceptType().name(),
+          identifier.conceptId().value(),
+          identifier.externalIdentifier().issuer().value(),
+          identifier.externalIdentifier().resourceType(),
+          identifier.externalIdentifier().value(),
+          identifier.status().name(),
+          identifier.supersedesIdentifierId().map(InternalId::value).orElse(null),
+          identifier.provenance().method(),
+          Timestamp.from(identifier.provenance().observedAt()),
+          Timestamp.from(identifier.provenance().recordedAt()),
+          identifier.provenance().recordedBy().kind().name(),
+          identifier.provenance().recordedBy().identity().issuer().value(),
+          identifier.provenance().recordedBy().identity().resourceType(),
+          identifier.provenance().recordedBy().identity().value(),
+          identifier.provenance().reasonCode(),
+          identifier.version(),
+          Timestamp.from(identifier.createdAt()),
+          Timestamp.from(identifier.updatedAt()));
+    } catch (DuplicateKeyException conflict) {
+      throw new ActiveExternalIdentifierConflictException(conflict);
+    }
+  }
+
+  @Override
+  public Optional<DirectoryExternalIdentifier> findExternalIdentifier(InternalId id) {
+    return findExternalIdentifier(id, false);
+  }
+
+  @Override
+  public Optional<DirectoryExternalIdentifier> lockExternalIdentifier(InternalId id) {
+    return findExternalIdentifier(id, true);
+  }
+
+  @Override
+  public List<DirectoryExternalIdentifierHistoryEntry> listExternalIdentifiers(
+      DirectoryConceptType conceptType,
+      InternalId conceptId,
+      boolean includeHistory,
+      int limit,
+      int offset) {
+    String currentRows =
+        "SELECT identifier_id, concept_type, concept_id, issuer, resource_type, identifier_value, "
+            + "lifecycle_status, supersedes_identifier_id, provenance_method, "
+            + "provenance_observed_at, provenance_recorded_at, provenance_actor_kind, "
+            + "provenance_actor_issuer, provenance_actor_identifier_type, "
+            + "provenance_actor_identifier, provenance_reason_code, version, created_at, "
+            + "updated_at, updated_at AS recorded_at, NULL::text AS change_reason, "
+            + "TRUE AS is_current FROM directory.external_identifier "
+            + "WHERE concept_type = ? AND concept_id = ?";
+    String query;
+    List<Object> parameters = new ArrayList<>();
+    if (includeHistory) {
+      query =
+          "SELECT * FROM ("
+              + currentRows
+              + " UNION ALL SELECT (snapshot->>'id')::uuid AS identifier_id, "
+              + "snapshot->>'conceptType' AS concept_type, (snapshot->>'conceptId')::uuid AS concept_id, "
+              + "snapshot->>'issuer' AS issuer, snapshot->>'resourceType' AS resource_type, "
+              + "snapshot->>'value' AS identifier_value, snapshot->>'status' AS lifecycle_status, "
+              + "NULLIF(snapshot->>'supersedesIdentifierId', '')::uuid AS supersedes_identifier_id, "
+              + "snapshot->>'provenanceMethod' AS provenance_method, "
+              + "(snapshot->>'provenanceObservedAt')::timestamptz AS provenance_observed_at, "
+              + "(snapshot->>'provenanceRecordedAt')::timestamptz AS provenance_recorded_at, "
+              + "snapshot->>'provenanceActorKind' AS provenance_actor_kind, "
+              + "snapshot->>'provenanceActorIssuer' AS provenance_actor_issuer, "
+              + "snapshot->>'provenanceActorIdentifierType' AS provenance_actor_identifier_type, "
+              + "snapshot->>'provenanceActorIdentifier' AS provenance_actor_identifier, "
+              + "snapshot->>'provenanceReasonCode' AS provenance_reason_code, "
+              + "(snapshot->>'version')::bigint AS version, "
+              + "(snapshot->>'createdAt')::timestamptz AS created_at, "
+              + "(snapshot->>'updatedAt')::timestamptz AS updated_at, changed_at AS recorded_at, "
+              + "reason_code AS change_reason, FALSE AS is_current "
+              + "FROM directory.external_identifier_revision WHERE snapshot->>'conceptType' = ? "
+              + "AND snapshot->>'conceptId' = ?"
+              + ") history ORDER BY recorded_at DESC, identifier_id, version DESC LIMIT ? OFFSET ?";
+      parameters.add(conceptType.name());
+      parameters.add(conceptId.value());
+      parameters.add(conceptType.name());
+      parameters.add(conceptId.toString());
+    } else {
+      query =
+          currentRows
+              + " AND lifecycle_status = 'ACTIVE' ORDER BY updated_at DESC, identifier_id LIMIT ? OFFSET ?";
+      parameters.add(conceptType.name());
+      parameters.add(conceptId.value());
+    }
+    parameters.add(limit);
+    parameters.add(offset);
+    return jdbc.query(query, EXTERNAL_IDENTIFIER_HISTORY_MAPPER, parameters.toArray());
+  }
+
+  @Override
+  public void appendExternalIdentifierRevision(
+      DirectoryExternalIdentifier current, String reasonCode, Instant changedAt) {
+    jdbc.update(
+        "INSERT INTO directory.external_identifier_revision (revision_id, identifier_id, "
+            + "superseded_version, snapshot, changed_at, reason_code) VALUES (?, ?, ?, ?::jsonb, ?, ?)",
+        InternalId.generate().value(),
+        current.id().value(),
+        current.version(),
+        externalIdentifierSnapshot(current),
+        Timestamp.from(changedAt),
+        reasonCode);
+  }
+
+  @Override
+  public boolean updateExternalIdentifier(
+      DirectoryExternalIdentifier corrected, long expectedVersion, Instant updatedAt) {
+    return jdbc.update(
+            "UPDATE directory.external_identifier SET lifecycle_status = ?, provenance_method = ?, "
+                + "provenance_observed_at = ?, provenance_recorded_at = ?, provenance_actor_kind = ?, "
+                + "provenance_actor_issuer = ?, provenance_actor_identifier_type = ?, "
+                + "provenance_actor_identifier = ?, provenance_reason_code = ?, version = ?, updated_at = ? "
+                + "WHERE identifier_id = ? AND version = ? AND lifecycle_status = 'ACTIVE'",
+            corrected.status().name(),
+            corrected.provenance().method(),
+            Timestamp.from(corrected.provenance().observedAt()),
+            Timestamp.from(corrected.provenance().recordedAt()),
+            corrected.provenance().recordedBy().kind().name(),
+            corrected.provenance().recordedBy().identity().issuer().value(),
+            corrected.provenance().recordedBy().identity().resourceType(),
+            corrected.provenance().recordedBy().identity().value(),
+            corrected.provenance().reasonCode(),
+            corrected.version(),
+            Timestamp.from(updatedAt),
+            corrected.id().value(),
+            expectedVersion)
+        == 1;
+  }
+
+  @Override
   public List<LocatedFacilitySearchResult> findNearbyFacilities(
       Optional<InternalId> organizationId,
       Optional<InternalId> facilityId,
@@ -885,6 +1107,18 @@ public class JdbcDirectoryStore implements DirectoryStore {
     }
   }
 
+  private Optional<DirectoryExternalIdentifier> findExternalIdentifier(
+      InternalId id, boolean forUpdate) {
+    String lock = forUpdate ? " FOR UPDATE" : "";
+    return jdbc
+        .query(
+            "SELECT * FROM directory.external_identifier WHERE identifier_id = ?" + lock,
+            (result, rowNumber) -> externalIdentifier(result),
+            id.value())
+        .stream()
+        .findFirst();
+  }
+
   private Optional<Organization> findOrganization(InternalId id, boolean forUpdate) {
     String lock = forUpdate ? " FOR UPDATE" : "";
     return jdbc
@@ -1023,6 +1257,25 @@ public class JdbcDirectoryStore implements DirectoryStore {
             new IssuerId(result.getString(prefix + "source_issuer")),
             result.getString(prefix + "source_resource_type"),
             result.getString(prefix + "source_reference")));
+  }
+
+  private static DirectoryExternalIdentifier externalIdentifier(java.sql.ResultSet result)
+      throws java.sql.SQLException {
+    return new DirectoryExternalIdentifier(
+        new InternalId(result.getObject("identifier_id", UUID.class)),
+        DirectoryConceptType.valueOf(result.getString("concept_type")),
+        new InternalId(result.getObject("concept_id", UUID.class)),
+        new ExternalReference(
+            new IssuerId(result.getString("issuer")),
+            result.getString("resource_type"),
+            result.getString("identifier_value")),
+        ExternalIdentifierStatus.valueOf(result.getString("lifecycle_status")),
+        Optional.ofNullable(result.getObject("supersedes_identifier_id", UUID.class))
+            .map(InternalId::new),
+        provenance(result),
+        result.getLong("version"),
+        result.getTimestamp("created_at").toInstant(),
+        result.getTimestamp("updated_at").toInstant());
   }
 
   private static DirectoryProvenance provenance(java.sql.ResultSet result)
@@ -1290,6 +1543,36 @@ public class JdbcDirectoryStore implements DirectoryStore {
     snapshot.put("effectiveFrom", assertion.effectiveFrom().toString());
     assertion.effectiveUntil().ifPresent(until -> snapshot.put("effectiveUntil", until.toString()));
     snapshot.put("version", assertion.version());
+    return json(snapshot);
+  }
+
+  private String externalIdentifierSnapshot(DirectoryExternalIdentifier identifier) {
+    ObjectNode snapshot = objectMapper.createObjectNode();
+    snapshot.put("id", identifier.id().toString());
+    snapshot.put("conceptType", identifier.conceptType().name());
+    snapshot.put("conceptId", identifier.conceptId().toString());
+    snapshot.put("issuer", identifier.externalIdentifier().issuer().value());
+    snapshot.put("resourceType", identifier.externalIdentifier().resourceType());
+    snapshot.put("value", identifier.externalIdentifier().value());
+    snapshot.put("status", identifier.status().name());
+    identifier
+        .supersedesIdentifierId()
+        .ifPresent(id -> snapshot.put("supersedesIdentifierId", id.toString()));
+    snapshot.put("provenanceMethod", identifier.provenance().method());
+    snapshot.put("provenanceObservedAt", identifier.provenance().observedAt().toString());
+    snapshot.put("provenanceRecordedAt", identifier.provenance().recordedAt().toString());
+    snapshot.put("provenanceActorKind", identifier.provenance().recordedBy().kind().name());
+    snapshot.put(
+        "provenanceActorIssuer", identifier.provenance().recordedBy().identity().issuer().value());
+    snapshot.put(
+        "provenanceActorIdentifierType",
+        identifier.provenance().recordedBy().identity().resourceType());
+    snapshot.put(
+        "provenanceActorIdentifier", identifier.provenance().recordedBy().identity().value());
+    snapshot.put("provenanceReasonCode", identifier.provenance().reasonCode());
+    snapshot.put("version", identifier.version());
+    snapshot.put("createdAt", identifier.createdAt().toString());
+    snapshot.put("updatedAt", identifier.updatedAt().toString());
     return json(snapshot);
   }
 
