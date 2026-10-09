@@ -9,6 +9,7 @@ import com.tngtech.archunit.lang.EvaluationResult;
 import java.nio.file.Path;
 import org.ayuvahak.architecture.fixtures.domain.SpringDependentDomainFixture;
 import org.ayuvahak.capacity.application.CapacityPersistenceAccessFixture;
+import org.ayuvahak.capacity.domain.fixture.CareCapabilityCouplingFixture;
 import org.ayuvahak.directory.adapter.persistence.DirectoryStoreFixture;
 import org.ayuvahak.platform.core.fixtures.forbidden.SpringDependentCoreFixture;
 import org.junit.jupiter.api.Test;
@@ -26,6 +27,8 @@ class Phase1ArchitectureTest {
     Phase1ArchitectureRules.directoryMustNotDependOnOtherBusinessContexts()
         .check(productionClasses);
     Phase1ArchitectureRules.businessContextsMustNotDependOnAnotherContextsPersistence()
+        .check(productionClasses);
+    Phase1ArchitectureRules.capacityMustNotDependOnReferralMatchingOrTransfer()
         .check(productionClasses);
   }
 
@@ -110,5 +113,22 @@ class Phase1ArchitectureTest {
     assertThat(result.getFailureReport().toString())
         .contains("A context must use another context's public application boundary")
         .contains("org.ayuvahak.directory.adapter.persistence.DirectoryStoreFixture");
+  }
+
+  @Test
+  void capacityBoundaryRuleDetectsCareCapabilityCouplingInTestFixture() {
+    JavaClasses fixtureClasses =
+        new ClassFileImporter()
+            .withImportOption(ImportOption.Predefined.DO_NOT_INCLUDE_JARS)
+            .importClasses(CareCapabilityCouplingFixture.class);
+
+    EvaluationResult result =
+        Phase1ArchitectureRules.capacityMustNotDependOnReferralMatchingOrTransfer()
+            .evaluate(fixtureClasses);
+
+    assertThat(result.hasViolation()).isTrue();
+    assertThat(result.getFailureReport().toString())
+        .contains("Capacity must evaluate only explicit CapacityDimensions")
+        .contains("org.ayuvahak.directory.domain.CareCapability");
   }
 }

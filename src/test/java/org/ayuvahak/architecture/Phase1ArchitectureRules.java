@@ -122,6 +122,40 @@ final class Phase1ArchitectureRules {
         .allowEmptyShould(true);
   }
 
+  static ArchRule capacityMustNotDependOnReferralMatchingOrTransfer() {
+    return classes()
+        .that()
+        .resideInAnyPackage("org.ayuvahak.capacity..")
+        .should(
+            new ArchCondition<>(
+                "not depend on CareCapability, Directory persistence, Referral, Matching, or Transfer") {
+              @Override
+              public void check(JavaClass item, ConditionEvents events) {
+                for (Dependency dependency : item.getDirectDependenciesFromSelf()) {
+                  JavaClass target = dependency.getTargetClass();
+                  String targetPackage = target.getPackageName();
+                  if (target.getName().equals("org.ayuvahak.directory.domain.CareCapability")
+                      || targetPackage.startsWith("org.ayuvahak.directory.adapter.persistence")
+                      || targetPackage.startsWith("org.ayuvahak.referral.")
+                      || targetPackage.startsWith("org.ayuvahak.matching.")
+                      || targetPackage.startsWith("org.ayuvahak.transfer.")) {
+                    events.add(
+                        SimpleConditionEvent.violated(
+                            item,
+                            item.getName()
+                                + " depends on a prohibited Capacity dependency: "
+                                + target.getName()));
+                  }
+                }
+              }
+            })
+        .as(
+            "Capacity must evaluate only explicit CapacityDimensions through owner contracts; it"
+                + " must not translate CareCapabilities or depend on Referral, Matching, Transfer,"
+                + " or Directory persistence")
+        .allowEmptyShould(true);
+  }
+
   static ArchRule businessContextsMustNotDependOnAnotherContextsPersistence() {
     return classes()
         .should(

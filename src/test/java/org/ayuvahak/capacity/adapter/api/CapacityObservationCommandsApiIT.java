@@ -61,6 +61,7 @@ class CapacityObservationCommandsApiIT {
   private static final String CURATOR = "synthetic-directory-curator";
   private static final String REPORTER = "synthetic-capacity-reporter";
   private static final String HISTORY_REPORTER = "synthetic-capacity-history-reporter";
+  private static final String UNREVIEWED_REPORTER = "synthetic-capacity-unreviewed-reporter";
   private static final String SERVICE_REPORTER = "synthetic-capacity-service";
   private static final RSAKey SIGNING_KEY = newSigningKey("capacity-observation-fixture");
   private static final PostgreSQLContainer POSTGRES =
@@ -123,6 +124,8 @@ class CapacityObservationCommandsApiIT {
     jdbc.execute(
         "DROP TRIGGER IF EXISTS test_fail_capacity_observation_audit ON audit.audit_record");
     jdbc.execute("DROP FUNCTION IF EXISTS test_fail_capacity_observation_audit()");
+    jdbc.execute("DROP TRIGGER IF EXISTS test_fail_capacity_readiness_audit ON audit.audit_record");
+    jdbc.execute("DROP FUNCTION IF EXISTS test_fail_capacity_readiness_audit()");
     Boolean observationTableExists =
         jdbc.queryForObject(
             "SELECT to_regclass('capacity.capacity_observation') IS NOT NULL", Boolean.class);
@@ -160,6 +163,13 @@ class CapacityObservationCommandsApiIT {
         organizationId,
         facilityId,
         "history-reporter-grant");
+    grant(
+        UNREVIEWED_REPORTER,
+        "CapacityReporting",
+        "FACILITY",
+        organizationId,
+        facilityId,
+        "unreviewed-reporter-grant");
     seedCapacityEvidenceReviewer();
     grantService(
         SERVICE_REPORTER,
@@ -243,6 +253,231 @@ class CapacityObservationCommandsApiIT {
         .andExpect(jsonPath("$.dimensions[0].evidence[0].receivedAt").exists())
         .andExpect(jsonPath("$.dimensions[0].policyVersion").value(1))
         .andExpect(jsonPath("$.dimensions[0].projectionVersion").value("capacity-evidence-v1"));
+  }
+
+  @Test
+  void evaluatesOnlyExplicitDimensionsAndReturnsAttributablePassingEvidence() throws Exception {
+    String observedAt = Instant.now().minusSeconds(2).toString();
+    submit(
+            "readiness-passing-observation",
+            observationBody("source-readiness-passing", 4, observedAt))
+        .andExpect(status().isCreated());
+
+    evaluateReadiness("[\"COORDINATION_BEDS\"]")
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.facilityId").value(facilityId))
+        .andExpect(jsonPath("$.outcome").value("READY"))
+        .andExpect(jsonPath("$.dimensions.length()").value(1))
+        .andExpect(jsonPath("$.dimensions[0].dimensionCode").value("COORDINATION_BEDS"))
+        .andExpect(jsonPath("$.dimensions[0].outcome").value("READY"))
+        .andExpect(jsonPath("$.dimensions[0].quantity").value(4))
+        .andExpect(jsonPath("$.dimensions[0].unit").value("bed"))
+        .andExpect(jsonPath("$.dimensions[0].evidence[0].sourceCode").value("manual"))
+        .andExpect(jsonPath("$.dimensions[0].evidence[0].observedAt").exists())
+        .andExpect(jsonPath("$.dimensions[0].dimensionVersion").value(1))
+        .andExpect(jsonPath("$.dimensions[0].capacityPolicyVersion").value(1))
+        .andExpect(jsonPath("$.dimensions[0].evidence[0].ingestionPolicyVersion").value(1))
+        .andExpect(jsonPath("$.dimensions[0].reasonCodes[0]").value("READINESS_RULE_PASSED"));
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = 'CAPACITY_READINESS_EVALUATE'"))
+        .isEqualTo(1);
+  }
+
+  @Test
+  void notReadyOutranksMissingEvidenceAndExplicitZeroRemainsAValue() throws Exception {
+    submit(
+            "readiness-zero-observation",
+            observationBody("source-readiness-zero", 0, Instant.now().minusSeconds(2).toString()))
+        .andExpect(status().isCreated());
+
+    evaluateReadiness("[\"COORDINATION_BEDS\",\"UNCONFIGURED_RESOURCE\"]")
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.outcome").value("NOT_READY"))
+        .andExpect(jsonPath("$.dimensions[0].outcome").value("NOT_READY"))
+        .andExpect(jsonPath("$.dimensions[0].quantity").value(0))
+        .andExpect(jsonPath("$.dimensions[0].reasonCodes[0]").value("BELOW_MINIMUM_QUANTITY"))
+        .andExpect(jsonPath("$.dimensions[1].outcome").value("UNKNOWN"))
+        .andExpect(jsonPath("$.dimensions[1].reasonCodes[0]").value("DIMENSION_UNKNOWN"));
+  }
+
+  @Test
+  void missingAndMixedEvidenceCannotProduceReady() throws Exception {
+    evaluateReadiness("[\"COORDINATION_BEDS\"]")
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.outcome").value("UNKNOWN"))
+        .andExpect(jsonPath("$.dimensions[0].freshness").value("UNKNOWN"));
+
+    submit(
+            "readiness-one-known-one-unknown",
+            observationBody(
+                "source-readiness-one-known", 4, Instant.now().minusSeconds(2).toString()))
+        .andExpect(status().isCreated());
+    evaluateReadiness("[\"COORDINATION_BEDS\",\"UNCONFIGURED_RESOURCE\"]")
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.outcome").value("UNKNOWN"))
+        .andExpect(jsonPath("$.dimensions[0].outcome").value("READY"))
+        .andExpect(jsonPath("$.dimensions[1].outcome").value("UNKNOWN"));
+  }
+
+  @Test
+  void staleEvidenceCannotProduceReady() throws Exception {
+    Instant now = Instant.now();
+    submit(
+            "readiness-stale-observation",
+            observationBody(
+                "source-readiness-stale",
+                "manual",
+                4,
+                now.minusSeconds(1_200).toString(),
+                now.plusSeconds(1_200).toString()))
+        .andExpect(status().isCreated());
+    evaluateReadiness("[\"COORDINATION_BEDS\"]")
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.outcome").value("STALE"))
+        .andExpect(jsonPath("$.dimensions[0].outcome").value("STALE"))
+        .andExpect(jsonPath("$.dimensions[0].freshness").value("STALE"))
+        .andExpect(jsonPath("$.dimensions[0].reasonCodes[0]").value("EVIDENCE_STALE"));
+  }
+
+  @Test
+  void dimensionWithoutAReadinessPolicyRemainsUnknown() throws Exception {
+    defineDimensionWithoutPolicy("POLICYLESS_RESOURCE");
+
+    evaluateReadiness("[\"POLICYLESS_RESOURCE\"]")
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.outcome").value("UNKNOWN"))
+        .andExpect(jsonPath("$.dimensions[0].outcome").value("UNKNOWN"))
+        .andExpect(jsonPath("$.dimensions[0].dimensionVersion").value(1))
+        .andExpect(jsonPath("$.dimensions[0].capacityPolicyVersion").doesNotExist())
+        .andExpect(
+            jsonPath("$.dimensions[0].reasonCodes[0]").value("READINESS_POLICY_UNCONFIGURED"));
+  }
+
+  @Test
+  void equalPriorityDisagreementProducesConflictedReadiness() throws Exception {
+    configureEqualPriorityPolicy();
+    String observedAt = Instant.now().minusSeconds(2).toString();
+    submit(
+            "readiness-conflict-one",
+            observationBody("source-readiness-conflict-one", "manual", 4, observedAt, null))
+        .andExpect(status().isCreated());
+    submit(
+            "readiness-conflict-two",
+            observationBody("source-readiness-conflict-two", "manual-replica", 7, observedAt, null))
+        .andExpect(status().isCreated());
+
+    evaluateReadiness("[\"COORDINATION_BEDS\"]")
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.outcome").value("CONFLICTED"))
+        .andExpect(jsonPath("$.dimensions[0].outcome").value("CONFLICTED"))
+        .andExpect(jsonPath("$.dimensions[0].quantity").doesNotExist())
+        .andExpect(jsonPath("$.dimensions[0].evidence.length()").value(2))
+        .andExpect(
+            jsonPath("$.dimensions[0].reasonCodes")
+                .value(org.hamcrest.Matchers.hasItem("EVIDENCE_CONFLICTED")));
+  }
+
+  @Test
+  void invalidRequestsReturnSafeProblemDetailsAndCorrelation() throws Exception {
+    String duplicateDimensions =
+        "{\"facilityId\":\""
+            + facilityId
+            + "\",\"requiredDimensions\":[\"COORDINATION_BEDS\",\"COORDINATION_BEDS\"]}";
+    evaluateReadinessRequest(REPORTER, facilityId, duplicateDimensions)
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("CAPACITY_VALUE_INVALID"))
+        .andExpect(jsonPath("$.correlationId").value("readiness-invalid-correlation"))
+        .andExpect(header().string("X-Correlation-ID", "readiness-invalid-correlation"));
+
+    evaluateReadinessRequest(
+            REPORTER,
+            facilityId,
+            "{\"facilityId\":\"" + facilityId + "\",\"requiredDimensions\":[]}")
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("CAPACITY_VALUE_INVALID"));
+
+    evaluateReadinessRequest(
+            REPORTER,
+            facilityId,
+            "{\"facilityId\":\""
+                + facilityId
+                + "\",\"requiredDimensions\":[\"COORDINATION_BEDS\"],"
+                + "\"evaluationTime\":\""
+                + Instant.now().plusSeconds(3_600)
+                + "\"}")
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("CAPACITY_VALUE_INVALID"));
+
+    evaluateReadinessRequest(
+            REPORTER,
+            facilityId,
+            "{\"facilityId\":\""
+                + facilityId
+                + "\",\"requiredDimensions\":[\"COORDINATION_BEDS\"],"
+                + "\"careCapabilities\":[\"ICU\"]}")
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("CAPACITY_VALUE_INVALID"));
+  }
+
+  @Test
+  void scopeAndAuthorizationFailuresAreDeniedAndAudited() throws Exception {
+    String body =
+        "{\"facilityId\":\"" + facilityId + "\",\"requiredDimensions\":[\"COORDINATION_BEDS\"]}";
+    evaluateReadinessRequest(REPORTER, "00000000-0000-4000-8000-000000000001", body)
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.code").value("INVALID_EXECUTION_SCOPE"));
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = "
+                    + "'CAPACITY_EVIDENCE_SCOPE_REJECTED' AND outcome = 'DENIED'"))
+        .isEqualTo(1);
+
+    evaluateReadinessRequest(UNREVIEWED_REPORTER, facilityId, body)
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.code").value("AUTHORIZATION_DENIED"));
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = "
+                    + "'CAPACITY_READINESS_EVALUATE' AND outcome = 'DENIED'"))
+        .isEqualTo(1);
+  }
+
+  @Test
+  void auditFailureMakesTheReadinessQueryFailClosed() throws Exception {
+    jdbc.execute(
+        "CREATE FUNCTION test_fail_capacity_readiness_audit() RETURNS trigger LANGUAGE plpgsql AS "
+            + "'BEGIN IF NEW.action_code = ''CAPACITY_READINESS_EVALUATE'' THEN "
+            + "RAISE EXCEPTION ''synthetic readiness audit failure''; END IF; RETURN NEW; END'");
+    jdbc.execute(
+        "CREATE TRIGGER test_fail_capacity_readiness_audit BEFORE INSERT ON audit.audit_record "
+            + "FOR EACH ROW EXECUTE FUNCTION test_fail_capacity_readiness_audit()");
+
+    try {
+      evaluateReadiness("[\"COORDINATION_BEDS\"]")
+          .andExpect(status().isServiceUnavailable())
+          .andExpect(jsonPath("$.code").value("AUDIT_UNAVAILABLE"));
+    } finally {
+      jdbc.execute(
+          "DROP TRIGGER IF EXISTS test_fail_capacity_readiness_audit ON audit.audit_record");
+      jdbc.execute("DROP FUNCTION IF EXISTS test_fail_capacity_readiness_audit()");
+    }
+  }
+
+  @Test
+  void unavailableEvidenceStoreCannotReturnReady() throws Exception {
+    jdbc.execute(
+        "ALTER TABLE capacity.capacity_observation "
+            + "RENAME TO capacity_observation_temporarily_unavailable");
+    try {
+      evaluateReadiness("[\"COORDINATION_BEDS\"]")
+          .andExpect(status().isServiceUnavailable())
+          .andExpect(jsonPath("$.code").value("CAPACITY_UNAVAILABLE"));
+    } finally {
+      jdbc.execute(
+          "ALTER TABLE capacity.capacity_observation_temporarily_unavailable "
+              + "RENAME TO capacity_observation");
+    }
   }
 
   @Test
@@ -836,6 +1071,33 @@ class CapacityObservationCommandsApiIT {
     return mockMvc.perform(request);
   }
 
+  private org.springframework.test.web.servlet.ResultActions evaluateReadiness(String dimensions)
+      throws Exception {
+    return evaluateReadinessRequest(
+        REPORTER,
+        facilityId,
+        "{\"facilityId\":\""
+            + facilityId
+            + "\",\"requiredDimensions\":"
+            + dimensions
+            + ",\"evaluationTime\":\""
+            + Instant.now()
+            + "\"}");
+  }
+
+  private org.springframework.test.web.servlet.ResultActions evaluateReadinessRequest(
+      String subject, String scopeFacilityId, String body) throws Exception {
+    return mockMvc.perform(
+        post("/api/v1/capacity/readiness-evaluations")
+            .header("Authorization", bearer(token(subject)))
+            .header("X-AyuVahak-Execution-Scope", "FACILITY")
+            .header("X-AyuVahak-Organization-Id", organizationId)
+            .header("X-AyuVahak-Facility-Id", scopeFacilityId)
+            .header("X-Correlation-ID", "readiness-invalid-correlation")
+            .contentType("application/json")
+            .content(body));
+  }
+
   private org.springframework.test.web.servlet.ResultActions queryHistory(
       String subject, String... parameters) throws Exception {
     var request =
@@ -866,6 +1128,28 @@ class CapacityObservationCommandsApiIT {
                         + "\"sourceCode\":\"manual\",\"priority\":1,"
                         + "\"fallbackWhenHigherPriorityAbsent\":true,"
                         + "\"fallbackWhenHigherPriorityStale\":true}],"
+                        + "\"maximumObservationAgeSeconds\":600,\"defaultValiditySeconds\":300,"
+                        + "\"futureSkewToleranceSeconds\":30,\"minimumPassingQuantity\":1,"
+                        + "\"passingStates\":[],\"reasonCode\":\"TEST_CONFIGURATION\"}"))
+        .andExpect(status().isOk());
+  }
+
+  private void configureEqualPriorityPolicy() throws Exception {
+    mockMvc
+        .perform(
+            post("/api/v1/capacity/policies/dimensions/COORDINATION_BEDS/policy")
+                .header("Authorization", bearer(token(ADMIN)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", "readiness-equal-priority-policy")
+                .contentType("application/json")
+                .content(
+                    "{\"expectedVersion\":1,\"dimensionVersion\":1,\"sources\":["
+                        + "{\"sourceCode\":\"manual\",\"priority\":0,"
+                        + "\"fallbackWhenHigherPriorityAbsent\":false,"
+                        + "\"fallbackWhenHigherPriorityStale\":false},{"
+                        + "\"sourceCode\":\"manual-replica\",\"priority\":0,"
+                        + "\"fallbackWhenHigherPriorityAbsent\":false,"
+                        + "\"fallbackWhenHigherPriorityStale\":false}],"
                         + "\"maximumObservationAgeSeconds\":600,\"defaultValiditySeconds\":300,"
                         + "\"futureSkewToleranceSeconds\":30,\"minimumPassingQuantity\":1,"
                         + "\"passingStates\":[],\"reasonCode\":\"TEST_CONFIGURATION\"}"))
@@ -917,6 +1201,25 @@ class CapacityObservationCommandsApiIT {
                         + "\"valueKind\":\"QUANTITY\",\"unit\":\"bed\",\"minimumValue\":0,\"maximumValue\":500,"
                         + "\"allowedStates\":[],\"usedForReadiness\":true,\"reservable\":false,"
                         + "\"reasonCode\":\"TEST_CONFIGURATION\"}"))
+        .andExpect(status().isCreated());
+  }
+
+  private void defineDimensionWithoutPolicy(String code) throws Exception {
+    mockMvc
+        .perform(
+            post("/api/v1/capacity/policies/dimensions")
+                .header("Authorization", bearer(token(ADMIN)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", "dimension-without-policy-" + code)
+                .contentType("application/json")
+                .content(
+                    "{\"code\":\""
+                        + code
+                        + "\",\"expectedVersion\":0,\"displayName\":\"Synthetic resource\","
+                        + "\"meaning\":\"Synthetic capacity evidence requiring configuration\","
+                        + "\"valueKind\":\"QUANTITY\",\"unit\":\"unit\",\"minimumValue\":0,"
+                        + "\"maximumValue\":500,\"allowedStates\":[],\"usedForReadiness\":true,"
+                        + "\"reservable\":false,\"reasonCode\":\"TEST_CONFIGURATION\"}"))
         .andExpect(status().isCreated());
   }
 
