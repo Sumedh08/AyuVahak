@@ -60,10 +60,13 @@ final class Phase1ArchitectureRules {
             "org.ayuvahak.directory",
             "org.ayuvahak.directory..",
             "org.ayuvahak.capacity",
-            "org.ayuvahak.capacity..")
+            "org.ayuvahak.capacity..",
+            "org.ayuvahak.referral",
+            "org.ayuvahak.referral..")
         .as(
             "Production code contains only implemented platform concerns and the active Directory"
-                + " and Capacity contexts; create later healthcare contexts only when their phase begins");
+                + ", Capacity, and Referral contexts; create later healthcare contexts only when"
+                + " their phase begins");
   }
 
   static ArchRule packageSlicesAreAcyclic() {
