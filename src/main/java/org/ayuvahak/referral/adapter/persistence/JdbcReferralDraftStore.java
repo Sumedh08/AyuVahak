@@ -19,6 +19,8 @@ import org.ayuvahak.referral.application.ReferralDraftStore;
 import org.ayuvahak.referral.domain.CareRequirement;
 import org.ayuvahak.referral.domain.PatientReference;
 import org.ayuvahak.referral.domain.ReferralDraft;
+import org.ayuvahak.referral.domain.ReferralResolution;
+import org.ayuvahak.referral.domain.ReferralResolutionOutcome;
 import org.ayuvahak.referral.domain.ReferralState;
 import org.ayuvahak.referral.domain.SubmittedReferralRevision;
 import org.springframework.context.annotation.Lazy;
@@ -120,6 +122,98 @@ public class JdbcReferralDraftStore implements ReferralDraftStore {
 
   @Override
   public boolean updateDraft(ReferralDraft revised, long expectedVersion) {
+    return updateCurrentContent(revised, expectedVersion, ReferralState.DRAFT);
+  }
+
+  @Override
+  public boolean submitDraft(
+      ReferralDraft submitted, long expectedVersion, SubmittedReferralRevision revision) {
+    int changed =
+        jdbc.update(
+            "UPDATE referral.draft SET state = 'SUBMITTED', updated_by_kind = ?, "
+                + "updated_by_issuer = ?, updated_by_identifier_type = ?, updated_by_identifier = ?, "
+                + "version = ?, updated_at = ? WHERE referral_id = ? AND version = ? AND state = 'DRAFT'",
+            submitted.updatedBy().kind().name(),
+            submitted.updatedBy().identity().issuer().value(),
+            submitted.updatedBy().identity().resourceType(),
+            submitted.updatedBy().identity().value(),
+            submitted.version(),
+            Timestamp.from(submitted.updatedAt()),
+            submitted.id().value(),
+            expectedVersion);
+    if (changed != 1) {
+      return false;
+    }
+    insertSubmittedRevision(revision);
+    return true;
+  }
+
+  @Override
+  public boolean amendSubmitted(
+      ReferralDraft amended, long expectedVersion, SubmittedReferralRevision revision) {
+    if (!updateCurrentContent(amended, expectedVersion, ReferralState.SUBMITTED)) {
+      return false;
+    }
+    insertSubmittedRevision(revision);
+    return true;
+  }
+
+  @Override
+  public boolean resolveDraft(
+      ReferralDraft resolved, long expectedVersion, ReferralResolution resolution) {
+    int changed =
+        jdbc.update(
+            "UPDATE referral.draft SET state = 'RESOLVED', updated_by_kind = ?, "
+                + "updated_by_issuer = ?, updated_by_identifier_type = ?, updated_by_identifier = ?, "
+                + "version = ?, updated_at = ? WHERE referral_id = ? AND version = ? AND state = 'SUBMITTED'",
+            resolved.updatedBy().kind().name(),
+            resolved.updatedBy().identity().issuer().value(),
+            resolved.updatedBy().identity().resourceType(),
+            resolved.updatedBy().identity().value(),
+            resolved.version(),
+            Timestamp.from(resolved.updatedAt()),
+            resolved.id().value(),
+            expectedVersion);
+    if (changed != 1) {
+      return false;
+    }
+    jdbc.update(
+        "INSERT INTO referral.resolution (referral_id, outcome, reason_code, resolved_by_kind, "
+            + "resolved_by_issuer, resolved_by_identifier_type, resolved_by_identifier, "
+            + "referral_version, resolved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        resolution.referralId().value(),
+        resolution.outcome().name(),
+        resolution.reasonCode(),
+        resolution.resolvedBy().kind().name(),
+        resolution.resolvedBy().identity().issuer().value(),
+        resolution.resolvedBy().identity().resourceType(),
+        resolution.resolvedBy().identity().value(),
+        resolution.referralVersion(),
+        Timestamp.from(resolution.resolvedAt()));
+    return true;
+  }
+
+  @Override
+  public Optional<SubmittedReferralRevision> findSubmittedRevision(
+      InternalId referralId, long referralVersion) {
+    List<RevisionRow> rows =
+        jdbc.query(
+            "SELECT referral_id, revision_number, referral_version, origin_organization_id, "
+                + "origin_facility_id, patient_issuer, patient_resource_type, patient_identifier, "
+                + "encounter_issuer, encounter_resource_type, encounter_identifier, requested_start, "
+                + "requested_end, selected_destination_organization_id, priority_code, "
+                + "source_actor_kind, source_actor_issuer, source_actor_identifier_type, "
+                + "source_actor_identifier, submitted_by_kind, submitted_by_issuer, "
+                + "submitted_by_identifier_type, submitted_by_identifier, submitted_at, reason_code "
+                + "FROM referral.submitted_revision WHERE referral_id = ? AND referral_version = ?",
+            JdbcReferralDraftStore::revisionRow,
+            referralId.value(),
+            referralVersion);
+    return rows.stream().findFirst().map(this::toRevision);
+  }
+
+  private boolean updateCurrentContent(
+      ReferralDraft revised, long expectedVersion, ReferralState expectedState) {
     int changed =
         jdbc.update(
             "UPDATE referral.draft SET patient_issuer = ?, patient_resource_type = ?, "
@@ -127,7 +221,7 @@ public class JdbcReferralDraftStore implements ReferralDraftStore {
                 + "encounter_identifier = ?, requested_start = ?, requested_end = ?, "
                 + "selected_destination_organization_id = ?, priority_code = ?, updated_by_kind = ?, "
                 + "updated_by_issuer = ?, updated_by_identifier_type = ?, updated_by_identifier = ?, "
-                + "version = ?, updated_at = ? WHERE referral_id = ? AND version = ? AND state = 'DRAFT'",
+                + "version = ?, updated_at = ? WHERE referral_id = ? AND version = ? AND state = ?",
             revised.patientReference().patient().issuer().value(),
             revised.patientReference().patient().resourceType(),
             revised.patientReference().patient().value(),
@@ -157,7 +251,8 @@ public class JdbcReferralDraftStore implements ReferralDraftStore {
             revised.version(),
             Timestamp.from(revised.updatedAt()),
             revised.id().value(),
-            expectedVersion);
+            expectedVersion,
+            expectedState.name());
     if (changed != 1) {
       return false;
     }
@@ -171,48 +266,6 @@ public class JdbcReferralDraftStore implements ReferralDraftStore {
     return true;
   }
 
-  @Override
-  public boolean submitDraft(
-      ReferralDraft submitted, long expectedVersion, SubmittedReferralRevision revision) {
-    int changed =
-        jdbc.update(
-            "UPDATE referral.draft SET state = 'SUBMITTED', updated_by_kind = ?, "
-                + "updated_by_issuer = ?, updated_by_identifier_type = ?, updated_by_identifier = ?, "
-                + "version = ?, updated_at = ? WHERE referral_id = ? AND version = ? AND state = 'DRAFT'",
-            submitted.updatedBy().kind().name(),
-            submitted.updatedBy().identity().issuer().value(),
-            submitted.updatedBy().identity().resourceType(),
-            submitted.updatedBy().identity().value(),
-            submitted.version(),
-            Timestamp.from(submitted.updatedAt()),
-            submitted.id().value(),
-            expectedVersion);
-    if (changed != 1) {
-      return false;
-    }
-    insertSubmittedRevision(revision);
-    return true;
-  }
-
-  @Override
-  public Optional<SubmittedReferralRevision> findSubmittedRevision(
-      InternalId referralId, long referralVersion) {
-    List<RevisionRow> rows =
-        jdbc.query(
-            "SELECT referral_id, revision_number, referral_version, origin_organization_id, "
-                + "origin_facility_id, patient_issuer, patient_resource_type, patient_identifier, "
-                + "encounter_issuer, encounter_resource_type, encounter_identifier, requested_start, "
-                + "requested_end, selected_destination_organization_id, priority_code, "
-                + "source_actor_kind, source_actor_issuer, source_actor_identifier_type, "
-                + "source_actor_identifier, submitted_by_kind, submitted_by_issuer, "
-                + "submitted_by_identifier_type, submitted_by_identifier, submitted_at "
-                + "FROM referral.submitted_revision WHERE referral_id = ? AND referral_version = ?",
-            JdbcReferralDraftStore::revisionRow,
-            referralId.value(),
-            referralVersion);
-    return rows.stream().findFirst().map(this::toRevision);
-  }
-
   private void insertSubmittedRevision(SubmittedReferralRevision revision) {
     jdbc.update(
         "INSERT INTO referral.submitted_revision (referral_id, revision_number, referral_version, "
@@ -221,8 +274,8 @@ public class JdbcReferralDraftStore implements ReferralDraftStore {
             + "requested_start, requested_end, selected_destination_organization_id, priority_code, "
             + "source_actor_kind, source_actor_issuer, source_actor_identifier_type, "
             + "source_actor_identifier, submitted_by_kind, submitted_by_issuer, "
-            + "submitted_by_identifier_type, submitted_by_identifier, submitted_at) "
-            + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            + "submitted_by_identifier_type, submitted_by_identifier, submitted_at, reason_code) "
+            + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         revision.referralId().value(),
         revision.revisionNumber(),
         revision.referralVersion(),
@@ -258,7 +311,8 @@ public class JdbcReferralDraftStore implements ReferralDraftStore {
         revision.submittedBy().identity().issuer().value(),
         revision.submittedBy().identity().resourceType(),
         revision.submittedBy().identity().value(),
-        Timestamp.from(revision.submittedAt()));
+        Timestamp.from(revision.submittedAt()),
+        revision.reasonCode().orElse(null));
     for (String code : revision.careRequirement().requiredCareCapabilityCodes()) {
       jdbc.update(
           "INSERT INTO referral.submitted_revision_required_care_capability "
@@ -275,6 +329,25 @@ public class JdbcReferralDraftStore implements ReferralDraftStore {
           revision.revisionNumber(),
           code);
     }
+  }
+
+  @Override
+  public Optional<ReferralResolution> findResolution(InternalId referralId) {
+    List<ReferralResolution> resolutions =
+        jdbc.query(
+            "SELECT referral_id, outcome, reason_code, resolved_by_kind, resolved_by_issuer, "
+                + "resolved_by_identifier_type, resolved_by_identifier, referral_version, resolved_at "
+                + "FROM referral.resolution WHERE referral_id = ?",
+            (result, row) ->
+                new ReferralResolution(
+                    new InternalId(result.getObject("referral_id", UUID.class)),
+                    ReferralResolutionOutcome.valueOf(result.getString("outcome")),
+                    result.getString("reason_code"),
+                    actor(result, "resolved_by"),
+                    result.getTimestamp("resolved_at").toInstant(),
+                    result.getLong("referral_version")),
+            referralId.value());
+    return resolutions.stream().findFirst();
   }
 
   @Override
@@ -454,7 +527,8 @@ public class JdbcReferralDraftStore implements ReferralDraftStore {
         result.getString("priority_code"),
         actor(result, "source_actor"),
         actor(result, "submitted_by"),
-        result.getTimestamp("submitted_at"));
+        result.getTimestamp("submitted_at"),
+        result.getString("reason_code"));
   }
 
   private SubmittedReferralRevision toRevision(RevisionRow row) {
@@ -496,7 +570,8 @@ public class JdbcReferralDraftStore implements ReferralDraftStore {
         requirement,
         row.sourceActor(),
         row.submittedBy(),
-        row.submittedAt().toInstant());
+        row.submittedAt().toInstant(),
+        Optional.ofNullable(row.reasonCode()));
   }
 
   private record RevisionRow(
@@ -517,7 +592,8 @@ public class JdbcReferralDraftStore implements ReferralDraftStore {
       String priorityCode,
       ActorReference sourceActor,
       ActorReference submittedBy,
-      Timestamp submittedAt) {}
+      Timestamp submittedAt,
+      String reasonCode) {}
 
   private List<String> readCodes(String table, String column, InternalId id) {
     return jdbc.query(

@@ -133,6 +133,7 @@ class ReferralDraftCommandsApiIT {
       if (Boolean.TRUE.equals(
           jdbc.queryForObject(
               "SELECT to_regclass('referral.submitted_revision') IS NOT NULL", Boolean.class))) {
+        jdbc.execute("TRUNCATE TABLE referral.resolution");
         jdbc.execute(
             "TRUNCATE TABLE referral.submitted_revision_required_care_capability, "
                 + "referral.submitted_revision_permitted_geography_code, "
@@ -160,6 +161,308 @@ class ReferralDraftCommandsApiIT {
     grant(ORIGINATOR, "ReferralCreate", "FACILITY", organizationId, facilityId);
     grant(ORIGINATOR, "ReferralEdit", "FACILITY", organizationId, facilityId);
     grant(ORIGINATOR, "ReferralSubmit", "FACILITY", organizationId, facilityId);
+    grant(ORIGINATOR, "ReferralAmend", "FACILITY", organizationId, facilityId);
+    grant(ORIGINATOR, "ReferralResolve", "FACILITY", organizationId, facilityId);
+  }
+
+  @Test
+  void authorizedOriginAmendsSubmittedReferralAsNewImmutableRevisionAndExactRetryReplays()
+      throws Exception {
+    String referralId = createDraft("amend-create", "opaque-synthetic-patient-before-amendment");
+    performSubmission(referralId, ORIGINATOR, "amend-submit", "{\"expectedVersion\":1}")
+        .andExpect(status().isOk());
+
+    String amendment =
+        amendmentBody(2, "ORIGIN_CORRECTION", "opaque-synthetic-patient-after-amendment");
+    MvcResult result =
+        performAmendment(referralId, ORIGINATOR, "amend-01", amendment)
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.id").value(referralId))
+            .andExpect(jsonPath("$.status").value("SUBMITTED"))
+            .andExpect(jsonPath("$.version").value(3))
+            .andExpect(jsonPath("$.submittedRevision.revisionNumber").value(2))
+            .andExpect(jsonPath("$.submittedRevision.reasonCode").value("ORIGIN_CORRECTION"))
+            .andExpect(
+                jsonPath("$.submittedRevision.patientReference.identifier")
+                    .value("opaque-synthetic-patient-after-amendment"))
+            .andReturn();
+    String submittedAt =
+        com.jayway.jsonpath.JsonPath.read(
+            result.getResponse().getContentAsString(), "$.submittedRevision.submittedAt");
+
+    performAmendment(referralId, ORIGINATOR, "amend-01", amendment)
+        .andExpect(status().isOk())
+        .andExpect(header().string("Idempotency-Replayed", "true"))
+        .andExpect(jsonPath("$.submittedRevision.revisionNumber").value(2))
+        .andExpect(jsonPath("$.submittedRevision.submittedAt").value(submittedAt));
+
+    assertThat(count("SELECT COUNT(*) FROM referral.submitted_revision")).isEqualTo(2);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT patient_identifier FROM referral.submitted_revision "
+                    + "WHERE referral_id = ?::uuid AND revision_number = 1",
+                String.class,
+                referralId))
+        .isEqualTo("opaque-synthetic-patient-before-amendment");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT patient_identifier FROM referral.submitted_revision "
+                    + "WHERE referral_id = ?::uuid AND revision_number = 2",
+                String.class,
+                referralId))
+        .isEqualTo("opaque-synthetic-patient-after-amendment");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = 'REFERRAL_AMEND'",
+                Integer.class))
+        .isEqualTo(1);
+    assertThat(count("SELECT COUNT(*) FROM platform_eventing.internal_event")).isZero();
+    performAmendment(
+            referralId,
+            ORIGINATOR,
+            "amend-01",
+            amendment.replace("ORIGIN_CORRECTION", "OTHER_REASON"))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("IDEMPOTENCY_KEY_REUSED"));
+    performAmendment(
+            referralId,
+            ORIGINATOR,
+            "amend-stale",
+            amendmentBody(2, "ORIGIN_CORRECTION", "opaque-synthetic-patient-stale-amendment"))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("REFERRAL_VERSION_CONFLICT"));
+    performAmendment(
+            referralId,
+            UNAUTHORIZED,
+            "amend-unauthorized",
+            amendmentBody(
+                3, "ORIGIN_CORRECTION", "opaque-synthetic-patient-unauthorized-amendment"))
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.code").value("AUTHORIZATION_DENIED"));
+    assertThat(count("SELECT COUNT(*) FROM referral.submitted_revision")).isEqualTo(2);
+    assertThatThrownBy(
+            () ->
+                jdbc.update(
+                    "UPDATE referral.submitted_revision SET reason_code = 'ALTERED' "
+                        + "WHERE referral_id = ?::uuid AND revision_number = 1",
+                    referralId))
+        .isInstanceOf(DataAccessException.class);
+  }
+
+  @Test
+  void originResolvesSubmittedReferralExplicitlyAndTerminalOutcomeIsIdempotent() throws Exception {
+    String referralId = createDraft("resolve-create", "opaque-synthetic-patient-resolve");
+    performSubmission(referralId, ORIGINATOR, "resolve-submit", "{\"expectedVersion\":1}")
+        .andExpect(status().isOk());
+    String resolution =
+        "{\"expectedVersion\":2,\"outcome\":\"UNFULFILLED\","
+            + "\"reasonCode\":\"ORIGIN_CLOSED_UNFULFILLED\"}";
+
+    MvcResult result =
+        performResolution(referralId, ORIGINATOR, "resolve-01", resolution)
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.id").value(referralId))
+            .andExpect(jsonPath("$.status").value("RESOLVED"))
+            .andExpect(jsonPath("$.version").value(3))
+            .andExpect(jsonPath("$.outcome").value("UNFULFILLED"))
+            .andExpect(jsonPath("$.reasonCode").value("ORIGIN_CLOSED_UNFULFILLED"))
+            .andExpect(jsonPath("$.resolvedBy.identifier").value(ORIGINATOR))
+            .andExpect(jsonPath("$.resolvedAt").isNotEmpty())
+            .andReturn();
+    String resolvedAt =
+        com.jayway.jsonpath.JsonPath.read(
+            result.getResponse().getContentAsString(), "$.resolvedAt");
+
+    performResolution(referralId, ORIGINATOR, "resolve-01", resolution)
+        .andExpect(status().isOk())
+        .andExpect(header().string("Idempotency-Replayed", "true"))
+        .andExpect(jsonPath("$.status").value("RESOLVED"))
+        .andExpect(jsonPath("$.resolvedAt").value(resolvedAt));
+    performResolution(
+            referralId, ORIGINATOR, "resolve-01", resolution.replace("UNFULFILLED", "FULFILLED"))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("IDEMPOTENCY_KEY_REUSED"));
+
+    assertThat(count("SELECT COUNT(*) FROM referral.resolution")).isEqualTo(1);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = 'REFERRAL_RESOLVE'",
+                Integer.class))
+        .isEqualTo(1);
+    assertThat(count("SELECT COUNT(*) FROM platform_eventing.internal_event")).isZero();
+
+    performAmendment(
+            referralId,
+            ORIGINATOR,
+            "resolve-after-amend",
+            amendmentBody(3, "ORIGIN_CORRECTION", "opaque-synthetic-patient-too-late"))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("REFERRAL_ALREADY_RESOLVED"));
+    performResolution(
+            referralId,
+            ORIGINATOR,
+            "resolve-again",
+            "{\"expectedVersion\":3,\"outcome\":\"FULFILLED\","
+                + "\"reasonCode\":\"OUTCOME_CHANGED\"}")
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("REFERRAL_ALREADY_RESOLVED"));
+    assertThat(count("SELECT COUNT(*) FROM referral.resolution")).isEqualTo(1);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT state FROM referral.draft WHERE referral_id = ?::uuid",
+                String.class,
+                referralId))
+        .isEqualTo("RESOLVED");
+  }
+
+  @Test
+  void failedAmendmentAuditRollsBackRevisionCurrentContentAndReceiptThenAllowsRetry()
+      throws Exception {
+    String referralId = createDraft("amend-audit-create", "opaque-synthetic-patient-amend-audit");
+    performSubmission(referralId, ORIGINATOR, "amend-audit-submit", "{\"expectedVersion\":1}")
+        .andExpect(status().isOk());
+    String amendment =
+        amendmentBody(2, "ORIGIN_CORRECTION", "opaque-synthetic-patient-amend-audit-corrected");
+    jdbc.execute(
+        "CREATE FUNCTION audit.reject_referral_amend() RETURNS trigger "
+            + "LANGUAGE plpgsql AS $$ BEGIN "
+            + "IF NEW.action_code = 'REFERRAL_AMEND' THEN "
+            + "RAISE EXCEPTION 'synthetic audit failure'; END IF; RETURN NEW; END $$");
+    jdbc.execute(
+        "CREATE TRIGGER reject_referral_amend BEFORE INSERT ON audit.audit_record "
+            + "FOR EACH ROW EXECUTE FUNCTION audit.reject_referral_amend()");
+    try {
+      performAmendment(referralId, ORIGINATOR, "amend-audit-01", amendment)
+          .andExpect(status().isServiceUnavailable())
+          .andExpect(jsonPath("$.code").value("AUDIT_UNAVAILABLE"));
+      assertThat(count("SELECT COUNT(*) FROM referral.submitted_revision")).isEqualTo(1);
+      assertThat(count("SELECT COUNT(*) FROM referral.command_receipt")).isEqualTo(2);
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT patient_identifier FROM referral.draft WHERE referral_id = ?::uuid",
+                  String.class,
+                  referralId))
+          .isEqualTo("opaque-synthetic-patient-amend-audit");
+    } finally {
+      jdbc.execute("DROP TRIGGER IF EXISTS reject_referral_amend ON audit.audit_record");
+      jdbc.execute("DROP FUNCTION IF EXISTS audit.reject_referral_amend()");
+    }
+
+    performAmendment(referralId, ORIGINATOR, "amend-audit-01", amendment)
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.submittedRevision.revisionNumber").value(2));
+    assertThat(count("SELECT COUNT(*) FROM referral.submitted_revision")).isEqualTo(2);
+    assertThat(count("SELECT COUNT(*) FROM referral.command_receipt")).isEqualTo(3);
+  }
+
+  @Test
+  void concurrentAmendmentAndResolutionHaveOneWinnerAndAnExplicitLoser() throws Exception {
+    String referralId = createDraft("amend-resolve-race-create", "opaque-synthetic-patient-race");
+    performSubmission(
+            referralId, ORIGINATOR, "amend-resolve-race-submit", "{\"expectedVersion\":1}")
+        .andExpect(status().isOk());
+    String amendment =
+        amendmentBody(2, "ORIGIN_CORRECTION", "opaque-synthetic-patient-race-amended");
+    String resolution =
+        "{\"expectedVersion\":2,\"outcome\":\"UNFULFILLED\","
+            + "\"reasonCode\":\"ORIGIN_CLOSED_UNFULFILLED\"}";
+    ExecutorService executor = Executors.newFixedThreadPool(2);
+    CountDownLatch start = new CountDownLatch(1);
+    try {
+      Future<MvcResult> amendmentAttempt =
+          executor.submit(
+              () -> {
+                start.await();
+                return performAmendment(referralId, ORIGINATOR, "amend-race", amendment)
+                    .andReturn();
+              });
+      Future<MvcResult> resolutionAttempt =
+          executor.submit(
+              () -> {
+                start.await();
+                return performResolution(referralId, ORIGINATOR, "resolve-race", resolution)
+                    .andReturn();
+              });
+      start.countDown();
+      MvcResult amendmentResult = amendmentAttempt.get();
+      MvcResult resolutionResult = resolutionAttempt.get();
+      assertThat(
+              List.of(
+                  amendmentResult.getResponse().getStatus(),
+                  resolutionResult.getResponse().getStatus()))
+          .containsExactlyInAnyOrder(200, 409);
+      MvcResult loser =
+          amendmentResult.getResponse().getStatus() == 409 ? amendmentResult : resolutionResult;
+      String loserCode =
+          com.jayway.jsonpath.JsonPath.parse(loser.getResponse().getContentAsString())
+              .read("$.code", String.class);
+      assertThat(loserCode).isIn("REFERRAL_VERSION_CONFLICT", "REFERRAL_ALREADY_RESOLVED");
+      long revisionCount = count("SELECT COUNT(*) FROM referral.submitted_revision");
+      long resolutionCount = count("SELECT COUNT(*) FROM referral.resolution");
+      assertThat(revisionCount + resolutionCount).isEqualTo(2);
+      assertThat(resolutionCount).isIn(0L, 1L);
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT state FROM referral.draft WHERE referral_id = ?::uuid",
+                  String.class,
+                  referralId))
+          .isIn("SUBMITTED", "RESOLVED");
+    } finally {
+      executor.shutdownNow();
+    }
+  }
+
+  @Test
+  void invalidAuthorityOrVersionCannotResolveAndAuditFailureRollsBackClosure() throws Exception {
+    String referralId =
+        createDraft("resolve-audit-create", "opaque-synthetic-patient-resolve-audit");
+    performSubmission(referralId, ORIGINATOR, "resolve-audit-submit", "{\"expectedVersion\":1}")
+        .andExpect(status().isOk());
+    String body =
+        "{\"expectedVersion\":2,\"outcome\":\"FULFILLED\","
+            + "\"reasonCode\":\"ORIGIN_CONFIRMED_FULFILLED\"}";
+
+    performResolution(referralId, UNAUTHORIZED, "resolve-unauthorized", body)
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.code").value("AUTHORIZATION_DENIED"));
+    performResolution(
+            referralId,
+            ORIGINATOR,
+            "resolve-stale",
+            body.replace("\"expectedVersion\":2", "\"expectedVersion\":1"))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("REFERRAL_VERSION_CONFLICT"));
+
+    jdbc.execute(
+        "CREATE FUNCTION audit.reject_referral_resolve() RETURNS trigger "
+            + "LANGUAGE plpgsql AS $$ BEGIN "
+            + "IF NEW.action_code = 'REFERRAL_RESOLVE' THEN "
+            + "RAISE EXCEPTION 'synthetic audit failure'; END IF; RETURN NEW; END $$");
+    jdbc.execute(
+        "CREATE TRIGGER reject_referral_resolve BEFORE INSERT ON audit.audit_record "
+            + "FOR EACH ROW EXECUTE FUNCTION audit.reject_referral_resolve()");
+    try {
+      performResolution(referralId, ORIGINATOR, "resolve-audit-01", body)
+          .andExpect(status().isServiceUnavailable())
+          .andExpect(jsonPath("$.code").value("AUDIT_UNAVAILABLE"));
+      assertThat(count("SELECT COUNT(*) FROM referral.resolution")).isZero();
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT state FROM referral.draft WHERE referral_id = ?::uuid",
+                  String.class,
+                  referralId))
+          .isEqualTo("SUBMITTED");
+      assertThat(count("SELECT COUNT(*) FROM referral.command_receipt")).isEqualTo(2);
+    } finally {
+      jdbc.execute("DROP TRIGGER IF EXISTS reject_referral_resolve ON audit.audit_record");
+      jdbc.execute("DROP FUNCTION IF EXISTS audit.reject_referral_resolve()");
+    }
+
+    performResolution(referralId, ORIGINATOR, "resolve-audit-01", body)
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.status").value("RESOLVED"))
+        .andExpect(jsonPath("$.outcome").value("FULFILLED"));
+    assertThat(count("SELECT COUNT(*) FROM referral.resolution")).isEqualTo(1);
   }
 
   @Test
@@ -736,6 +1039,56 @@ class ReferralDraftCommandsApiIT {
             .header("Idempotency-Key", idempotencyKey)
             .contentType("application/json")
             .content(body));
+  }
+
+  private org.springframework.test.web.servlet.ResultActions performAmendment(
+      String referralId, String subject, String idempotencyKey, String body) throws Exception {
+    return mockMvc.perform(
+        post("/api/v1/referrals/{referralId}/revisions", referralId)
+            .header("Authorization", bearer(token(subject)))
+            .header("X-AyuVahak-Execution-Scope", "FACILITY")
+            .header("X-AyuVahak-Organization-Id", organizationId)
+            .header("X-AyuVahak-Facility-Id", facilityId)
+            .header("Idempotency-Key", idempotencyKey)
+            .contentType("application/json")
+            .content(body));
+  }
+
+  private org.springframework.test.web.servlet.ResultActions performResolution(
+      String referralId, String subject, String idempotencyKey, String body) throws Exception {
+    return mockMvc.perform(
+        post("/api/v1/referrals/{referralId}/resolution", referralId)
+            .header("Authorization", bearer(token(subject)))
+            .header("X-AyuVahak-Execution-Scope", "FACILITY")
+            .header("X-AyuVahak-Organization-Id", organizationId)
+            .header("X-AyuVahak-Facility-Id", facilityId)
+            .header("Idempotency-Key", idempotencyKey)
+            .contentType("application/json")
+            .content(body));
+  }
+
+  private String amendmentBody(long expectedVersion, String reasonCode, String patientIdentifier) {
+    return """
+        {
+          "expectedVersion": %d,
+          "reasonCode": "%s",
+          "patientReference": {
+            "issuer": "urn:synthetic:source-ehr",
+            "resourceType": "Patient",
+            "identifier": "%s",
+            "encounterReference": null
+          },
+          "careRequirement": {
+            "requiredCareCapabilityCodes": ["%s"],
+            "requestedStart": "2026-10-09T10:00:00Z",
+            "requestedEnd": "2026-10-09T12:00:00Z",
+            "permittedGeographyCodes": ["SYNTHETIC_DISTRICT_01"],
+            "selectedDestinationOrganizationId": null,
+            "priorityCode": "ROUTINE"
+          }
+        }
+        """
+        .formatted(expectedVersion, reasonCode, patientIdentifier, CAPABILITY);
   }
 
   private String createDraft(String idempotencyKey, String patientIdentifier) throws Exception {
