@@ -12,10 +12,13 @@ import org.ayuvahak.platform.core.ActorReference;
 import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.InternalId;
 import org.ayuvahak.platform.core.IssuerId;
+import org.ayuvahak.platform.executioncontext.ExecutionScope;
 import org.ayuvahak.platform.idempotency.CommandReceiptKey;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
 import org.ayuvahak.platform.idempotency.configuration.CommandIdempotencyProperties;
 import org.ayuvahak.referral.application.ReferralDraftStore;
+import org.ayuvahak.referral.application.ReferralListItem;
+import org.ayuvahak.referral.application.ReferralReadFilter;
 import org.ayuvahak.referral.domain.CareRequirement;
 import org.ayuvahak.referral.domain.PatientReference;
 import org.ayuvahak.referral.domain.ReferralCancellation;
@@ -232,20 +235,103 @@ public class JdbcReferralDraftStore implements ReferralDraftStore {
   @Override
   public Optional<SubmittedReferralRevision> findSubmittedRevision(
       InternalId referralId, long referralVersion) {
+    return findRevision("referral_version = ?", referralId, referralVersion);
+  }
+
+  @Override
+  public Optional<SubmittedReferralRevision> findSubmittedRevisionNumber(
+      InternalId referralId, long revisionNumber) {
+    return findRevision("revision_number = ?", referralId, revisionNumber);
+  }
+
+  @Override
+  public Optional<SubmittedReferralRevision> findLatestSubmittedRevision(InternalId referralId) {
     List<RevisionRow> rows =
         jdbc.query(
-            "SELECT referral_id, revision_number, referral_version, origin_organization_id, "
-                + "origin_facility_id, patient_issuer, patient_resource_type, patient_identifier, "
-                + "encounter_issuer, encounter_resource_type, encounter_identifier, requested_start, "
-                + "requested_end, selected_destination_organization_id, priority_code, "
-                + "source_actor_kind, source_actor_issuer, source_actor_identifier_type, "
-                + "source_actor_identifier, submitted_by_kind, submitted_by_issuer, "
-                + "submitted_by_identifier_type, submitted_by_identifier, submitted_at, reason_code "
-                + "FROM referral.submitted_revision WHERE referral_id = ? AND referral_version = ?",
+            revisionSelect() + "WHERE referral_id = ? ORDER BY revision_number DESC LIMIT 1",
+            JdbcReferralDraftStore::revisionRow,
+            referralId.value());
+    return rows.stream().findFirst().map(this::toRevision);
+  }
+
+  @Override
+  public List<ReferralListItem> findReferralPage(
+      ExecutionScope scope, ReferralReadFilter filter, int limit, long offset) {
+    StringBuilder query =
+        new StringBuilder(
+            "SELECT d.referral_id, d.state, d.version, d.origin_organization_id, "
+                + "d.origin_facility_id, latest.submitted_at, "
+                + "COALESCE(latest.submitted_at, d.created_at) AS relevant_at "
+                + "FROM referral.draft d LEFT JOIN LATERAL ("
+                + "SELECT MAX(r.submitted_at) AS submitted_at FROM referral.submitted_revision r "
+                + "WHERE r.referral_id = d.referral_id) latest ON TRUE "
+                + "WHERE d.origin_organization_id = ? ");
+    List<Object> parameters = new java.util.ArrayList<>();
+    parameters.add(directoryId(scope.organization().orElseThrow()));
+    if (scope.kind() == ExecutionScope.Kind.FACILITY) {
+      query.append("AND d.origin_facility_id = ? ");
+      parameters.add(directoryId(scope.facility().orElseThrow()));
+    }
+    filter
+        .state()
+        .ifPresent(
+            state -> {
+              query.append("AND d.state = ? ");
+              parameters.add(state.name());
+            });
+    filter
+        .fromInclusive()
+        .ifPresent(
+            from -> {
+              query.append("AND COALESCE(latest.submitted_at, d.created_at) >= ? ");
+              parameters.add(Timestamp.from(from));
+            });
+    filter
+        .untilExclusive()
+        .ifPresent(
+            until -> {
+              query.append("AND COALESCE(latest.submitted_at, d.created_at) < ? ");
+              parameters.add(Timestamp.from(until));
+            });
+    query.append("ORDER BY relevant_at DESC, d.referral_id ASC LIMIT ? OFFSET ?");
+    parameters.add(limit);
+    parameters.add(offset);
+    return jdbc.query(
+        query.toString(),
+        (result, row) ->
+            new ReferralListItem(
+                new InternalId(result.getObject("referral_id", UUID.class)),
+                ReferralState.valueOf(result.getString("state")),
+                result.getLong("version"),
+                directoryReference(
+                    "Organization", result.getObject("origin_organization_id", UUID.class)),
+                Optional.ofNullable(result.getObject("origin_facility_id", UUID.class))
+                    .map(value -> directoryReference("Facility", value)),
+                result.getTimestamp("relevant_at").toInstant(),
+                Optional.ofNullable(result.getTimestamp("submitted_at")).map(Timestamp::toInstant)),
+        parameters.toArray());
+  }
+
+  private Optional<SubmittedReferralRevision> findRevision(
+      String selector, InternalId referralId, long value) {
+    List<RevisionRow> rows =
+        jdbc.query(
+            revisionSelect() + "WHERE referral_id = ? AND " + selector,
             JdbcReferralDraftStore::revisionRow,
             referralId.value(),
-            referralVersion);
+            value);
     return rows.stream().findFirst().map(this::toRevision);
+  }
+
+  private static String revisionSelect() {
+    return "SELECT referral_id, revision_number, referral_version, origin_organization_id, "
+        + "origin_facility_id, patient_issuer, patient_resource_type, patient_identifier, "
+        + "encounter_issuer, encounter_resource_type, encounter_identifier, requested_start, "
+        + "requested_end, selected_destination_organization_id, priority_code, "
+        + "source_actor_kind, source_actor_issuer, source_actor_identifier_type, "
+        + "source_actor_identifier, submitted_by_kind, submitted_by_issuer, "
+        + "submitted_by_identifier_type, submitted_by_identifier, submitted_at, reason_code "
+        + "FROM referral.submitted_revision ";
   }
 
   private boolean updateCurrentContent(

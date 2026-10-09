@@ -2,6 +2,7 @@ package org.ayuvahak.referral.adapter.api;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
@@ -166,6 +167,7 @@ class ReferralDraftCommandsApiIT {
     grant(ORIGINATOR, "ReferralAmend", "FACILITY", organizationId, facilityId);
     grant(ORIGINATOR, "ReferralResolve", "FACILITY", organizationId, facilityId);
     grant(ORIGINATOR, "ReferralCancel", "FACILITY", organizationId, facilityId);
+    grant(ORIGINATOR, "ReferralRead", "FACILITY", organizationId, facilityId);
   }
 
   @Test
@@ -1236,6 +1238,232 @@ class ReferralDraftCommandsApiIT {
     }
   }
 
+  @Test
+  void authorizedOriginReadsCurrentAndImmutableRevisionWhileListOmitsPatientReference()
+      throws Exception {
+    String patientReference = "opaque-synthetic-patient-query-01";
+    String referralId = createDraft("query-read-create", patientReference);
+    performSubmission(referralId, ORIGINATOR, "query-read-submit", "{\"expectedVersion\":1}")
+        .andExpect(status().isOk());
+
+    mockMvc
+        .perform(
+            get("/api/v1/referrals/{referralId}", referralId)
+                .header("Authorization", bearer(token(ORIGINATOR)))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", organizationId)
+                .header("X-AyuVahak-Facility-Id", facilityId)
+                .header("X-Correlation-ID", "referral-query-current-01"))
+        .andExpect(status().isOk())
+        .andExpect(header().string("X-Correlation-ID", "referral-query-current-01"))
+        .andExpect(jsonPath("$.id").value(referralId))
+        .andExpect(jsonPath("$.status").value("SUBMITTED"))
+        .andExpect(jsonPath("$.version").value(2))
+        .andExpect(jsonPath("$.patientReference.identifier").value(patientReference))
+        .andExpect(jsonPath("$.submittedRevision.revisionNumber").value(1));
+
+    mockMvc
+        .perform(
+            get("/api/v1/referrals/{referralId}/revisions/{revisionNumber}", referralId, 1)
+                .header("Authorization", bearer(token(ORIGINATOR)))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", organizationId)
+                .header("X-AyuVahak-Facility-Id", facilityId))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.id").value(referralId))
+        .andExpect(jsonPath("$.submittedRevision.revisionNumber").value(1))
+        .andExpect(
+            jsonPath("$.submittedRevision.patientReference.identifier").value(patientReference));
+
+    mockMvc
+        .perform(
+            get("/api/v1/referrals")
+                .queryParam("status", "SUBMITTED")
+                .queryParam("page", "0")
+                .queryParam("size", "1")
+                .header("Authorization", bearer(token(ORIGINATOR)))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", organizationId)
+                .header("X-AyuVahak-Facility-Id", facilityId))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.page").value(0))
+        .andExpect(jsonPath("$.size").value(1))
+        .andExpect(jsonPath("$.items[0].id").value(referralId))
+        .andExpect(jsonPath("$.items[0].status").value("SUBMITTED"))
+        .andExpect(jsonPath("$.items[0].patientReference").doesNotExist())
+        .andExpect(jsonPath("$.items[0].careRequirement").doesNotExist());
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code IN "
+                    + "('REFERRAL_DETAIL_READ', 'REFERRAL_REVISION_READ', 'REFERRAL_LIST_READ')",
+                Integer.class))
+        .isEqualTo(3);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE actor_reference = ?",
+                Integer.class,
+                patientReference))
+        .isZero();
+  }
+
+  @Test
+  void referralReadsRequireReadAuthorityAndHideCrossScopeExistence() throws Exception {
+    String referralId = createDraft("query-scope-create", "opaque-synthetic-patient-scope");
+    String otherOrganizationId = createOrganization("query-other-organization");
+    String otherFacilityId = createFacilityFor(otherOrganizationId, "query-other-facility");
+    grant(ORIGINATOR, "ReferralRead", "FACILITY", otherOrganizationId, otherFacilityId);
+
+    mockMvc
+        .perform(
+            get("/api/v1/referrals/{referralId}", referralId)
+                .header("Authorization", bearer(token(UNAUTHORIZED)))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", organizationId)
+                .header("X-AyuVahak-Facility-Id", facilityId))
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.code").value("AUTHORIZATION_DENIED"))
+        .andExpect(header().exists("X-Correlation-ID"));
+
+    mockMvc
+        .perform(
+            get("/api/v1/referrals/{referralId}", referralId)
+                .header("Authorization", bearer(token(ORIGINATOR)))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", otherOrganizationId)
+                .header("X-AyuVahak-Facility-Id", otherFacilityId))
+        .andExpect(status().isNotFound())
+        .andExpect(jsonPath("$.code").value("REFERRAL_NOT_FOUND"));
+  }
+
+  @Test
+  void organizationReadsIncludeFacilityReferralsAndPagesAreStableAndDisjoint() throws Exception {
+    String firstReferral = createDraft("query-page-one-create", "synthetic-list-patient-one");
+    performSubmission(firstReferral, ORIGINATOR, "query-page-one-submit", "{\"expectedVersion\":1}")
+        .andExpect(status().isOk());
+    String secondReferral = createDraft("query-page-two-create", "synthetic-list-patient-two");
+    performSubmission(
+            secondReferral, ORIGINATOR, "query-page-two-submit", "{\"expectedVersion\":1}")
+        .andExpect(status().isOk());
+
+    var firstPage =
+        mockMvc
+            .perform(
+                get("/api/v1/referrals")
+                    .queryParam("status", "SUBMITTED")
+                    .queryParam("page", "0")
+                    .queryParam("size", "1")
+                    .header("Authorization", bearer(token(ORIGINATOR)))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", organizationId)
+                    .header("X-AyuVahak-Facility-Id", facilityId))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.items.length()").value(1))
+            .andExpect(jsonPath("$.items[0].patientReference").doesNotExist())
+            .andExpect(jsonPath("$.hasMore").value(true))
+            .andReturn();
+    var repeatedFirstPage =
+        mockMvc
+            .perform(
+                get("/api/v1/referrals")
+                    .queryParam("status", "SUBMITTED")
+                    .queryParam("page", "0")
+                    .queryParam("size", "1")
+                    .header("Authorization", bearer(token(ORIGINATOR)))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", organizationId)
+                    .header("X-AyuVahak-Facility-Id", facilityId))
+            .andExpect(status().isOk())
+            .andReturn();
+    var secondPage =
+        mockMvc
+            .perform(
+                get("/api/v1/referrals")
+                    .queryParam("status", "SUBMITTED")
+                    .queryParam("page", "1")
+                    .queryParam("size", "1")
+                    .header("Authorization", bearer(token(ORIGINATOR)))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", organizationId)
+                    .header("X-AyuVahak-Facility-Id", facilityId))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.items.length()").value(1))
+            .andExpect(jsonPath("$.hasMore").value(false))
+            .andReturn();
+    assertThat(repeatedFirstPage.getResponse().getContentAsString())
+        .isEqualTo(firstPage.getResponse().getContentAsString());
+    String pages =
+        firstPage.getResponse().getContentAsString()
+            + secondPage.getResponse().getContentAsString();
+    assertThat(pages).contains(firstReferral, secondReferral);
+
+    grant(ORIGINATOR, "ReferralRead", "ORGANIZATION", organizationId, null);
+    mockMvc
+        .perform(
+            get("/api/v1/referrals")
+                .queryParam("status", "SUBMITTED")
+                .queryParam("from", "2026-10-09T00:00:00Z")
+                .queryParam("until", "2026-10-10T00:00:00Z")
+                .header("Authorization", bearer(token(ORIGINATOR)))
+                .header("X-AyuVahak-Execution-Scope", "ORGANIZATION")
+                .header("X-AyuVahak-Organization-Id", organizationId))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.items.length()").value(2))
+        .andExpect(jsonPath("$.items[*].patientReference").doesNotExist());
+  }
+
+  @Test
+  void referralListRejectsUnboundedOrUnknownFiltersAndSensitiveReadAuditFailureFailsClosed()
+      throws Exception {
+    String referralId = createDraft("query-audit-create", "opaque-synthetic-patient-audit");
+    jdbc.execute(
+        "CREATE FUNCTION audit.reject_referral_detail_read() RETURNS trigger "
+            + "LANGUAGE plpgsql AS $$ BEGIN "
+            + "IF NEW.action_code = 'REFERRAL_DETAIL_READ' THEN "
+            + "RAISE EXCEPTION 'synthetic read audit failure'; END IF; RETURN NEW; END $$");
+    jdbc.execute(
+        "CREATE TRIGGER reject_referral_detail_read BEFORE INSERT ON audit.audit_record "
+            + "FOR EACH ROW EXECUTE FUNCTION audit.reject_referral_detail_read()");
+    try {
+      mockMvc
+          .perform(
+              get("/api/v1/referrals/{referralId}", referralId)
+                  .header("Authorization", bearer(token(ORIGINATOR)))
+                  .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                  .header("X-AyuVahak-Organization-Id", organizationId)
+                  .header("X-AyuVahak-Facility-Id", facilityId))
+          .andExpect(status().isServiceUnavailable())
+          .andExpect(jsonPath("$.code").value("AUDIT_UNAVAILABLE"))
+          .andExpect(jsonPath("$.patientReference").doesNotExist());
+    } finally {
+      jdbc.execute("DROP TRIGGER IF EXISTS reject_referral_detail_read ON audit.audit_record");
+      jdbc.execute("DROP FUNCTION IF EXISTS audit.reject_referral_detail_read()");
+    }
+
+    mockMvc
+        .perform(
+            get("/api/v1/referrals")
+                .queryParam("page", "0")
+                .queryParam("size", "101")
+                .header("Authorization", bearer(token(ORIGINATOR)))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", organizationId)
+                .header("X-AyuVahak-Facility-Id", facilityId))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("REFERRAL_REQUIREMENT_INVALID"));
+
+    mockMvc
+        .perform(
+            get("/api/v1/referrals")
+                .queryParam("patientIdentifier", "must-not-be-a-filter")
+                .header("Authorization", bearer(token(ORIGINATOR)))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", organizationId)
+                .header("X-AyuVahak-Facility-Id", facilityId))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("REFERRAL_REQUIREMENT_INVALID"));
+  }
+
   private org.springframework.test.web.servlet.ResultActions performSubmission(
       String referralId, String subject, String idempotencyKey, String body) throws Exception {
     return mockMvc.perform(
@@ -1330,13 +1558,17 @@ class ReferralDraftCommandsApiIT {
   }
 
   private String createOrganization() throws Exception {
+    return createOrganization("referral-origin-organization");
+  }
+
+  private String createOrganization(String idempotencyKey) throws Exception {
     MvcResult result =
         mockMvc
             .perform(
                 post("/api/v1/directory/organizations")
                     .header("Authorization", bearer(token(CURATOR)))
                     .header("X-AyuVahak-Execution-Scope", "PLATFORM")
-                    .header("Idempotency-Key", "referral-origin-organization")
+                    .header("Idempotency-Key", idempotencyKey)
                     .contentType("application/json")
                     .content(
                         "{\"name\":\"Synthetic Referral Origin\","
@@ -1363,6 +1595,31 @@ class ReferralDraftCommandsApiIT {
                     .content(
                         "{\"name\":\"Synthetic Referral Facility\",\"managingOrganizationId\":\""
                             + organizationId
+                            + "\",\"source\":{\"issuer\":\"urn:synthetic:directory\","
+                            + "\"resourceType\":\"Facility\",\"reference\":\"facility-"
+                            + UUID.randomUUID()
+                            + "\"},\"provenance\":{\"method\":\"MANUAL_REVIEW\","
+                            + "\"observedAt\":\"2026-10-09T09:00:00Z\","
+                            + "\"reasonCode\":\"SYNTHETIC_SETUP\"}}"))
+            .andExpect(status().isCreated())
+            .andReturn();
+    return com.jayway.jsonpath.JsonPath.read(result.getResponse().getContentAsString(), "$.id");
+  }
+
+  private String createFacilityFor(String managingOrganizationId, String idempotencyKey)
+      throws Exception {
+    MvcResult result =
+        mockMvc
+            .perform(
+                post("/api/v1/directory/facilities")
+                    .header("Authorization", bearer(token(CURATOR)))
+                    .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                    .header("Idempotency-Key", idempotencyKey)
+                    .contentType("application/json")
+                    .content(
+                        "{\"name\":\"Synthetic Other Referral Facility\","
+                            + "\"managingOrganizationId\":\""
+                            + managingOrganizationId
                             + "\",\"source\":{\"issuer\":\"urn:synthetic:directory\","
                             + "\"resourceType\":\"Facility\",\"reference\":\"facility-"
                             + UUID.randomUUID()
@@ -1410,6 +1667,21 @@ class ReferralDraftCommandsApiIT {
           ISSUER,
           subject,
           authority);
+      return;
+    }
+    if ("ORGANIZATION".equals(scope)) {
+      jdbc.update(
+          "INSERT INTO identity_access.authorization_grant (grant_id, principal_kind, "
+              + "principal_issuer, principal_identifier_type, principal_identifier, authority_code, "
+              + "scope_kind, organization_issuer, organization_identifier_type, "
+              + "organization_identifier, grant_status, created_at) VALUES (gen_random_uuid(), "
+              + "'HUMAN', ?, 'subject', ?, ?, 'ORGANIZATION', ?, 'Organization', ?, 'ACTIVE', "
+              + "CURRENT_TIMESTAMP)",
+          ISSUER,
+          subject,
+          authority,
+          DIRECTORY_ISSUER,
+          organization);
       return;
     }
     jdbc.update(

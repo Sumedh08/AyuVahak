@@ -20,8 +20,13 @@ import org.ayuvahak.platform.executioncontext.ExecutionScopeDeniedException;
 import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
 import org.ayuvahak.referral.application.ReferralAmendmentCommandResult;
+import org.ayuvahak.referral.application.ReferralCurrentView;
 import org.ayuvahak.referral.application.ReferralDraftCommandResult;
 import org.ayuvahak.referral.application.ReferralDraftCommands;
+import org.ayuvahak.referral.application.ReferralListItem;
+import org.ayuvahak.referral.application.ReferralListPage;
+import org.ayuvahak.referral.application.ReferralQueries;
+import org.ayuvahak.referral.application.ReferralReadFilter;
 import org.ayuvahak.referral.application.ReferralResolutionCommandResult;
 import org.ayuvahak.referral.application.ReferralSubmissionCommandResult;
 import org.ayuvahak.referral.domain.CareRequirement;
@@ -29,18 +34,22 @@ import org.ayuvahak.referral.domain.PatientReference;
 import org.ayuvahak.referral.domain.ReferralDraft;
 import org.ayuvahak.referral.domain.ReferralResolution;
 import org.ayuvahak.referral.domain.ReferralResolutionOutcome;
+import org.ayuvahak.referral.domain.ReferralState;
 import org.ayuvahak.referral.domain.SubmittedReferralRevision;
 import org.slf4j.MDC;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.util.MultiValueMap;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
@@ -75,16 +84,58 @@ public final class ReferralDraftController {
       Set.of("issuer", "resourceType", "identifier");
 
   private final ReferralDraftCommands commands;
+  private final ReferralQueries queries;
   private final ExecutionContextFactory contextFactory;
   private final ObjectMapper objectMapper;
 
   public ReferralDraftController(
       ReferralDraftCommands commands,
+      ReferralQueries queries,
       ExecutionContextFactory contextFactory,
       ObjectMapper objectMapper) {
     this.commands = commands;
+    this.queries = queries;
     this.contextFactory = contextFactory;
     this.objectMapper = objectMapper;
+  }
+
+  @GetMapping("/{referralId}")
+  public ReferralCurrentRepresentation getCurrent(
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
+      @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationId,
+      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityId,
+      @PathVariable String referralId) {
+    ExecutionContext context = readContext(actor, scope, organizationId, facilityId);
+    return ReferralCurrentRepresentation.from(
+        queries.current(context, parseReferralId(referralId)));
+  }
+
+  @GetMapping("/{referralId}/revisions/{revisionNumber}")
+  public ReferralRevisionRepresentation getRevision(
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
+      @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationId,
+      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityId,
+      @PathVariable String referralId,
+      @PathVariable String revisionNumber) {
+    long number = parseRevisionNumber(revisionNumber);
+    ExecutionContext context = readContext(actor, scope, organizationId, facilityId);
+    ReferralCurrentView view = queries.revision(context, parseReferralId(referralId), number);
+    return ReferralRevisionRepresentation.from(
+        view.current().id().toString(), view.submittedRevision().orElseThrow());
+  }
+
+  @GetMapping
+  public ReferralListRepresentation list(
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
+      @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationId,
+      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityId,
+      @RequestParam MultiValueMap<String, String> parameters) {
+    ExecutionContext context = readContext(actor, scope, organizationId, facilityId);
+    ReferralReadFilter filter = readFilter(parameters);
+    return ReferralListRepresentation.from(queries.list(context, filter));
   }
 
   @PostMapping
@@ -527,6 +578,103 @@ public final class ReferralDraftController {
     }
   }
 
+  private ExecutionContext readContext(
+      ActorReference actor, String scope, String organizationId, String facilityId) {
+    CorrelationId correlationId = correlationId();
+    try {
+      RequestedExecutionScope requestedScope;
+      if ("ORGANIZATION".equals(scope) && organizationId != null && facilityId == null) {
+        requestedScope =
+            RequestedExecutionScope.organization(
+                directoryReference("Organization", InternalId.parse(organizationId)));
+      } else if ("FACILITY".equals(scope) && organizationId != null && facilityId != null) {
+        requestedScope =
+            RequestedExecutionScope.facility(
+                directoryReference("Organization", InternalId.parse(organizationId)),
+                directoryReference("Facility", InternalId.parse(facilityId)));
+      } else {
+        queries.recordInvalidScope(actor, correlationId);
+        throw invalidScope();
+      }
+      if (actor.kind() == ActorKind.HUMAN) {
+        return contextFactory.forInteractiveRequest(actor, requestedScope, correlationId);
+      }
+      return contextFactory.forIntegrationRequest(actor, requestedScope, correlationId);
+    } catch (
+        org.ayuvahak.directory.application.DirectoryScopeLookupUnavailableException unavailable) {
+      throw new PlatformProblemException(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          PlatformErrorCode.REFERRAL_UNAVAILABLE,
+          "Directory could not validate the Referral read scope.");
+    } catch (ExecutionScopeDeniedException | IllegalArgumentException denied) {
+      queries.recordInvalidScope(actor, correlationId);
+      throw invalidScope();
+    }
+  }
+
+  private static ReferralReadFilter readFilter(MultiValueMap<String, String> parameters) {
+    Set<String> allowed = Set.of("status", "from", "until", "page", "size");
+    if (parameters.keySet().stream().anyMatch(name -> !allowed.contains(name))) {
+      throw invalid("The Referral list contains an unsupported filter.");
+    }
+    if (parameters.values().stream().anyMatch(values -> values == null || values.size() != 1)) {
+      throw invalid("Referral list filters may be supplied only once.");
+    }
+    Optional<ReferralState> state =
+        single(parameters, "status")
+            .map(
+                value -> {
+                  try {
+                    return ReferralState.valueOf(value);
+                  } catch (IllegalArgumentException malformed) {
+                    throw invalid("The Referral status filter is invalid.");
+                  }
+                });
+    Optional<Instant> from = single(parameters, "from").map(ReferralDraftController::instant);
+    Optional<Instant> until = single(parameters, "until").map(ReferralDraftController::instant);
+    int page = integer(single(parameters, "page").orElse("0"), "page", 0);
+    int size = integer(single(parameters, "size").orElse("50"), "size", 50);
+    try {
+      return new ReferralReadFilter(state, from, until, page, size);
+    } catch (IllegalArgumentException invalid) {
+      throw invalid("Referral pagination or time filters are outside the supported bounds.");
+    }
+  }
+
+  private static Optional<String> single(MultiValueMap<String, String> parameters, String name) {
+    return Optional.ofNullable(parameters.getFirst(name));
+  }
+
+  private static Instant instant(String value) {
+    try {
+      return Instant.parse(value);
+    } catch (RuntimeException malformed) {
+      throw invalid("Referral list time filters must be valid UTC instants.");
+    }
+  }
+
+  private static int integer(String value, String name, int defaultValue) {
+    try {
+      if (!value.matches("[0-9]{1,10}")) {
+        throw new NumberFormatException("not a bounded decimal integer");
+      }
+      return Integer.parseInt(value);
+    } catch (NumberFormatException malformed) {
+      throw invalid("Referral list " + name + " must be a bounded non-negative integer.");
+    }
+  }
+
+  private static long parseRevisionNumber(String value) {
+    try {
+      if (!value.matches("[1-9][0-9]{0,18}")) {
+        throw new NumberFormatException("not a positive revision number");
+      }
+      return Long.parseLong(value);
+    } catch (NumberFormatException malformed) {
+      throw invalid("A positive submitted Referral revision number is required.");
+    }
+  }
+
   private static long expectedVersion(JsonNode body) {
     if (body == null || !body.isObject()) {
       throw malformed();
@@ -741,6 +889,71 @@ public final class ReferralDraftController {
           OriginRepresentation.from(draft),
           PatientReferenceRepresentation.from(draft.patientReference()),
           CareRequirementRepresentation.from(draft.careRequirement()));
+    }
+  }
+
+  /** Current origin-scoped detail; PatientReference appears only on this authorized view. */
+  public record ReferralCurrentRepresentation(
+      String id,
+      String status,
+      long version,
+      OriginRepresentation origin,
+      PatientReferenceRepresentation patientReference,
+      CareRequirementRepresentation careRequirement,
+      Instant createdAt,
+      Instant updatedAt,
+      SubmittedRevisionRepresentation submittedRevision) {
+    static ReferralCurrentRepresentation from(ReferralCurrentView view) {
+      ReferralDraft current = view.current();
+      return new ReferralCurrentRepresentation(
+          current.id().toString(),
+          current.state().name(),
+          current.version(),
+          OriginRepresentation.from(current),
+          PatientReferenceRepresentation.from(current.patientReference()),
+          CareRequirementRepresentation.from(current.careRequirement()),
+          current.createdAt(),
+          current.updatedAt(),
+          view.submittedRevision().map(SubmittedRevisionRepresentation::from).orElse(null));
+    }
+  }
+
+  public record ReferralRevisionRepresentation(
+      String id, SubmittedRevisionRepresentation submittedRevision) {
+    static ReferralRevisionRepresentation from(String id, SubmittedReferralRevision revision) {
+      return new ReferralRevisionRepresentation(id, SubmittedRevisionRepresentation.from(revision));
+    }
+  }
+
+  /** List projection intentionally has no PatientReference or clinical-context field. */
+  public record ReferralListItemRepresentation(
+      String id,
+      String status,
+      long version,
+      OriginRepresentation origin,
+      Instant relevantAt,
+      Instant submittedAt) {
+    static ReferralListItemRepresentation from(ReferralListItem item) {
+      return new ReferralListItemRepresentation(
+          item.id().toString(),
+          item.state().name(),
+          item.version(),
+          new OriginRepresentation(
+              item.originOrganization().value(),
+              item.originFacility().map(ExternalReference::value).orElse(null)),
+          item.relevantAt(),
+          item.submittedAt().orElse(null));
+    }
+  }
+
+  public record ReferralListRepresentation(
+      List<ReferralListItemRepresentation> items, int page, int size, boolean hasMore) {
+    static ReferralListRepresentation from(ReferralListPage page) {
+      return new ReferralListRepresentation(
+          page.items().stream().map(ReferralListItemRepresentation::from).toList(),
+          page.page(),
+          page.size(),
+          page.hasMore());
     }
   }
 

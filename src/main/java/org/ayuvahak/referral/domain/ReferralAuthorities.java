@@ -4,7 +4,7 @@ import java.util.Set;
 import org.ayuvahak.platform.authorization.domain.FunctionalAuthority;
 import org.ayuvahak.platform.executioncontext.ExecutionScope;
 
-/** Referral-owned functional authorities for origin-scoped draft commands. */
+/** Referral-owned functional authorities for origin-scoped commands and reads. */
 public final class ReferralAuthorities {
 
   private static final Set<ExecutionScope.Kind> ORIGIN_SCOPES =
@@ -21,6 +21,8 @@ public final class ReferralAuthorities {
       new FunctionalAuthority("ReferralResolve", ORIGIN_SCOPES);
   private static final FunctionalAuthority CANCEL =
       new FunctionalAuthority("ReferralCancel", ORIGIN_SCOPES);
+  private static final FunctionalAuthority READ =
+      new FunctionalAuthority("ReferralRead", ORIGIN_SCOPES);
 
   private ReferralAuthorities() {}
 
@@ -46,5 +48,9 @@ public final class ReferralAuthorities {
 
   public static FunctionalAuthority cancel() {
     return CANCEL;
+  }
+
+  public static FunctionalAuthority read() {
+    return READ;
   }
 }

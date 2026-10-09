@@ -58,10 +58,10 @@ Functional authority names describe policy functions, not job titles. A deployme
 
 ### Queries
 
-- `GetReferral` returns current state, origin, submitted revision number, minimum PatientReference and CareRequirement only to authorized origin-side case participants. A receiving participant is not a participant until a Transfer Request exists and is not allowed to read patient reference by listing/search.
-- `GetReferralRevision` returns one immutable revision and provenance for authorized review.
-- `ListReferrals` requires scoped filters and bounded pagination with deterministic sort by submitted time/reference; no global anonymous list or generic BI query.
-- `GetTransferBasis` is an application contract for Transfer and returns current submitted revision, origin and linked Recommendation reference. Only after a specific request is created may it return the opaque source-scoped PatientReference to that destination's authorized case participant when explicitly requested for coordination; that value is transient and is not persisted by Transfer.
+- `GetReferral` returns current state, origin, submitted revision number, minimum PatientReference and CareRequirement only to an authorized origin-side participant with `ReferralRead` in the validated origin organization or facility scope. A facility grant sees only that facility's referrals; an organization grant may see referrals from facilities in that organization. A receiving participant is not an origin-side participant and cannot read PatientReference through this query.
+- `GetReferralRevision` returns one immutable revision and provenance under the same authorized origin-scope rule.
+- `ListReferrals` requires an authorized origin organization/facility scope, allowlisted filters, and bounded pagination. It orders by the latest submitted time descending, using draft creation time for a Referral with no submitted revision, then by stable Referral ID ascending. Optional time bounds apply to that same relevant time. List items omit PatientReference and CareRequirement; no global anonymous list or generic BI query exists.
+- `GetTransferBasis` is a future owner-produced application contract defined in the [cross-context contracts](../architecture/volume-2-context-contracts.md), not a callable Phase 5 runtime operation. Phase 5 exposes no recipient-facing query or unverified caller assertion. Phase 7 may activate the contract only after the Transfer owner can verify an actual Transfer Request, its selected recipient, and that recipient actor's case participation. The owner may then return the opaque source-scoped PatientReference only for that authorized purpose; it remains transient and is not persisted by Transfer.
 - Phase 5 has no Matching query yet. Until Phase 6 exists, a submitted Referral remains active and its use is human/out-of-band.
 
 ### HTTP resource contract
