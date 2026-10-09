@@ -1,8 +1,10 @@
 package org.ayuvahak.referral.application;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import org.ayuvahak.platform.core.InternalId;
+import org.ayuvahak.platform.executioncontext.ExecutionScope;
 import org.ayuvahak.platform.idempotency.CommandReceiptKey;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
 import org.ayuvahak.referral.domain.ReferralCancellation;
@@ -34,6 +36,14 @@ public interface ReferralDraftStore {
 
   Optional<SubmittedReferralRevision> findSubmittedRevision(
       InternalId referralId, long referralVersion);
+
+  Optional<SubmittedReferralRevision> findSubmittedRevisionNumber(
+      InternalId referralId, long revisionNumber);
+
+  Optional<SubmittedReferralRevision> findLatestSubmittedRevision(InternalId referralId);
+
+  List<ReferralListItem> findReferralPage(
+      ExecutionScope scope, ReferralReadFilter filter, int limit, long offset);
 
   Optional<ReferralResolution> findResolution(InternalId referralId);
 

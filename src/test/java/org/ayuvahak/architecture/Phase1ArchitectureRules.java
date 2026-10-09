@@ -159,6 +159,17 @@ final class Phase1ArchitectureRules {
         .allowEmptyShould(true);
   }
 
+  static ArchRule referralMustNotDependOnMatchingOrTransfer() {
+    return noClasses()
+        .that()
+        .resideInAnyPackage("org.ayuvahak.referral..")
+        .should()
+        .dependOnClassesThat()
+        .resideInAnyPackage("org.ayuvahak.matching..", "org.ayuvahak.transfer..")
+        .as("Referral must not depend on Matching or Transfer implementation")
+        .allowEmptyShould(true);
+  }
+
   static ArchRule businessContextsMustNotDependOnAnotherContextsPersistence() {
     return classes()
         .should(

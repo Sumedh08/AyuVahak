@@ -30,6 +30,7 @@ class Phase1ArchitectureTest {
         .check(productionClasses);
     Phase1ArchitectureRules.capacityMustNotDependOnReferralMatchingOrTransfer()
         .check(productionClasses);
+    Phase1ArchitectureRules.referralMustNotDependOnMatchingOrTransfer().check(productionClasses);
   }
 
   @Test
@@ -52,6 +53,31 @@ class Phase1ArchitectureTest {
     Phase1ArchitectureRules.domainCodeMustNotDependOnFrameworks().check(productionClasses);
     Phase1ArchitectureRules.directoryMustNotDependOnOtherBusinessContexts()
         .check(productionClasses);
+  }
+
+  @Test
+  void activeReferralBoundariesArePresentAndFrameworkIndependent() {
+    JavaClasses productionClasses =
+        new ClassFileImporter().importPath(Path.of("target", "classes"));
+
+    assertThat(productionClasses.get("org.ayuvahak.referral.domain.ReferralState")).isNotNull();
+    assertThat(productionClasses.get("org.ayuvahak.referral.domain.ReferralAuthorities"))
+        .isNotNull();
+    assertThat(productionClasses.get("org.ayuvahak.referral.application.ReferralDraftCommands"))
+        .isNotNull();
+    assertThat(productionClasses.get("org.ayuvahak.referral.application.ReferralQueries"))
+        .isNotNull();
+    assertThat(
+            productionClasses.get(
+                "org.ayuvahak.referral.adapter.persistence.JdbcReferralDraftStore"))
+        .isNotNull();
+    assertThat(productionClasses.get("org.ayuvahak.referral.adapter.api.ReferralDraftController"))
+        .isNotNull();
+
+    Phase1ArchitectureRules.domainCodeMustNotDependOnFrameworks().check(productionClasses);
+    Phase1ArchitectureRules.businessContextsMustNotDependOnAnotherContextsPersistence()
+        .check(productionClasses);
+    Phase1ArchitectureRules.referralMustNotDependOnMatchingOrTransfer().check(productionClasses);
   }
 
   @Test
