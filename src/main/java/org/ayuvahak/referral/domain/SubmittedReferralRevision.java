@@ -18,7 +18,8 @@ public record SubmittedReferralRevision(
     CareRequirement careRequirement,
     ActorReference sourceActor,
     ActorReference submittedBy,
-    Instant submittedAt) {
+    Instant submittedAt,
+    Optional<String> reasonCode) {
 
   public SubmittedReferralRevision {
     Objects.requireNonNull(referralId, "Referral id");
@@ -32,5 +33,12 @@ public record SubmittedReferralRevision(
     Objects.requireNonNull(sourceActor, "source actor");
     Objects.requireNonNull(submittedBy, "submitter");
     Objects.requireNonNull(submittedAt, "submitted at");
+    reasonCode = Objects.requireNonNull(reasonCode, "revision reason code");
+    reasonCode.ifPresent(
+        code -> {
+          if (!code.matches("[A-Z][A-Z0-9._-]{0,63}")) {
+            throw new IllegalArgumentException("revision reason code is invalid");
+          }
+        });
   }
 }

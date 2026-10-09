@@ -6,9 +6,10 @@ import org.ayuvahak.platform.core.InternalId;
 import org.ayuvahak.platform.idempotency.CommandReceiptKey;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
 import org.ayuvahak.referral.domain.ReferralDraft;
+import org.ayuvahak.referral.domain.ReferralResolution;
 import org.ayuvahak.referral.domain.SubmittedReferralRevision;
 
-/** Referral-owned persistence boundary for drafts and command receipts. */
+/** Referral-owned persistence boundary for current state, revisions, resolutions and receipts. */
 public interface ReferralDraftStore {
 
   void insertDraft(ReferralDraft draft);
@@ -22,8 +23,15 @@ public interface ReferralDraftStore {
   boolean submitDraft(
       ReferralDraft submitted, long expectedVersion, SubmittedReferralRevision revision);
 
+  boolean amendSubmitted(
+      ReferralDraft amended, long expectedVersion, SubmittedReferralRevision revision);
+
+  boolean resolveDraft(ReferralDraft resolved, long expectedVersion, ReferralResolution resolution);
+
   Optional<SubmittedReferralRevision> findSubmittedRevision(
       InternalId referralId, long referralVersion);
+
+  Optional<ReferralResolution> findResolution(InternalId referralId);
 
   ReceiptClaim claimReceipt(
       CommandReceiptKey key, RequestFingerprint fingerprint, Instant recordedAt);

@@ -19,12 +19,16 @@ import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
 import org.ayuvahak.platform.executioncontext.ExecutionScopeDeniedException;
 import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
+import org.ayuvahak.referral.application.ReferralAmendmentCommandResult;
 import org.ayuvahak.referral.application.ReferralDraftCommandResult;
 import org.ayuvahak.referral.application.ReferralDraftCommands;
+import org.ayuvahak.referral.application.ReferralResolutionCommandResult;
 import org.ayuvahak.referral.application.ReferralSubmissionCommandResult;
 import org.ayuvahak.referral.domain.CareRequirement;
 import org.ayuvahak.referral.domain.PatientReference;
 import org.ayuvahak.referral.domain.ReferralDraft;
+import org.ayuvahak.referral.domain.ReferralResolution;
+import org.ayuvahak.referral.domain.ReferralResolutionOutcome;
 import org.ayuvahak.referral.domain.SubmittedReferralRevision;
 import org.slf4j.MDC;
 import org.springframework.http.HttpHeaders;
@@ -43,7 +47,7 @@ import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
-/** Authenticated HTTP boundary for creating and editing Referral drafts. */
+/** Authenticated HTTP boundary for Referral creation and lifecycle commands. */
 @RestController
 @RequestMapping("/api/v1/referrals")
 public final class ReferralDraftController {
@@ -54,6 +58,8 @@ public final class ReferralDraftController {
   private static final String FACILITY_SCOPE_HEADER = "X-AyuVahak-Facility-Id";
   private static final Set<String> REQUEST_FIELDS = Set.of("patientReference", "careRequirement");
   private static final Set<String> SUBMISSION_FIELDS = Set.of("expectedVersion");
+  private static final Set<String> RESOLUTION_FIELDS =
+      Set.of("expectedVersion", "outcome", "reasonCode");
   private static final Set<String> PATIENT_REFERENCE_FIELDS =
       Set.of("issuer", "resourceType", "identifier", "encounterReference");
   private static final Set<String> CARE_REQUIREMENT_FIELDS =
@@ -165,6 +171,71 @@ public final class ReferralDraftController {
         org.springframework.http.HttpStatusCode.valueOf(result.responseStatus()));
   }
 
+  @PostMapping("/{referralId}/revisions")
+  public ResponseEntity<SubmittedReferralRepresentation> amend(
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
+      @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationId,
+      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityId,
+      @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+      @PathVariable String referralId,
+      @RequestBody JsonNode body) {
+    long expectedVersion = amendmentExpectedVersion(body);
+    String reasonCode = requiredReasonCode(body, "amendment");
+    DraftContent content = read(body, true, true);
+    InternalId id = parseReferralId(referralId);
+    ExecutionContext context = context(actor, scope, organizationId, facilityId);
+    ReferralAmendmentCommandResult result =
+        commands.amendSubmitted(
+            context,
+            id,
+            expectedVersion,
+            reasonCode,
+            content.patientReference(),
+            content.careRequirement(),
+            idempotencyKey,
+            amendmentFingerprint(content, expectedVersion, reasonCode));
+    HttpHeaders headers = new HttpHeaders();
+    if (result.commandReplayed()) {
+      headers.set("Idempotency-Replayed", "true");
+    }
+    return new ResponseEntity<>(
+        SubmittedReferralRepresentation.from(result.revision()),
+        headers,
+        org.springframework.http.HttpStatusCode.valueOf(result.responseStatus()));
+  }
+
+  @PostMapping("/{referralId}/resolution")
+  public ResponseEntity<ReferralResolutionRepresentation> resolve(
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
+      @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationId,
+      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityId,
+      @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+      @PathVariable String referralId,
+      @RequestBody JsonNode body) {
+    ResolutionContent content = resolutionContent(body);
+    InternalId id = parseReferralId(referralId);
+    ExecutionContext context = context(actor, scope, organizationId, facilityId);
+    ReferralResolutionCommandResult result =
+        commands.resolve(
+            context,
+            id,
+            content.expectedVersion(),
+            content.outcome(),
+            content.reasonCode(),
+            idempotencyKey,
+            resolutionFingerprint(content));
+    HttpHeaders headers = new HttpHeaders();
+    if (result.commandReplayed()) {
+      headers.set("Idempotency-Replayed", "true");
+    }
+    return new ResponseEntity<>(
+        ReferralResolutionRepresentation.from(result.referral(), result.resolution()),
+        headers,
+        org.springframework.http.HttpStatusCode.valueOf(result.responseStatus()));
+  }
+
   private long submissionExpectedVersion(JsonNode body) {
     if (body == null || !body.isObject()) {
       throw malformed();
@@ -181,6 +252,57 @@ public final class ReferralDraftController {
     return result;
   }
 
+  private long amendmentExpectedVersion(JsonNode body) {
+    if (body == null || !body.isObject()) {
+      throw malformed();
+    }
+    JsonNode version = body.get("expectedVersion");
+    if (version == null || !version.isIntegralNumber() || !version.canConvertToLong()) {
+      throw invalid("A positive expectedVersion is required to amend a Referral.");
+    }
+    long result = version.longValue();
+    if (result < 1) {
+      throw invalid("A positive expectedVersion is required to amend a Referral.");
+    }
+    return result;
+  }
+
+  private ResolutionContent resolutionContent(JsonNode body) {
+    if (body == null || !body.isObject()) {
+      throw malformed();
+    }
+    rejectUnknownFields(body, RESOLUTION_FIELDS);
+    JsonNode version = body.get("expectedVersion");
+    if (version == null
+        || !version.isIntegralNumber()
+        || !version.canConvertToLong()
+        || version.longValue() < 1) {
+      throw invalid("A positive expectedVersion is required to resolve a Referral.");
+    }
+    JsonNode outcome = body.get("outcome");
+    if (outcome == null || !outcome.isTextual()) {
+      throw invalid("A Referral resolution outcome must be FULFILLED or UNFULFILLED.");
+    }
+    ReferralResolutionOutcome resolutionOutcome;
+    try {
+      resolutionOutcome = ReferralResolutionOutcome.valueOf(outcome.stringValue());
+    } catch (IllegalArgumentException invalidOutcome) {
+      throw invalid("A Referral resolution outcome must be FULFILLED or UNFULFILLED.");
+    }
+    return new ResolutionContent(
+        version.longValue(), resolutionOutcome, requiredReasonCode(body, "resolution"));
+  }
+
+  private static String requiredReasonCode(JsonNode body, String operation) {
+    JsonNode reason = body.get("reasonCode");
+    if (reason == null
+        || !reason.isTextual()
+        || !reason.stringValue().matches("[A-Z][A-Z0-9._-]{0,63}")) {
+      throw invalid("A valid coded reason is required for Referral " + operation + ".");
+    }
+    return reason.stringValue();
+  }
+
   private RequestFingerprint submissionFingerprint(long expectedVersion) {
     ObjectNode root = objectMapper.createObjectNode();
     root.put("expectedVersion", expectedVersion);
@@ -192,11 +314,18 @@ public final class ReferralDraftController {
   }
 
   private DraftContent read(JsonNode body, boolean hasExpectedVersion) {
+    return read(body, hasExpectedVersion, false);
+  }
+
+  private DraftContent read(JsonNode body, boolean hasExpectedVersion, boolean hasReasonCode) {
     if (body == null || !body.isObject()) {
       throw malformed();
     }
     Set<String> allowedRootFields =
         hasExpectedVersion ? union(REQUEST_FIELDS, Set.of("expectedVersion")) : REQUEST_FIELDS;
+    if (hasReasonCode) {
+      allowedRootFields = union(allowedRootFields, Set.of("reasonCode"));
+    }
     rejectUnknownFields(body, allowedRootFields);
     JsonNode patient = body.get("patientReference");
     JsonNode requirement = body.get("careRequirement");
@@ -370,6 +499,28 @@ public final class ReferralDraftController {
   private RequestFingerprint fingerprint(DraftContent content, Optional<Long> expectedVersion) {
     ObjectNode root = objectMapper.createObjectNode();
     expectedVersion.ifPresent(value -> root.put("expectedVersion", value));
+    addContentFingerprint(root, content);
+    return RequestFingerprint.from(root);
+  }
+
+  private RequestFingerprint amendmentFingerprint(
+      DraftContent content, long expectedVersion, String reasonCode) {
+    ObjectNode root = objectMapper.createObjectNode();
+    root.put("expectedVersion", expectedVersion);
+    root.put("reasonCode", reasonCode);
+    addContentFingerprint(root, content);
+    return RequestFingerprint.from(root);
+  }
+
+  private RequestFingerprint resolutionFingerprint(ResolutionContent content) {
+    ObjectNode root = objectMapper.createObjectNode();
+    root.put("expectedVersion", content.expectedVersion());
+    root.put("outcome", content.outcome().name());
+    root.put("reasonCode", content.reasonCode());
+    return RequestFingerprint.from(root);
+  }
+
+  private void addContentFingerprint(ObjectNode root, DraftContent content) {
     ObjectNode patient = root.putObject("patientReference");
     putReference(patient, content.patientReference().patient());
     if (content.patientReference().encounterOrCase().isPresent()) {
@@ -395,7 +546,6 @@ public final class ReferralDraftController {
       care.putNull("selectedDestinationOrganizationId");
     }
     care.put("priorityCode", requirement.priorityCode().orElse(null));
-    return RequestFingerprint.from(root);
   }
 
   private static void putReference(ObjectNode node, ExternalReference reference) {
@@ -469,6 +619,9 @@ public final class ReferralDraftController {
   }
 
   private record DraftContent(PatientReference patientReference, CareRequirement careRequirement) {}
+
+  private record ResolutionContent(
+      long expectedVersion, ReferralResolutionOutcome outcome, String reasonCode) {}
 
   public record PatientReferenceRepresentation(
       String issuer,
@@ -573,7 +726,8 @@ public final class ReferralDraftController {
       PatientReferenceRepresentation patientReference,
       CareRequirementRepresentation careRequirement,
       SourceContextRepresentation sourceContext,
-      Instant submittedAt) {
+      Instant submittedAt,
+      String reasonCode) {
     static SubmittedRevisionRepresentation from(SubmittedReferralRevision revision) {
       return new SubmittedRevisionRepresentation(
           revision.revisionNumber(),
@@ -583,7 +737,29 @@ public final class ReferralDraftController {
           PatientReferenceRepresentation.from(revision.patientReference()),
           CareRequirementRepresentation.from(revision.careRequirement()),
           SourceContextRepresentation.from(revision),
-          revision.submittedAt());
+          revision.submittedAt(),
+          revision.reasonCode().orElse(null));
+    }
+  }
+
+  public record ReferralResolutionRepresentation(
+      String id,
+      String status,
+      long version,
+      String outcome,
+      String reasonCode,
+      ActorRepresentation resolvedBy,
+      Instant resolvedAt) {
+    static ReferralResolutionRepresentation from(
+        ReferralDraft referral, ReferralResolution resolution) {
+      return new ReferralResolutionRepresentation(
+          referral.id().toString(),
+          referral.state().name(),
+          referral.version(),
+          resolution.outcome().name(),
+          resolution.reasonCode(),
+          ActorRepresentation.from(resolution.resolvedBy()),
+          resolution.resolvedAt());
     }
   }
 }

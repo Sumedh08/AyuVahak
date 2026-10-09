@@ -86,6 +86,46 @@ public record ReferralDraft(
         submittedAt);
   }
 
+  public ReferralDraft amendSubmitted(
+      PatientReference replacementPatientReference,
+      CareRequirement replacementCareRequirement,
+      ActorReference editor,
+      Instant changedAt) {
+    if (state != ReferralState.SUBMITTED) {
+      throw new IllegalStateException("only a submitted Referral can be amended");
+    }
+    return new ReferralDraft(
+        id,
+        originOrganization,
+        originFacility,
+        replacementPatientReference,
+        replacementCareRequirement,
+        createdBy,
+        editor,
+        ReferralState.SUBMITTED,
+        Math.addExact(version, 1),
+        createdAt,
+        changedAt);
+  }
+
+  public ReferralDraft resolve(ActorReference resolver, Instant resolvedAt) {
+    if (state != ReferralState.SUBMITTED) {
+      throw new IllegalStateException("only a submitted Referral can be resolved");
+    }
+    return new ReferralDraft(
+        id,
+        originOrganization,
+        originFacility,
+        patientReference,
+        careRequirement,
+        createdBy,
+        resolver,
+        ReferralState.RESOLVED,
+        Math.addExact(version, 1),
+        createdAt,
+        resolvedAt);
+  }
+
   @Override
   public String toString() {
     return "ReferralDraft[id="

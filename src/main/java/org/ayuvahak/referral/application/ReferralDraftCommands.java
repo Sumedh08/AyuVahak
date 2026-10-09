@@ -32,6 +32,8 @@ import org.ayuvahak.referral.domain.CareRequirement;
 import org.ayuvahak.referral.domain.PatientReference;
 import org.ayuvahak.referral.domain.ReferralAuthorities;
 import org.ayuvahak.referral.domain.ReferralDraft;
+import org.ayuvahak.referral.domain.ReferralResolution;
+import org.ayuvahak.referral.domain.ReferralResolutionOutcome;
 import org.ayuvahak.referral.domain.ReferralState;
 import org.ayuvahak.referral.domain.SubmittedReferralRevision;
 import org.springframework.beans.factory.ObjectProvider;
@@ -44,7 +46,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
-/** Referral owner commands for creating and editing origin-scoped drafts. */
+/** Referral owner commands for origin-scoped coordination state. */
 @Service
 @Lazy
 public class ReferralDraftCommands {
@@ -226,7 +228,8 @@ public class ReferralDraftCommands {
                   current.careRequirement(),
                   current.createdBy(),
                   context.actor(),
-                  now);
+                  now,
+                  Optional.empty());
           if (!drafts.submitDraft(submitted, expectedVersion, revision)) {
             throw versionConflict("The Referral changed; reload it before submitting.");
           }
@@ -241,6 +244,151 @@ public class ReferralDraftCommands {
                           new IllegalStateException("Submitted Referral revision was not stored"));
           return new ReferralSubmissionCommandResult(
               persistedRevision, false, HttpStatus.OK.value());
+        });
+  }
+
+  public ReferralAmendmentCommandResult amendSubmitted(
+      ExecutionContext context,
+      InternalId referralId,
+      long expectedVersion,
+      String reasonCode,
+      PatientReference patientReference,
+      CareRequirement careRequirement,
+      String idempotencyKey,
+      RequestFingerprint fingerprint) {
+    Objects.requireNonNull(referralId, "Referral id");
+    Objects.requireNonNull(patientReference, "PatientReference");
+    Objects.requireNonNull(careRequirement, "CareRequirement");
+    Objects.requireNonNull(fingerprint, "request fingerprint");
+    requireOriginScope(context);
+    requireExpectedVersion(expectedVersion, "A positive expected Referral version is required.");
+    String normalizedReasonCode = requireReasonCode(reasonCode, "amendment");
+    requireAuthority(context, ReferralAuthorities.amend(), "REFERRAL_AMEND");
+    CommandReceiptKey receiptKey =
+        commandKey(context, "referral.amend", "referrals/" + referralId, idempotencyKey);
+    return execute(
+        () -> {
+          Instant now = clock.instant();
+          drafts.configureBoundedReceiptWait();
+          ReferralDraftStore.ReceiptClaim claim = drafts.claimReceipt(receiptKey, fingerprint, now);
+          ReferralAmendmentCommandResult replay = replayAmendment(claim);
+          if (replay != null) {
+            return replay;
+          }
+          ReferralDraft current =
+              drafts.lockDraft(referralId).orElseThrow(ReferralDraftCommands::notFound);
+          if (!originMatches(context.scope(), current)) {
+            throw notFound();
+          }
+          if (current.state() == ReferralState.RESOLVED) {
+            throw alreadyResolved();
+          }
+          if (current.state() != ReferralState.SUBMITTED) {
+            throw stateConflict("Only a submitted Referral can be amended.");
+          }
+          if (current.version() != expectedVersion) {
+            throw versionConflict("The Referral changed; reload it before amending.");
+          }
+          requireValidDirectoryReferences(context.scope(), careRequirement);
+          SubmittedReferralRevision previous =
+              drafts
+                  .findSubmittedRevision(referralId, expectedVersion)
+                  .orElseThrow(
+                      () -> new IllegalStateException("Current submitted revision was not stored"));
+          ReferralDraft amended =
+              current.amendSubmitted(patientReference, careRequirement, context.actor(), now);
+          SubmittedReferralRevision revision =
+              new SubmittedReferralRevision(
+                  current.id(),
+                  Math.addExact(previous.revisionNumber(), 1),
+                  amended.version(),
+                  current.originOrganization(),
+                  current.originFacility(),
+                  patientReference,
+                  careRequirement,
+                  current.createdBy(),
+                  context.actor(),
+                  now,
+                  Optional.of(normalizedReasonCode));
+          if (!drafts.amendSubmitted(amended, expectedVersion, revision)) {
+            throw versionConflict("The Referral changed; reload it before amending.");
+          }
+          auditMutation(context, amended, "REFERRAL_AMEND", Optional.of(normalizedReasonCode));
+          drafts.completeReceipt(
+              receiptKey, HttpStatus.OK.value(), referralId, amended.version(), now);
+          SubmittedReferralRevision persisted =
+              drafts
+                  .findSubmittedRevision(referralId, amended.version())
+                  .orElseThrow(
+                      () -> new IllegalStateException("Amended Referral revision was not stored"));
+          return new ReferralAmendmentCommandResult(persisted, false, HttpStatus.OK.value());
+        });
+  }
+
+  public ReferralResolutionCommandResult resolve(
+      ExecutionContext context,
+      InternalId referralId,
+      long expectedVersion,
+      ReferralResolutionOutcome outcome,
+      String reasonCode,
+      String idempotencyKey,
+      RequestFingerprint fingerprint) {
+    Objects.requireNonNull(referralId, "Referral id");
+    Objects.requireNonNull(outcome, "resolution outcome");
+    Objects.requireNonNull(fingerprint, "request fingerprint");
+    requireOriginScope(context);
+    requireExpectedVersion(expectedVersion, "A positive expected Referral version is required.");
+    String normalizedReasonCode = requireReasonCode(reasonCode, "resolution");
+    requireAuthority(context, ReferralAuthorities.resolve(), "REFERRAL_RESOLVE");
+    CommandReceiptKey receiptKey =
+        commandKey(context, "referral.resolve", "referrals/" + referralId, idempotencyKey);
+    return execute(
+        () -> {
+          Instant now = clock.instant();
+          drafts.configureBoundedReceiptWait();
+          ReferralDraftStore.ReceiptClaim claim = drafts.claimReceipt(receiptKey, fingerprint, now);
+          ReferralResolutionCommandResult replay = replayResolution(claim, context);
+          if (replay != null) {
+            return replay;
+          }
+          ReferralDraft current =
+              drafts.lockDraft(referralId).orElseThrow(ReferralDraftCommands::notFound);
+          if (!originMatches(context.scope(), current)) {
+            throw notFound();
+          }
+          if (current.state() == ReferralState.RESOLVED) {
+            throw alreadyResolved();
+          }
+          if (current.state() != ReferralState.SUBMITTED) {
+            throw stateConflict("Only a submitted Referral can be resolved.");
+          }
+          if (current.version() != expectedVersion) {
+            throw versionConflict("The Referral changed; reload it before resolving.");
+          }
+          // Phase 5 has no Transfer context. This is the authorized origin-side closure path;
+          // Phase 7 will supply Transfer-owned outcomes and active-journey coordination.
+          ReferralDraft resolved = current.resolve(context.actor(), now);
+          ReferralResolution resolution =
+              new ReferralResolution(
+                  referralId,
+                  outcome,
+                  normalizedReasonCode,
+                  context.actor(),
+                  now,
+                  resolved.version());
+          if (!drafts.resolveDraft(resolved, expectedVersion, resolution)) {
+            throw versionConflict("The Referral changed; reload it before resolving.");
+          }
+          auditMutation(context, resolved, "REFERRAL_RESOLVE", Optional.of(normalizedReasonCode));
+          drafts.completeReceipt(
+              receiptKey, HttpStatus.OK.value(), referralId, resolved.version(), now);
+          ReferralResolution persisted =
+              drafts
+                  .findResolution(referralId)
+                  .orElseThrow(
+                      () -> new IllegalStateException("Referral resolution was not stored"));
+          return new ReferralResolutionCommandResult(
+              resolved, persisted, false, HttpStatus.OK.value());
         });
   }
 
@@ -297,6 +445,57 @@ public class ReferralDraftCommands {
                 .orElseThrow(ReferralDraftCommands::notFound);
         yield new ReferralSubmissionCommandResult(
             revision, true, claim.responseStatus().orElse(HttpStatus.OK.value()));
+      }
+    };
+  }
+
+  private ReferralAmendmentCommandResult replayAmendment(ReferralDraftStore.ReceiptClaim claim) {
+    return switch (claim.state()) {
+      case OWNER -> null;
+      case KEY_REUSED ->
+          throw problem(
+              HttpStatus.CONFLICT,
+              PlatformErrorCode.IDEMPOTENCY_KEY_REUSED,
+              "The idempotency key was already used for a different Referral command.");
+      case IN_PROGRESS ->
+          throw problem(
+              HttpStatus.CONFLICT, PlatformErrorCode.IDEMPOTENCY_IN_PROGRESS, COMMAND_BUSY_DETAIL);
+      case REPLAY -> {
+        InternalId referralId = claim.resultReference().orElseThrow();
+        long referralVersion = claim.resultVersion().orElseThrow();
+        SubmittedReferralRevision revision =
+            drafts
+                .findSubmittedRevision(referralId, referralVersion)
+                .orElseThrow(ReferralDraftCommands::notFound);
+        yield new ReferralAmendmentCommandResult(
+            revision, true, claim.responseStatus().orElse(HttpStatus.OK.value()));
+      }
+    };
+  }
+
+  private ReferralResolutionCommandResult replayResolution(
+      ReferralDraftStore.ReceiptClaim claim, ExecutionContext context) {
+    return switch (claim.state()) {
+      case OWNER -> null;
+      case KEY_REUSED ->
+          throw problem(
+              HttpStatus.CONFLICT,
+              PlatformErrorCode.IDEMPOTENCY_KEY_REUSED,
+              "The idempotency key was already used for a different Referral command.");
+      case IN_PROGRESS ->
+          throw problem(
+              HttpStatus.CONFLICT, PlatformErrorCode.IDEMPOTENCY_IN_PROGRESS, COMMAND_BUSY_DETAIL);
+      case REPLAY -> {
+        InternalId referralId = claim.resultReference().orElseThrow();
+        ReferralDraft referral =
+            drafts.findDraft(referralId).orElseThrow(ReferralDraftCommands::notFound);
+        if (!originMatches(context.scope(), referral)) {
+          throw notFound();
+        }
+        ReferralResolution resolution =
+            drafts.findResolution(referralId).orElseThrow(ReferralDraftCommands::notFound);
+        yield new ReferralResolutionCommandResult(
+            referral, resolution, true, claim.responseStatus().orElse(HttpStatus.OK.value()));
       }
     };
   }
@@ -394,6 +593,14 @@ public class ReferralDraftCommands {
   }
 
   private void auditMutation(ExecutionContext context, ReferralDraft draft, String actionCode) {
+    auditMutation(context, draft, actionCode, Optional.empty());
+  }
+
+  private void auditMutation(
+      ExecutionContext context,
+      ReferralDraft draft,
+      String actionCode,
+      Optional<String> reasonCode) {
     try {
       auditWriter
           .getObject()
@@ -407,7 +614,7 @@ public class ReferralDraftCommands {
                   Optional.of(draft.id()),
                   clock.instant(),
                   AuditOutcome.SUCCEEDED,
-                  Optional.empty(),
+                  reasonCode,
                   authenticationEvidence(context.authenticationMechanism()),
                   AuditAuthorizationOutcome.ALLOWED,
                   context.correlationId(),
@@ -521,8 +728,29 @@ public class ReferralDraftCommands {
     return problem(HttpStatus.BAD_REQUEST, PlatformErrorCode.REFERRAL_REQUIREMENT_INVALID, detail);
   }
 
+  private static void requireExpectedVersion(long expectedVersion, String detail) {
+    if (expectedVersion < 1) {
+      throw requirementInvalid(detail);
+    }
+  }
+
+  private static String requireReasonCode(String reasonCode, String operation) {
+    if (reasonCode == null || !reasonCode.matches("[A-Z][A-Z0-9._-]{0,63}")) {
+      throw requirementInvalid(
+          "A nonblank uppercase coded reason is required to " + operation + " a Referral.");
+    }
+    return reasonCode;
+  }
+
   private static PlatformProblemException stateConflict(String detail) {
     return problem(HttpStatus.CONFLICT, PlatformErrorCode.REFERRAL_STATE_CONFLICT, detail);
+  }
+
+  private static PlatformProblemException alreadyResolved() {
+    return problem(
+        HttpStatus.CONFLICT,
+        PlatformErrorCode.REFERRAL_ALREADY_RESOLVED,
+        "The Referral is already resolved and cannot be changed.");
   }
 
   private static PlatformProblemException versionConflict(String detail) {
