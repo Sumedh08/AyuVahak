@@ -1416,6 +1416,23 @@ class DirectoryOrganizationFacilityApiIT {
   }
 
   @Test
+  void facilitySearchRejectsUnknownQueryKeysWithStableDirectoryProblem() throws Exception {
+    grant(ADMIN, CURATOR, "DirectoryRead", "PLATFORM", null, null, "unknown-search-reader");
+
+    mockMvc
+        .perform(
+            get("/api/v1/directory/facilities")
+                .param("unexpected", "ignored-by-default-spring-binding")
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("X-Correlation-ID", "directory-unknown-search-01"))
+        .andExpect(status().isBadRequest())
+        .andExpect(content().contentTypeCompatibleWith("application/problem+json"))
+        .andExpect(jsonPath("$.code").value("DIRECTORY_VALIDATION_FAILED"))
+        .andExpect(jsonPath("$.correlationId").value("directory-unknown-search-01"));
+  }
+
+  @Test
   void protectedDirectorySearchRequiresAnAuthenticatedActor() throws Exception {
     mockMvc
         .perform(

@@ -1,5 +1,6 @@
 package org.ayuvahak.directory.adapter.api;
 
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -10,6 +11,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import org.ayuvahak.directory.application.DirectoryApplicationService;
 import org.ayuvahak.directory.application.DirectoryExternalIdentifierHistoryEntry;
 import org.ayuvahak.directory.application.DirectoryExternalIdentifierPage;
@@ -72,6 +74,16 @@ public class DirectoryOrganizationFacilityController {
   public static final String ORGANIZATION_SCOPE_HEADER = "X-AyuVahak-Organization-Id";
   public static final String FACILITY_SCOPE_HEADER = "X-AyuVahak-Facility-Id";
   private static final String DIRECTORY_ISSUER = "urn:ayuvahak:directory";
+  private static final Set<String> FACILITY_SEARCH_QUERY_PARAMETERS =
+      Set.of(
+          "centerLongitude",
+          "centerLatitude",
+          "radiusMeters",
+          "organizationId",
+          "facilityId",
+          "requiredCapability",
+          "pageSize",
+          "offset");
 
   private final DirectoryApplicationService directory;
   private final ExecutionContextFactory contextFactory;
@@ -617,9 +629,11 @@ public class DirectoryOrganizationFacilityController {
       @RequestParam(name = "requiredCapability", required = false)
           List<String> requiredCapabilityCodes,
       @RequestParam(required = false, defaultValue = "0") int pageSize,
-      @RequestParam(required = false, defaultValue = "0") int offset) {
+      @RequestParam(required = false, defaultValue = "0") int offset,
+      HttpServletRequest servletRequest) {
     ExecutionContext context =
         context(actor, scope, organizationScope, facilityScope, "DIRECTORY_FACILITY_SEARCH_READ");
+    rejectUnknownFacilitySearchParameters(servletRequest);
     Optional<InternalId> organizationFilter = optionalInternalId(organizationId);
     Optional<InternalId> facilityFilter = optionalInternalId(facilityId);
     boolean hasLongitude = centerLongitude != null;
@@ -1010,6 +1024,15 @@ public class DirectoryOrganizationFacilityController {
   private static PlatformProblemException searchValidation(String detail) {
     return new PlatformProblemException(
         HttpStatus.BAD_REQUEST, PlatformErrorCode.DIRECTORY_VALIDATION_FAILED, detail);
+  }
+
+  private static void rejectUnknownFacilitySearchParameters(HttpServletRequest request) {
+    boolean hasUnsupportedParameter =
+        request.getParameterMap().keySet().stream()
+            .anyMatch(name -> !FACILITY_SEARCH_QUERY_PARAMETERS.contains(name));
+    if (hasUnsupportedParameter) {
+      throw searchValidation("The facility search contains an unsupported query parameter.");
+    }
   }
 
   private ObjectNode sourceNode(SourceRequest request) {
