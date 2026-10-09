@@ -547,6 +547,8 @@ class DirectoryOrganizationFacilityApiIT {
     grant(ADMIN, CURATOR, "DirectoryCuration", "PLATFORM", null, null, "identifier-idem-curator");
     String organizationId =
         createOrganization(CURATOR, "identifier-idem-org", "Idempotency Clinic");
+    int eventCountBeforeIdentifierCommands =
+        count("SELECT COUNT(*) FROM platform_eventing.internal_event");
     String firstId =
         addExternalIdentifier(
             CURATOR,
@@ -592,7 +594,8 @@ class DirectoryOrganizationFacilityApiIT {
         .isEqualTo(1);
     // The organization creation and identifier registration each have one Directory receipt.
     assertThat(count("SELECT COUNT(*) FROM directory.command_receipt")).isEqualTo(2);
-    assertThat(count("SELECT COUNT(*) FROM platform_eventing.internal_event")).isZero();
+    assertThat(count("SELECT COUNT(*) FROM platform_eventing.internal_event"))
+        .isEqualTo(eventCountBeforeIdentifierCommands);
   }
 
   @Test
@@ -600,6 +603,8 @@ class DirectoryOrganizationFacilityApiIT {
     grant(ADMIN, CURATOR, "DirectoryCuration", "PLATFORM", null, null, "identifier-audit-curator");
     String organizationId =
         createOrganization(CURATOR, "identifier-audit-org", "Audit Failure Clinic");
+    int eventCountBeforeFailedIdentifierCommand =
+        count("SELECT COUNT(*) FROM platform_eventing.internal_event");
     jdbc.execute(
         "CREATE FUNCTION test_fail_audit_insert() RETURNS trigger LANGUAGE plpgsql AS "
             + "'BEGIN RAISE EXCEPTION ''synthetic audit failure''; END'");
@@ -626,7 +631,8 @@ class DirectoryOrganizationFacilityApiIT {
     assertThat(count("SELECT COUNT(*) FROM directory.external_identifier")).isZero();
     assertThat(count("SELECT COUNT(*) FROM directory.external_identifier_revision")).isZero();
     assertThat(count("SELECT COUNT(*) FROM directory.command_receipt")).isEqualTo(1);
-    assertThat(count("SELECT COUNT(*) FROM platform_eventing.internal_event")).isZero();
+    assertThat(count("SELECT COUNT(*) FROM platform_eventing.internal_event"))
+        .isEqualTo(eventCountBeforeFailedIdentifierCommand);
   }
 
   @Test
