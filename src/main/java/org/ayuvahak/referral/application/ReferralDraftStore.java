@@ -5,6 +5,7 @@ import java.util.Optional;
 import org.ayuvahak.platform.core.InternalId;
 import org.ayuvahak.platform.idempotency.CommandReceiptKey;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
+import org.ayuvahak.referral.domain.ReferralCancellation;
 import org.ayuvahak.referral.domain.ReferralDraft;
 import org.ayuvahak.referral.domain.ReferralResolution;
 import org.ayuvahak.referral.domain.SubmittedReferralRevision;
@@ -28,10 +29,15 @@ public interface ReferralDraftStore {
 
   boolean resolveDraft(ReferralDraft resolved, long expectedVersion, ReferralResolution resolution);
 
+  boolean cancelDraft(
+      ReferralDraft cancelled, long expectedVersion, ReferralCancellation cancellation);
+
   Optional<SubmittedReferralRevision> findSubmittedRevision(
       InternalId referralId, long referralVersion);
 
   Optional<ReferralResolution> findResolution(InternalId referralId);
+
+  Optional<ReferralCancellation> findCancellation(InternalId referralId);
 
   ReceiptClaim claimReceipt(
       CommandReceiptKey key, RequestFingerprint fingerprint, Instant recordedAt);

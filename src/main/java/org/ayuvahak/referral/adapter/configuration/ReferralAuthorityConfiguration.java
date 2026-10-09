@@ -33,4 +33,9 @@ public class ReferralAuthorityConfiguration {
   FunctionalAuthority referralResolveAuthority() {
     return ReferralAuthorities.resolve();
   }
+
+  @Bean
+  FunctionalAuthority referralCancelAuthority() {
+    return ReferralAuthorities.cancel();
+  }
 }

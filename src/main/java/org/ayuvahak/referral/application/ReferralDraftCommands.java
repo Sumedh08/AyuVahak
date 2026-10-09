@@ -23,6 +23,12 @@ import org.ayuvahak.platform.core.ActorReference;
 import org.ayuvahak.platform.core.CorrelationId;
 import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.InternalId;
+import org.ayuvahak.platform.core.OccurredAt;
+import org.ayuvahak.platform.core.RecordedAt;
+import org.ayuvahak.platform.event.AggregatePosition;
+import org.ayuvahak.platform.event.EventEnvelope;
+import org.ayuvahak.platform.event.EventType;
+import org.ayuvahak.platform.eventing.application.OutboxWriter;
 import org.ayuvahak.platform.executioncontext.AuthenticationMechanism;
 import org.ayuvahak.platform.executioncontext.ExecutionContext;
 import org.ayuvahak.platform.executioncontext.ExecutionScope;
@@ -31,6 +37,7 @@ import org.ayuvahak.platform.idempotency.RequestFingerprint;
 import org.ayuvahak.referral.domain.CareRequirement;
 import org.ayuvahak.referral.domain.PatientReference;
 import org.ayuvahak.referral.domain.ReferralAuthorities;
+import org.ayuvahak.referral.domain.ReferralCancellation;
 import org.ayuvahak.referral.domain.ReferralDraft;
 import org.ayuvahak.referral.domain.ReferralResolution;
 import org.ayuvahak.referral.domain.ReferralResolutionOutcome;
@@ -45,6 +52,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
+import tools.jackson.databind.ObjectMapper;
 
 /** Referral owner commands for origin-scoped coordination state. */
 @Service
@@ -61,6 +69,8 @@ public class ReferralDraftCommands {
   private final ObjectProvider<AuditWriter> auditWriter;
   private final TransactionTemplate transaction;
   private final Clock clock;
+  private final OutboxWriter outboxWriter;
+  private final ObjectMapper objectMapper;
 
   public ReferralDraftCommands(
       @Lazy ReferralDraftStore drafts,
@@ -68,7 +78,9 @@ public class ReferralDraftCommands {
       ObjectProvider<AuthorizationService> authorization,
       ObjectProvider<AuditWriter> auditWriter,
       @Lazy PlatformTransactionManager transactionManager,
-      @Qualifier("auditClock") Clock clock) {
+      @Qualifier("auditClock") Clock clock,
+      OutboxWriter outboxWriter,
+      ObjectMapper objectMapper) {
     this.drafts = Objects.requireNonNull(drafts, "Referral draft store");
     this.directoryReferences =
         Objects.requireNonNull(directoryReferences, "Directory reference contract");
@@ -76,6 +88,8 @@ public class ReferralDraftCommands {
     this.auditWriter = Objects.requireNonNull(auditWriter, "audit writer");
     this.transaction = new TransactionTemplate(Objects.requireNonNull(transactionManager));
     this.clock = Objects.requireNonNull(clock, "audit clock");
+    this.outboxWriter = Objects.requireNonNull(outboxWriter, "outbox writer");
+    this.objectMapper = Objects.requireNonNull(objectMapper, "object mapper");
   }
 
   public ReferralDraftCommandResult create(
@@ -390,6 +404,96 @@ public class ReferralDraftCommands {
           return new ReferralResolutionCommandResult(
               resolved, persisted, false, HttpStatus.OK.value());
         });
+  }
+
+  public ReferralDraftCommandResult cancel(
+      ExecutionContext context,
+      InternalId referralId,
+      long expectedVersion,
+      String reasonCode,
+      String idempotencyKey,
+      RequestFingerprint fingerprint) {
+    Objects.requireNonNull(referralId, "Referral id");
+    Objects.requireNonNull(fingerprint, "request fingerprint");
+    requireOriginScope(context);
+    requireExpectedVersion(expectedVersion, "A positive expected Referral version is required.");
+    String normalizedReasonCode = requireReasonCode(reasonCode, "cancel");
+    requireAuthority(context, ReferralAuthorities.cancel(), "REFERRAL_CANCEL");
+    CommandReceiptKey receiptKey =
+        commandKey(context, "referral.cancel", "referrals/" + referralId, idempotencyKey);
+    return execute(
+        () -> {
+          Instant now = clock.instant();
+          drafts.configureBoundedReceiptWait();
+          ReferralDraftStore.ReceiptClaim claim = drafts.claimReceipt(receiptKey, fingerprint, now);
+          ReferralDraftCommandResult replay = replay(claim);
+          if (replay != null) {
+            return replay;
+          }
+          ReferralDraft current =
+              drafts.lockDraft(referralId).orElseThrow(ReferralDraftCommands::notFound);
+          if (!originMatches(context.scope(), current)) {
+            throw notFound();
+          }
+          if (current.state() == ReferralState.CANCELLED) {
+            throw alreadyCancelled();
+          }
+          if (current.state() == ReferralState.RESOLVED) {
+            throw alreadyResolved();
+          }
+          if (current.version() != expectedVersion) {
+            throw versionConflict("The Referral changed; reload it before cancelling.");
+          }
+          Optional<SubmittedReferralRevision> currentRevision =
+              current.state() == ReferralState.SUBMITTED
+                  ? Optional.of(
+                      drafts
+                          .findSubmittedRevision(referralId, current.version())
+                          .orElseThrow(
+                              () ->
+                                  new IllegalStateException(
+                                      "Current submitted Referral revision was not stored")))
+                  : Optional.empty();
+          ReferralDraft cancelled = current.cancel(context.actor(), now);
+          ReferralCancellation cancellation =
+              new ReferralCancellation(
+                  referralId, normalizedReasonCode, context.actor(), now, cancelled.version());
+          if (!drafts.cancelDraft(cancelled, expectedVersion, cancellation)) {
+            throw versionConflict("The Referral changed; reload it before cancelling.");
+          }
+          auditMutation(context, cancelled, "REFERRAL_CANCEL", Optional.of(normalizedReasonCode));
+          currentRevision.ifPresent(
+              revision ->
+                  recordCancellationEvent(context, cancelled, revision, normalizedReasonCode, now));
+          drafts.completeReceipt(
+              receiptKey, HttpStatus.OK.value(), referralId, cancelled.version(), now);
+          return new ReferralDraftCommandResult(cancelled, false, HttpStatus.OK.value());
+        });
+  }
+
+  private void recordCancellationEvent(
+      ExecutionContext context,
+      ReferralDraft cancelled,
+      SubmittedReferralRevision revision,
+      String reasonCode,
+      Instant recordedAt) {
+    var payload = objectMapper.createObjectNode();
+    payload.put("referralReference", cancelled.id().toString());
+    payload.put("revisionNumber", revision.revisionNumber());
+    payload.put("reasonCode", reasonCode);
+    payload.put("sourceKind", context.sourceKind().name());
+    EventType eventType = EventType.parse("referral.cancelled.v1");
+    EventEnvelope event =
+        new EventEnvelope(
+            InternalId.generate(),
+            eventType,
+            "referral",
+            new OccurredAt(recordedAt),
+            new RecordedAt(recordedAt),
+            context,
+            Optional.of(new AggregatePosition("referral/" + cancelled.id(), cancelled.version())),
+            payload);
+    outboxWriter.recordForDeclaredFutureConsumer(event);
   }
 
   /** Records an invalid execution-context attempt against a non-sensitive platform target. */
@@ -751,6 +855,13 @@ public class ReferralDraftCommands {
         HttpStatus.CONFLICT,
         PlatformErrorCode.REFERRAL_ALREADY_RESOLVED,
         "The Referral is already resolved and cannot be changed.");
+  }
+
+  private static PlatformProblemException alreadyCancelled() {
+    return problem(
+        HttpStatus.CONFLICT,
+        PlatformErrorCode.REFERRAL_ALREADY_CANCELLED,
+        "The Referral is already cancelled and cannot be changed.");
   }
 
   private static PlatformProblemException versionConflict(String detail) {

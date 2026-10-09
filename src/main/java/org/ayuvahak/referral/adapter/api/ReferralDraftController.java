@@ -60,6 +60,7 @@ public final class ReferralDraftController {
   private static final Set<String> SUBMISSION_FIELDS = Set.of("expectedVersion");
   private static final Set<String> RESOLUTION_FIELDS =
       Set.of("expectedVersion", "outcome", "reasonCode");
+  private static final Set<String> CANCELLATION_FIELDS = Set.of("expectedVersion", "reasonCode");
   private static final Set<String> PATIENT_REFERENCE_FIELDS =
       Set.of("issuer", "resourceType", "identifier", "encounterReference");
   private static final Set<String> CARE_REQUIREMENT_FIELDS =
@@ -236,6 +237,36 @@ public final class ReferralDraftController {
         org.springframework.http.HttpStatusCode.valueOf(result.responseStatus()));
   }
 
+  @PostMapping("/{referralId}/cancellation")
+  public ResponseEntity<ReferralDraftRepresentation> cancel(
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
+      @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationId,
+      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityId,
+      @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+      @PathVariable String referralId,
+      @RequestBody JsonNode body) {
+    CancellationContent content = cancellationContent(body);
+    InternalId id = parseReferralId(referralId);
+    ExecutionContext context = context(actor, scope, organizationId, facilityId);
+    ReferralDraftCommandResult result =
+        commands.cancel(
+            context,
+            id,
+            content.expectedVersion(),
+            content.reasonCode(),
+            idempotencyKey,
+            cancellationFingerprint(content));
+    HttpHeaders headers = new HttpHeaders();
+    if (result.commandReplayed()) {
+      headers.set("Idempotency-Replayed", "true");
+    }
+    return new ResponseEntity<>(
+        ReferralDraftRepresentation.from(result.draft()),
+        headers,
+        org.springframework.http.HttpStatusCode.valueOf(result.responseStatus()));
+  }
+
   private long submissionExpectedVersion(JsonNode body) {
     if (body == null || !body.isObject()) {
       throw malformed();
@@ -291,6 +322,21 @@ public final class ReferralDraftController {
     }
     return new ResolutionContent(
         version.longValue(), resolutionOutcome, requiredReasonCode(body, "resolution"));
+  }
+
+  private CancellationContent cancellationContent(JsonNode body) {
+    if (body == null || !body.isObject()) {
+      throw malformed();
+    }
+    rejectUnknownFields(body, CANCELLATION_FIELDS);
+    JsonNode version = body.get("expectedVersion");
+    if (version == null
+        || !version.isIntegralNumber()
+        || !version.canConvertToLong()
+        || version.longValue() < 1) {
+      throw invalid("A positive expectedVersion is required to cancel a Referral.");
+    }
+    return new CancellationContent(version.longValue(), requiredReasonCode(body, "cancellation"));
   }
 
   private static String requiredReasonCode(JsonNode body, String operation) {
@@ -520,6 +566,13 @@ public final class ReferralDraftController {
     return RequestFingerprint.from(root);
   }
 
+  private RequestFingerprint cancellationFingerprint(CancellationContent content) {
+    ObjectNode root = objectMapper.createObjectNode();
+    root.put("expectedVersion", content.expectedVersion());
+    root.put("reasonCode", content.reasonCode());
+    return RequestFingerprint.from(root);
+  }
+
   private void addContentFingerprint(ObjectNode root, DraftContent content) {
     ObjectNode patient = root.putObject("patientReference");
     putReference(patient, content.patientReference().patient());
@@ -622,6 +675,8 @@ public final class ReferralDraftController {
 
   private record ResolutionContent(
       long expectedVersion, ReferralResolutionOutcome outcome, String reasonCode) {}
+
+  private record CancellationContent(long expectedVersion, String reasonCode) {}
 
   public record PatientReferenceRepresentation(
       String issuer,

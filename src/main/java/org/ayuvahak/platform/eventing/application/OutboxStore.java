@@ -10,6 +10,8 @@ public interface OutboxStore {
 
   void record(EventEnvelope event);
 
+  void recordWaitingForConsumer(EventEnvelope event);
+
   List<LeasedEvent> claimDue(Instant now, Duration leaseDuration, int maximumAttempts, int limit);
 
   boolean markUnhandled(LeaseToken token, Instant now);

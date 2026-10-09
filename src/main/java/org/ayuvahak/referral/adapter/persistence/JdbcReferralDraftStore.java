@@ -18,6 +18,7 @@ import org.ayuvahak.platform.idempotency.configuration.CommandIdempotencyPropert
 import org.ayuvahak.referral.application.ReferralDraftStore;
 import org.ayuvahak.referral.domain.CareRequirement;
 import org.ayuvahak.referral.domain.PatientReference;
+import org.ayuvahak.referral.domain.ReferralCancellation;
 import org.ayuvahak.referral.domain.ReferralDraft;
 import org.ayuvahak.referral.domain.ReferralResolution;
 import org.ayuvahak.referral.domain.ReferralResolutionOutcome;
@@ -194,6 +195,41 @@ public class JdbcReferralDraftStore implements ReferralDraftStore {
   }
 
   @Override
+  public boolean cancelDraft(
+      ReferralDraft cancelled, long expectedVersion, ReferralCancellation cancellation) {
+    int changed =
+        jdbc.update(
+            "UPDATE referral.draft SET state = 'CANCELLED', updated_by_kind = ?, "
+                + "updated_by_issuer = ?, updated_by_identifier_type = ?, updated_by_identifier = ?, "
+                + "version = ?, updated_at = ? WHERE referral_id = ? AND version = ? "
+                + "AND state IN ('DRAFT', 'SUBMITTED')",
+            cancelled.updatedBy().kind().name(),
+            cancelled.updatedBy().identity().issuer().value(),
+            cancelled.updatedBy().identity().resourceType(),
+            cancelled.updatedBy().identity().value(),
+            cancelled.version(),
+            Timestamp.from(cancelled.updatedAt()),
+            cancelled.id().value(),
+            expectedVersion);
+    if (changed != 1) {
+      return false;
+    }
+    jdbc.update(
+        "INSERT INTO referral.cancellation (referral_id, reason_code, cancelled_by_kind, "
+            + "cancelled_by_issuer, cancelled_by_identifier_type, cancelled_by_identifier, "
+            + "referral_version, cancelled_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        cancellation.referralId().value(),
+        cancellation.reasonCode(),
+        cancellation.cancelledBy().kind().name(),
+        cancellation.cancelledBy().identity().issuer().value(),
+        cancellation.cancelledBy().identity().resourceType(),
+        cancellation.cancelledBy().identity().value(),
+        cancellation.referralVersion(),
+        Timestamp.from(cancellation.cancelledAt()));
+    return true;
+  }
+
+  @Override
   public Optional<SubmittedReferralRevision> findSubmittedRevision(
       InternalId referralId, long referralVersion) {
     List<RevisionRow> rows =
@@ -348,6 +384,25 @@ public class JdbcReferralDraftStore implements ReferralDraftStore {
                     result.getLong("referral_version")),
             referralId.value());
     return resolutions.stream().findFirst();
+  }
+
+  @Override
+  public Optional<ReferralCancellation> findCancellation(InternalId referralId) {
+    return jdbc
+        .query(
+            "SELECT referral_id, reason_code, cancelled_by_kind, cancelled_by_issuer, "
+                + "cancelled_by_identifier_type, cancelled_by_identifier, referral_version, cancelled_at "
+                + "FROM referral.cancellation WHERE referral_id = ?",
+            (result, row) ->
+                new ReferralCancellation(
+                    new InternalId(result.getObject("referral_id", UUID.class)),
+                    result.getString("reason_code"),
+                    actor(result, "cancelled_by"),
+                    result.getTimestamp("cancelled_at").toInstant(),
+                    result.getLong("referral_version")),
+            referralId.value())
+        .stream()
+        .findFirst();
   }
 
   @Override

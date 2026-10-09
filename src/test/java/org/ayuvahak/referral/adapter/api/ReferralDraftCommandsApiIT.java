@@ -29,6 +29,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import org.ayuvahak.platform.AyuVahakApplication;
+import org.ayuvahak.platform.eventing.application.OutboxDispatcher;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -84,6 +85,7 @@ class ReferralDraftCommandsApiIT {
 
   @Autowired private MockMvc mockMvc;
   @Autowired private JdbcTemplate jdbc;
+  @Autowired private OutboxDispatcher outboxDispatcher;
 
   private String organizationId;
   private String facilityId;
@@ -133,7 +135,7 @@ class ReferralDraftCommandsApiIT {
       if (Boolean.TRUE.equals(
           jdbc.queryForObject(
               "SELECT to_regclass('referral.submitted_revision') IS NOT NULL", Boolean.class))) {
-        jdbc.execute("TRUNCATE TABLE referral.resolution");
+        jdbc.execute("TRUNCATE TABLE referral.cancellation, referral.resolution");
         jdbc.execute(
             "TRUNCATE TABLE referral.submitted_revision_required_care_capability, "
                 + "referral.submitted_revision_permitted_geography_code, "
@@ -163,6 +165,7 @@ class ReferralDraftCommandsApiIT {
     grant(ORIGINATOR, "ReferralSubmit", "FACILITY", organizationId, facilityId);
     grant(ORIGINATOR, "ReferralAmend", "FACILITY", organizationId, facilityId);
     grant(ORIGINATOR, "ReferralResolve", "FACILITY", organizationId, facilityId);
+    grant(ORIGINATOR, "ReferralCancel", "FACILITY", organizationId, facilityId);
   }
 
   @Test
@@ -313,6 +316,211 @@ class ReferralDraftCommandsApiIT {
                 String.class,
                 referralId))
         .isEqualTo("RESOLVED");
+  }
+
+  @Test
+  void submittedCancellationIsAtomicMinimalAndWaitsWithoutDispatchOrReplay() throws Exception {
+    String patientReference = "opaque-synthetic-patient-cancel";
+    String referralId = createDraft("cancel-create", patientReference);
+    performSubmission(referralId, ORIGINATOR, "cancel-submit", "{\"expectedVersion\":1}")
+        .andExpect(status().isOk());
+    String body = "{\"expectedVersion\":2,\"reasonCode\":\"ORIGIN_NO_LONGER_REQUIRED\"}";
+
+    performCancellation(
+            referralId,
+            ORIGINATOR,
+            "cancel-stale",
+            "{\"expectedVersion\":1,\"reasonCode\":\"ORIGIN_NO_LONGER_REQUIRED\"}")
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("REFERRAL_VERSION_CONFLICT"));
+
+    performCancellation(referralId, ORIGINATOR, "cancel-01", body)
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.id").value(referralId))
+        .andExpect(jsonPath("$.status").value("CANCELLED"))
+        .andExpect(jsonPath("$.version").value(3));
+    performCancellation(referralId, ORIGINATOR, "cancel-01", body)
+        .andExpect(status().isOk())
+        .andExpect(header().string("Idempotency-Replayed", "true"))
+        .andExpect(jsonPath("$.status").value("CANCELLED"));
+    performCancellation(
+            referralId,
+            ORIGINATOR,
+            "cancel-01",
+            body.replace("ORIGIN_NO_LONGER_REQUIRED", "OTHER_REASON"))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("IDEMPOTENCY_KEY_REUSED"));
+    performCancellation(referralId, UNAUTHORIZED, "cancel-denied", body)
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.code").value("AUTHORIZATION_DENIED"));
+
+    assertThat(count("SELECT COUNT(*) FROM referral.cancellation")).isEqualTo(1);
+    assertThat(count("SELECT COUNT(*) FROM referral.command_receipt")).isEqualTo(3);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM audit.audit_record "
+                    + "WHERE action_code = 'REFERRAL_CANCEL' AND outcome = 'SUCCEEDED'",
+                Integer.class))
+        .isEqualTo(1);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM audit.audit_record "
+                    + "WHERE action_code = 'REFERRAL_CANCEL' AND outcome = 'DENIED'",
+                Integer.class))
+        .isEqualTo(1);
+    assertThat(count("SELECT COUNT(*) FROM platform_eventing.internal_event")).isEqualTo(1);
+    String eventEnvelope =
+        jdbc.queryForObject(
+            "SELECT envelope::text FROM platform_eventing.internal_event WHERE event_type = ?",
+            String.class,
+            "referral.cancelled.v1");
+    assertThat(eventEnvelope)
+        .contains("ORIGIN_NO_LONGER_REQUIRED", referralId, "revisionNumber")
+        .doesNotContain(patientReference, "PatientReference", "clinical");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT d.state FROM platform_eventing.outbox_delivery d "
+                    + "JOIN platform_eventing.internal_event e USING (event_id) "
+                    + "WHERE e.event_type = 'referral.cancelled.v1'",
+                String.class))
+        .isEqualTo("WAITING_FOR_CONSUMER");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT d.attempt_count FROM platform_eventing.outbox_delivery d "
+                    + "JOIN platform_eventing.internal_event e USING (event_id) "
+                    + "WHERE e.event_type = 'referral.cancelled.v1'",
+                Integer.class))
+        .isZero();
+    assertThat(
+            outboxDispatcher.dispatchAvailable(Instant.parse("2026-10-09T10:00:00Z")).delivered())
+        .isZero();
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT d.state FROM platform_eventing.outbox_delivery d "
+                    + "JOIN platform_eventing.internal_event e USING (event_id) "
+                    + "WHERE e.event_type = 'referral.cancelled.v1'",
+                String.class))
+        .isEqualTo("WAITING_FOR_CONSUMER");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT d.attempt_count FROM platform_eventing.outbox_delivery d "
+                    + "JOIN platform_eventing.internal_event e USING (event_id) "
+                    + "WHERE e.event_type = 'referral.cancelled.v1'",
+                Integer.class))
+        .isZero();
+  }
+
+  @Test
+  void draftCanBeCancelledWithoutPublishingCoordinationEvent() throws Exception {
+    String referralId = createDraft("cancel-draft-create", "opaque-synthetic-patient-draft-cancel");
+    String body = "{\"expectedVersion\":1,\"reasonCode\":\"DUPLICATE_REQUEST\"}";
+
+    performCancellation(referralId, ORIGINATOR, "cancel-draft", body)
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.status").value("CANCELLED"))
+        .andExpect(jsonPath("$.version").value(2));
+    performCancellation(
+            referralId,
+            ORIGINATOR,
+            "cancel-draft-again",
+            "{\"expectedVersion\":2,\"reasonCode\":\"DUPLICATE_REQUEST\"}")
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("REFERRAL_ALREADY_CANCELLED"));
+    performAmendment(
+            referralId,
+            ORIGINATOR,
+            "cancel-draft-amend",
+            amendmentBody(2, "ORIGIN_CORRECTION", "opaque-synthetic-patient-late-amend"))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("REFERRAL_STATE_CONFLICT"));
+
+    assertThat(count("SELECT COUNT(*) FROM referral.cancellation")).isEqualTo(1);
+    assertThat(count("SELECT COUNT(*) FROM platform_eventing.internal_event")).isZero();
+  }
+
+  @Test
+  void outboxFailureRollsBackSubmittedCancellationAuditAndReceiptThenSameKeyCanRetry()
+      throws Exception {
+    String referralId = createDraft("cancel-outbox-create", "opaque-synthetic-patient-outbox");
+    performSubmission(referralId, ORIGINATOR, "cancel-outbox-submit", "{\"expectedVersion\":1}")
+        .andExpect(status().isOk());
+    String body = "{\"expectedVersion\":2,\"reasonCode\":\"ORIGIN_NO_LONGER_REQUIRED\"}";
+    jdbc.execute(
+        "CREATE FUNCTION platform_eventing.reject_referral_cancel_outbox() RETURNS trigger "
+            + "LANGUAGE plpgsql AS $$ BEGIN "
+            + "IF NEW.state = 'WAITING_FOR_CONSUMER' THEN "
+            + "RAISE EXCEPTION 'synthetic outbox failure'; END IF; RETURN NEW; END $$");
+    jdbc.execute(
+        "CREATE TRIGGER reject_referral_cancel_outbox BEFORE INSERT ON "
+            + "platform_eventing.outbox_delivery FOR EACH ROW EXECUTE FUNCTION "
+            + "platform_eventing.reject_referral_cancel_outbox()");
+    try {
+      performCancellation(referralId, ORIGINATOR, "cancel-outbox", body)
+          .andExpect(status().isServiceUnavailable())
+          .andExpect(jsonPath("$.code").value("REFERRAL_UNAVAILABLE"));
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT state FROM referral.draft WHERE referral_id = ?::uuid",
+                  String.class,
+                  referralId))
+          .isEqualTo("SUBMITTED");
+      assertThat(count("SELECT COUNT(*) FROM referral.cancellation")).isZero();
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = 'REFERRAL_CANCEL'",
+                  Integer.class))
+          .isZero();
+      assertThat(count("SELECT COUNT(*) FROM referral.command_receipt")).isEqualTo(2);
+      assertThat(count("SELECT COUNT(*) FROM platform_eventing.internal_event")).isZero();
+    } finally {
+      jdbc.execute(
+          "DROP TRIGGER IF EXISTS reject_referral_cancel_outbox ON "
+              + "platform_eventing.outbox_delivery");
+      jdbc.execute("DROP FUNCTION IF EXISTS platform_eventing.reject_referral_cancel_outbox()");
+    }
+
+    performCancellation(referralId, ORIGINATOR, "cancel-outbox", body)
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.status").value("CANCELLED"));
+    assertThat(count("SELECT COUNT(*) FROM platform_eventing.internal_event")).isEqualTo(1);
+  }
+
+  @Test
+  void auditFailureRollsBackSubmittedCancellationAndEventThenSameKeyCanRetry() throws Exception {
+    String referralId = createDraft("cancel-audit-create", "opaque-synthetic-patient-audit-cancel");
+    performSubmission(referralId, ORIGINATOR, "cancel-audit-submit", "{\"expectedVersion\":1}")
+        .andExpect(status().isOk());
+    String body = "{\"expectedVersion\":2,\"reasonCode\":\"ORIGIN_NO_LONGER_REQUIRED\"}";
+    jdbc.execute(
+        "CREATE FUNCTION audit.reject_referral_cancel() RETURNS trigger "
+            + "LANGUAGE plpgsql AS $$ BEGIN "
+            + "IF NEW.action_code = 'REFERRAL_CANCEL' THEN "
+            + "RAISE EXCEPTION 'synthetic audit failure'; END IF; RETURN NEW; END $$");
+    jdbc.execute(
+        "CREATE TRIGGER reject_referral_cancel BEFORE INSERT ON audit.audit_record "
+            + "FOR EACH ROW EXECUTE FUNCTION audit.reject_referral_cancel()");
+    try {
+      performCancellation(referralId, ORIGINATOR, "cancel-audit", body)
+          .andExpect(status().isServiceUnavailable())
+          .andExpect(jsonPath("$.code").value("AUDIT_UNAVAILABLE"));
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT state FROM referral.draft WHERE referral_id = ?::uuid",
+                  String.class,
+                  referralId))
+          .isEqualTo("SUBMITTED");
+      assertThat(count("SELECT COUNT(*) FROM referral.cancellation")).isZero();
+      assertThat(count("SELECT COUNT(*) FROM referral.command_receipt")).isEqualTo(2);
+      assertThat(count("SELECT COUNT(*) FROM platform_eventing.internal_event")).isZero();
+    } finally {
+      jdbc.execute("DROP TRIGGER IF EXISTS reject_referral_cancel ON audit.audit_record");
+      jdbc.execute("DROP FUNCTION IF EXISTS audit.reject_referral_cancel()");
+    }
+
+    performCancellation(referralId, ORIGINATOR, "cancel-audit", body)
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.status").value("CANCELLED"));
+    assertThat(count("SELECT COUNT(*) FROM platform_eventing.internal_event")).isEqualTo(1);
   }
 
   @Test
@@ -1058,6 +1266,19 @@ class ReferralDraftCommandsApiIT {
       String referralId, String subject, String idempotencyKey, String body) throws Exception {
     return mockMvc.perform(
         post("/api/v1/referrals/{referralId}/resolution", referralId)
+            .header("Authorization", bearer(token(subject)))
+            .header("X-AyuVahak-Execution-Scope", "FACILITY")
+            .header("X-AyuVahak-Organization-Id", organizationId)
+            .header("X-AyuVahak-Facility-Id", facilityId)
+            .header("Idempotency-Key", idempotencyKey)
+            .contentType("application/json")
+            .content(body));
+  }
+
+  private org.springframework.test.web.servlet.ResultActions performCancellation(
+      String referralId, String subject, String idempotencyKey, String body) throws Exception {
+    return mockMvc.perform(
+        post("/api/v1/referrals/{referralId}/cancellation", referralId)
             .header("Authorization", bearer(token(subject)))
             .header("X-AyuVahak-Execution-Scope", "FACILITY")
             .header("X-AyuVahak-Organization-Id", organizationId)

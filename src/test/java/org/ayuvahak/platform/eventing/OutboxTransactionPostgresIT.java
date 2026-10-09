@@ -26,6 +26,7 @@ import org.ayuvahak.platform.event.EventEnvelope;
 import org.ayuvahak.platform.event.EventType;
 import org.ayuvahak.platform.eventing.application.DeliveryFailureResult;
 import org.ayuvahak.platform.eventing.application.DispatchReport;
+import org.ayuvahak.platform.eventing.application.EventDeliveryOperationsStore;
 import org.ayuvahak.platform.eventing.application.InternalEvent;
 import org.ayuvahak.platform.eventing.application.InternalEventHandler;
 import org.ayuvahak.platform.eventing.application.LeasedEvent;
@@ -95,6 +96,7 @@ class OutboxTransactionPostgresIT {
   @Autowired private ObjectMapper objectMapper;
   @Autowired private Flyway flyway;
   @Autowired private OutboxStore outboxStore;
+  @Autowired private EventDeliveryOperationsStore deliveryOperationsStore;
   @Autowired private OutboxDispatcher dispatcher;
   @Autowired private MutableClock clock;
   @Autowired private DeterministicHandler handler;
@@ -245,6 +247,42 @@ class OutboxTransactionPostgresIT {
     assertThat(deliveryState(first.eventId())).isEqualTo("UNHANDLED");
     assertThat(deliveryState(second.eventId())).isEqualTo("PENDING");
     assertThat(attemptCount(first.eventId())).isZero();
+  }
+
+  @Test
+  void declaredFutureConsumerWaitsWithoutAttemptsAndBlocksOnlyItsAggregate() {
+    EventEnvelope waiting =
+        event(
+            InternalId.generate(),
+            3,
+            "referral/synthetic-referral",
+            EventType.parse("referral.cancelled.v1"));
+    EventEnvelope orderedAfter =
+        event(
+            InternalId.generate(),
+            4,
+            "referral/synthetic-referral",
+            EventType.parse("referral.submitted.v1"));
+    EventEnvelope independent =
+        event(InternalId.generate(), 1, "grant/waiting-independent", createdEventType());
+    new TransactionTemplate(transactionManager)
+        .executeWithoutResult(status -> outboxWriter.recordForDeclaredFutureConsumer(waiting));
+    record(orderedAfter);
+    record(independent);
+
+    DispatchReport firstPoll = dispatcher.dispatchAvailable(clock.instant());
+    DispatchReport secondPoll = dispatcher.dispatchAvailable(clock.instant());
+
+    assertThat(firstPoll.delivered()).isEqualTo(1);
+    assertThat(secondPoll).isEqualTo(new DispatchReport(0, 0, 0, 0, 0));
+    assertThat(deliveryState(waiting.eventId())).isEqualTo("WAITING_FOR_CONSUMER");
+    assertThat(attemptCount(waiting.eventId())).isZero();
+    assertThat(lastFailureCategory(waiting.eventId())).isNull();
+    assertThat(deliveryState(orderedAfter.eventId())).isEqualTo("PENDING");
+    assertThat(deliveryState(independent.eventId())).isEqualTo("DELIVERED");
+    assertThat(deliveryOperationsStore.replay(waiting.eventId(), 1, clock.instant())).isEmpty();
+    assertThat(deliveryOperationsStore.listCurrent(Optional.empty(), 100))
+        .anySatisfy(summary -> assertThat(summary.state()).isEqualTo("WAITING_FOR_CONSUMER"));
   }
 
   @Test
