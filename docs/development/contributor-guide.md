@@ -1,6 +1,6 @@
 # Contributor guide
 
-This guide covers the engineering platform, Phase 2 identity/trust kernel, and Phase 3 Care Service Directory. Product scope and enduring architecture decisions live in the [architecture constitution](../architecture/constitution.md), [Phase 1 engineering decisions](../architecture/phase-1-engineering-decisions.md), [Phase 2 platform-kernel architecture](../architecture/phase-2-platform-kernel.md), [Volume II architecture](../architecture/volume-2-core-care-coordination.md), and [ADR register](../adr/README.md); this guide links to them instead of restating them.
+This guide covers the engineering platform, Phase 2 identity/trust kernel, and Volume II Phases 3–5: Directory, Capacity, and Referral. Product scope and enduring architecture decisions live in the [architecture constitution](../architecture/constitution.md), [Phase 1 engineering decisions](../architecture/phase-1-engineering-decisions.md), [Phase 2 platform-kernel architecture](../architecture/phase-2-platform-kernel.md), [Volume II architecture](../architecture/volume-2-core-care-coordination.md), the [Phase 4 Capacity specification](../specs/phase-4-capacity-readiness-spec.md), the [Phase 5 Referral specification](../specs/phase-5-referral-spec.md), and the [ADR register](../adr/README.md); this guide links to them instead of restating them.
 
 ## Prerequisites
 
@@ -8,7 +8,7 @@ This guide covers the engineering platform, Phase 2 identity/trust kernel, and P
 - Docker Engine or another Docker-compatible container runtime, with Docker Compose v2 support.
 - A terminal and Git client.
 
-Node.js is not needed for this phase. The local and test databases run in containers; do not connect tests to public/shared healthcare systems.
+Node.js is not needed for the current Java service. A later frontend phase may add it. The local and test databases run in containers; do not connect tests to public/shared healthcare systems.
 
 Check the tools before starting:
 
@@ -147,4 +147,4 @@ No telemetry backend or collector is required. Optional OTLP tracing export is d
 
 ## Scope and safety
 
-This is a local developer environment, not a production deployment recipe. It has synthetic credentials and a local authentication reference provider. Phase 2 implements platform identity/access grants, audit, provenance, and event/recovery capabilities. Phase 3 implements the Directory only; Capacity, Referral, Matching, Transfer, Transport, and clinical workflows remain out of scope. It contains no patient data. The permanent restrictions on external writes, credentials, and healthcare test targets are in [AGENTS.md](../../AGENTS.md) and the [agent safety policy](../governance/agent-safety-policy.md). Follow them for all later phases.
+This is a local developer environment, not a production deployment recipe. It has synthetic credentials and a local authentication reference provider. The current platform includes Phase 2 identity/access grants, audit, provenance, and event/recovery capabilities, followed by Phase 3 Directory, Phase 4 Capacity, and Phase 5 Referral. Matching, Transfer, Transport, and clinical workflows remain future work. This environment contains no patient data. The permanent restrictions on external writes, credentials, and healthcare test targets are in [AGENTS.md](../../AGENTS.md) and the [agent safety policy](../governance/agent-safety-policy.md). Follow them for all later phases.
