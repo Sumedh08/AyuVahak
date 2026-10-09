@@ -6,8 +6,11 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import org.ayuvahak.capacity.domain.CapacityAuthorities;
+import org.ayuvahak.capacity.domain.CapacityDimensionReadiness;
 import org.ayuvahak.capacity.domain.CapacityEvidenceProjection;
 import org.ayuvahak.capacity.domain.CapacityEvidenceProjector;
+import org.ayuvahak.capacity.domain.CapacityReadinessEvaluation;
+import org.ayuvahak.capacity.domain.CapacityReadinessEvaluator;
 import org.ayuvahak.platform.api.PlatformErrorCode;
 import org.ayuvahak.platform.api.PlatformProblemException;
 import org.ayuvahak.platform.audit.application.AuditPersistenceUnavailableException;
@@ -40,7 +43,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 /** Authorization and consistent query-time reconstruction of Capacity evidence. */
 @Service
 @Lazy
-public class CapacityEvidenceQueries {
+public class CapacityEvidenceQueries implements CapacityReadiness {
 
   private static final int MAX_HISTORY_SIZE = 100;
   private static final int MAX_DIMENSIONS_PER_QUERY = 50;
@@ -52,6 +55,7 @@ public class CapacityEvidenceQueries {
   private final TransactionTemplate readTransaction;
   private final Clock clock;
   private final CapacityEvidenceProjector projector = new CapacityEvidenceProjector();
+  private final CapacityReadinessEvaluator readinessEvaluator = new CapacityReadinessEvaluator();
 
   public CapacityEvidenceQueries(
       @Lazy CapacityEvidenceStore evidence,
@@ -106,6 +110,52 @@ public class CapacityEvidenceQueries {
     }
     recordRead(context, facility, "CAPACITY_CURRENT_EVIDENCE_READ");
     return result;
+  }
+
+  @Override
+  public CapacityReadinessEvaluation evaluateOperationalReadiness(
+      ExecutionContext context,
+      ExternalReference facility,
+      List<String> requiredDimensionCodes,
+      Optional<Instant> requestedAt) {
+    requireFacility(context, facility);
+    requireReviewer(context, "CAPACITY_READINESS_EVALUATE", facility);
+    List<String> dimensions = validateDimensions(requiredDimensionCodes);
+    Instant evaluationTime = requestedAt.orElseGet(clock::instant);
+    if (evaluationTime.isAfter(clock.instant())) {
+      throw invalid("Capacity readiness cannot be evaluated at a future instant.");
+    }
+
+    List<CapacityDimensionReadiness> results;
+    try {
+      results =
+          Objects.requireNonNull(
+              readTransaction.execute(
+                  status ->
+                      dimensions.stream()
+                          .map(
+                              code -> {
+                                var dimension = configuration.currentDimension(code);
+                                var policy = configuration.currentPolicy(code);
+                                var projection =
+                                    projector.project(
+                                        facility,
+                                        code,
+                                        dimension,
+                                        policy,
+                                        evidence.findForProjection(facility, code),
+                                        evaluationTime);
+                                return readinessEvaluator.evaluate(
+                                    code, dimension, policy, projection);
+                              })
+                          .toList()),
+              "Capacity readiness transaction result");
+    } catch (DataAccessException unavailable) {
+      throw unavailable("Capacity readiness evidence could not be evaluated safely.");
+    }
+    recordRead(context, facility, "CAPACITY_READINESS_EVALUATE");
+    return new CapacityReadinessEvaluation(
+        facility, evaluationTime, CapacityReadinessEvaluation.aggregate(results), results);
   }
 
   public CapacityObservationHistoryPage history(
