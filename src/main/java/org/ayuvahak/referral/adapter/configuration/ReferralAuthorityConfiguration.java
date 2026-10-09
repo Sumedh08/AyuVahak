@@ -18,4 +18,9 @@ public class ReferralAuthorityConfiguration {
   FunctionalAuthority referralEditAuthority() {
     return ReferralAuthorities.edit();
   }
+
+  @Bean
+  FunctionalAuthority referralSubmitAuthority() {
+    return ReferralAuthorities.submit();
+  }
 }

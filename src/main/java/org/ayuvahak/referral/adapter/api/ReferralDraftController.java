@@ -21,9 +21,11 @@ import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
 import org.ayuvahak.referral.application.ReferralDraftCommandResult;
 import org.ayuvahak.referral.application.ReferralDraftCommands;
+import org.ayuvahak.referral.application.ReferralSubmissionCommandResult;
 import org.ayuvahak.referral.domain.CareRequirement;
 import org.ayuvahak.referral.domain.PatientReference;
 import org.ayuvahak.referral.domain.ReferralDraft;
+import org.ayuvahak.referral.domain.SubmittedReferralRevision;
 import org.slf4j.MDC;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -51,6 +53,7 @@ public final class ReferralDraftController {
   private static final String ORGANIZATION_SCOPE_HEADER = "X-AyuVahak-Organization-Id";
   private static final String FACILITY_SCOPE_HEADER = "X-AyuVahak-Facility-Id";
   private static final Set<String> REQUEST_FIELDS = Set.of("patientReference", "careRequirement");
+  private static final Set<String> SUBMISSION_FIELDS = Set.of("expectedVersion");
   private static final Set<String> PATIENT_REFERENCE_FIELDS =
       Set.of("issuer", "resourceType", "identifier", "encounterReference");
   private static final Set<String> CARE_REQUIREMENT_FIELDS =
@@ -135,6 +138,53 @@ public final class ReferralDraftController {
         ReferralDraftRepresentation.from(result.draft()),
         headers,
         org.springframework.http.HttpStatusCode.valueOf(result.responseStatus()));
+  }
+
+  @PostMapping("/{referralId}/submission")
+  public ResponseEntity<SubmittedReferralRepresentation> submit(
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
+      @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationId,
+      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityId,
+      @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+      @PathVariable String referralId,
+      @RequestBody JsonNode body) {
+    long expectedVersion = submissionExpectedVersion(body);
+    InternalId id = parseReferralId(referralId);
+    ExecutionContext context = context(actor, scope, organizationId, facilityId);
+    ReferralSubmissionCommandResult result =
+        commands.submit(
+            context, id, expectedVersion, idempotencyKey, submissionFingerprint(expectedVersion));
+    HttpHeaders headers = new HttpHeaders();
+    if (result.commandReplayed()) {
+      headers.set("Idempotency-Replayed", "true");
+    }
+    return new ResponseEntity<>(
+        SubmittedReferralRepresentation.from(result.revision()),
+        headers,
+        org.springframework.http.HttpStatusCode.valueOf(result.responseStatus()));
+  }
+
+  private long submissionExpectedVersion(JsonNode body) {
+    if (body == null || !body.isObject()) {
+      throw malformed();
+    }
+    rejectUnknownFields(body, SUBMISSION_FIELDS);
+    JsonNode version = body.get("expectedVersion");
+    if (version == null || !version.isIntegralNumber() || !version.canConvertToLong()) {
+      throw invalid("A positive expectedVersion is required to submit a Referral.");
+    }
+    long result = version.longValue();
+    if (result < 1) {
+      throw invalid("A positive expectedVersion is required to submit a Referral.");
+    }
+    return result;
+  }
+
+  private RequestFingerprint submissionFingerprint(long expectedVersion) {
+    ObjectNode root = objectMapper.createObjectNode();
+    root.put("expectedVersion", expectedVersion);
+    return RequestFingerprint.from(root);
   }
 
   private DraftContent read(JsonNode body) {
@@ -478,11 +528,62 @@ public final class ReferralDraftController {
     static ReferralDraftRepresentation from(ReferralDraft draft) {
       return new ReferralDraftRepresentation(
           draft.id().toString(),
-          "DRAFT",
+          draft.state().name(),
           draft.version(),
           OriginRepresentation.from(draft),
           PatientReferenceRepresentation.from(draft.patientReference()),
           CareRequirementRepresentation.from(draft.careRequirement()));
+    }
+  }
+
+  public record ActorRepresentation(
+      String kind, String issuer, String identifierType, String identifier) {
+    static ActorRepresentation from(ActorReference actor) {
+      return new ActorRepresentation(
+          actor.kind().name(),
+          actor.identity().issuer().value(),
+          actor.identity().resourceType(),
+          actor.identity().value());
+    }
+  }
+
+  public record SourceContextRepresentation(
+      ActorRepresentation sourceActor, ActorRepresentation submittedBy) {
+    static SourceContextRepresentation from(SubmittedReferralRevision revision) {
+      return new SourceContextRepresentation(
+          ActorRepresentation.from(revision.sourceActor()),
+          ActorRepresentation.from(revision.submittedBy()));
+    }
+  }
+
+  public record SubmittedReferralRepresentation(
+      String id, String status, long version, SubmittedRevisionRepresentation submittedRevision) {
+    static SubmittedReferralRepresentation from(SubmittedReferralRevision revision) {
+      return new SubmittedReferralRepresentation(
+          revision.referralId().toString(),
+          "SUBMITTED",
+          revision.referralVersion(),
+          SubmittedRevisionRepresentation.from(revision));
+    }
+  }
+
+  public record SubmittedRevisionRepresentation(
+      long revisionNumber,
+      OriginRepresentation origin,
+      PatientReferenceRepresentation patientReference,
+      CareRequirementRepresentation careRequirement,
+      SourceContextRepresentation sourceContext,
+      Instant submittedAt) {
+    static SubmittedRevisionRepresentation from(SubmittedReferralRevision revision) {
+      return new SubmittedRevisionRepresentation(
+          revision.revisionNumber(),
+          new OriginRepresentation(
+              revision.originOrganization().value(),
+              revision.originFacility().map(ExternalReference::value).orElse(null)),
+          PatientReferenceRepresentation.from(revision.patientReference()),
+          CareRequirementRepresentation.from(revision.careRequirement()),
+          SourceContextRepresentation.from(revision),
+          revision.submittedAt());
     }
   }
 }

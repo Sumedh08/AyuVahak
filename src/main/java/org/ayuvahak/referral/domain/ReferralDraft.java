@@ -7,7 +7,7 @@ import org.ayuvahak.platform.core.ActorReference;
 import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.InternalId;
 
-/** Mutable coordination draft owned by Referral until submitted in a later slice. */
+/** Current Referral state as it is prepared at origin and then submitted. */
 public record ReferralDraft(
     InternalId id,
     ExternalReference originOrganization,
@@ -16,6 +16,7 @@ public record ReferralDraft(
     CareRequirement careRequirement,
     ActorReference createdBy,
     ActorReference updatedBy,
+    ReferralState state,
     long version,
     Instant createdAt,
     Instant updatedAt) {
@@ -37,6 +38,7 @@ public record ReferralDraft(
     Objects.requireNonNull(careRequirement, "care requirement");
     Objects.requireNonNull(createdBy, "created by");
     Objects.requireNonNull(updatedBy, "updated by");
+    Objects.requireNonNull(state, "Referral state");
     if (version < 1) {
       throw new IllegalArgumentException("draft version must be positive");
     }
@@ -49,6 +51,9 @@ public record ReferralDraft(
       CareRequirement replacementCareRequirement,
       ActorReference editor,
       Instant changedAt) {
+    if (state != ReferralState.DRAFT) {
+      throw new IllegalStateException("only a draft Referral can be edited");
+    }
     return new ReferralDraft(
         id,
         originOrganization,
@@ -57,16 +62,37 @@ public record ReferralDraft(
         replacementCareRequirement,
         createdBy,
         editor,
+        ReferralState.DRAFT,
         Math.addExact(version, 1),
         createdAt,
         changedAt);
+  }
+
+  public ReferralDraft submit(ActorReference submitter, Instant submittedAt) {
+    if (state != ReferralState.DRAFT) {
+      throw new IllegalStateException("only a draft Referral can be submitted");
+    }
+    return new ReferralDraft(
+        id,
+        originOrganization,
+        originFacility,
+        patientReference,
+        careRequirement,
+        createdBy,
+        submitter,
+        ReferralState.SUBMITTED,
+        Math.addExact(version, 1),
+        createdAt,
+        submittedAt);
   }
 
   @Override
   public String toString() {
     return "ReferralDraft[id="
         + id
-        + ", status=DRAFT, version="
+        + ", status="
+        + state
+        + ", version="
         + version
         + ", patientReference=redacted]";
   }
