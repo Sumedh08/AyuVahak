@@ -9,10 +9,16 @@ public final class CapacityAuthorities {
 
   private static final FunctionalAuthority POLICY_ADMINISTRATION =
       new FunctionalAuthority("CapacityPolicyAdministration", Set.of(ExecutionScope.Kind.PLATFORM));
+  private static final FunctionalAuthority REPORTING =
+      new FunctionalAuthority("CapacityReporting", Set.of(ExecutionScope.Kind.FACILITY));
 
   private CapacityAuthorities() {}
 
   public static FunctionalAuthority policyAdministration() {
     return POLICY_ADMINISTRATION;
+  }
+
+  public static FunctionalAuthority reporting() {
+    return REPORTING;
   }
 }
