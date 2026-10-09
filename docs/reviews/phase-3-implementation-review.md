@@ -1,8 +1,8 @@
 # Phase 3 implementation review
 
 **Review date:** 2026-10-09
-**Status:** PASS — local Phase 3 freeze is ready after integration and commit.
-**Candidate branch:** `phase3-p3-06-protected-api`, based on the local Phase 3 integration point `020ff01`.
+**Status:** FROZEN — local Phase 3 integration passed.
+**Candidate branch:** `phase3-p3-06-protected-api`; integration/freeze commit: `f83211062abbd444be8b830790df689cc0729237`.
 
 ## Scope reviewed
 
@@ -34,4 +34,4 @@ The clean integration suite used disposable local Testcontainers instances, incl
 
 No unresolved BLOCKER or MAJOR finding remains. The final pagination and query validation corrections passed both the full suite and the Directory API integration class. The updated acceptance and review records reflect the current test totals and Compose restart evidence.
 
-**Freeze decision: PASS.** Phase 3 is ready to be integrated and frozen locally. Phase 4 must not begin until the local integration/freeze commit is complete. This review does not authorize remote publication.
+**Freeze decision: PASS.** Phase 3 was integrated and frozen locally by merge commit `f83211062abbd444be8b830790df689cc0729237`. Phase 4 may begin under its separately approved design and implementation gates. This review does not authorize remote publication.
