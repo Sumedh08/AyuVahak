@@ -9,7 +9,7 @@ import org.ayuvahak.platform.idempotency.CommandReceiptKey;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
 
 /** Capacity-owned persistence boundary for immutable dimension and policy versions. */
-public interface CapacityPolicyStore {
+public interface CapacityPolicyStore extends CapacityConfigurationLookup {
 
   Optional<CapacityDimension> currentDimension(String code);
 
