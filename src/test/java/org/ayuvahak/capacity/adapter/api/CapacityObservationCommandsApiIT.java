@@ -1,6 +1,7 @@
 package org.ayuvahak.capacity.adapter.api;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -19,6 +20,10 @@ import com.sun.net.httpserver.HttpServer;
 import java.net.InetSocketAddress;
 import java.time.Instant;
 import java.util.Date;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import org.ayuvahak.platform.AyuVahakApplication;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -55,6 +60,7 @@ class CapacityObservationCommandsApiIT {
   private static final String ADMIN = "synthetic-platform-admin";
   private static final String CURATOR = "synthetic-directory-curator";
   private static final String REPORTER = "synthetic-capacity-reporter";
+  private static final String HISTORY_REPORTER = "synthetic-capacity-history-reporter";
   private static final String SERVICE_REPORTER = "synthetic-capacity-service";
   private static final RSAKey SIGNING_KEY = newSigningKey("capacity-observation-fixture");
   private static final PostgreSQLContainer POSTGRES =
@@ -147,6 +153,14 @@ class CapacityObservationCommandsApiIT {
     organizationId = createOrganization("North Coordination Clinic");
     facilityId = createFacility("North Coordination Facility");
     grant(REPORTER, "CapacityReporting", "FACILITY", organizationId, facilityId, "reporter-grant");
+    grant(
+        HISTORY_REPORTER,
+        "CapacityReporting",
+        "FACILITY",
+        organizationId,
+        facilityId,
+        "history-reporter-grant");
+    seedCapacityEvidenceReviewer();
     grantService(
         SERVICE_REPORTER,
         "CapacityReporting",
@@ -202,6 +216,416 @@ class CapacityObservationCommandsApiIT {
         .andExpect(status().isConflict())
         .andExpect(jsonPath("$.code").value("CAPACITY_OBSERVATION_CONFLICT"));
     assertThat(count("SELECT COUNT(*) FROM capacity.capacity_observation")).isEqualTo(1);
+  }
+
+  @Test
+  void authorizedFacilityReaderGetsCurrentEvidenceWithItsProvenance() throws Exception {
+    String observedAt = Instant.now().minusSeconds(2).toString();
+    submit("current-query-observation", observationBody("source-current-query", 4, observedAt))
+        .andExpect(status().isCreated());
+
+    mockMvc
+        .perform(
+            get("/api/v1/capacity/facilities/{facilityId}/current", facilityId)
+                .param("dimension", "COORDINATION_BEDS")
+                .header("Authorization", bearer(token(REPORTER)))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", organizationId)
+                .header("X-AyuVahak-Facility-Id", facilityId))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.facilityId").value(facilityId))
+        .andExpect(jsonPath("$.dimensions[0].dimensionCode").value("COORDINATION_BEDS"))
+        .andExpect(jsonPath("$.dimensions[0].freshness").value("CURRENT"))
+        .andExpect(jsonPath("$.dimensions[0].quantity").value(4))
+        .andExpect(jsonPath("$.dimensions[0].unit").value("bed"))
+        .andExpect(jsonPath("$.dimensions[0].evidence[0].sourceCode").value("manual"))
+        .andExpect(jsonPath("$.dimensions[0].evidence[0].observedAt").exists())
+        .andExpect(jsonPath("$.dimensions[0].evidence[0].receivedAt").exists())
+        .andExpect(jsonPath("$.dimensions[0].policyVersion").value(1))
+        .andExpect(jsonPath("$.dimensions[0].projectionVersion").value("capacity-evidence-v1"));
+  }
+
+  @Test
+  void staleHigherPriorityEvidenceUsesOnlyExplicitlyAllowedFallback() throws Exception {
+    configureFallbackPolicy();
+    Instant now = Instant.now();
+    String staleObservedAt = now.minusSeconds(3_600).toString();
+    String stillValid = now.plusSeconds(600).toString();
+    submit(
+            "stale-primary-source",
+            observationBody("source-stale-primary", "automated", 8, staleObservedAt, stillValid))
+        .andExpect(status().isCreated());
+    submit(
+            "current-fallback-source",
+            observationBody(
+                "source-current-fallback", "manual", 3, now.minusSeconds(10).toString(), null))
+        .andExpect(status().isCreated());
+
+    queryCurrent("COORDINATION_BEDS")
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.dimensions[0].freshness").value("CURRENT"))
+        .andExpect(jsonPath("$.dimensions[0].quantity").value(3))
+        .andExpect(jsonPath("$.dimensions[0].fallbackUsed").value(true))
+        .andExpect(jsonPath("$.dimensions[0].reasonCodes[1]").value("FALLBACK_SOURCE_SELECTED"))
+        .andExpect(jsonPath("$.dimensions[0].evidence[0].sourceCode").value("manual"));
+  }
+
+  @Test
+  void equalAuthorityDisagreementAtTheLatestObservationTimeIsConflicted() throws Exception {
+    String observedAt = Instant.now().minusSeconds(5).toString();
+    submit("equal-tier-observation-a", observationBody("equal-tier-source-a", 4, observedAt))
+        .andExpect(status().isCreated());
+    submit("equal-tier-observation-b", observationBody("equal-tier-source-b", 7, observedAt))
+        .andExpect(status().isCreated());
+
+    queryCurrent("COORDINATION_BEDS")
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.dimensions[0].freshness").value("CONFLICTED"))
+        .andExpect(jsonPath("$.dimensions[0].quantity").doesNotExist())
+        .andExpect(jsonPath("$.dimensions[0].evidence.length()").value(2))
+        .andExpect(
+            jsonPath("$.dimensions[0].reasonCodes[0]").value("EQUAL_AUTHORITY_DISAGREEMENT"));
+  }
+
+  @Test
+  void concurrentSameDimensionObservationsResolveToConflictIndependentOfCommitOrder()
+      throws Exception {
+    String observedAt = Instant.now().minusSeconds(5).toString();
+    CountDownLatch startTogether = new CountDownLatch(1);
+    ExecutorService writers = Executors.newFixedThreadPool(2);
+    try {
+      var first =
+          writers.submit(
+              () -> {
+                startTogether.await();
+                return submit(
+                        "concurrent-dimension-a",
+                        observationBody("source-concurrent-a", 4, observedAt))
+                    .andReturn()
+                    .getResponse()
+                    .getStatus();
+              });
+      var second =
+          writers.submit(
+              () -> {
+                startTogether.await();
+                return submit(
+                        "concurrent-dimension-b",
+                        observationBody("source-concurrent-b", 7, observedAt))
+                    .andReturn()
+                    .getResponse()
+                    .getStatus();
+              });
+      startTogether.countDown();
+      assertThat(first.get(15, TimeUnit.SECONDS)).isEqualTo(201);
+      assertThat(second.get(15, TimeUnit.SECONDS)).isEqualTo(201);
+    } finally {
+      writers.shutdownNow();
+    }
+
+    queryCurrent("COORDINATION_BEDS")
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.dimensions[0].freshness").value("CONFLICTED"))
+        .andExpect(jsonPath("$.dimensions[0].evidence.length()").value(2));
+  }
+
+  @Test
+  void laterReceivedOlderObservationCannotReplaceNewerObservedEvidence() throws Exception {
+    Instant now = Instant.now();
+    submit(
+            "observed-newer-received-first",
+            observationBody("source-newer-observed", 6, now.minusSeconds(20).toString()))
+        .andExpect(status().isCreated());
+    submit(
+            "observed-older-received-later",
+            observationBody("source-older-observed", 2, now.minusSeconds(40).toString()))
+        .andExpect(status().isCreated());
+
+    queryCurrent("COORDINATION_BEDS")
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.dimensions[0].freshness").value("CURRENT"))
+        .andExpect(jsonPath("$.dimensions[0].quantity").value(6))
+        .andExpect(jsonPath("$.dimensions[0].evidence.length()").value(1))
+        .andExpect(
+            jsonPath("$.dimensions[0].evidence[0].sourceObservation.value")
+                .value("source-newer-observed"));
+  }
+
+  @Test
+  void explicitZeroRemainsCurrentWhileAnUnconfiguredDimensionRemainsUnknown() throws Exception {
+    submit(
+            "explicit-zero-observation",
+            observationBody("source-explicit-zero", 0, Instant.now().minusSeconds(5).toString()))
+        .andExpect(status().isCreated());
+
+    queryCurrent("COORDINATION_BEDS", "UNCONFIGURED_RESOURCE")
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.dimensions.length()").value(2))
+        .andExpect(jsonPath("$.dimensions[0].freshness").value("CURRENT"))
+        .andExpect(jsonPath("$.dimensions[0].quantity").value(0))
+        .andExpect(jsonPath("$.dimensions[1].freshness").value("UNKNOWN"))
+        .andExpect(jsonPath("$.dimensions[1].quantity").doesNotExist())
+        .andExpect(jsonPath("$.dimensions[1].reasonCodes[0]").value("DIMENSION_UNKNOWN"));
+  }
+
+  @Test
+  void staleEvidenceIsNotReportedAsCurrent() throws Exception {
+    Instant now = Instant.now();
+    submit(
+            "stale-evidence",
+            observationBody(
+                "source-stale-evidence",
+                "manual",
+                8,
+                now.minusSeconds(3_600).toString(),
+                now.plusSeconds(600).toString()))
+        .andExpect(status().isCreated());
+
+    queryCurrent("COORDINATION_BEDS")
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.dimensions[0].freshness").value("STALE"))
+        .andExpect(jsonPath("$.dimensions[0].quantity").doesNotExist())
+        .andExpect(jsonPath("$.dimensions[0].evidence.length()").value(1))
+        .andExpect(jsonPath("$.dimensions[0].reasonCodes[0]").value("OBSERVATION_TOO_OLD"));
+  }
+
+  @Test
+  void validityExpiryIsExclusiveAndDistinctFromStaleEvidence() throws Exception {
+    Instant now = Instant.now();
+    Instant observedAt = now.minusSeconds(20);
+    Instant validUntil = now.minusSeconds(1);
+    submit(
+            "expired-evidence",
+            observationBody(
+                "source-expired-evidence",
+                "manual",
+                8,
+                observedAt.toString(),
+                validUntil.toString()))
+        .andExpect(status().isCreated());
+
+    queryCurrentAt(now.toString(), "COORDINATION_BEDS")
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.dimensions[0].freshness").value("EXPIRED"))
+        .andExpect(jsonPath("$.dimensions[0].quantity").doesNotExist())
+        .andExpect(jsonPath("$.dimensions[0].reasonCodes[0]").value("VALIDITY_ELAPSED"));
+  }
+
+  @Test
+  void futureSkewedEvidenceCannotBecomePositiveCurrentEvidence() throws Exception {
+    submit(
+            "future-skewed-evidence",
+            observationBody("source-future-skewed", 9, Instant.now().plusSeconds(120).toString()))
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.futureSkewed").value(true));
+
+    queryCurrent("COORDINATION_BEDS")
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.dimensions[0].freshness").value("UNKNOWN"))
+        .andExpect(jsonPath("$.dimensions[0].quantity").doesNotExist())
+        .andExpect(jsonPath("$.dimensions[0].reasonCodes[0]").value("FUTURE_SKEW_EXCLUDED"));
+  }
+
+  @Test
+  void correctionSupersedesCurrentEvidenceAndRemainsVisibleInHistory() throws Exception {
+    Instant now = Instant.now();
+    var original =
+        submit(
+                "current-original-observation",
+                observationBody("source-current-original", 4, now.minusSeconds(20).toString()))
+            .andExpect(status().isCreated())
+            .andReturn();
+    String originalId =
+        com.jayway.jsonpath.JsonPath.read(original.getResponse().getContentAsString(), "$.id");
+    var correction =
+        correct(
+                originalId,
+                "current-correction",
+                correctionBody("source-current-correction", 3, now.minusSeconds(10).toString()))
+            .andExpect(status().isCreated())
+            .andReturn();
+    String correctionId =
+        com.jayway.jsonpath.JsonPath.read(correction.getResponse().getContentAsString(), "$.id");
+
+    queryCurrentAt(now.toString(), "COORDINATION_BEDS")
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.dimensions[0].freshness").value("CURRENT"))
+        .andExpect(jsonPath("$.dimensions[0].quantity").value(3))
+        .andExpect(jsonPath("$.dimensions[0].evidence[0].observationId").value(correctionId))
+        .andExpect(
+            jsonPath("$.dimensions[0].evidence[0].supersedesObservationId").value(originalId));
+    queryHistory(REPORTER, "page", "0", "size", "10")
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.items.length()").value(2))
+        .andExpect(jsonPath("$.items[0].observation.observationId").value(correctionId))
+        .andExpect(jsonPath("$.items[0].superseded").value(false))
+        .andExpect(jsonPath("$.items[1].observation.observationId").value(originalId))
+        .andExpect(jsonPath("$.items[1].superseded").value(true));
+  }
+
+  @Test
+  void historyIsAuthorizedFilteredBoundedAndOrderedWithExclusiveEnd() throws Exception {
+    Instant newest = Instant.now().minusSeconds(5);
+    Instant middle = newest.minusSeconds(10);
+    Instant oldest = middle.minusSeconds(10);
+    submit("history-oldest", observationBody("source-history-oldest", 1, oldest.toString()))
+        .andExpect(status().isCreated());
+    submit("history-middle", observationBody("source-history-middle", 2, middle.toString()))
+        .andExpect(status().isCreated());
+    submit("history-newest", observationBody("source-history-newest", 3, newest.toString()))
+        .andExpect(status().isCreated());
+
+    queryHistory(
+            REPORTER,
+            "dimension",
+            "COORDINATION_BEDS",
+            "sourceCode",
+            "manual",
+            "page",
+            "0",
+            "size",
+            "1")
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.items.length()").value(1))
+        .andExpect(
+            jsonPath("$.items[0].observation.sourceObservation.value")
+                .value("source-history-newest"))
+        .andExpect(jsonPath("$.hasMore").value(true));
+    queryHistory(
+            REPORTER,
+            "dimension",
+            "COORDINATION_BEDS",
+            "sourceCode",
+            "manual",
+            "page",
+            "1",
+            "size",
+            "1")
+        .andExpect(status().isOk())
+        .andExpect(
+            jsonPath("$.items[0].observation.sourceObservation.value")
+                .value("source-history-middle"))
+        .andExpect(jsonPath("$.hasMore").value(true));
+    queryHistory(
+            REPORTER,
+            "dimension",
+            "COORDINATION_BEDS",
+            "sourceCode",
+            "manual",
+            "page",
+            "2",
+            "size",
+            "1")
+        .andExpect(status().isOk())
+        .andExpect(
+            jsonPath("$.items[0].observation.sourceObservation.value")
+                .value("source-history-oldest"))
+        .andExpect(jsonPath("$.hasMore").value(false));
+    queryHistory(
+            REPORTER,
+            "from",
+            oldest.toString(),
+            "until",
+            middle.toString(),
+            "page",
+            "0",
+            "size",
+            "10")
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.items.length()").value(1))
+        .andExpect(
+            jsonPath("$.items[0].observation.sourceObservation.value")
+                .value("source-history-oldest"));
+    queryHistory(REPORTER, "unsupported", "value")
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("CAPACITY_VALUE_INVALID"));
+    queryHistory(REPORTER, "size", "101")
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("CAPACITY_VALUE_INVALID"));
+    queryHistory(HISTORY_REPORTER, "size", "1")
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.code").value("AUTHORIZATION_DENIED"));
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = "
+                    + "'CAPACITY_OBSERVATION_HISTORY_READ' AND outcome = 'DENIED'"))
+        .isEqualTo(1);
+  }
+
+  @Test
+  void repeatedQueryAtTheSameInstantRebuildsTheSameProjection() throws Exception {
+    Instant observedAt = Instant.now().minusSeconds(5);
+    submit(
+            "deterministic-evidence",
+            observationBody("source-deterministic", 9, observedAt.toString()))
+        .andExpect(status().isCreated());
+    String evaluatedAt = Instant.now().toString();
+
+    String first =
+        queryCurrentAt(evaluatedAt, "COORDINATION_BEDS")
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+    String second =
+        queryCurrentAt(evaluatedAt, "COORDINATION_BEDS")
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+
+    Object firstDimension = com.jayway.jsonpath.JsonPath.read(first, "$.dimensions[0]");
+    Object secondDimension = com.jayway.jsonpath.JsonPath.read(second, "$.dimensions[0]");
+    assertThat(firstDimension).isEqualTo(secondDimension);
+    assertThat((Object) com.jayway.jsonpath.JsonPath.read(first, "$.dimensions[0].policyVersion"))
+        .isEqualTo(1);
+    assertThat(
+            (Object) com.jayway.jsonpath.JsonPath.read(first, "$.dimensions[0].projectionVersion"))
+        .isEqualTo("capacity-evidence-v1");
+  }
+
+  @Test
+  void projectionRebuildUsesNewerCommittedObservationWithoutReplacingHistory() throws Exception {
+    Instant now = Instant.now();
+    submit(
+            "projection-before-new-observation",
+            observationBody("source-projection-old", 4, now.minusSeconds(20).toString()))
+        .andExpect(status().isCreated());
+    queryCurrentAt(now.toString(), "COORDINATION_BEDS")
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.dimensions[0].quantity").value(4));
+
+    submit(
+            "projection-after-new-observation",
+            observationBody("source-projection-new", 7, now.minusSeconds(10).toString()))
+        .andExpect(status().isCreated());
+
+    queryCurrentAt(now.toString(), "COORDINATION_BEDS")
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.dimensions[0].quantity").value(7))
+        .andExpect(
+            jsonPath("$.dimensions[0].evidence[0].sourceObservation.value")
+                .value("source-projection-new"));
+    assertThat(count("SELECT COUNT(*) FROM capacity.capacity_observation")).isEqualTo(2);
+  }
+
+  @Test
+  void policyRevisionDoesNotRewriteObservedFactsAndCurrentProjectionUsesActivePolicy()
+      throws Exception {
+    submit(
+            "policy-revision-evidence",
+            observationBody("source-under-policy-one", 5, Instant.now().minusSeconds(5).toString()))
+        .andExpect(status().isCreated());
+
+    replacePolicySource();
+
+    queryCurrent("COORDINATION_BEDS")
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.dimensions[0].freshness").value("UNKNOWN"))
+        .andExpect(jsonPath("$.dimensions[0].policyVersion").value(2))
+        .andExpect(jsonPath("$.dimensions[0].evidence.length()").value(0));
+    queryHistory(REPORTER, "sourceCode", "manual", "size", "1")
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.items[0].observation.sourcePolicyVersion").value(1))
+        .andExpect(jsonPath("$.items[0].observation.quantity").value(5));
   }
 
   @Test
@@ -388,6 +812,64 @@ class CapacityObservationCommandsApiIT {
             .header("Idempotency-Key", key)
             .contentType("application/json")
             .content(body));
+  }
+
+  private org.springframework.test.web.servlet.ResultActions queryCurrent(String... dimensions)
+      throws Exception {
+    return queryCurrentAt(null, dimensions);
+  }
+
+  private org.springframework.test.web.servlet.ResultActions queryCurrentAt(
+      String evaluatedAt, String... dimensions) throws Exception {
+    var request =
+        get("/api/v1/capacity/facilities/{facilityId}/current", facilityId)
+            .header("Authorization", bearer(token(REPORTER)))
+            .header("X-AyuVahak-Execution-Scope", "FACILITY")
+            .header("X-AyuVahak-Organization-Id", organizationId)
+            .header("X-AyuVahak-Facility-Id", facilityId);
+    if (evaluatedAt != null) {
+      request.param("at", evaluatedAt);
+    }
+    for (String dimension : dimensions) {
+      request.param("dimension", dimension);
+    }
+    return mockMvc.perform(request);
+  }
+
+  private org.springframework.test.web.servlet.ResultActions queryHistory(
+      String subject, String... parameters) throws Exception {
+    var request =
+        get("/api/v1/capacity/facilities/{facilityId}/observations", facilityId)
+            .header("Authorization", bearer(token(subject)))
+            .header("X-AyuVahak-Execution-Scope", "FACILITY")
+            .header("X-AyuVahak-Organization-Id", organizationId)
+            .header("X-AyuVahak-Facility-Id", facilityId);
+    for (int index = 0; index < parameters.length; index += 2) {
+      request.param(parameters[index], parameters[index + 1]);
+    }
+    return mockMvc.perform(request);
+  }
+
+  private void configureFallbackPolicy() throws Exception {
+    mockMvc
+        .perform(
+            post("/api/v1/capacity/policies/dimensions/COORDINATION_BEDS/policy")
+                .header("Authorization", bearer(token(ADMIN)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", "policy-fallback-configuration")
+                .contentType("application/json")
+                .content(
+                    "{\"expectedVersion\":1,\"dimensionVersion\":1,\"sources\":["
+                        + "{\"sourceCode\":\"automated\",\"priority\":0,"
+                        + "\"fallbackWhenHigherPriorityAbsent\":false,"
+                        + "\"fallbackWhenHigherPriorityStale\":false},{"
+                        + "\"sourceCode\":\"manual\",\"priority\":1,"
+                        + "\"fallbackWhenHigherPriorityAbsent\":true,"
+                        + "\"fallbackWhenHigherPriorityStale\":true}],"
+                        + "\"maximumObservationAgeSeconds\":600,\"defaultValiditySeconds\":300,"
+                        + "\"futureSkewToleranceSeconds\":30,\"minimumPassingQuantity\":1,"
+                        + "\"passingStates\":[],\"reasonCode\":\"TEST_CONFIGURATION\"}"))
+        .andExpect(status().isOk());
   }
 
   private void replacePolicySource() throws Exception {
@@ -586,6 +1068,23 @@ class CapacityObservationCommandsApiIT {
         ADMIN);
   }
 
+  private void seedCapacityEvidenceReviewer() {
+    jdbc.update(
+        "INSERT INTO identity_access.authorization_grant (grant_id, principal_kind, "
+            + "principal_issuer, principal_identifier_type, principal_identifier, authority_code, "
+            + "scope_kind, organization_issuer, organization_identifier_type, "
+            + "organization_identifier, facility_issuer, facility_identifier_type, "
+            + "facility_identifier, grant_status, created_at) VALUES (gen_random_uuid(), "
+            + "'HUMAN', ?, 'subject', ?, 'CapacityEvidenceReview', 'FACILITY', ?, 'Organization', ?, ?, "
+            + "'Facility', ?, 'ACTIVE', CURRENT_TIMESTAMP)",
+        ISSUER,
+        REPORTER,
+        DIRECTORY_ISSUER,
+        organizationId,
+        DIRECTORY_ISSUER,
+        facilityId);
+  }
+
   private String observationBody(String sourceObservationId, int quantity, String observedAt) {
     return "{\"dimensionCode\":\"COORDINATION_BEDS\",\"sourceCode\":\"manual\","
         + "\"sourceIssuer\":\"urn:coordination:manual-entry\",\"sourceObservationId\":\""
@@ -599,14 +1098,44 @@ class CapacityObservationCommandsApiIT {
         + "\"reasonCode\":\"CAPACITY_REPORT\"}";
   }
 
+  private String observationBody(
+      String sourceObservationId,
+      String sourceCode,
+      int quantity,
+      String observedAt,
+      String validUntil) {
+    String reportingMethod = "automated".equals(sourceCode) ? "AUTOMATED" : "MANUAL_ENTRY";
+    return "{\"dimensionCode\":\"COORDINATION_BEDS\",\"sourceCode\":\""
+        + sourceCode
+        + "\",\"sourceIssuer\":\"urn:coordination:synthetic-source\","
+        + "\"sourceObservationId\":\""
+        + sourceObservationId
+        + "\",\"observationKind\":\"VALUE\",\"valueKind\":\"QUANTITY\","
+        + "\"quantity\":"
+        + quantity
+        + ",\"state\":null,\"unit\":\"bed\",\"observedAt\":\""
+        + observedAt
+        + "\",\"validUntil\":"
+        + (validUntil == null ? "null" : "\"" + validUntil + "\"")
+        + ",\"reportingMethod\":\""
+        + reportingMethod
+        + "\",\"reasonCode\":\"CAPACITY_REPORT\"}";
+  }
+
   private String correctionBody(String sourceObservationId, int quantity) {
+    return correctionBody(sourceObservationId, quantity, "2026-10-08T09:30:00Z");
+  }
+
+  private String correctionBody(String sourceObservationId, int quantity, String observedAt) {
     return "{\"dimensionCode\":\"COORDINATION_BEDS\",\"sourceCode\":\"manual\",\"sourceIssuer\":\"urn:coordination:manual-entry\","
         + "\"sourceObservationId\":\""
         + sourceObservationId
         + "\",\"observationKind\":\"VALUE\",\"valueKind\":\"QUANTITY\","
         + "\"quantity\":"
         + quantity
-        + ",\"state\":null,\"unit\":\"bed\",\"observedAt\":\"2026-10-08T09:30:00Z\","
+        + ",\"state\":null,\"unit\":\"bed\",\"observedAt\":\""
+        + observedAt
+        + "\","
         + "\"validUntil\":null,\"reportingMethod\":\"MANUAL_CORRECTION\","
         + "\"reasonCode\":\"SOURCE_CORRECTION\"}";
   }

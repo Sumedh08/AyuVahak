@@ -6,7 +6,7 @@ import org.ayuvahak.platform.authorization.application.GrantTargetScopeValidator
 import org.ayuvahak.platform.authorization.domain.FunctionalAuthority;
 import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
 
-/** Validates Capacity reporter grants against Directory-owned active Facility facts. */
+/** Validates Capacity reporter and evidence-review grants against active Directory Facilities. */
 public final class CapacityReportingGrantTargetScopeValidator implements GrantTargetScopeValidator {
 
   private final DirectoryScopeReferenceLookup directory;
@@ -17,7 +17,8 @@ public final class CapacityReportingGrantTargetScopeValidator implements GrantTa
 
   @Override
   public boolean supports(FunctionalAuthority authority) {
-    return "CapacityReporting".equals(authority.code());
+    return "CapacityReporting".equals(authority.code())
+        || "CapacityEvidenceReview".equals(authority.code());
   }
 
   @Override

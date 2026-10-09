@@ -26,7 +26,7 @@ import org.springframework.stereotype.Repository;
 @Lazy
 public class JdbcCapacityObservationStore implements CapacityObservationStore {
 
-  private static final String OBSERVATION_COLUMNS =
+  static final String OBSERVATION_COLUMNS =
       "o.observation_id, o.facility_issuer, o.facility_identifier_type, o.facility_identifier, "
           + "o.dimension_code, o.dimension_version, o.observation_kind, o.value_kind, o.quantity, "
           + "o.state_code, o.unit_code, o.source_code, o.source_issuer, o.source_identifier_type, "
@@ -152,7 +152,7 @@ public class JdbcCapacityObservationStore implements CapacityObservationStore {
         observation.reasonCode());
   }
 
-  private static CapacityObservation observation(ResultSet result, int row) throws SQLException {
+  static CapacityObservation observation(ResultSet result, int row) throws SQLException {
     Timestamp sourceValidUntil = result.getTimestamp("source_valid_until");
     Timestamp validUntil = result.getTimestamp("valid_until");
     String valueKind = result.getString("value_kind");

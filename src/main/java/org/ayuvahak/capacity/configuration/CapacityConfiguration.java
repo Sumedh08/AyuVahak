@@ -21,6 +21,11 @@ class CapacityConfiguration {
   }
 
   @Bean
+  FunctionalAuthority capacityEvidenceReviewAuthority() {
+    return CapacityAuthorities.evidenceReview();
+  }
+
+  @Bean
   CapacityReportingGrantTargetScopeValidator capacityReportingGrantTargetScopeValidator(
       DirectoryScopeReferenceLookup directoryScopeReferenceLookup) {
     return new CapacityReportingGrantTargetScopeValidator(directoryScopeReferenceLookup);
