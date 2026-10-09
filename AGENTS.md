@@ -28,7 +28,29 @@ Do not request, generate, store, expose, commit, or transmit real production cre
 
 ### Phase boundary and local planning
 
-Phase 0 is product definition, domain language, system boundaries, standards strategy, security/trust assumptions, architecture decisions, and documentation only. Do not implement the application, scaffold services or applications, create database schemas, implement APIs/connectors, or build production functionality. Do not proceed to `/to-spec`, `/to-tickets`, `/implement`, or `/implement-spec` during Phase 0. Stop when the Phase 0 architecture documentation is complete. If a planning skill requires an issue tracker, use a local Markdown tracker or another local-only mechanism; never create external issues for Phase 0.
+#### Current program state
+
+- Phase 0 — Product & Architecture Constitution: FROZEN
+- Phase 1 — Engineering Platform: FROZEN
+- Phase 2 — Platform Kernel, Identity & Trust: FROZEN
+- Phase 3 — Care Service Directory: FROZEN
+- Phase 4 — Capacity & Operational Readiness: FROZEN
+- Phase 5 — Referral: FROZEN
+- Phase 6 — Destination Matching & Recommendation: NOT STARTED
+- Phase 7 — Transfer Coordination: NOT STARTED
+- Volume III: NOT AUTHORIZED
+
+#### Phase-aware execution rules
+
+- Treat frozen phases as stable baselines. Do not reopen or modify them casually; a correction must be explicitly authorized and documented without silently changing their accepted behavior.
+- Implement only the phase explicitly authorized by the active master prompt, and follow that phase's approved architecture, canonical specification, local ticket graph, test/review requirements, and acceptance gate.
+- Do not scaffold or implement a later phase before it is authorized. Do not create placeholder modules, schemas, APIs, dependencies, or infrastructure for future phases.
+- Use `/to-spec`, `/to-tickets`, `/implement-spec`, and related implementation workflows only when the active prompt authorizes them for the current phase. Planning artifacts and tickets default to local Markdown under `.scratch/`; external issue tracking remains subject to the external-mutation policy above.
+- Local Git branches, worktrees, commits, and merges are allowed when required by an authorized phase workflow. Remote Git operations remain prohibited unless the human explicitly authorizes that exact operation under the external-mutation policy.
+- The currently authorized next implementation scope is Phase 6 — Destination Matching & Recommendation. Phase 7 — Transfer Coordination may begin only after Phase 6 passes its acceptance gate and is frozen.
+- Volume III is prohibited until separately authorized by the human.
+- When no phase is explicitly authorized by the active master prompt, do not advance implementation, generate phase tickets, or start a later phase. Stop and request direction if the authorized scope cannot be determined.
+- Keep planning trackers local. Never create external issues without explicit authorization for that exact operation.
 
 ## Documentation discipline
 
