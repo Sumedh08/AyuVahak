@@ -1,8 +1,16 @@
 # HTTP API Conventions
 
-Phase 1 exposes one production application route: `GET /api/v1/system-info`. It exists to prove the platform's versioning and response conventions; it does not represent a healthcare resource. The response contains only `serviceName`, `apiMajorVersion`, and `applicationVersion`. Build version comes from Spring Boot build information generated from the Maven project version. Build time is omitted so the metadata does not make otherwise reproducible artifacts vary by build time.
+The platform API uses a major version in the URI. `GET /api/v1/system-info` is a non-sensitive platform route that reports `serviceName`, `apiMajorVersion`, and `applicationVersion`. Build version comes from Spring Boot build information generated from the Maven project version. Build time is omitted so the metadata does not make otherwise reproducible artifacts vary by build time. Phase 3 adds the protected Directory API under `/api/v1/directory`; the Phase 3 specification is its canonical route and behavior contract.
 
-The API version is a major version in the URI. Compatible additive changes stay under the current major version; an incompatible public contract requires a new URI major version. This phase defines no business routes.
+The API version is a major version in the URI. Compatible additive changes stay under the current major version; an incompatible public contract requires a new URI major version.
+
+The Directory API is the only Volume II business context implemented so far. It exposes Organization, Facility, Location, HealthcareService, CareCapability, FacilityCapabilityAssertion, external-identifier association, and bounded Facility discovery operations. It does not expose Capacity, Referral, Matching, Transfer, or Transport behavior.
+
+Directory requests are authenticated and use a server-validated execution context. Where scope headers are supplied, they identify the requested context but never grant authority by themselves; the caller's registered functional grant and the Directory-owned target facts are checked. Directory mutations require an `Idempotency-Key`, preserve required audit evidence in the same transaction, and use explicit provenance/version preconditions where the operation changes an existing fact. The precise authority, request, response, and error-code contract is in the [Phase 3 Care Service Directory specification](../specs/phase-3-care-service-directory-spec.md).
+
+`GET /api/v1/directory/facilities` supports exact Organization/Facility filters with optional required-capability filters. A geographic search is selected only when longitude, latitude, and radius are all supplied. Partial geographic input and unsupported query keys fail validation. Exact results do not claim distance; nearby results use the documented PostGIS distance ordering and keep unlocated facilities separate. Search does not report live capacity or guarantee acceptance.
+
+The Phase 3 response shape is the first Directory API contract intended for publication. Earlier local implementation shapes are not compatibility commitments; after publication, incompatible changes require a new major URI version.
 
 ## Errors
 
@@ -12,7 +20,7 @@ Errors use RFC 9457 Problem Details with `Content-Type: application/problem+json
 - `correlationId`: the request correlation identifier also returned in the response header.
 - `validationErrors`: optional entries containing a request field and constraint code. Rejected values and validator messages are not returned.
 
-Current platform codes are `MALFORMED_REQUEST`, `VALIDATION_FAILED`, `UNSUPPORTED_MEDIA_TYPE`, `NOT_FOUND`, `METHOD_NOT_ALLOWED`, `REQUEST_FAILED`, and `INTERNAL_ERROR`. They describe only platform HTTP failures; no healthcare business codes are defined in Phase 1. Clients should branch on `code` and `status`, not on the human-readable `title` or `detail`.
+The platform error-code family includes `MALFORMED_REQUEST`, `VALIDATION_FAILED`, `UNSUPPORTED_MEDIA_TYPE`, `NOT_FOUND`, `METHOD_NOT_ALLOWED`, `REQUEST_FAILED`, and `INTERNAL_ERROR`. Directory adds stable context-owned codes documented in the [Phase 3 specification](../specs/phase-3-care-service-directory-spec.md); clients should branch on `code` and `status`, not on the human-readable `title` or `detail`.
 
 Unexpected server errors return a generic detail. Responses do not include exception messages, stack traces, SQL, file paths, credentials, or request URI data. Validation details identify the field and constraint without echoing the rejected value.
 

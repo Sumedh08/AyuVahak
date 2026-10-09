@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -129,6 +131,8 @@ class DirectoryOrganizationFacilityApiIT {
   @BeforeEach
   void resetSyntheticState() {
     jdbc.update("DELETE FROM directory.command_receipt");
+    jdbc.update("DELETE FROM directory.external_identifier_revision");
+    jdbc.update("DELETE FROM directory.external_identifier");
     jdbc.update("DELETE FROM directory.facility_capability_assertion_revision");
     jdbc.update("DELETE FROM directory.facility_capability_assertion");
     jdbc.update("DELETE FROM directory.healthcare_service_revision");
@@ -151,6 +155,770 @@ class DirectoryOrganizationFacilityApiIT {
     jdbc.execute("DROP TRIGGER IF EXISTS test_fail_audit_insert ON audit.audit_record");
     jdbc.execute("DROP FUNCTION IF EXISTS test_fail_audit_insert()");
     seedPlatformAdministrator();
+  }
+
+  @Test
+  void addsAndReadsAnIssuerScopedExternalIdentifierSeparatelyFromSourceProvenance()
+      throws Exception {
+    grant(ADMIN, CURATOR, "DirectoryCuration", "PLATFORM", null, null, "identifier-curator-01");
+    grant(ADMIN, CURATOR, "DirectoryRead", "PLATFORM", null, null, "identifier-reader-01");
+    String organizationId = createOrganization(CURATOR, "identifier-org-01", "Identifier Clinic");
+
+    mockMvc
+        .perform(
+            post(
+                    "/api/v1/directory/concepts/{conceptType}/{conceptId}/external-identifiers",
+                    "ORGANIZATION",
+                    organizationId)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", "identifier-add-01")
+                .contentType("application/json")
+                .content(externalIdentifierBody("urn:registry:north", "Organization", "org-042")))
+        .andExpect(status().isCreated());
+
+    mockMvc
+        .perform(
+            get(
+                    "/api/v1/directory/concepts/{conceptType}/{conceptId}/external-identifiers",
+                    "ORGANIZATION",
+                    organizationId)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.items.length()").value(1))
+        .andExpect(jsonPath("$.page").value(0))
+        .andExpect(jsonPath("$.size").value(50))
+        .andExpect(jsonPath("$.items[0].conceptType").value("ORGANIZATION"))
+        .andExpect(jsonPath("$.items[0].externalIdentifier.issuer").value("urn:registry:north"))
+        .andExpect(jsonPath("$.items[0].externalIdentifier.resourceType").value("Organization"))
+        .andExpect(jsonPath("$.items[0].externalIdentifier.value").value("org-042"))
+        .andExpect(jsonPath("$.items[0].status").value("ACTIVE"))
+        .andExpect(jsonPath("$.items[0].provenance.reasonCode").value("REGISTER_IDENTIFIER"));
+
+    mockMvc
+        .perform(
+            get("/api/v1/directory/organizations/{organizationId}", organizationId)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.source.issuer").value("urn:synthetic:facility-registry"))
+        .andExpect(jsonPath("$.source.reference").value("synthetic-organization-001"));
+  }
+
+  @Test
+  void externalIdentifierReadUsesBoundedPageAndSizeAndRejectsUnknownQueryKeys() throws Exception {
+    grant(ADMIN, CURATOR, "DirectoryCuration", "PLATFORM", null, null, "identifier-page-curator");
+    grant(ADMIN, CURATOR, "DirectoryRead", "PLATFORM", null, null, "identifier-page-reader");
+    String organizationId = createOrganization(CURATOR, "identifier-page-org", "Page Clinic");
+    String firstIdentifier =
+        addExternalIdentifier(
+            CURATOR,
+            "PLATFORM",
+            organizationId,
+            null,
+            "ORGANIZATION",
+            "urn:registry:north",
+            "Organization",
+            "page-001",
+            "identifier-page-add-001");
+    String secondIdentifier =
+        addExternalIdentifier(
+            CURATOR,
+            "PLATFORM",
+            organizationId,
+            null,
+            "ORGANIZATION",
+            "urn:registry:north",
+            "Organization",
+            "page-002",
+            "identifier-page-add-002");
+
+    var firstPage =
+        mockMvc
+            .perform(
+                get(
+                        "/api/v1/directory/concepts/{conceptType}/{conceptId}/external-identifiers",
+                        "ORGANIZATION",
+                        organizationId)
+                    .param("page", "0")
+                    .param("size", "1")
+                    .header("Authorization", bearer(token(CURATOR)))
+                    .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.page").value(0))
+            .andExpect(jsonPath("$.size").value(1))
+            .andExpect(jsonPath("$.items.length()").value(1))
+            .andExpect(jsonPath("$.hasMore").value(true))
+            .andReturn();
+    var secondPage =
+        mockMvc
+            .perform(
+                get(
+                        "/api/v1/directory/concepts/{conceptType}/{conceptId}/external-identifiers",
+                        "ORGANIZATION",
+                        organizationId)
+                    .param("page", "1")
+                    .param("size", "1")
+                    .header("Authorization", bearer(token(CURATOR)))
+                    .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.page").value(1))
+            .andExpect(jsonPath("$.size").value(1))
+            .andExpect(jsonPath("$.items.length()").value(1))
+            .andExpect(jsonPath("$.hasMore").value(false))
+            .andReturn();
+    String firstPageId =
+        com.jayway.jsonpath.JsonPath.read(
+            firstPage.getResponse().getContentAsString(), "$.items[0].id");
+    String secondPageId =
+        com.jayway.jsonpath.JsonPath.read(
+            secondPage.getResponse().getContentAsString(), "$.items[0].id");
+    assertThat(List.of(firstPageId, secondPageId))
+        .containsExactlyInAnyOrder(firstIdentifier, secondIdentifier);
+
+    mockMvc
+        .perform(
+            get(
+                    "/api/v1/directory/concepts/{conceptType}/{conceptId}/external-identifiers",
+                    "ORGANIZATION",
+                    organizationId)
+                .param("unexpected", "ignored")
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+        .andExpect(status().isBadRequest())
+        .andExpect(content().contentTypeCompatibleWith("application/problem+json"))
+        .andExpect(jsonPath("$.code").value("DIRECTORY_VALIDATION_FAILED"))
+        .andExpect(jsonPath("$.correlationId").isNotEmpty());
+  }
+
+  @Test
+  void capabilityVocabularyUsesBoundedPageAndSizeAndRejectsUnknownQueryKeys() throws Exception {
+    grant(ADMIN, CURATOR, "DirectoryCuration", "PLATFORM", null, null, "capability-page-curator");
+    grant(ADMIN, CURATOR, "DirectoryRead", "PLATFORM", null, null, "capability-page-reader");
+    grant(
+        ADMIN,
+        CURATOR,
+        "DirectoryVocabularyAdministration",
+        "PLATFORM",
+        null,
+        null,
+        "capability-page-admin");
+    createCareCapability("PAGE_A", "Page A", null, "capability-page-create-a");
+    createCareCapability("PAGE_B", "Page B", null, "capability-page-create-b");
+
+    var firstPage =
+        mockMvc
+            .perform(
+                get("/api/v1/directory/capabilities")
+                    .param("page", "0")
+                    .param("size", "1")
+                    .header("Authorization", bearer(token(CURATOR)))
+                    .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.page").value(0))
+            .andExpect(jsonPath("$.size").value(1))
+            .andExpect(jsonPath("$.items.length()").value(1))
+            .andExpect(jsonPath("$.hasMore").value(true))
+            .andReturn();
+    String firstCode =
+        com.jayway.jsonpath.JsonPath.read(
+            firstPage.getResponse().getContentAsString(), "$.items[0].code");
+
+    var secondPage =
+        mockMvc
+            .perform(
+                get("/api/v1/directory/capabilities")
+                    .param("page", "1")
+                    .param("size", "1")
+                    .header("Authorization", bearer(token(CURATOR)))
+                    .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.page").value(1))
+            .andExpect(jsonPath("$.size").value(1))
+            .andExpect(jsonPath("$.items.length()").value(1))
+            .andReturn();
+    String secondCode =
+        com.jayway.jsonpath.JsonPath.read(
+            secondPage.getResponse().getContentAsString(), "$.items[0].code");
+    assertThat(firstCode).isLessThan(secondCode);
+
+    mockMvc
+        .perform(
+            get("/api/v1/directory/capabilities")
+                .param("unknown", "ignored")
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("DIRECTORY_VALIDATION_FAILED"));
+  }
+
+  @Test
+  void removalPreservesThePreviousIdentifierAssertionAndItsProvenance() throws Exception {
+    grant(ADMIN, CURATOR, "DirectoryCuration", "PLATFORM", null, null, "identifier-remove-curator");
+    grant(ADMIN, CURATOR, "DirectoryRead", "PLATFORM", null, null, "identifier-remove-reader");
+    String organizationId = createOrganization(CURATOR, "identifier-remove-org", "History Clinic");
+    String identifierId =
+        addExternalIdentifier(
+            CURATOR,
+            "PLATFORM",
+            organizationId,
+            null,
+            "ORGANIZATION",
+            "urn:registry:north",
+            "Organization",
+            "history-001",
+            "identifier-remove-add");
+
+    mockMvc
+        .perform(
+            post("/api/v1/directory/external-identifiers/{identifierId}/removal", identifierId)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", "identifier-remove-command")
+                .contentType("application/json")
+                .content(identifierTransitionBody(1, "REMOVE_IDENTIFIER")))
+        .andExpect(status().isNoContent());
+
+    mockMvc
+        .perform(
+            get(
+                    "/api/v1/directory/concepts/{conceptType}/{conceptId}/external-identifiers",
+                    "ORGANIZATION",
+                    organizationId)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.items.length()").value(0));
+
+    mockMvc
+        .perform(
+            get(
+                    "/api/v1/directory/concepts/{conceptType}/{conceptId}/external-identifiers",
+                    "ORGANIZATION",
+                    organizationId)
+                .param("includeHistory", "true")
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.items.length()").value(2))
+        .andExpect(jsonPath("$.items[0].id").value(identifierId))
+        .andExpect(jsonPath("$.items[0].status").value("REMOVED"))
+        .andExpect(jsonPath("$.items[0].current").value(true))
+        .andExpect(jsonPath("$.items[0].version").value(2))
+        .andExpect(jsonPath("$.items[0].provenance.reasonCode").value("REMOVE_IDENTIFIER"))
+        .andExpect(jsonPath("$.items[1].status").value("ACTIVE"))
+        .andExpect(jsonPath("$.items[1].current").value(false))
+        .andExpect(jsonPath("$.items[1].version").value(1))
+        .andExpect(jsonPath("$.items[1].externalIdentifier.value").value("history-001"))
+        .andExpect(jsonPath("$.items[1].provenance.reasonCode").value("REGISTER_IDENTIFIER"))
+        .andExpect(jsonPath("$.items[1].changeReasonCode").value("REMOVE_IDENTIFIER"));
+  }
+
+  @Test
+  void removesIdentifierFromDeactivatedFacilityAndReleasesItsActiveTuple() throws Exception {
+    grant(
+        ADMIN, CURATOR, "DirectoryCuration", "PLATFORM", null, null, "identifier-inactive-curator");
+    String organizationId =
+        createOrganization(CURATOR, "identifier-inactive-org", "Inactive Identifier Org");
+    String inactiveFacility =
+        createFacility(
+            CURATOR,
+            "PLATFORM",
+            "identifier-inactive-facility",
+            "Inactive Identifier Facility",
+            organizationId);
+    String identifierId =
+        addExternalIdentifier(
+            CURATOR,
+            "PLATFORM",
+            inactiveFacility,
+            organizationId,
+            "FACILITY",
+            "urn:registry:north",
+            "Facility",
+            "facility-identifier-01",
+            "identifier-inactive-add");
+
+    mockMvc
+        .perform(
+            post("/api/v1/directory/facilities/{facilityId}/deactivation", inactiveFacility)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", "identifier-inactive-facility-deactivate")
+                .contentType("application/json")
+                .content(deactivationBody(1, "FACILITY_CLOSED")))
+        .andExpect(status().isNoContent());
+
+    mockMvc
+        .perform(
+            post("/api/v1/directory/external-identifiers/{identifierId}/removal", identifierId)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", "identifier-inactive-remove")
+                .contentType("application/json")
+                .content(identifierTransitionBody(1, "REGISTRY_IDENTIFIER_RETIRED")))
+        .andExpect(status().isNoContent());
+
+    String replacementFacility =
+        createFacility(
+            CURATOR,
+            "PLATFORM",
+            "identifier-reuse-facility",
+            "Replacement Facility",
+            organizationId);
+    addExternalIdentifier(
+        CURATOR,
+        "PLATFORM",
+        replacementFacility,
+        organizationId,
+        "FACILITY",
+        "urn:registry:north",
+        "Facility",
+        "facility-identifier-01",
+        "identifier-reuse-add");
+  }
+
+  @Test
+  void supersedingIdentifierKeepsOldAssertionAndLinksTheSuccessor() throws Exception {
+    grant(ADMIN, CURATOR, "DirectoryCuration", "PLATFORM", null, null, "identifier-sup-curator");
+    grant(ADMIN, CURATOR, "DirectoryRead", "PLATFORM", null, null, "identifier-sup-reader");
+    String organizationId = createOrganization(CURATOR, "identifier-sup-org", "Supersede Clinic");
+    String previousId =
+        addExternalIdentifier(
+            CURATOR,
+            "PLATFORM",
+            organizationId,
+            null,
+            "ORGANIZATION",
+            "urn:registry:north",
+            "Organization",
+            "old-identity-001",
+            "identifier-sup-add");
+
+    var supersession =
+        mockMvc
+            .perform(
+                post(
+                        "/api/v1/directory/external-identifiers/{identifierId}/supersession",
+                        previousId)
+                    .header("Authorization", bearer(token(CURATOR)))
+                    .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                    .header("Idempotency-Key", "identifier-sup-command")
+                    .contentType("application/json")
+                    .content(
+                        identifierSupersessionBody(
+                            1, "urn:registry:south", "Organization", "new-identity-002")))
+            .andExpect(status().isCreated())
+            .andReturn();
+    String successorId =
+        com.jayway.jsonpath.JsonPath.read(supersession.getResponse().getContentAsString(), "$.id");
+
+    mockMvc
+        .perform(
+            get(
+                    "/api/v1/directory/concepts/{conceptType}/{conceptId}/external-identifiers",
+                    "ORGANIZATION",
+                    organizationId)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.items.length()").value(1))
+        .andExpect(jsonPath("$.items[0].id").value(successorId))
+        .andExpect(jsonPath("$.items[0].status").value("ACTIVE"))
+        .andExpect(jsonPath("$.items[0].supersedesIdentifierId").value(previousId));
+
+    mockMvc
+        .perform(
+            get(
+                    "/api/v1/directory/concepts/{conceptType}/{conceptId}/external-identifiers",
+                    "ORGANIZATION",
+                    organizationId)
+                .param("includeHistory", "true")
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+        .andExpect(status().isOk())
+        .andExpect(
+            jsonPath("$.items[?(@.id == '%s')].status".formatted(previousId))
+                .value(org.hamcrest.Matchers.contains("SUPERSEDED", "ACTIVE")))
+        .andExpect(
+            jsonPath("$.items[?(@.id == '%s')].version".formatted(previousId))
+                .value(org.hamcrest.Matchers.contains(2, 1)))
+        .andExpect(
+            jsonPath(
+                    "$.items[?(@.id == '%s' && @.current == true)].provenance.reasonCode"
+                        .formatted(previousId))
+                .value(org.hamcrest.Matchers.contains("SUPERSEDE_IDENTIFIER")))
+        .andExpect(
+            jsonPath(
+                    "$.items[?(@.id == '%s' && @.current == false)].changeReasonCode"
+                        .formatted(previousId))
+                .value(org.hamcrest.Matchers.contains("SUPERSEDE_IDENTIFIER")))
+        .andExpect(
+            jsonPath("$.items[?(@.id == '%s')].supersedesIdentifierId".formatted(successorId))
+                .value(org.hamcrest.Matchers.contains(previousId)));
+  }
+
+  @Test
+  void activeIdentifierTupleIsUniquePerConceptTypeAndAllowsIssuerResourceAndLifecycleChanges()
+      throws Exception {
+    grant(ADMIN, CURATOR, "DirectoryCuration", "PLATFORM", null, null, "identifier-unique-curator");
+    grant(ADMIN, CURATOR, "DirectoryRead", "PLATFORM", null, null, "identifier-unique-reader");
+    String firstOrganization =
+        createOrganization(CURATOR, "identifier-unique-org-1", "First Identifier Clinic");
+    String secondOrganization =
+        createOrganization(CURATOR, "identifier-unique-org-2", "Second Identifier Clinic");
+    String facility =
+        createFacility(
+            CURATOR,
+            "PLATFORM",
+            "identifier-unique-facility",
+            "Identifier Facility",
+            firstOrganization);
+
+    String originalId =
+        addExternalIdentifier(
+            CURATOR,
+            "PLATFORM",
+            firstOrganization,
+            null,
+            "ORGANIZATION",
+            "urn:registry:north",
+            "Organization",
+            "shared-value-001",
+            "identifier-unique-original");
+
+    mockMvc
+        .perform(
+            post(
+                    "/api/v1/directory/concepts/{conceptType}/{conceptId}/external-identifiers",
+                    "ORGANIZATION",
+                    secondOrganization)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", "identifier-unique-conflict")
+                .contentType("application/json")
+                .content(
+                    externalIdentifierBody(
+                        "urn:registry:north", "Organization", "shared-value-001")))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("DIRECTORY_IDENTIFIER_CONFLICT"));
+
+    addExternalIdentifier(
+        CURATOR,
+        "PLATFORM",
+        secondOrganization,
+        null,
+        "ORGANIZATION",
+        "urn:registry:south",
+        "Organization",
+        "shared-value-001",
+        "identifier-unique-different-issuer");
+    addExternalIdentifier(
+        CURATOR,
+        "PLATFORM",
+        secondOrganization,
+        null,
+        "ORGANIZATION",
+        "urn:registry:north",
+        "Facility",
+        "shared-value-001",
+        "identifier-unique-different-resource");
+    addExternalIdentifier(
+        CURATOR,
+        "PLATFORM",
+        facility,
+        null,
+        "FACILITY",
+        "urn:registry:north",
+        "Organization",
+        "shared-value-001",
+        "identifier-unique-different-concept-type");
+    addExternalIdentifier(
+        CURATOR,
+        "PLATFORM",
+        secondOrganization,
+        null,
+        "ORGANIZATION",
+        "urn:registry:west",
+        "Organization",
+        "supersede-conflict-001",
+        "identifier-unique-supersede-conflict-target");
+
+    mockMvc
+        .perform(
+            post("/api/v1/directory/external-identifiers/{identifierId}/supersession", originalId)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", "identifier-unique-supersede-conflict")
+                .contentType("application/json")
+                .content(
+                    identifierSupersessionBody(
+                        1, "urn:registry:west", "Organization", "supersede-conflict-001")))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("DIRECTORY_IDENTIFIER_CONFLICT"));
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT lifecycle_status FROM directory.external_identifier WHERE identifier_id = ?",
+                String.class,
+                java.util.UUID.fromString(originalId)))
+        .isEqualTo("ACTIVE");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT version FROM directory.external_identifier WHERE identifier_id = ?",
+                Long.class,
+                java.util.UUID.fromString(originalId)))
+        .isEqualTo(1L);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM directory.external_identifier_revision WHERE identifier_id = ?",
+                Integer.class,
+                java.util.UUID.fromString(originalId)))
+        .isZero();
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = 'DIRECTORY_EXTERNAL_IDENTIFIER_SUPERSEDE'"))
+        .isZero();
+
+    mockMvc
+        .perform(
+            post("/api/v1/directory/external-identifiers/{identifierId}/removal", originalId)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", "identifier-unique-remove")
+                .contentType("application/json")
+                .content(identifierTransitionBody(1, "REMOVE_IDENTIFIER")))
+        .andExpect(status().isNoContent());
+    addExternalIdentifier(
+        CURATOR,
+        "PLATFORM",
+        secondOrganization,
+        null,
+        "ORGANIZATION",
+        "urn:registry:north",
+        "Organization",
+        "shared-value-001",
+        "identifier-unique-readd-after-removal");
+  }
+
+  @Test
+  void concurrentIdentifierRemovalWithSameExpectedVersionHasOneWinnerAndOneConflict()
+      throws Exception {
+    grant(ADMIN, CURATOR, "DirectoryCuration", "PLATFORM", null, null, "identifier-race-curator");
+    String organizationId =
+        createOrganization(CURATOR, "identifier-race-org", "Concurrency Clinic");
+    String identifierId =
+        addExternalIdentifier(
+            CURATOR,
+            "PLATFORM",
+            organizationId,
+            null,
+            "ORGANIZATION",
+            "urn:registry:north",
+            "Organization",
+            "race-001",
+            "identifier-race-add");
+    String authorization = bearer(token(CURATOR));
+    CountDownLatch ready = new CountDownLatch(2);
+    CountDownLatch start = new CountDownLatch(1);
+    try (ExecutorService workers = Executors.newFixedThreadPool(2)) {
+      var first =
+          workers.submit(
+              () ->
+                  concurrentIdentifierRemoval(
+                      authorization, identifierId, "identifier-race-remove-1", ready, start));
+      var second =
+          workers.submit(
+              () ->
+                  concurrentIdentifierRemoval(
+                      authorization, identifierId, "identifier-race-remove-2", ready, start));
+      assertThat(ready.await(10, TimeUnit.SECONDS)).isTrue();
+      start.countDown();
+      int firstStatus = first.get(30, TimeUnit.SECONDS).getResponse().getStatus();
+      int secondStatus = second.get(30, TimeUnit.SECONDS).getResponse().getStatus();
+      assertThat(List.of(firstStatus, secondStatus)).containsExactlyInAnyOrder(204, 409);
+      MvcResult conflict = firstStatus == 409 ? first.get() : second.get();
+      String conflictCode =
+          com.jayway.jsonpath.JsonPath.read(conflict.getResponse().getContentAsString(), "$.code");
+      assertThat(conflictCode).isEqualTo("DIRECTORY_VERSION_CONFLICT");
+    }
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = 'DIRECTORY_EXTERNAL_IDENTIFIER_REMOVE'"))
+        .isEqualTo(1);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM directory.external_identifier_revision WHERE identifier_id = ?",
+                Integer.class,
+                java.util.UUID.fromString(identifierId)))
+        .isEqualTo(1);
+  }
+
+  @Test
+  void identifierMutationIsIdempotentAndRejectsReusedKeyWithDifferentCommand() throws Exception {
+    grant(ADMIN, CURATOR, "DirectoryCuration", "PLATFORM", null, null, "identifier-idem-curator");
+    String organizationId =
+        createOrganization(CURATOR, "identifier-idem-org", "Idempotency Clinic");
+    int eventCountBeforeIdentifierCommands =
+        count("SELECT COUNT(*) FROM platform_eventing.internal_event");
+    String firstId =
+        addExternalIdentifier(
+            CURATOR,
+            "PLATFORM",
+            organizationId,
+            null,
+            "ORGANIZATION",
+            "urn:registry:north",
+            "Organization",
+            "idem-001",
+            "identifier-idempotent-add");
+    String replayedId =
+        addExternalIdentifier(
+            CURATOR,
+            "PLATFORM",
+            organizationId,
+            null,
+            "ORGANIZATION",
+            "urn:registry:north",
+            "Organization",
+            "idem-001",
+            "identifier-idempotent-add");
+    assertThat(replayedId).isEqualTo(firstId);
+
+    mockMvc
+        .perform(
+            post(
+                    "/api/v1/directory/concepts/{conceptType}/{conceptId}/external-identifiers",
+                    "ORGANIZATION",
+                    organizationId)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", "identifier-idempotent-add")
+                .contentType("application/json")
+                .content(externalIdentifierBody("urn:registry:north", "Organization", "idem-002")))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("IDEMPOTENCY_KEY_REUSED"));
+
+    assertThat(count("SELECT COUNT(*) FROM directory.external_identifier")).isEqualTo(1);
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = 'DIRECTORY_EXTERNAL_IDENTIFIER_ADD'"))
+        .isEqualTo(1);
+    // The organization creation and identifier registration each have one Directory receipt.
+    assertThat(count("SELECT COUNT(*) FROM directory.command_receipt")).isEqualTo(2);
+    assertThat(count("SELECT COUNT(*) FROM platform_eventing.internal_event"))
+        .isEqualTo(eventCountBeforeIdentifierCommands);
+  }
+
+  @Test
+  void failedIdentifierAuditRollsBackAssociationRevisionAndReceipt() throws Exception {
+    grant(ADMIN, CURATOR, "DirectoryCuration", "PLATFORM", null, null, "identifier-audit-curator");
+    String organizationId =
+        createOrganization(CURATOR, "identifier-audit-org", "Audit Failure Clinic");
+    int eventCountBeforeFailedIdentifierCommand =
+        count("SELECT COUNT(*) FROM platform_eventing.internal_event");
+    jdbc.execute(
+        "CREATE FUNCTION test_fail_audit_insert() RETURNS trigger LANGUAGE plpgsql AS "
+            + "'BEGIN RAISE EXCEPTION ''synthetic audit failure''; END'");
+    jdbc.execute(
+        "CREATE TRIGGER test_fail_audit_insert BEFORE INSERT ON audit.audit_record "
+            + "FOR EACH ROW EXECUTE FUNCTION test_fail_audit_insert()");
+
+    mockMvc
+        .perform(
+            post(
+                    "/api/v1/directory/concepts/{conceptType}/{conceptId}/external-identifiers",
+                    "ORGANIZATION",
+                    organizationId)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", "identifier-audit-failure")
+                .contentType("application/json")
+                .content(
+                    externalIdentifierBody(
+                        "urn:registry:north", "Organization", "audit-failure-001")))
+        .andExpect(status().isServiceUnavailable())
+        .andExpect(jsonPath("$.code").value("AUDIT_UNAVAILABLE"));
+
+    assertThat(count("SELECT COUNT(*) FROM directory.external_identifier")).isZero();
+    assertThat(count("SELECT COUNT(*) FROM directory.external_identifier_revision")).isZero();
+    assertThat(count("SELECT COUNT(*) FROM directory.command_receipt")).isEqualTo(1);
+    assertThat(count("SELECT COUNT(*) FROM platform_eventing.internal_event"))
+        .isEqualTo(eventCountBeforeFailedIdentifierCommand);
+  }
+
+  @Test
+  void identifierCurationRequiresAuthorityAndMatchingOwnerScope() throws Exception {
+    grant(
+        ADMIN,
+        CURATOR,
+        "DirectoryCuration",
+        "PLATFORM",
+        null,
+        null,
+        "identifier-scope-platform-curator");
+    String authorizedOrganization =
+        createOrganization(CURATOR, "identifier-scope-org-1", "Authorized Clinic");
+    String otherOrganization =
+        createOrganization(CURATOR, "identifier-scope-org-2", "Other Clinic");
+    grant(
+        ADMIN,
+        ORG_CURATOR,
+        "DirectoryCuration",
+        "ORGANIZATION",
+        authorizedOrganization,
+        null,
+        "identifier-scope-org-curator");
+
+    addExternalIdentifier(
+        ORG_CURATOR,
+        "ORGANIZATION",
+        authorizedOrganization,
+        authorizedOrganization,
+        "ORGANIZATION",
+        "urn:registry:north",
+        "Organization",
+        "scope-allowed-001",
+        "identifier-scope-allowed");
+
+    mockMvc
+        .perform(
+            post(
+                    "/api/v1/directory/concepts/{conceptType}/{conceptId}/external-identifiers",
+                    "ORGANIZATION",
+                    otherOrganization)
+                .header("Authorization", bearer(token(ORG_CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "ORGANIZATION")
+                .header("X-AyuVahak-Organization-Id", authorizedOrganization)
+                .header("Idempotency-Key", "identifier-scope-outside-owner")
+                .contentType("application/json")
+                .content(
+                    externalIdentifierBody(
+                        "urn:registry:north", "Organization", "scope-denied-001")))
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.code").value("DIRECTORY_SCOPE_MISMATCH"));
+
+    mockMvc
+        .perform(
+            post(
+                    "/api/v1/directory/concepts/{conceptType}/{conceptId}/external-identifiers",
+                    "ORGANIZATION",
+                    otherOrganization)
+                .header("Authorization", bearer(token(UNAUTHORIZED)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", "identifier-scope-unauthorized")
+                .contentType("application/json")
+                .content(
+                    externalIdentifierBody(
+                        "urn:registry:north", "Organization", "scope-denied-002")))
+        .andExpect(status().isForbidden());
+
+    assertThat(count("SELECT COUNT(*) FROM directory.external_identifier")).isEqualTo(1);
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = 'DIRECTORY_EXTERNAL_IDENTIFIER_ADD' AND outcome = 'DENIED'"))
+        .isEqualTo(2);
   }
 
   @Test
@@ -753,6 +1521,168 @@ class DirectoryOrganizationFacilityApiIT {
   }
 
   @Test
+  void facilitySearchSupportsBoundedExactFiltersWithoutGeographicCoordinates() throws Exception {
+    grant(ADMIN, CURATOR, "DirectoryCuration", "PLATFORM", null, null, "exact-search-curator");
+    grant(ADMIN, CURATOR, "DirectoryRead", "PLATFORM", null, null, "exact-search-reader");
+    String organizationId = createOrganization(CURATOR, "exact-search-org", "Exact Search Org");
+    String firstFacility =
+        createFacility(
+            CURATOR, "PLATFORM", "exact-search-facility-01", "First Site", organizationId);
+    String secondFacility =
+        createFacility(
+            CURATOR, "PLATFORM", "exact-search-facility-02", "Second Site", organizationId);
+    String otherOrganization =
+        createOrganization(CURATOR, "exact-search-org-other", "Other Exact Search Org");
+    createFacility(
+        CURATOR, "PLATFORM", "exact-search-facility-other", "Other Site", otherOrganization);
+
+    List<String> expectedOrder =
+        java.util.stream.Stream.of(firstFacility, secondFacility).sorted().toList();
+    var firstPage =
+        mockMvc
+            .perform(
+                get("/api/v1/directory/facilities")
+                    .param("organizationId", organizationId)
+                    .param("size", "1")
+                    .param("page", "0")
+                    .header("Authorization", bearer(token(CURATOR)))
+                    .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.mode").value("DIRECTORY_FILTERED"))
+            .andExpect(jsonPath("$.facilities.length()").value(1))
+            .andExpect(jsonPath("$.hasMore").value(true))
+            .andExpect(jsonPath("$.unlocated.length()").value(0))
+            .andReturn();
+    assertThat(
+            (String)
+                com.jayway.jsonpath.JsonPath.read(
+                    firstPage.getResponse().getContentAsString(), "$.facilities[0].facilityId"))
+        .isEqualTo(expectedOrder.getFirst());
+
+    var secondPage =
+        mockMvc
+            .perform(
+                get("/api/v1/directory/facilities")
+                    .param("organizationId", organizationId)
+                    .param("size", "1")
+                    .param("page", "1")
+                    .header("Authorization", bearer(token(CURATOR)))
+                    .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.facilities.length()").value(1))
+            .andExpect(jsonPath("$.hasMore").value(false))
+            .andReturn();
+    assertThat(
+            (String)
+                com.jayway.jsonpath.JsonPath.read(
+                    secondPage.getResponse().getContentAsString(), "$.facilities[0].facilityId"))
+        .isEqualTo(expectedOrder.getLast());
+
+    mockMvc
+        .perform(
+            get("/api/v1/directory/facilities")
+                .param("facilityId", firstFacility)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.facilities.length()").value(1))
+        .andExpect(jsonPath("$.facilities[0].facilityId").value(firstFacility));
+
+    mockMvc
+        .perform(
+            get("/api/v1/directory/facilities")
+                .param("organizationId", otherOrganization)
+                .param("facilityId", firstFacility)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("DIRECTORY_VALIDATION_FAILED"));
+
+    grant(
+        ADMIN,
+        ORG_CURATOR,
+        "DirectoryRead",
+        "ORGANIZATION",
+        otherOrganization,
+        null,
+        "exact-search-org-reader");
+    mockMvc
+        .perform(
+            get("/api/v1/directory/facilities")
+                .param("facilityId", firstFacility)
+                .header("Authorization", bearer(token(ORG_CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "ORGANIZATION")
+                .header("X-AyuVahak-Organization-Id", otherOrganization))
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.code").value("DIRECTORY_SCOPE_MISMATCH"));
+  }
+
+  @Test
+  void facilitySearchRejectsPartialGeographicInputsWithStableDirectoryProblem() throws Exception {
+    grant(ADMIN, CURATOR, "DirectoryRead", "PLATFORM", null, null, "partial-search-reader");
+
+    mockMvc
+        .perform(
+            get("/api/v1/directory/facilities")
+                .param("centerLongitude", "72.8")
+                .param("centerLatitude", "19.1")
+                .header("X-Correlation-ID", "directory-partial-search-01")
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("DIRECTORY_VALIDATION_FAILED"))
+        .andExpect(jsonPath("$.correlationId").value("directory-partial-search-01"))
+        .andExpect(header().string("X-Correlation-ID", "directory-partial-search-01"));
+  }
+
+  @Test
+  void facilitySearchRejectsUnknownQueryKeysWithStableDirectoryProblem() throws Exception {
+    grant(ADMIN, CURATOR, "DirectoryRead", "PLATFORM", null, null, "unknown-search-reader");
+
+    mockMvc
+        .perform(
+            get("/api/v1/directory/facilities")
+                .param("unexpected", "ignored-by-default-spring-binding")
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("X-Correlation-ID", "directory-unknown-search-01"))
+        .andExpect(status().isBadRequest())
+        .andExpect(content().contentTypeCompatibleWith("application/problem+json"))
+        .andExpect(jsonPath("$.code").value("DIRECTORY_VALIDATION_FAILED"))
+        .andExpect(jsonPath("$.correlationId").value("directory-unknown-search-01"));
+  }
+
+  @Test
+  void protectedDirectorySearchRequiresAnAuthenticatedActor() throws Exception {
+    mockMvc
+        .perform(
+            get("/api/v1/directory/facilities")
+                .header("X-Correlation-ID", "directory-unauthenticated-search-01"))
+        .andExpect(status().isUnauthorized())
+        .andExpect(content().contentTypeCompatibleWith("application/problem+json"))
+        .andExpect(jsonPath("$.status").value(401))
+        .andExpect(jsonPath("$.correlationId").value("directory-unauthenticated-search-01"));
+  }
+
+  @Test
+  void missingFacilityReadUsesSafeDirectoryProblemDetails() throws Exception {
+    grant(ADMIN, CURATOR, "DirectoryRead", "PLATFORM", null, null, "missing-facility-reader");
+    String unknownFacilityId = InternalId.generate().toString();
+
+    mockMvc
+        .perform(
+            get("/api/v1/directory/facilities/{facilityId}", unknownFacilityId)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("X-Correlation-ID", "directory-safe-not-found-01"))
+        .andExpect(status().isNotFound())
+        .andExpect(content().contentTypeCompatibleWith("application/problem+json"))
+        .andExpect(jsonPath("$.code").value("DIRECTORY_NOT_FOUND"))
+        .andExpect(jsonPath("$.correlationId").value("directory-safe-not-found-01"))
+        .andExpect(jsonPath("$.detail").value("The Directory record was not found."));
+  }
+
+  @Test
   void nearbySearchUsesInclusivePostgisMetersStableUuidTieBreakAndSeparateUnlocatedResults()
       throws Exception {
     grant(ADMIN, CURATOR, "DirectoryCuration", "PLATFORM", null, null, "seed-nearby-curator-01");
@@ -846,19 +1776,21 @@ class DirectoryOrganizationFacilityApiIT {
                     .param("centerLongitude", "0.0")
                     .param("centerLatitude", "0.0")
                     .param("radiusMeters", radiusMeters.toString())
-                    .param("pageSize", "10")
+                    .param("size", "10")
+                    .param("page", "0")
                     .header("Authorization", bearer(token(CURATOR)))
                     .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
             .andExpect(status().isOk())
-            .andExpect(jsonPath("$.nearby.length()").value(3))
-            .andExpect(jsonPath("$.nearby[1].distanceMeters").value(radiusMeters))
-            .andExpect(jsonPath("$.nearby[2].distanceMeters").value(radiusMeters))
+            .andExpect(jsonPath("$.mode").value("NEARBY"))
+            .andExpect(jsonPath("$.facilities.length()").value(3))
+            .andExpect(jsonPath("$.facilities[1].distanceMeters").value(radiusMeters))
+            .andExpect(jsonPath("$.facilities[2].distanceMeters").value(radiusMeters))
             .andExpect(jsonPath("$.unlocated.length()").value(2))
             .andReturn();
 
     List<String> actualOrder =
         com.jayway.jsonpath.JsonPath.read(
-            response.getResponse().getContentAsString(), "$.nearby[*].facilityId");
+            response.getResponse().getContentAsString(), "$.facilities[*].facilityId");
     List<String> boundaryOrder =
         java.util.stream.Stream.of(boundaryFacilityOne, boundaryFacilityTwo).sorted().toList();
     assertThat(actualOrder)
@@ -947,18 +1879,19 @@ class DirectoryOrganizationFacilityApiIT {
                     .param("centerLongitude", "0.0")
                     .param("centerLatitude", "0.0")
                     .param("radiusMeters", radiusMeters.toString())
-                    .param("pageSize", "10")
+                    .param("size", "10")
+                    .param("page", "0")
                     .param("requiredCapability", "SEARCH_A", "SEARCH_B")
                     .header("Authorization", bearer(token(CURATOR)))
                     .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
             .andExpect(status().isOk())
-            .andExpect(jsonPath("$.nearby.length()").value(2))
+            .andExpect(jsonPath("$.facilities.length()").value(2))
             .andExpect(jsonPath("$.unlocated.length()").value(1))
             .andReturn();
     List<String> capabilityFilteredNearby =
         com.jayway.jsonpath.JsonPath.read(
             capabilityFilteredResponse.getResponse().getContentAsString(),
-            "$.nearby[*].facilityId");
+            "$.facilities[*].facilityId");
     assertThat(capabilityFilteredNearby).containsExactly(closeFacility, boundaryFacilityOne);
     List<String> capabilityFilteredUnlocated =
         com.jayway.jsonpath.JsonPath.read(
@@ -978,11 +1911,33 @@ class DirectoryOrganizationFacilityApiIT {
 
     mockMvc
         .perform(
+            get(
+                    "/api/v1/directory/facilities/{facilityId}/capability-evidence",
+                    boundaryFacilityTwo)
+                .param("unknown", "ignored")
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("DIRECTORY_VALIDATION_FAILED"));
+
+    mockMvc
+        .perform(
+            get(
+                    "/api/v1/directory/facilities/{facilityId}/capability-evidence",
+                    boundaryFacilityTwo)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("DIRECTORY_VALIDATION_FAILED"));
+
+    mockMvc
+        .perform(
             get("/api/v1/directory/facilities")
                 .param("centerLongitude", "0.0")
                 .param("centerLatitude", "0.0")
                 .param("radiusMeters", radiusMeters.toString())
-                .param("pageSize", "101")
+                .param("size", "101")
+                .param("page", "0")
                 .header("Authorization", bearer(token(CURATOR)))
                 .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
         .andExpect(status().isBadRequest());
@@ -1246,6 +2201,34 @@ class DirectoryOrganizationFacilityApiIT {
     return id;
   }
 
+  private String addExternalIdentifier(
+      String actor,
+      String scope,
+      String conceptId,
+      String organizationId,
+      String conceptType,
+      String issuer,
+      String resourceType,
+      String value,
+      String idempotencyKey)
+      throws Exception {
+    var request =
+        post(
+                "/api/v1/directory/concepts/{conceptType}/{conceptId}/external-identifiers",
+                conceptType,
+                conceptId)
+            .header("Authorization", bearer(token(actor)))
+            .header("X-AyuVahak-Execution-Scope", scope)
+            .header("Idempotency-Key", idempotencyKey)
+            .contentType("application/json")
+            .content(externalIdentifierBody(issuer, resourceType, value));
+    if ("ORGANIZATION".equals(scope)) {
+      request.header("X-AyuVahak-Organization-Id", organizationId);
+    }
+    var response = mockMvc.perform(request).andExpect(status().isCreated()).andReturn();
+    return com.jayway.jsonpath.JsonPath.read(response.getResponse().getContentAsString(), "$.id");
+  }
+
   private MvcResult concurrentCreate(
       String authorization, String body, CountDownLatch ready, CountDownLatch start)
       throws Exception {
@@ -1261,6 +2244,28 @@ class DirectoryOrganizationFacilityApiIT {
                 .header("Idempotency-Key", "org-concurrent-create-01")
                 .contentType("application/json")
                 .content(body))
+        .andReturn();
+  }
+
+  private MvcResult concurrentIdentifierRemoval(
+      String authorization,
+      String identifierId,
+      String idempotencyKey,
+      CountDownLatch ready,
+      CountDownLatch start)
+      throws Exception {
+    ready.countDown();
+    if (!start.await(10, TimeUnit.SECONDS)) {
+      throw new IllegalStateException("concurrent identifier removal test did not start");
+    }
+    return mockMvc
+        .perform(
+            post("/api/v1/directory/external-identifiers/{identifierId}/removal", identifierId)
+                .header("Authorization", authorization)
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", idempotencyKey)
+                .contentType("application/json")
+                .content(identifierTransitionBody(1, "REMOVE_IDENTIFIER")))
         .andReturn();
   }
 
@@ -1618,6 +2623,41 @@ class DirectoryOrganizationFacilityApiIT {
         + "\",\"reference\":\""
         + reference
         + "\"";
+  }
+
+  private static String externalIdentifierBody(String issuer, String resourceType, String value) {
+    return "{\"issuer\":\""
+        + issuer
+        + "\",\"resourceType\":\""
+        + resourceType
+        + "\",\"value\":\""
+        + value
+        + "\",\"provenance\":{"
+        + provenanceJson("REGISTER_IDENTIFIER")
+        + "}}";
+  }
+
+  private static String identifierTransitionBody(long expectedVersion, String reasonCode) {
+    return "{\"expectedVersion\":"
+        + expectedVersion
+        + ",\"provenance\":{"
+        + provenanceJson(reasonCode)
+        + "}}";
+  }
+
+  private static String identifierSupersessionBody(
+      long expectedVersion, String issuer, String resourceType, String value) {
+    return "{\"expectedVersion\":"
+        + expectedVersion
+        + ",\"issuer\":\""
+        + issuer
+        + "\",\"resourceType\":\""
+        + resourceType
+        + "\",\"value\":\""
+        + value
+        + "\",\"provenance\":{"
+        + provenanceJson("SUPERSEDE_IDENTIFIER")
+        + "}}";
   }
 
   private static String provenanceJson(String reasonCode) {

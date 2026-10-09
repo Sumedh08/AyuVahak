@@ -13,10 +13,13 @@ import java.util.regex.Pattern;
 import org.ayuvahak.directory.domain.CapabilityVerificationStatus;
 import org.ayuvahak.directory.domain.CareCapability;
 import org.ayuvahak.directory.domain.DirectoryAuthorities;
+import org.ayuvahak.directory.domain.DirectoryConceptType;
+import org.ayuvahak.directory.domain.DirectoryExternalIdentifier;
 import org.ayuvahak.directory.domain.DirectoryLifecycleStatus;
 import org.ayuvahak.directory.domain.DirectoryLocation;
 import org.ayuvahak.directory.domain.DirectoryProvenance;
 import org.ayuvahak.directory.domain.DirectorySource;
+import org.ayuvahak.directory.domain.ExternalIdentifierStatus;
 import org.ayuvahak.directory.domain.Facility;
 import org.ayuvahak.directory.domain.FacilityCapabilityAssertion;
 import org.ayuvahak.directory.domain.HealthcareService;
@@ -61,9 +64,9 @@ import org.springframework.transaction.support.TransactionTemplate;
 public class DirectoryApplicationService {
 
   private static final String DIRECTORY_ISSUER = "urn:ayuvahak:directory";
-  private static final int DEFAULT_SEARCH_PAGE_SIZE = 50;
-  private static final int MAX_SEARCH_PAGE_SIZE = 100;
-  private static final int MAX_SEARCH_OFFSET = 10_000;
+  private static final int DEFAULT_PAGE_SIZE = 50;
+  private static final int MAX_PAGE_SIZE = 100;
+  private static final int MAX_PAGE_OFFSET = 10_000;
   private static final double MAX_SEARCH_RADIUS_METERS = 500_000.0;
   private static final int MAX_REQUIRED_CAPABILITIES = 20;
   private static final Pattern CAPABILITY_CODE = Pattern.compile("[A-Z][A-Z0-9._-]{0,63}");
@@ -88,6 +91,334 @@ public class DirectoryApplicationService {
     this.transaction =
         new TransactionTemplate(Objects.requireNonNull(transactionManager, "transactionManager"));
     this.clock = Objects.requireNonNull(clock, "clock");
+  }
+
+  public InternalId addExternalIdentifier(
+      ExecutionContext context,
+      DirectoryConceptType conceptType,
+      InternalId conceptId,
+      ExternalReference externalIdentifier,
+      DirectoryProvenance provenance,
+      String rawIdempotencyKey,
+      RequestFingerprint fingerprint) {
+    String actionCode = "DIRECTORY_EXTERNAL_IDENTIFIER_ADD";
+    requireAuthority(
+        context,
+        DirectoryAuthorities.curation().code(),
+        actionCode,
+        "ExternalIdentifier",
+        Optional.of(conceptId),
+        Optional.empty());
+    CommandReceiptKey receiptKey =
+        commandKey(
+            context,
+            "external-identifier.add",
+            conceptType.name() + "/" + conceptId,
+            rawIdempotencyKey);
+    try {
+      return executeIdempotent(
+          receiptKey,
+          fingerprint,
+          201,
+          () -> {
+            DirectoryConceptOwner owner =
+                lockActiveConceptOwner(context, conceptType, conceptId, actionCode);
+            InternalId id = InternalId.generate();
+            Instant now = clock.instant();
+            DirectoryExternalIdentifier identifier =
+                new DirectoryExternalIdentifier(
+                    id,
+                    conceptType,
+                    conceptId,
+                    externalIdentifier,
+                    ExternalIdentifierStatus.ACTIVE,
+                    Optional.empty(),
+                    provenance,
+                    1,
+                    now,
+                    now);
+            store.insertExternalIdentifier(identifier);
+            auditMutation(
+                context,
+                actionCode,
+                "ExternalIdentifier",
+                id,
+                provenance.reasonCode(),
+                owner.organizationId().map(DirectoryApplicationService::organizationReference),
+                owner.facilityId().map(DirectoryApplicationService::facilityReference));
+            return id;
+          });
+    } catch (ActiveExternalIdentifierConflictException conflict) {
+      throw identifierConflict();
+    }
+  }
+
+  public void removeExternalIdentifier(
+      ExecutionContext context,
+      InternalId identifierId,
+      long expectedVersion,
+      DirectoryProvenance provenance,
+      String rawIdempotencyKey,
+      RequestFingerprint fingerprint) {
+    String actionCode = "DIRECTORY_EXTERNAL_IDENTIFIER_REMOVE";
+    requireAuthority(
+        context,
+        DirectoryAuthorities.curation().code(),
+        actionCode,
+        "ExternalIdentifier",
+        Optional.of(identifierId),
+        Optional.empty());
+    CommandReceiptKey receiptKey =
+        commandKey(
+            context,
+            "external-identifier.remove",
+            "external-identifiers/" + identifierId,
+            rawIdempotencyKey);
+    executeIdempotent(
+        receiptKey,
+        fingerprint,
+        204,
+        () -> {
+          DirectoryExternalIdentifier current =
+              store
+                  .lockExternalIdentifier(identifierId)
+                  .orElseThrow(DirectoryApplicationService::notFound);
+          DirectoryConceptOwner owner =
+              lockConceptOwner(context, current.conceptType(), current.conceptId(), actionCode);
+          if (current.status() != ExternalIdentifierStatus.ACTIVE) {
+            throw versionConflict();
+          }
+          requireExpectedVersion(current.version(), expectedVersion);
+          Instant changedAt = clock.instant();
+          DirectoryExternalIdentifier removed =
+              current.transition(ExternalIdentifierStatus.REMOVED, provenance, changedAt);
+          store.appendExternalIdentifierRevision(current, provenance.reasonCode(), changedAt);
+          if (!store.updateExternalIdentifier(removed, expectedVersion, changedAt)) {
+            throw versionConflict();
+          }
+          auditMutation(
+              context,
+              actionCode,
+              "ExternalIdentifier",
+              identifierId,
+              provenance.reasonCode(),
+              owner.organizationId().map(DirectoryApplicationService::organizationReference),
+              owner.facilityId().map(DirectoryApplicationService::facilityReference));
+          return identifierId;
+        });
+  }
+
+  public InternalId supersedeExternalIdentifier(
+      ExecutionContext context,
+      InternalId identifierId,
+      long expectedVersion,
+      ExternalReference replacement,
+      DirectoryProvenance provenance,
+      String rawIdempotencyKey,
+      RequestFingerprint fingerprint) {
+    String actionCode = "DIRECTORY_EXTERNAL_IDENTIFIER_SUPERSEDE";
+    requireAuthority(
+        context,
+        DirectoryAuthorities.curation().code(),
+        actionCode,
+        "ExternalIdentifier",
+        Optional.of(identifierId),
+        Optional.empty());
+    CommandReceiptKey receiptKey =
+        commandKey(
+            context,
+            "external-identifier.supersede",
+            "external-identifiers/" + identifierId,
+            rawIdempotencyKey);
+    try {
+      return executeIdempotent(
+          receiptKey,
+          fingerprint,
+          201,
+          () -> {
+            DirectoryExternalIdentifier current =
+                store
+                    .lockExternalIdentifier(identifierId)
+                    .orElseThrow(DirectoryApplicationService::notFound);
+            DirectoryConceptOwner owner =
+                lockActiveConceptOwner(
+                    context, current.conceptType(), current.conceptId(), actionCode);
+            if (current.status() != ExternalIdentifierStatus.ACTIVE) {
+              throw versionConflict();
+            }
+            requireExpectedVersion(current.version(), expectedVersion);
+            if (current.externalIdentifier().equals(replacement)) {
+              throw validation(
+                  "A superseding identifier must have a different issuer, type, or value.");
+            }
+            Instant changedAt = clock.instant();
+            DirectoryExternalIdentifier superseded =
+                current.transition(ExternalIdentifierStatus.SUPERSEDED, provenance, changedAt);
+            store.appendExternalIdentifierRevision(current, provenance.reasonCode(), changedAt);
+            if (!store.updateExternalIdentifier(superseded, expectedVersion, changedAt)) {
+              throw versionConflict();
+            }
+            InternalId replacementId = InternalId.generate();
+            DirectoryExternalIdentifier successor =
+                new DirectoryExternalIdentifier(
+                    replacementId,
+                    current.conceptType(),
+                    current.conceptId(),
+                    replacement,
+                    ExternalIdentifierStatus.ACTIVE,
+                    Optional.of(current.id()),
+                    provenance,
+                    1,
+                    changedAt,
+                    changedAt);
+            store.insertExternalIdentifier(successor);
+            auditMutation(
+                context,
+                actionCode,
+                "ExternalIdentifier",
+                identifierId,
+                provenance.reasonCode(),
+                owner.organizationId().map(DirectoryApplicationService::organizationReference),
+                owner.facilityId().map(DirectoryApplicationService::facilityReference));
+            return replacementId;
+          });
+    } catch (ActiveExternalIdentifierConflictException conflict) {
+      throw identifierConflict();
+    }
+  }
+
+  public DirectoryExternalIdentifierPage listExternalIdentifiers(
+      ExecutionContext context,
+      DirectoryConceptType conceptType,
+      InternalId conceptId,
+      boolean includeHistory,
+      Integer requestedPage,
+      Integer requestedSize) {
+    String actionCode = "DIRECTORY_EXTERNAL_IDENTIFIER_READ";
+    requireAuthority(
+        context,
+        DirectoryAuthorities.read().code(),
+        actionCode,
+        "ExternalIdentifierCollection",
+        Optional.of(conceptId),
+        Optional.empty());
+    DirectoryConceptOwner owner =
+        store
+            .findConceptOwner(conceptType, conceptId)
+            .orElseThrow(DirectoryApplicationService::notFound);
+    requireConceptReadScope(context, conceptType, conceptId, owner, actionCode);
+    PageBounds page = validatedPageBounds(requestedPage, requestedSize);
+    auditRead(
+        context,
+        actionCode,
+        "ExternalIdentifierCollection",
+        conceptId,
+        owner.organizationId().map(DirectoryApplicationService::organizationReference),
+        owner.facilityId().map(DirectoryApplicationService::facilityReference));
+    List<DirectoryExternalIdentifierHistoryEntry> entries =
+        store.listExternalIdentifiers(
+            conceptType, conceptId, includeHistory, page.size() + 1, page.offset());
+    return new DirectoryExternalIdentifierPage(
+        entries.stream().limit(page.size()).toList(),
+        page.page(),
+        page.size(),
+        entries.size() > page.size());
+  }
+
+  private DirectoryConceptOwner lockActiveConceptOwner(
+      ExecutionContext context,
+      DirectoryConceptType conceptType,
+      InternalId conceptId,
+      String actionCode) {
+    DirectoryConceptOwner owner = lockConceptOwner(context, conceptType, conceptId, actionCode);
+    if (!owner.active()) {
+      throw inactive();
+    }
+    return owner;
+  }
+
+  private DirectoryConceptOwner lockConceptOwner(
+      ExecutionContext context,
+      DirectoryConceptType conceptType,
+      InternalId conceptId,
+      String actionCode) {
+    DirectoryConceptOwner owner =
+        store
+            .lockConceptOwner(conceptType, conceptId)
+            .orElseThrow(DirectoryApplicationService::notFound);
+    requireConceptCurationScope(context, conceptType, conceptId, owner, actionCode);
+    return owner;
+  }
+
+  private void requireConceptCurationScope(
+      ExecutionContext context,
+      DirectoryConceptType conceptType,
+      InternalId conceptId,
+      DirectoryConceptOwner owner,
+      String actionCode) {
+    if (!scopeAllowsConcept(context.scope(), owner, false)) {
+      denyScope(
+          context,
+          actionCode,
+          "DirectoryConcept",
+          Optional.of(conceptId),
+          owner.organizationId().map(DirectoryApplicationService::organizationReference),
+          owner.facilityId().map(DirectoryApplicationService::facilityReference));
+      throw scopeMismatch();
+    }
+  }
+
+  private void requireConceptReadScope(
+      ExecutionContext context,
+      DirectoryConceptType conceptType,
+      InternalId conceptId,
+      DirectoryConceptOwner owner,
+      String actionCode) {
+    if (!scopeAllowsConcept(context.scope(), owner, true)) {
+      denyScope(
+          context,
+          actionCode,
+          "DirectoryConcept",
+          Optional.of(conceptId),
+          owner.organizationId().map(DirectoryApplicationService::organizationReference),
+          owner.facilityId().map(DirectoryApplicationService::facilityReference));
+      throw scopeMismatch();
+    }
+  }
+
+  private static boolean scopeAllowsConcept(
+      ExecutionScope scope, DirectoryConceptOwner owner, boolean allowGlobalConceptRead) {
+    if (owner.facilityId().isPresent()) {
+      return switch (scope.kind()) {
+        case PLATFORM -> true;
+        case ORGANIZATION ->
+            scope
+                .organization()
+                .orElseThrow()
+                .equals(organizationReference(owner.organizationId().orElseThrow()));
+        case FACILITY ->
+            scope
+                    .organization()
+                    .orElseThrow()
+                    .equals(organizationReference(owner.organizationId().orElseThrow()))
+                && scope
+                    .facility()
+                    .orElseThrow()
+                    .equals(facilityReference(owner.facilityId().orElseThrow()));
+      };
+    }
+    if (owner.organizationId().isPresent()) {
+      return switch (scope.kind()) {
+        case PLATFORM -> true;
+        case ORGANIZATION ->
+            scope
+                .organization()
+                .orElseThrow()
+                .equals(organizationReference(owner.organizationId().orElseThrow()));
+        case FACILITY -> false;
+      };
+    }
+    return allowGlobalConceptRead || scope.kind() == ExecutionScope.Kind.PLATFORM;
   }
 
   public InternalId createOrganization(
@@ -781,7 +1112,8 @@ public class DirectoryApplicationService {
         });
   }
 
-  public List<CareCapability> listCareCapabilities(ExecutionContext context) {
+  public DirectoryCareCapabilityPage listCareCapabilities(
+      ExecutionContext context, Integer requestedPage, Integer requestedSize) {
     requireAuthority(
         context,
         DirectoryAuthorities.read().code(),
@@ -789,8 +1121,15 @@ public class DirectoryApplicationService {
         "CareCapabilityVocabulary",
         Optional.empty(),
         Optional.empty());
+    PageBounds page = validatedPageBounds(requestedPage, requestedSize);
     auditVocabularyRead(context);
-    return store.listCareCapabilities(true);
+    List<CareCapability> capabilities =
+        store.listCareCapabilities(true, page.size() + 1, page.offset());
+    return new DirectoryCareCapabilityPage(
+        capabilities.stream().limit(page.size()).toList(),
+        page.page(),
+        page.size(),
+        capabilities.size() > page.size());
   }
 
   public void correctCareCapabilityDisplayName(
@@ -1403,32 +1742,36 @@ public class DirectoryApplicationService {
       Wgs84Coordinate center,
       double radiusMeters,
       Optional<InternalId> requestedOrganizationId,
+      Optional<InternalId> requestedFacilityId,
       List<String> requestedCapabilityCodes,
-      int requestedPageSize,
-      int offset) {
+      Integer requestedPage,
+      Integer requestedSize) {
     requireAuthority(
         context,
         DirectoryAuthorities.read().code(),
         "DIRECTORY_FACILITY_NEARBY_READ",
         "FacilitySearch",
-        Optional.empty(),
+        requestedFacilityId,
         requestedOrganizationId.map(DirectoryApplicationService::organizationReference));
     if (!Double.isFinite(radiusMeters)
         || radiusMeters <= 0.0
         || radiusMeters > MAX_SEARCH_RADIUS_METERS) {
       throw coordinateInvalid("Radius must be greater than zero and no more than 500000 meters.");
     }
-    int pageSize = requestedPageSize == 0 ? DEFAULT_SEARCH_PAGE_SIZE : requestedPageSize;
-    if (pageSize < 1
-        || pageSize > MAX_SEARCH_PAGE_SIZE
-        || offset < 0
-        || offset > MAX_SEARCH_OFFSET) {
-      throw validation("Search page size must be between 1 and 100 and offset at most 10000.");
-    }
-    SearchScope searchScope = resolveSearchScope(context, requestedOrganizationId);
+    PageBounds page = validatedPageBounds(requestedPage, requestedSize);
+    SearchScope searchScope =
+        resolveSearchScope(
+            context,
+            requestedOrganizationId,
+            requestedFacilityId,
+            "DIRECTORY_FACILITY_NEARBY_READ");
     List<String> requiredCapabilityCodes = optionalCapabilityRequirements(requestedCapabilityCodes);
     Instant evaluatedAt = clock.instant();
-    auditSearchRead(context, searchScope.organizationId());
+    auditSearchRead(
+        context,
+        searchScope.organizationId(),
+        searchScope.facilityId(),
+        "DIRECTORY_FACILITY_NEARBY_READ");
     List<LocatedFacilitySearchResult> nearby =
         store.findNearbyFacilities(
             searchScope.organizationId(),
@@ -1437,29 +1780,111 @@ public class DirectoryApplicationService {
             radiusMeters,
             requiredCapabilityCodes,
             evaluatedAt,
-            pageSize + 1,
-            offset);
+            page.size() + 1,
+            page.offset());
     List<UnlocatedFacilitySearchResult> unlocated =
         store.findUnlocatedFacilities(
             searchScope.organizationId(),
             searchScope.facilityId(),
             requiredCapabilityCodes,
             evaluatedAt,
-            pageSize + 1,
-            offset);
-    boolean hasMoreNearby = nearby.size() > pageSize;
-    boolean hasMoreUnlocated = unlocated.size() > pageSize;
+            page.size() + 1,
+            page.offset());
+    boolean hasMoreNearby = nearby.size() > page.size();
+    boolean hasMoreUnlocated = unlocated.size() > page.size();
     return new NearbyFacilityPage(
-        nearby.stream().limit(pageSize).toList(),
-        unlocated.stream().limit(pageSize).toList(),
-        pageSize,
-        offset,
+        nearby.stream().limit(page.size()).toList(),
+        unlocated.stream().limit(page.size()).toList(),
+        page.page(),
+        page.size(),
         hasMoreNearby,
         hasMoreUnlocated);
   }
 
+  public DirectoryFacilitySearchPage findFacilities(
+      ExecutionContext context,
+      Optional<InternalId> requestedOrganizationId,
+      Optional<InternalId> requestedFacilityId,
+      List<String> requestedCapabilityCodes,
+      Integer requestedPage,
+      Integer requestedSize) {
+    requireAuthority(
+        context,
+        DirectoryAuthorities.read().code(),
+        "DIRECTORY_FACILITY_SEARCH_READ",
+        "FacilitySearch",
+        requestedFacilityId,
+        requestedOrganizationId.map(DirectoryApplicationService::organizationReference));
+    PageBounds page = validatedPageBounds(requestedPage, requestedSize);
+    SearchScope searchScope =
+        resolveSearchScope(
+            context,
+            requestedOrganizationId,
+            requestedFacilityId,
+            "DIRECTORY_FACILITY_SEARCH_READ");
+    List<String> requiredCapabilityCodes = optionalCapabilityRequirements(requestedCapabilityCodes);
+    Instant evaluatedAt = clock.instant();
+    auditSearchRead(
+        context,
+        searchScope.organizationId(),
+        searchScope.facilityId(),
+        "DIRECTORY_FACILITY_SEARCH_READ");
+    List<DirectoryFacilitySearchEntry> facilities =
+        store.findFacilities(
+            searchScope.organizationId(),
+            searchScope.facilityId(),
+            requiredCapabilityCodes,
+            evaluatedAt,
+            page.size() + 1,
+            page.offset());
+    boolean hasMore = facilities.size() > page.size();
+    return new DirectoryFacilitySearchPage(
+        facilities.stream().limit(page.size()).toList(), page.page(), page.size(), hasMore);
+  }
+
+  private static PageBounds validatedPageBounds(Integer requestedPage, Integer requestedSize) {
+    int page = requestedPage == null ? 0 : requestedPage;
+    int size = requestedSize == null ? DEFAULT_PAGE_SIZE : requestedSize;
+    long offset = (long) page * size;
+    if (page < 0 || size < 1 || size > MAX_PAGE_SIZE || offset > MAX_PAGE_OFFSET) {
+      throw validation(
+          "Page must be non-negative, size must be between 1 and 100, and page offset at most 10000.");
+    }
+    return new PageBounds(page, size, (int) offset);
+  }
+
+  private record PageBounds(int page, int size, int offset) {}
+
   private SearchScope resolveSearchScope(
-      ExecutionContext context, Optional<InternalId> requestedOrganizationId) {
+      ExecutionContext context,
+      Optional<InternalId> requestedOrganizationId,
+      Optional<InternalId> requestedFacilityId,
+      String actionCode) {
+    if (requestedFacilityId.isPresent()) {
+      InternalId facilityId = requestedFacilityId.orElseThrow();
+      Facility facility =
+          store.findFacility(facilityId).orElseThrow(DirectoryApplicationService::notFound);
+      boolean organizationFilterConflicts =
+          requestedOrganizationId
+              .filter(organizationId -> !organizationId.equals(facility.managingOrganizationId()))
+              .isPresent();
+      if (organizationFilterConflicts && context.scope().kind() == ExecutionScope.Kind.PLATFORM) {
+        throw validation("The Facility does not belong to the requested Organization filter.");
+      }
+      if (organizationFilterConflicts || !scopeCanReadFacility(context.scope(), facility)) {
+        denyScope(
+            context,
+            actionCode,
+            "FacilitySearch",
+            Optional.of(facilityId),
+            Optional.of(organizationReference(facility.managingOrganizationId())),
+            Optional.of(facilityReference(facilityId)));
+        throw scopeMismatch();
+      }
+      return new SearchScope(
+          Optional.of(facility.managingOrganizationId()), Optional.of(facilityId));
+    }
+
     return switch (context.scope().kind()) {
       case PLATFORM -> new SearchScope(requestedOrganizationId, Optional.empty());
       case ORGANIZATION -> {
@@ -1469,7 +1894,7 @@ public class DirectoryApplicationService {
             && !requestedOrganizationId.orElseThrow().equals(scopeOrganizationId)) {
           denyScope(
               context,
-              "DIRECTORY_FACILITY_NEARBY_READ",
+              actionCode,
               "FacilitySearch",
               Optional.empty(),
               requestedOrganizationId.map(DirectoryApplicationService::organizationReference));
@@ -1484,7 +1909,7 @@ public class DirectoryApplicationService {
             && !requestedOrganizationId.orElseThrow().equals(scopeOrganizationId)) {
           denyScope(
               context,
-              "DIRECTORY_FACILITY_NEARBY_READ",
+              actionCode,
               "FacilitySearch",
               Optional.empty(),
               requestedOrganizationId.map(DirectoryApplicationService::organizationReference));
@@ -1505,7 +1930,11 @@ public class DirectoryApplicationService {
     return InternalId.parse(reference.value());
   }
 
-  private void auditSearchRead(ExecutionContext context, Optional<InternalId> organizationId) {
+  private void auditSearchRead(
+      ExecutionContext context,
+      Optional<InternalId> organizationId,
+      Optional<InternalId> facilityId,
+      String actionCode) {
     try {
       auditWriter
           .getObject()
@@ -1513,16 +1942,14 @@ public class DirectoryApplicationService {
               evidence(
                   context,
                   AuditActionKind.SENSITIVE_READ,
-                  "DIRECTORY_FACILITY_NEARBY_READ",
+                  actionCode,
                   "FacilitySearch",
                   Optional.empty(),
                   AuditOutcome.SUCCEEDED,
                   Optional.empty(),
                   AuditAuthorizationOutcome.ALLOWED,
                   organizationId.map(DirectoryApplicationService::organizationReference),
-                  context.scope().kind() == ExecutionScope.Kind.FACILITY
-                      ? context.scope().facility()
-                      : Optional.empty()));
+                  facilityId.map(DirectoryApplicationService::facilityReference)));
     } catch (AuditPersistenceUnavailableException failure) {
       throw problem(
           HttpStatus.SERVICE_UNAVAILABLE,
@@ -1537,13 +1964,27 @@ public class DirectoryApplicationService {
   public record NearbyFacilityPage(
       List<LocatedFacilitySearchResult> nearby,
       List<UnlocatedFacilitySearchResult> unlocated,
-      int pageSize,
-      int offset,
+      int page,
+      int size,
       boolean hasMoreNearby,
       boolean hasMoreUnlocated) {
     public NearbyFacilityPage {
       nearby = List.copyOf(nearby);
       unlocated = List.copyOf(unlocated);
+    }
+  }
+
+  public record DirectoryFacilitySearchPage(
+      List<DirectoryFacilitySearchEntry> facilities, int page, int size, boolean hasMore) {
+    public DirectoryFacilitySearchPage {
+      facilities = List.copyOf(facilities);
+    }
+  }
+
+  public record DirectoryCareCapabilityPage(
+      List<CareCapability> items, int page, int size, boolean hasMore) {
+    public DirectoryCareCapabilityPage {
+      items = List.copyOf(items);
     }
   }
 
@@ -2099,6 +2540,13 @@ public class DirectoryApplicationService {
         HttpStatus.CONFLICT,
         PlatformErrorCode.DIRECTORY_CAPABILITY_CODE_CONFLICT,
         "The CareCapability code is already defined in this Directory vocabulary.");
+  }
+
+  private static PlatformProblemException identifierConflict() {
+    return problem(
+        HttpStatus.CONFLICT,
+        PlatformErrorCode.DIRECTORY_IDENTIFIER_CONFLICT,
+        "An active external identifier with this issuer, resource type, and value already exists for this Directory concept type.");
   }
 
   private static PlatformProblemException problem(

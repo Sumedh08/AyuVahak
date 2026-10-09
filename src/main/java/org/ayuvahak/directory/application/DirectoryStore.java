@@ -4,6 +4,8 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import org.ayuvahak.directory.domain.CareCapability;
+import org.ayuvahak.directory.domain.DirectoryConceptType;
+import org.ayuvahak.directory.domain.DirectoryExternalIdentifier;
 import org.ayuvahak.directory.domain.DirectoryLocation;
 import org.ayuvahak.directory.domain.Facility;
 import org.ayuvahak.directory.domain.FacilityCapabilityAssertion;
@@ -68,7 +70,7 @@ public interface DirectoryStore extends DirectoryScopeReferenceLookup {
 
   Optional<CareCapability> lockCareCapability(InternalId id);
 
-  List<CareCapability> listCareCapabilities(boolean activeOnly);
+  List<CareCapability> listCareCapabilities(boolean activeOnly, int limit, int offset);
 
   void appendCareCapabilityRevision(CareCapability current, String reasonCode);
 
@@ -89,6 +91,29 @@ public interface DirectoryStore extends DirectoryScopeReferenceLookup {
   boolean updateFacilityCapabilityAssertion(
       FacilityCapabilityAssertion corrected, long expectedVersion, Instant updatedAt);
 
+  Optional<DirectoryConceptOwner> findConceptOwner(DirectoryConceptType conceptType, InternalId id);
+
+  Optional<DirectoryConceptOwner> lockConceptOwner(DirectoryConceptType conceptType, InternalId id);
+
+  void insertExternalIdentifier(DirectoryExternalIdentifier identifier);
+
+  Optional<DirectoryExternalIdentifier> findExternalIdentifier(InternalId id);
+
+  Optional<DirectoryExternalIdentifier> lockExternalIdentifier(InternalId id);
+
+  List<DirectoryExternalIdentifierHistoryEntry> listExternalIdentifiers(
+      DirectoryConceptType conceptType,
+      InternalId conceptId,
+      boolean includeHistory,
+      int limit,
+      int offset);
+
+  void appendExternalIdentifierRevision(
+      DirectoryExternalIdentifier current, String reasonCode, Instant changedAt);
+
+  boolean updateExternalIdentifier(
+      DirectoryExternalIdentifier corrected, long expectedVersion, Instant updatedAt);
+
   List<LocatedFacilitySearchResult> findNearbyFacilities(
       Optional<InternalId> organizationId,
       Optional<InternalId> facilityId,
@@ -100,6 +125,14 @@ public interface DirectoryStore extends DirectoryScopeReferenceLookup {
       int offset);
 
   List<UnlocatedFacilitySearchResult> findUnlocatedFacilities(
+      Optional<InternalId> organizationId,
+      Optional<InternalId> facilityId,
+      List<String> requiredCapabilityCodes,
+      Instant evaluatedAt,
+      int limit,
+      int offset);
+
+  List<DirectoryFacilitySearchEntry> findFacilities(
       Optional<InternalId> organizationId,
       Optional<InternalId> facilityId,
       List<String> requiredCapabilityCodes,

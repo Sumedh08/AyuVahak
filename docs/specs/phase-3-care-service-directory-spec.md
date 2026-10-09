@@ -44,7 +44,7 @@ Capability assertion verification is explicit: `UNVERIFIED`, `VERIFIED`, `DISPUT
 | Create/update/deactivate HealthcareService | Preserve offering and owner/location references; service state does not assert capacity. |
 | Define/deactivate CareCapability code | Require platform-scoped `DirectoryVocabularyAdministration`; code immutable; cannot deactivate a code while existing history depends on it without a deprecation/replacement explanation. |
 | Assert/correct/withdraw FacilityCapability | Require authority for owning Facility; include source, method, effective time, and evidence status. Withdrawal/correction is append/supersede, not erasure. |
-| Add/remove ExternalIdentifier association | Require Directory authority, scoped issuer and resource type; prevent duplicate active tuple within a concept type; preserve history. |
+| Add/remove/supersede ExternalIdentifier association | Require Directory authority, an issuer/resource-type/value tuple, and valid owning-concept scope; prevent duplicate active tuple within a concept type; preserve correction history. |
 
 All mutations require owner-local idempotency for retried external commands, explicit validated organization/facility context, and atomic required audit per Phase 2. Source facts retain provenance; manual facts identify the actor, method, time, and reason. No source write-back occurs.
 
@@ -89,8 +89,29 @@ All routes below are authenticated and scope-checked; command routes require `Id
 | `POST /api/v1/directory/capabilities` | Define a governed CareCapability code. |
 | `POST /api/v1/directory/facilities/{facilityId}/capability-assertions` | Assert a direct capability for a Facility. |
 | `POST /api/v1/directory/capability-assertions/{assertionId}/corrections` | Correct/withdraw an assertion without destructive edit. |
-| `GET /api/v1/directory/capabilities` | Bounded active capability vocabulary query. |
-| `GET /api/v1/directory/facilities` | Bounded discovery with organization, near point/radius, and repeated required-capability filters. |
+| `GET /api/v1/directory/capabilities` | Bounded, paginated active capability vocabulary query. |
+| `GET /api/v1/directory/facilities/{facilityId}/capability-evidence` | Evaluate explicitly requested capability evidence for one Facility. |
+| `GET /api/v1/directory/facilities` | Bounded discovery using exact Organization/Facility filters, or optional geographic near-point/radius filters, plus repeated required-capability filters. |
+| `POST /api/v1/directory/concepts/{conceptType}/{conceptId}/external-identifiers` | Associate an issuer/resource-type/value identifier with one supported Directory concept. |
+| `GET /api/v1/directory/concepts/{conceptType}/{conceptId}/external-identifiers` | Read bounded current associations or their correction history. |
+| `POST /api/v1/directory/external-identifiers/{identifierId}/removal` | Remove an active association with an expected-version precondition and retained history. |
+| `POST /api/v1/directory/external-identifiers/{identifierId}/supersession` | Replace an active association with a linked successor and retained history. |
+
+All Directory list/search routes use `page` and `size`: page defaults to 0, size defaults to 50 and must be 1–100, and the calculated offset (`page × size`) must not exceed 10,000. Responses expose `page`, `size`, `items` (or the route-specific result groups), and `hasMore` metadata. Unsupported query keys fail with a stable Directory validation error rather than being silently ignored. Each route allowlists its own filters.
+
+`GET /api/v1/directory/facilities` accepts only `organizationId`, `facilityId`, `centerLongitude`, `centerLatitude`, `radiusMeters`, repeated `requiredCapability`, `page`, and `size`. Exact and capability filters may be used without geographic parameters. Geographic search requires longitude, latitude, and radius together; supplying only part of the geographic tuple is a validation error. Exact-filter results have deterministic Facility UUID ordering. A geographic response identifies `NEARBY` mode, orders located results by distance then Facility UUID, and keeps unlocated facilities in a separate group; an exact-filter response identifies `DIRECTORY_FILTERED` mode and does not imply distance.
+
+This specification defines the first Directory response contract intended for publication under `/api/v1`; earlier local-only implementation shapes are not compatibility commitments. After publication, incompatible API changes require a new major URI version.
+
+The four external-identifier routes use only these Directory concept types: Organization, Facility, Location, HealthcareService, CareCapability, and FacilityCapabilityAssertion. Add, remove, and supersession commands require `DirectoryCuration`, an explicit validated execution scope, `Idempotency-Key`, provenance, and required audit evidence in the same transaction. The initial association returns `201` with its internal Directory identifier; removal requires `expectedVersion` and returns `204`; supersession requires `expectedVersion`, the replacement issuer/resource type/value, and provenance, then returns `201` with the successor identifier. An active `(concept type, issuer, resource type, value)` tuple is unique across concepts of that type and conflicts with `DIRECTORY_IDENTIFIER_CONFLICT`. Issuer, resource type, value, and concept type are all part of the key; identifiers are not globally unique across other issuers, resource types, or concept types. Version conflicts use `DIRECTORY_VERSION_CONFLICT`. Directory validates each concept's owning Organization/Facility facts and never queries Identity & Access grant tables.
+
+The external-identifier read route requires `DirectoryRead` and accepts only `includeHistory`, `page`, and `size`. By default it returns only current active associations; `includeHistory=true` returns a bounded projection containing current state and retained correction snapshots. Reads are scope-checked and audited before disclosure. `DirectorySource` remains the provenance reference for a Directory fact and is distinct from an external identifier associated with that fact. Identifier associations do not provide a master patient index, identity reconciliation, or write-back.
+
+The active capability vocabulary read route requires `DirectoryRead` and accepts only `page` and `size`. It returns the active vocabulary in deterministic code/identifier order using the shared page response contract.
+
+The facility capability-evidence route requires `DirectoryRead` and at least one repeated `requiredCapability` parameter; it accepts no other query keys. Missing required capabilities and unknown query keys are rejected with `DIRECTORY_VALIDATION_FAILED`.
+
+An active external-identifier association may be removed when its owning Directory concept has been deactivated, provided the caller still passes the owner's curation-scope check. Removal changes only the identifier association and retained history; it does not reactivate or otherwise change the inactive concept. This permits cleanup of a no-longer-current external claim and release of its active uniqueness tuple.
 
 The standard list response contains page metadata and projection facts, not persistence rows. Nearby search documents coordinate order (`longitude`, `latitude`), radius in meters, distance metric, deterministic sort, and unlocated count/group.
 

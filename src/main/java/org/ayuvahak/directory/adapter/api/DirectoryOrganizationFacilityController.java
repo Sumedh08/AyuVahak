@@ -1,5 +1,6 @@
 package org.ayuvahak.directory.adapter.api;
 
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -10,13 +11,19 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import org.ayuvahak.directory.application.DirectoryApplicationService;
+import org.ayuvahak.directory.application.DirectoryExternalIdentifierHistoryEntry;
+import org.ayuvahak.directory.application.DirectoryExternalIdentifierPage;
+import org.ayuvahak.directory.application.DirectoryFacilitySearchEntry;
 import org.ayuvahak.directory.application.DirectoryScopeLookupUnavailableException;
 import org.ayuvahak.directory.application.FacilityDirectoryView;
 import org.ayuvahak.directory.application.LocatedFacilitySearchResult;
 import org.ayuvahak.directory.application.UnlocatedFacilitySearchResult;
 import org.ayuvahak.directory.domain.CapabilityVerificationStatus;
 import org.ayuvahak.directory.domain.CareCapability;
+import org.ayuvahak.directory.domain.DirectoryConceptType;
+import org.ayuvahak.directory.domain.DirectoryExternalIdentifier;
 import org.ayuvahak.directory.domain.DirectoryLocation;
 import org.ayuvahak.directory.domain.DirectoryProvenance;
 import org.ayuvahak.directory.domain.DirectorySource;
@@ -67,6 +74,21 @@ public class DirectoryOrganizationFacilityController {
   public static final String ORGANIZATION_SCOPE_HEADER = "X-AyuVahak-Organization-Id";
   public static final String FACILITY_SCOPE_HEADER = "X-AyuVahak-Facility-Id";
   private static final String DIRECTORY_ISSUER = "urn:ayuvahak:directory";
+  private static final Set<String> EXTERNAL_IDENTIFIER_QUERY_PARAMETERS =
+      Set.of("includeHistory", "page", "size");
+  private static final Set<String> CAPABILITY_QUERY_PARAMETERS = Set.of("page", "size");
+  private static final Set<String> CAPABILITY_EVIDENCE_QUERY_PARAMETERS =
+      Set.of("requiredCapability");
+  private static final Set<String> FACILITY_SEARCH_QUERY_PARAMETERS =
+      Set.of(
+          "centerLongitude",
+          "centerLatitude",
+          "radiusMeters",
+          "organizationId",
+          "facilityId",
+          "requiredCapability",
+          "page",
+          "size");
 
   private final DirectoryApplicationService directory;
   private final ExecutionContextFactory contextFactory;
@@ -82,6 +104,111 @@ public class DirectoryOrganizationFacilityController {
     this.contextFactory = contextFactory;
     this.objectMapper = objectMapper;
     this.clock = clock;
+  }
+
+  @PostMapping("/concepts/{conceptType}/{conceptId}/external-identifiers")
+  public ResponseEntity<ResourceCreated> addExternalIdentifier(
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
+      @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationScope,
+      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityScope,
+      @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+      @PathVariable String conceptType,
+      @PathVariable String conceptId,
+      @Valid @RequestBody ExternalIdentifierRequest request) {
+    DirectoryConceptType type = parseConceptType(conceptType);
+    InternalId id = parseId(conceptId);
+    ExecutionContext context =
+        context(
+            actor, scope, organizationScope, facilityScope, "DIRECTORY_EXTERNAL_IDENTIFIER_ADD");
+    InternalId identifierId =
+        directory.addExternalIdentifier(
+            context,
+            type,
+            id,
+            request.toExternalReference(),
+            request.provenance().toProvenance(context, clock.instant()),
+            idempotencyKey,
+            fingerprint(externalIdentifierCommand(type, id, request)));
+    return ResponseEntity.created(
+            URI.create("/api/v1/directory/external-identifiers/" + identifierId))
+        .body(new ResourceCreated(identifierId.toString()));
+  }
+
+  @GetMapping("/concepts/{conceptType}/{conceptId}/external-identifiers")
+  public ExternalIdentifierPageRepresentation listExternalIdentifiers(
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
+      @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationScope,
+      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityScope,
+      @PathVariable String conceptType,
+      @PathVariable String conceptId,
+      @RequestParam(defaultValue = "false") boolean includeHistory,
+      @RequestParam(required = false) Integer page,
+      @RequestParam(required = false) Integer size,
+      HttpServletRequest servletRequest) {
+    rejectUnknownQueryParameters(servletRequest, EXTERNAL_IDENTIFIER_QUERY_PARAMETERS);
+    DirectoryConceptType type = parseConceptType(conceptType);
+    InternalId id = parseId(conceptId);
+    ExecutionContext context =
+        context(
+            actor, scope, organizationScope, facilityScope, "DIRECTORY_EXTERNAL_IDENTIFIER_READ");
+    return ExternalIdentifierPageRepresentation.from(
+        directory.listExternalIdentifiers(context, type, id, includeHistory, page, size));
+  }
+
+  @PostMapping("/external-identifiers/{identifierId}/removal")
+  public ResponseEntity<Void> removeExternalIdentifier(
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
+      @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationScope,
+      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityScope,
+      @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+      @PathVariable String identifierId,
+      @Valid @RequestBody ExternalIdentifierTransitionRequest request) {
+    InternalId id = parseId(identifierId);
+    ExecutionContext context =
+        context(
+            actor, scope, organizationScope, facilityScope, "DIRECTORY_EXTERNAL_IDENTIFIER_REMOVE");
+    directory.removeExternalIdentifier(
+        context,
+        id,
+        request.expectedVersion(),
+        request.provenance().toProvenance(context, clock.instant()),
+        idempotencyKey,
+        fingerprint(externalIdentifierTransitionCommand(request)));
+    return ResponseEntity.noContent().build();
+  }
+
+  @PostMapping("/external-identifiers/{identifierId}/supersession")
+  public ResponseEntity<ResourceCreated> supersedeExternalIdentifier(
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
+      @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationScope,
+      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityScope,
+      @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+      @PathVariable String identifierId,
+      @Valid @RequestBody ExternalIdentifierSupersessionRequest request) {
+    InternalId id = parseId(identifierId);
+    ExecutionContext context =
+        context(
+            actor,
+            scope,
+            organizationScope,
+            facilityScope,
+            "DIRECTORY_EXTERNAL_IDENTIFIER_SUPERSEDE");
+    InternalId replacementId =
+        directory.supersedeExternalIdentifier(
+            context,
+            id,
+            request.expectedVersion(),
+            request.toExternalReference(),
+            request.provenance().toProvenance(context, clock.instant()),
+            idempotencyKey,
+            fingerprint(externalIdentifierSupersessionCommand(id, request)));
+    return ResponseEntity.created(
+            URI.create("/api/v1/directory/external-identifiers/" + replacementId))
+        .body(new ResourceCreated(replacementId.toString()));
   }
 
   @PostMapping("/organizations")
@@ -341,17 +468,24 @@ public class DirectoryOrganizationFacilityController {
   }
 
   @GetMapping("/capabilities")
-  public List<CareCapabilityRepresentation> listCareCapabilities(
+  public CareCapabilityPageRepresentation listCareCapabilities(
       @AuthenticationPrincipal ActorReference actor,
       @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
       @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationScope,
-      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityScope) {
+      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityScope,
+      @RequestParam(required = false) Integer page,
+      @RequestParam(required = false) Integer size,
+      HttpServletRequest servletRequest) {
+    rejectUnknownQueryParameters(servletRequest, CAPABILITY_QUERY_PARAMETERS);
     ExecutionContext context =
         context(
             actor, scope, organizationScope, facilityScope, "DIRECTORY_CARE_CAPABILITY_LIST_READ");
-    return directory.listCareCapabilities(context).stream()
-        .map(CareCapabilityRepresentation::from)
-        .toList();
+    var result = directory.listCareCapabilities(context, page, size);
+    return new CareCapabilityPageRepresentation(
+        result.items().stream().map(CareCapabilityRepresentation::from).toList(),
+        result.page(),
+        result.size(),
+        result.hasMore());
   }
 
   @PatchMapping("/capabilities/{capabilityId}")
@@ -483,7 +617,13 @@ public class DirectoryOrganizationFacilityController {
       @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationScope,
       @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityScope,
       @PathVariable String facilityId,
-      @RequestParam("requiredCapability") List<String> requiredCapabilities) {
+      @RequestParam(name = "requiredCapability", required = false)
+          List<String> requiredCapabilities,
+      HttpServletRequest servletRequest) {
+    rejectUnknownQueryParameters(servletRequest, CAPABILITY_EVIDENCE_QUERY_PARAMETERS);
+    if (requiredCapabilities == null || requiredCapabilities.isEmpty()) {
+      throw searchValidation("At least one requiredCapability must be supplied.");
+    }
     ExecutionContext context =
         context(
             actor,
@@ -496,35 +636,61 @@ public class DirectoryOrganizationFacilityController {
   }
 
   @GetMapping("/facilities")
-  public NearbyFacilitiesRepresentation findNearbyFacilities(
+  public FacilitySearchRepresentation findFacilities(
       @AuthenticationPrincipal ActorReference actor,
       @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
       @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationScope,
       @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityScope,
-      @RequestParam Double centerLongitude,
-      @RequestParam Double centerLatitude,
-      @RequestParam Double radiusMeters,
+      @RequestParam(required = false) Double centerLongitude,
+      @RequestParam(required = false) Double centerLatitude,
+      @RequestParam(required = false) Double radiusMeters,
       @RequestParam(required = false) String organizationId,
+      @RequestParam(required = false) String facilityId,
       @RequestParam(name = "requiredCapability", required = false)
           List<String> requiredCapabilityCodes,
-      @RequestParam(required = false, defaultValue = "0") int pageSize,
-      @RequestParam(required = false, defaultValue = "0") int offset) {
+      @RequestParam(required = false) Integer page,
+      @RequestParam(required = false) Integer size,
+      HttpServletRequest servletRequest) {
     ExecutionContext context =
-        context(actor, scope, organizationScope, facilityScope, "DIRECTORY_FACILITY_NEARBY_READ");
+        context(actor, scope, organizationScope, facilityScope, "DIRECTORY_FACILITY_SEARCH_READ");
+    rejectUnknownFacilitySearchParameters(servletRequest);
+    Optional<InternalId> organizationFilter = optionalInternalId(organizationId);
+    Optional<InternalId> facilityFilter = optionalInternalId(facilityId);
+    boolean hasLongitude = centerLongitude != null;
+    boolean hasLatitude = centerLatitude != null;
+    boolean hasRadius = radiusMeters != null;
+    if (!hasLongitude && !hasLatitude && !hasRadius) {
+      var result =
+          directory.findFacilities(
+              context, organizationFilter, facilityFilter, requiredCapabilityCodes, page, size);
+      return new FacilitySearchRepresentation(
+          "DIRECTORY_FILTERED",
+          result.facilities().stream().map(FacilitySearchItemRepresentation::from).toList(),
+          List.of(),
+          result.page(),
+          result.size(),
+          result.hasMore(),
+          false);
+    }
+    if (!hasLongitude || !hasLatitude || !hasRadius) {
+      throw searchValidation("Geographic search requires center longitude, latitude, and radius.");
+    }
     var result =
         directory.findNearbyFacilities(
             context,
             coordinate(centerLongitude, centerLatitude).orElseThrow(),
             radiusMeters,
-            organizationId == null ? Optional.empty() : Optional.of(parseId(organizationId)),
+            organizationFilter,
+            facilityFilter,
             requiredCapabilityCodes,
-            pageSize,
-            offset);
-    return new NearbyFacilitiesRepresentation(
-        result.nearby().stream().map(NearbyFacilityRepresentation::from).toList(),
-        result.unlocated().stream().map(UnlocatedFacilityRepresentation::from).toList(),
-        result.pageSize(),
-        result.offset(),
+            page,
+            size);
+    return new FacilitySearchRepresentation(
+        "NEARBY",
+        result.nearby().stream().map(FacilitySearchItemRepresentation::from).toList(),
+        result.unlocated().stream().map(FacilitySearchItemRepresentation::from).toList(),
+        result.page(),
+        result.size(),
         result.hasMoreNearby(),
         result.hasMoreUnlocated());
   }
@@ -641,6 +807,17 @@ public class DirectoryOrganizationFacilityController {
     }
   }
 
+  private static DirectoryConceptType parseConceptType(String serializedType) {
+    try {
+      return DirectoryConceptType.valueOf(serializedType);
+    } catch (IllegalArgumentException | NullPointerException malformed) {
+      throw new PlatformProblemException(
+          HttpStatus.BAD_REQUEST,
+          PlatformErrorCode.DIRECTORY_VALIDATION_FAILED,
+          "The requested Directory concept type does not support external identifiers.");
+    }
+  }
+
   private static Optional<InternalId> optionalInternalId(String serializedId) {
     return serializedId == null ? Optional.empty() : Optional.of(parseId(serializedId));
   }
@@ -652,6 +829,38 @@ public class DirectoryOrganizationFacilityController {
 
   private RequestFingerprint fingerprint(ObjectNode normalized) {
     return RequestFingerprint.from(normalized);
+  }
+
+  private ObjectNode externalIdentifierCommand(
+      DirectoryConceptType conceptType, InternalId conceptId, ExternalIdentifierRequest request) {
+    ObjectNode normalized = objectMapper.createObjectNode();
+    normalized.put("conceptType", conceptType.name());
+    normalized.put("conceptId", conceptId.toString());
+    normalized.put("issuer", request.issuer());
+    normalized.put("resourceType", request.resourceType());
+    normalized.put("value", request.value());
+    normalized.set("provenance", provenanceNode(request.provenance()));
+    return normalized;
+  }
+
+  private ObjectNode externalIdentifierTransitionCommand(
+      ExternalIdentifierTransitionRequest request) {
+    ObjectNode normalized = objectMapper.createObjectNode();
+    normalized.put("expectedVersion", request.expectedVersion());
+    normalized.set("provenance", provenanceNode(request.provenance()));
+    return normalized;
+  }
+
+  private ObjectNode externalIdentifierSupersessionCommand(
+      InternalId identifierId, ExternalIdentifierSupersessionRequest request) {
+    ObjectNode normalized = objectMapper.createObjectNode();
+    normalized.put("identifierId", identifierId.toString());
+    normalized.put("expectedVersion", request.expectedVersion());
+    normalized.put("issuer", request.issuer());
+    normalized.put("resourceType", request.resourceType());
+    normalized.put("value", request.value());
+    normalized.set("provenance", provenanceNode(request.provenance()));
+    return normalized;
   }
 
   private ObjectNode organizationCommand(CreateOrganizationRequest request) {
@@ -827,6 +1036,25 @@ public class DirectoryOrganizationFacilityController {
         "Coordinates must be finite WGS84 longitude and latitude in that order.");
   }
 
+  private static PlatformProblemException searchValidation(String detail) {
+    return new PlatformProblemException(
+        HttpStatus.BAD_REQUEST, PlatformErrorCode.DIRECTORY_VALIDATION_FAILED, detail);
+  }
+
+  private static void rejectUnknownFacilitySearchParameters(HttpServletRequest request) {
+    rejectUnknownQueryParameters(request, FACILITY_SEARCH_QUERY_PARAMETERS);
+  }
+
+  private static void rejectUnknownQueryParameters(
+      HttpServletRequest request, Set<String> allowedParameters) {
+    boolean hasUnsupportedParameter =
+        request.getParameterMap().keySet().stream()
+            .anyMatch(name -> !allowedParameters.contains(name));
+    if (hasUnsupportedParameter) {
+      throw searchValidation("The request contains an unsupported query parameter.");
+    }
+  }
+
   private ObjectNode sourceNode(SourceRequest request) {
     ObjectNode normalized = objectMapper.createObjectNode();
     normalized.put("issuer", request.issuer());
@@ -923,6 +1151,38 @@ public class DirectoryOrganizationFacilityController {
       @NotNull Instant effectiveFrom,
       Instant effectiveUntil) {}
 
+  public record ExternalIdentifierRequest(
+      @NotBlank String issuer,
+      @NotBlank @Pattern(regexp = "[A-Za-z][A-Za-z0-9._-]{0,63}") String resourceType,
+      @NotBlank String value,
+      @Valid @NotNull ProvenanceRequest provenance) {
+    ExternalReference toExternalReference() {
+      try {
+        return new ExternalReference(new IssuerId(issuer), resourceType, value);
+      } catch (IllegalArgumentException malformed) {
+        throw new PlatformProblemException(
+            HttpStatus.BAD_REQUEST,
+            PlatformErrorCode.DIRECTORY_VALIDATION_FAILED,
+            "The external identifier issuer, resource type, or value is invalid.");
+      }
+    }
+  }
+
+  public record ExternalIdentifierTransitionRequest(
+      @Positive long expectedVersion, @Valid @NotNull ProvenanceRequest provenance) {}
+
+  public record ExternalIdentifierSupersessionRequest(
+      @Positive long expectedVersion,
+      @NotBlank String issuer,
+      @NotBlank @Pattern(regexp = "[A-Za-z][A-Za-z0-9._-]{0,63}") String resourceType,
+      @NotBlank String value,
+      @Valid @NotNull ProvenanceRequest provenance) {
+    ExternalReference toExternalReference() {
+      return new ExternalIdentifierRequest(issuer, resourceType, value, provenance)
+          .toExternalReference();
+    }
+  }
+
   public record SourceRequest(
       @NotBlank String issuer,
       @NotBlank @Pattern(regexp = "[A-Za-z][A-Za-z0-9._-]{0,63}") String resourceType,
@@ -956,6 +1216,60 @@ public class DirectoryOrganizationFacilityController {
   }
 
   public record ResourceCreated(String id) {}
+
+  public record CareCapabilityPageRepresentation(
+      List<CareCapabilityRepresentation> items, int page, int size, boolean hasMore) {}
+
+  public record ExternalIdentifierPageRepresentation(
+      List<ExternalIdentifierHistoryRepresentation> items, int page, int size, boolean hasMore) {
+    static ExternalIdentifierPageRepresentation from(DirectoryExternalIdentifierPage page) {
+      return new ExternalIdentifierPageRepresentation(
+          page.items().stream().map(ExternalIdentifierHistoryRepresentation::from).toList(),
+          page.page(),
+          page.size(),
+          page.hasMore());
+    }
+  }
+
+  public record ExternalIdentifierHistoryRepresentation(
+      String id,
+      String conceptType,
+      String conceptId,
+      ExternalIdentifierValueRepresentation externalIdentifier,
+      String status,
+      Optional<String> supersedesIdentifierId,
+      ProvenanceRepresentation provenance,
+      long version,
+      boolean current,
+      Instant recordedAt,
+      Optional<String> changeReasonCode) {
+    static ExternalIdentifierHistoryRepresentation from(
+        DirectoryExternalIdentifierHistoryEntry entry) {
+      DirectoryExternalIdentifier identifier = entry.identifier();
+      return new ExternalIdentifierHistoryRepresentation(
+          identifier.id().toString(),
+          identifier.conceptType().name(),
+          identifier.conceptId().toString(),
+          ExternalIdentifierValueRepresentation.from(identifier.externalIdentifier()),
+          identifier.status().name(),
+          identifier.supersedesIdentifierId().map(InternalId::toString),
+          ProvenanceRepresentation.from(identifier.provenance()),
+          identifier.version(),
+          entry.current(),
+          entry.recordedAt(),
+          entry.changeReasonCode());
+    }
+  }
+
+  public record ExternalIdentifierValueRepresentation(
+      String issuer, String resourceType, String value) {
+    static ExternalIdentifierValueRepresentation from(ExternalReference externalIdentifier) {
+      return new ExternalIdentifierValueRepresentation(
+          externalIdentifier.issuer().value(),
+          externalIdentifier.resourceType(),
+          externalIdentifier.value());
+    }
+  }
 
   public record SourceRepresentation(String issuer, String resourceType, String reference) {
     static SourceRepresentation from(DirectorySource source) {
@@ -1149,41 +1463,55 @@ public class DirectoryOrganizationFacilityController {
     }
   }
 
-  public record NearbyFacilitiesRepresentation(
-      List<NearbyFacilityRepresentation> nearby,
-      List<UnlocatedFacilityRepresentation> unlocated,
-      int pageSize,
-      int offset,
-      boolean hasMoreNearby,
+  public record FacilitySearchRepresentation(
+      String mode,
+      List<FacilitySearchItemRepresentation> facilities,
+      List<FacilitySearchItemRepresentation> unlocated,
+      int page,
+      int size,
+      boolean hasMore,
       boolean hasMoreUnlocated) {}
 
-  public record NearbyFacilityRepresentation(
+  public record FacilitySearchItemRepresentation(
       String facilityId,
       String managingOrganizationId,
       String facilityName,
-      LocationRepresentation location,
-      double distanceMeters) {
-    static NearbyFacilityRepresentation from(LocatedFacilitySearchResult result) {
-      return new NearbyFacilityRepresentation(
-          result.facility().id().toString(),
-          result.facility().managingOrganizationId().toString(),
-          result.facility().name(),
-          LocationRepresentation.from(result.location()),
-          result.distanceMeters());
+      String status,
+      long version,
+      SourceRepresentation source,
+      ProvenanceRepresentation provenance,
+      Optional<LocationRepresentation> location,
+      Optional<Double> distanceMeters) {
+    static FacilitySearchItemRepresentation from(DirectoryFacilitySearchEntry result) {
+      Facility facility = result.facility();
+      return new FacilitySearchItemRepresentation(
+          facility.id().toString(),
+          facility.managingOrganizationId().toString(),
+          facility.name(),
+          facility.status().name(),
+          facility.version(),
+          SourceRepresentation.from(facility.source()),
+          ProvenanceRepresentation.from(facility.provenance()),
+          result.primaryLocation().map(LocationRepresentation::from),
+          Optional.empty());
     }
-  }
 
-  public record UnlocatedFacilityRepresentation(
-      String facilityId,
-      String managingOrganizationId,
-      String facilityName,
-      Optional<LocationRepresentation> primaryLocation) {
-    static UnlocatedFacilityRepresentation from(UnlocatedFacilitySearchResult result) {
-      return new UnlocatedFacilityRepresentation(
+    static FacilitySearchItemRepresentation from(LocatedFacilitySearchResult result) {
+      Facility facility = result.facility();
+      return new FacilitySearchItemRepresentation(
           result.facility().id().toString(),
           result.facility().managingOrganizationId().toString(),
           result.facility().name(),
-          result.primaryLocation().map(LocationRepresentation::from));
+          facility.status().name(),
+          facility.version(),
+          SourceRepresentation.from(facility.source()),
+          ProvenanceRepresentation.from(facility.provenance()),
+          Optional.of(LocationRepresentation.from(result.location())),
+          Optional.of(result.distanceMeters()));
+    }
+
+    static FacilitySearchItemRepresentation from(UnlocatedFacilitySearchResult result) {
+      return from(new DirectoryFacilitySearchEntry(result.facility(), result.primaryLocation()));
     }
   }
 }
