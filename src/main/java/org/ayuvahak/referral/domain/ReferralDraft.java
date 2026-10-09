@@ -126,6 +126,24 @@ public record ReferralDraft(
         resolvedAt);
   }
 
+  public ReferralDraft cancel(ActorReference canceller, Instant cancelledAt) {
+    if (state != ReferralState.DRAFT && state != ReferralState.SUBMITTED) {
+      throw new IllegalStateException("only a draft or submitted Referral can be cancelled");
+    }
+    return new ReferralDraft(
+        id,
+        originOrganization,
+        originFacility,
+        patientReference,
+        careRequirement,
+        createdBy,
+        canceller,
+        ReferralState.CANCELLED,
+        Math.addExact(version, 1),
+        createdAt,
+        cancelledAt);
+  }
+
   @Override
   public String toString() {
     return "ReferralDraft[id="

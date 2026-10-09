@@ -4,5 +4,6 @@ package org.ayuvahak.referral.domain;
 public enum ReferralState {
   DRAFT,
   SUBMITTED,
+  CANCELLED,
   RESOLVED
 }

@@ -15,6 +15,7 @@ import org.ayuvahak.platform.event.AggregatePosition;
 import org.ayuvahak.platform.event.EventEnvelope;
 import org.ayuvahak.platform.event.EventEnvelopeJsonCodec;
 import org.ayuvahak.platform.event.EventType;
+import org.ayuvahak.platform.eventing.application.DeclaredFutureConsumerEvents;
 import org.ayuvahak.platform.eventing.application.DeliveryFailureResult;
 import org.ayuvahak.platform.eventing.application.InternalEvent;
 import org.ayuvahak.platform.eventing.application.LeaseToken;
@@ -84,6 +85,18 @@ public class PostgresOutboxStore implements OutboxStore {
 
   @Override
   public void record(EventEnvelope event) {
+    record(event, "PENDING");
+  }
+
+  @Override
+  public void recordWaitingForConsumer(EventEnvelope event) {
+    if (!DeclaredFutureConsumerEvents.permitsWaiting(event)) {
+      throw new IllegalArgumentException("event is not an approved declared-future-consumer event");
+    }
+    record(event, "WAITING_FOR_CONSUMER");
+  }
+
+  private void record(EventEnvelope event, String initialDeliveryState) {
     Objects.requireNonNull(event, "event");
     if (!TransactionSynchronizationManager.isActualTransactionActive()) {
       throw new IllegalStateException("outbox intent must join the producer's active transaction");
@@ -111,8 +124,9 @@ public class PostgresOutboxStore implements OutboxStore {
     jdbcTemplate.update(
         "INSERT INTO platform_eventing.outbox_delivery "
             + "(event_id, delivery_generation, state, next_attempt_at, created_at, updated_at) "
-            + "VALUES (?, 1, 'PENDING', ?, ?, ?)",
+            + "VALUES (?, 1, ?, ?, ?, ?)",
         event.eventId().value(),
+        initialDeliveryState,
         Timestamp.from(now),
         Timestamp.from(now),
         Timestamp.from(now));

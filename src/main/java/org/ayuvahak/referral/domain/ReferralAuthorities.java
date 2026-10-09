@@ -19,6 +19,8 @@ public final class ReferralAuthorities {
       new FunctionalAuthority("ReferralAmend", ORIGIN_SCOPES);
   private static final FunctionalAuthority RESOLVE =
       new FunctionalAuthority("ReferralResolve", ORIGIN_SCOPES);
+  private static final FunctionalAuthority CANCEL =
+      new FunctionalAuthority("ReferralCancel", ORIGIN_SCOPES);
 
   private ReferralAuthorities() {}
 
@@ -40,5 +42,9 @@ public final class ReferralAuthorities {
 
   public static FunctionalAuthority resolve() {
     return RESOLVE;
+  }
+
+  public static FunctionalAuthority cancel() {
+    return CANCEL;
   }
 }
