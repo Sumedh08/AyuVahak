@@ -13,6 +13,8 @@ public final class ReferralAuthorities {
       new FunctionalAuthority("ReferralCreate", ORIGIN_SCOPES);
   private static final FunctionalAuthority EDIT =
       new FunctionalAuthority("ReferralEdit", ORIGIN_SCOPES);
+  private static final FunctionalAuthority SUBMIT =
+      new FunctionalAuthority("ReferralSubmit", ORIGIN_SCOPES);
 
   private ReferralAuthorities() {}
 
@@ -22,5 +24,9 @@ public final class ReferralAuthorities {
 
   public static FunctionalAuthority edit() {
     return EDIT;
+  }
+
+  public static FunctionalAuthority submit() {
+    return SUBMIT;
   }
 }
