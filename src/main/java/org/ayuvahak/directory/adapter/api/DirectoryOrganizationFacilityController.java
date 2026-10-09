@@ -13,6 +13,7 @@ import java.util.Optional;
 import org.ayuvahak.directory.application.DirectoryApplicationService;
 import org.ayuvahak.directory.application.DirectoryExternalIdentifierHistoryEntry;
 import org.ayuvahak.directory.application.DirectoryExternalIdentifierPage;
+import org.ayuvahak.directory.application.DirectoryFacilitySearchEntry;
 import org.ayuvahak.directory.application.DirectoryScopeLookupUnavailableException;
 import org.ayuvahak.directory.application.FacilityDirectoryView;
 import org.ayuvahak.directory.application.LocatedFacilitySearchResult;
@@ -603,33 +604,62 @@ public class DirectoryOrganizationFacilityController {
   }
 
   @GetMapping("/facilities")
-  public NearbyFacilitiesRepresentation findNearbyFacilities(
+  public FacilitySearchRepresentation findFacilities(
       @AuthenticationPrincipal ActorReference actor,
       @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
       @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationScope,
       @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityScope,
-      @RequestParam Double centerLongitude,
-      @RequestParam Double centerLatitude,
-      @RequestParam Double radiusMeters,
+      @RequestParam(required = false) Double centerLongitude,
+      @RequestParam(required = false) Double centerLatitude,
+      @RequestParam(required = false) Double radiusMeters,
       @RequestParam(required = false) String organizationId,
+      @RequestParam(required = false) String facilityId,
       @RequestParam(name = "requiredCapability", required = false)
           List<String> requiredCapabilityCodes,
       @RequestParam(required = false, defaultValue = "0") int pageSize,
       @RequestParam(required = false, defaultValue = "0") int offset) {
     ExecutionContext context =
-        context(actor, scope, organizationScope, facilityScope, "DIRECTORY_FACILITY_NEARBY_READ");
+        context(actor, scope, organizationScope, facilityScope, "DIRECTORY_FACILITY_SEARCH_READ");
+    Optional<InternalId> organizationFilter = optionalInternalId(organizationId);
+    Optional<InternalId> facilityFilter = optionalInternalId(facilityId);
+    boolean hasLongitude = centerLongitude != null;
+    boolean hasLatitude = centerLatitude != null;
+    boolean hasRadius = radiusMeters != null;
+    if (!hasLongitude && !hasLatitude && !hasRadius) {
+      var result =
+          directory.findFacilities(
+              context,
+              organizationFilter,
+              facilityFilter,
+              requiredCapabilityCodes,
+              pageSize,
+              offset);
+      return new FacilitySearchRepresentation(
+          "DIRECTORY_FILTERED",
+          result.facilities().stream().map(FacilitySearchItemRepresentation::from).toList(),
+          List.of(),
+          result.pageSize(),
+          result.offset(),
+          result.hasMore(),
+          false);
+    }
+    if (!hasLongitude || !hasLatitude || !hasRadius) {
+      throw searchValidation("Geographic search requires center longitude, latitude, and radius.");
+    }
     var result =
         directory.findNearbyFacilities(
             context,
             coordinate(centerLongitude, centerLatitude).orElseThrow(),
             radiusMeters,
-            organizationId == null ? Optional.empty() : Optional.of(parseId(organizationId)),
+            organizationFilter,
+            facilityFilter,
             requiredCapabilityCodes,
             pageSize,
             offset);
-    return new NearbyFacilitiesRepresentation(
-        result.nearby().stream().map(NearbyFacilityRepresentation::from).toList(),
-        result.unlocated().stream().map(UnlocatedFacilityRepresentation::from).toList(),
+    return new FacilitySearchRepresentation(
+        "NEARBY",
+        result.nearby().stream().map(FacilitySearchItemRepresentation::from).toList(),
+        result.unlocated().stream().map(FacilitySearchItemRepresentation::from).toList(),
         result.pageSize(),
         result.offset(),
         result.hasMoreNearby(),
@@ -975,6 +1005,11 @@ public class DirectoryOrganizationFacilityController {
         HttpStatus.BAD_REQUEST,
         PlatformErrorCode.DIRECTORY_COORDINATE_INVALID,
         "Coordinates must be finite WGS84 longitude and latitude in that order.");
+  }
+
+  private static PlatformProblemException searchValidation(String detail) {
+    return new PlatformProblemException(
+        HttpStatus.BAD_REQUEST, PlatformErrorCode.DIRECTORY_VALIDATION_FAILED, detail);
   }
 
   private ObjectNode sourceNode(SourceRequest request) {
@@ -1382,41 +1417,55 @@ public class DirectoryOrganizationFacilityController {
     }
   }
 
-  public record NearbyFacilitiesRepresentation(
-      List<NearbyFacilityRepresentation> nearby,
-      List<UnlocatedFacilityRepresentation> unlocated,
+  public record FacilitySearchRepresentation(
+      String mode,
+      List<FacilitySearchItemRepresentation> facilities,
+      List<FacilitySearchItemRepresentation> unlocated,
       int pageSize,
       int offset,
-      boolean hasMoreNearby,
+      boolean hasMore,
       boolean hasMoreUnlocated) {}
 
-  public record NearbyFacilityRepresentation(
+  public record FacilitySearchItemRepresentation(
       String facilityId,
       String managingOrganizationId,
       String facilityName,
-      LocationRepresentation location,
-      double distanceMeters) {
-    static NearbyFacilityRepresentation from(LocatedFacilitySearchResult result) {
-      return new NearbyFacilityRepresentation(
-          result.facility().id().toString(),
-          result.facility().managingOrganizationId().toString(),
-          result.facility().name(),
-          LocationRepresentation.from(result.location()),
-          result.distanceMeters());
+      String status,
+      long version,
+      SourceRepresentation source,
+      ProvenanceRepresentation provenance,
+      Optional<LocationRepresentation> location,
+      Optional<Double> distanceMeters) {
+    static FacilitySearchItemRepresentation from(DirectoryFacilitySearchEntry result) {
+      Facility facility = result.facility();
+      return new FacilitySearchItemRepresentation(
+          facility.id().toString(),
+          facility.managingOrganizationId().toString(),
+          facility.name(),
+          facility.status().name(),
+          facility.version(),
+          SourceRepresentation.from(facility.source()),
+          ProvenanceRepresentation.from(facility.provenance()),
+          result.primaryLocation().map(LocationRepresentation::from),
+          Optional.empty());
     }
-  }
 
-  public record UnlocatedFacilityRepresentation(
-      String facilityId,
-      String managingOrganizationId,
-      String facilityName,
-      Optional<LocationRepresentation> primaryLocation) {
-    static UnlocatedFacilityRepresentation from(UnlocatedFacilitySearchResult result) {
-      return new UnlocatedFacilityRepresentation(
+    static FacilitySearchItemRepresentation from(LocatedFacilitySearchResult result) {
+      Facility facility = result.facility();
+      return new FacilitySearchItemRepresentation(
           result.facility().id().toString(),
           result.facility().managingOrganizationId().toString(),
           result.facility().name(),
-          result.primaryLocation().map(LocationRepresentation::from));
+          facility.status().name(),
+          facility.version(),
+          SourceRepresentation.from(facility.source()),
+          ProvenanceRepresentation.from(facility.provenance()),
+          Optional.of(LocationRepresentation.from(result.location())),
+          Optional.of(result.distanceMeters()));
+    }
+
+    static FacilitySearchItemRepresentation from(UnlocatedFacilitySearchResult result) {
+      return from(new DirectoryFacilitySearchEntry(result.facility(), result.primaryLocation()));
     }
   }
 }

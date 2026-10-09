@@ -132,6 +132,14 @@ public interface DirectoryStore extends DirectoryScopeReferenceLookup {
       int limit,
       int offset);
 
+  List<DirectoryFacilitySearchEntry> findFacilities(
+      Optional<InternalId> organizationId,
+      Optional<InternalId> facilityId,
+      List<String> requiredCapabilityCodes,
+      Instant evaluatedAt,
+      int limit,
+      int offset);
+
   ReceiptClaim claimReceipt(
       CommandReceiptKey key, RequestFingerprint fingerprint, Instant recordedAt);
 

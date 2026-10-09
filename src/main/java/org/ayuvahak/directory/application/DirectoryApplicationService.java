@@ -1731,6 +1731,7 @@ public class DirectoryApplicationService {
       Wgs84Coordinate center,
       double radiusMeters,
       Optional<InternalId> requestedOrganizationId,
+      Optional<InternalId> requestedFacilityId,
       List<String> requestedCapabilityCodes,
       int requestedPageSize,
       int offset) {
@@ -1739,24 +1740,27 @@ public class DirectoryApplicationService {
         DirectoryAuthorities.read().code(),
         "DIRECTORY_FACILITY_NEARBY_READ",
         "FacilitySearch",
-        Optional.empty(),
+        requestedFacilityId,
         requestedOrganizationId.map(DirectoryApplicationService::organizationReference));
     if (!Double.isFinite(radiusMeters)
         || radiusMeters <= 0.0
         || radiusMeters > MAX_SEARCH_RADIUS_METERS) {
       throw coordinateInvalid("Radius must be greater than zero and no more than 500000 meters.");
     }
-    int pageSize = requestedPageSize == 0 ? DEFAULT_SEARCH_PAGE_SIZE : requestedPageSize;
-    if (pageSize < 1
-        || pageSize > MAX_SEARCH_PAGE_SIZE
-        || offset < 0
-        || offset > MAX_SEARCH_OFFSET) {
-      throw validation("Search page size must be between 1 and 100 and offset at most 10000.");
-    }
-    SearchScope searchScope = resolveSearchScope(context, requestedOrganizationId);
+    int pageSize = validatedSearchPageSize(requestedPageSize, offset);
+    SearchScope searchScope =
+        resolveSearchScope(
+            context,
+            requestedOrganizationId,
+            requestedFacilityId,
+            "DIRECTORY_FACILITY_NEARBY_READ");
     List<String> requiredCapabilityCodes = optionalCapabilityRequirements(requestedCapabilityCodes);
     Instant evaluatedAt = clock.instant();
-    auditSearchRead(context, searchScope.organizationId());
+    auditSearchRead(
+        context,
+        searchScope.organizationId(),
+        searchScope.facilityId(),
+        "DIRECTORY_FACILITY_NEARBY_READ");
     List<LocatedFacilitySearchResult> nearby =
         store.findNearbyFacilities(
             searchScope.organizationId(),
@@ -1786,8 +1790,88 @@ public class DirectoryApplicationService {
         hasMoreUnlocated);
   }
 
+  public DirectoryFacilitySearchPage findFacilities(
+      ExecutionContext context,
+      Optional<InternalId> requestedOrganizationId,
+      Optional<InternalId> requestedFacilityId,
+      List<String> requestedCapabilityCodes,
+      int requestedPageSize,
+      int offset) {
+    requireAuthority(
+        context,
+        DirectoryAuthorities.read().code(),
+        "DIRECTORY_FACILITY_SEARCH_READ",
+        "FacilitySearch",
+        requestedFacilityId,
+        requestedOrganizationId.map(DirectoryApplicationService::organizationReference));
+    int pageSize = validatedSearchPageSize(requestedPageSize, offset);
+    SearchScope searchScope =
+        resolveSearchScope(
+            context,
+            requestedOrganizationId,
+            requestedFacilityId,
+            "DIRECTORY_FACILITY_SEARCH_READ");
+    List<String> requiredCapabilityCodes = optionalCapabilityRequirements(requestedCapabilityCodes);
+    Instant evaluatedAt = clock.instant();
+    auditSearchRead(
+        context,
+        searchScope.organizationId(),
+        searchScope.facilityId(),
+        "DIRECTORY_FACILITY_SEARCH_READ");
+    List<DirectoryFacilitySearchEntry> facilities =
+        store.findFacilities(
+            searchScope.organizationId(),
+            searchScope.facilityId(),
+            requiredCapabilityCodes,
+            evaluatedAt,
+            pageSize + 1,
+            offset);
+    boolean hasMore = facilities.size() > pageSize;
+    return new DirectoryFacilitySearchPage(
+        facilities.stream().limit(pageSize).toList(), pageSize, offset, hasMore);
+  }
+
+  private static int validatedSearchPageSize(int requestedPageSize, int offset) {
+    int pageSize = requestedPageSize == 0 ? DEFAULT_SEARCH_PAGE_SIZE : requestedPageSize;
+    if (pageSize < 1
+        || pageSize > MAX_SEARCH_PAGE_SIZE
+        || offset < 0
+        || offset > MAX_SEARCH_OFFSET) {
+      throw validation("Search page size must be between 1 and 100 and offset at most 10000.");
+    }
+    return pageSize;
+  }
+
   private SearchScope resolveSearchScope(
-      ExecutionContext context, Optional<InternalId> requestedOrganizationId) {
+      ExecutionContext context,
+      Optional<InternalId> requestedOrganizationId,
+      Optional<InternalId> requestedFacilityId,
+      String actionCode) {
+    if (requestedFacilityId.isPresent()) {
+      InternalId facilityId = requestedFacilityId.orElseThrow();
+      Facility facility =
+          store.findFacility(facilityId).orElseThrow(DirectoryApplicationService::notFound);
+      boolean organizationFilterConflicts =
+          requestedOrganizationId
+              .filter(organizationId -> !organizationId.equals(facility.managingOrganizationId()))
+              .isPresent();
+      if (organizationFilterConflicts && context.scope().kind() == ExecutionScope.Kind.PLATFORM) {
+        throw validation("The Facility does not belong to the requested Organization filter.");
+      }
+      if (organizationFilterConflicts || !scopeCanReadFacility(context.scope(), facility)) {
+        denyScope(
+            context,
+            actionCode,
+            "FacilitySearch",
+            Optional.of(facilityId),
+            Optional.of(organizationReference(facility.managingOrganizationId())),
+            Optional.of(facilityReference(facilityId)));
+        throw scopeMismatch();
+      }
+      return new SearchScope(
+          Optional.of(facility.managingOrganizationId()), Optional.of(facilityId));
+    }
+
     return switch (context.scope().kind()) {
       case PLATFORM -> new SearchScope(requestedOrganizationId, Optional.empty());
       case ORGANIZATION -> {
@@ -1797,7 +1881,7 @@ public class DirectoryApplicationService {
             && !requestedOrganizationId.orElseThrow().equals(scopeOrganizationId)) {
           denyScope(
               context,
-              "DIRECTORY_FACILITY_NEARBY_READ",
+              actionCode,
               "FacilitySearch",
               Optional.empty(),
               requestedOrganizationId.map(DirectoryApplicationService::organizationReference));
@@ -1812,7 +1896,7 @@ public class DirectoryApplicationService {
             && !requestedOrganizationId.orElseThrow().equals(scopeOrganizationId)) {
           denyScope(
               context,
-              "DIRECTORY_FACILITY_NEARBY_READ",
+              actionCode,
               "FacilitySearch",
               Optional.empty(),
               requestedOrganizationId.map(DirectoryApplicationService::organizationReference));
@@ -1833,7 +1917,11 @@ public class DirectoryApplicationService {
     return InternalId.parse(reference.value());
   }
 
-  private void auditSearchRead(ExecutionContext context, Optional<InternalId> organizationId) {
+  private void auditSearchRead(
+      ExecutionContext context,
+      Optional<InternalId> organizationId,
+      Optional<InternalId> facilityId,
+      String actionCode) {
     try {
       auditWriter
           .getObject()
@@ -1841,16 +1929,14 @@ public class DirectoryApplicationService {
               evidence(
                   context,
                   AuditActionKind.SENSITIVE_READ,
-                  "DIRECTORY_FACILITY_NEARBY_READ",
+                  actionCode,
                   "FacilitySearch",
                   Optional.empty(),
                   AuditOutcome.SUCCEEDED,
                   Optional.empty(),
                   AuditAuthorizationOutcome.ALLOWED,
                   organizationId.map(DirectoryApplicationService::organizationReference),
-                  context.scope().kind() == ExecutionScope.Kind.FACILITY
-                      ? context.scope().facility()
-                      : Optional.empty()));
+                  facilityId.map(DirectoryApplicationService::facilityReference)));
     } catch (AuditPersistenceUnavailableException failure) {
       throw problem(
           HttpStatus.SERVICE_UNAVAILABLE,
@@ -1872,6 +1958,13 @@ public class DirectoryApplicationService {
     public NearbyFacilityPage {
       nearby = List.copyOf(nearby);
       unlocated = List.copyOf(unlocated);
+    }
+  }
+
+  public record DirectoryFacilitySearchPage(
+      List<DirectoryFacilitySearchEntry> facilities, int pageSize, int offset, boolean hasMore) {
+    public DirectoryFacilitySearchPage {
+      facilities = List.copyOf(facilities);
     }
   }
 

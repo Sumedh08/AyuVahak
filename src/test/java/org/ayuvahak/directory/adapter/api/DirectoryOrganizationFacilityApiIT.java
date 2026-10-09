@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -1300,6 +1302,150 @@ class DirectoryOrganizationFacilityApiIT {
   }
 
   @Test
+  void facilitySearchSupportsBoundedExactFiltersWithoutGeographicCoordinates() throws Exception {
+    grant(ADMIN, CURATOR, "DirectoryCuration", "PLATFORM", null, null, "exact-search-curator");
+    grant(ADMIN, CURATOR, "DirectoryRead", "PLATFORM", null, null, "exact-search-reader");
+    String organizationId = createOrganization(CURATOR, "exact-search-org", "Exact Search Org");
+    String firstFacility =
+        createFacility(
+            CURATOR, "PLATFORM", "exact-search-facility-01", "First Site", organizationId);
+    String secondFacility =
+        createFacility(
+            CURATOR, "PLATFORM", "exact-search-facility-02", "Second Site", organizationId);
+    String otherOrganization =
+        createOrganization(CURATOR, "exact-search-org-other", "Other Exact Search Org");
+    createFacility(
+        CURATOR, "PLATFORM", "exact-search-facility-other", "Other Site", otherOrganization);
+
+    List<String> expectedOrder =
+        java.util.stream.Stream.of(firstFacility, secondFacility).sorted().toList();
+    var firstPage =
+        mockMvc
+            .perform(
+                get("/api/v1/directory/facilities")
+                    .param("organizationId", organizationId)
+                    .param("pageSize", "1")
+                    .header("Authorization", bearer(token(CURATOR)))
+                    .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.mode").value("DIRECTORY_FILTERED"))
+            .andExpect(jsonPath("$.facilities.length()").value(1))
+            .andExpect(jsonPath("$.hasMore").value(true))
+            .andExpect(jsonPath("$.unlocated.length()").value(0))
+            .andReturn();
+    assertThat(
+            (String)
+                com.jayway.jsonpath.JsonPath.read(
+                    firstPage.getResponse().getContentAsString(), "$.facilities[0].facilityId"))
+        .isEqualTo(expectedOrder.getFirst());
+
+    var secondPage =
+        mockMvc
+            .perform(
+                get("/api/v1/directory/facilities")
+                    .param("organizationId", organizationId)
+                    .param("pageSize", "1")
+                    .param("offset", "1")
+                    .header("Authorization", bearer(token(CURATOR)))
+                    .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.facilities.length()").value(1))
+            .andExpect(jsonPath("$.hasMore").value(false))
+            .andReturn();
+    assertThat(
+            (String)
+                com.jayway.jsonpath.JsonPath.read(
+                    secondPage.getResponse().getContentAsString(), "$.facilities[0].facilityId"))
+        .isEqualTo(expectedOrder.getLast());
+
+    mockMvc
+        .perform(
+            get("/api/v1/directory/facilities")
+                .param("facilityId", firstFacility)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.facilities.length()").value(1))
+        .andExpect(jsonPath("$.facilities[0].facilityId").value(firstFacility));
+
+    mockMvc
+        .perform(
+            get("/api/v1/directory/facilities")
+                .param("organizationId", otherOrganization)
+                .param("facilityId", firstFacility)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("DIRECTORY_VALIDATION_FAILED"));
+
+    grant(
+        ADMIN,
+        ORG_CURATOR,
+        "DirectoryRead",
+        "ORGANIZATION",
+        otherOrganization,
+        null,
+        "exact-search-org-reader");
+    mockMvc
+        .perform(
+            get("/api/v1/directory/facilities")
+                .param("facilityId", firstFacility)
+                .header("Authorization", bearer(token(ORG_CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "ORGANIZATION")
+                .header("X-AyuVahak-Organization-Id", otherOrganization))
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.code").value("DIRECTORY_SCOPE_MISMATCH"));
+  }
+
+  @Test
+  void facilitySearchRejectsPartialGeographicInputsWithStableDirectoryProblem() throws Exception {
+    grant(ADMIN, CURATOR, "DirectoryRead", "PLATFORM", null, null, "partial-search-reader");
+
+    mockMvc
+        .perform(
+            get("/api/v1/directory/facilities")
+                .param("centerLongitude", "72.8")
+                .param("centerLatitude", "19.1")
+                .header("X-Correlation-ID", "directory-partial-search-01")
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("DIRECTORY_VALIDATION_FAILED"))
+        .andExpect(jsonPath("$.correlationId").value("directory-partial-search-01"))
+        .andExpect(header().string("X-Correlation-ID", "directory-partial-search-01"));
+  }
+
+  @Test
+  void protectedDirectorySearchRequiresAnAuthenticatedActor() throws Exception {
+    mockMvc
+        .perform(
+            get("/api/v1/directory/facilities")
+                .header("X-Correlation-ID", "directory-unauthenticated-search-01"))
+        .andExpect(status().isUnauthorized())
+        .andExpect(content().contentTypeCompatibleWith("application/problem+json"))
+        .andExpect(jsonPath("$.status").value(401))
+        .andExpect(jsonPath("$.correlationId").value("directory-unauthenticated-search-01"));
+  }
+
+  @Test
+  void missingFacilityReadUsesSafeDirectoryProblemDetails() throws Exception {
+    grant(ADMIN, CURATOR, "DirectoryRead", "PLATFORM", null, null, "missing-facility-reader");
+    String unknownFacilityId = InternalId.generate().toString();
+
+    mockMvc
+        .perform(
+            get("/api/v1/directory/facilities/{facilityId}", unknownFacilityId)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("X-Correlation-ID", "directory-safe-not-found-01"))
+        .andExpect(status().isNotFound())
+        .andExpect(content().contentTypeCompatibleWith("application/problem+json"))
+        .andExpect(jsonPath("$.code").value("DIRECTORY_NOT_FOUND"))
+        .andExpect(jsonPath("$.correlationId").value("directory-safe-not-found-01"))
+        .andExpect(jsonPath("$.detail").value("The Directory record was not found."));
+  }
+
+  @Test
   void nearbySearchUsesInclusivePostgisMetersStableUuidTieBreakAndSeparateUnlocatedResults()
       throws Exception {
     grant(ADMIN, CURATOR, "DirectoryCuration", "PLATFORM", null, null, "seed-nearby-curator-01");
@@ -1397,15 +1543,16 @@ class DirectoryOrganizationFacilityApiIT {
                     .header("Authorization", bearer(token(CURATOR)))
                     .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
             .andExpect(status().isOk())
-            .andExpect(jsonPath("$.nearby.length()").value(3))
-            .andExpect(jsonPath("$.nearby[1].distanceMeters").value(radiusMeters))
-            .andExpect(jsonPath("$.nearby[2].distanceMeters").value(radiusMeters))
+            .andExpect(jsonPath("$.mode").value("NEARBY"))
+            .andExpect(jsonPath("$.facilities.length()").value(3))
+            .andExpect(jsonPath("$.facilities[1].distanceMeters").value(radiusMeters))
+            .andExpect(jsonPath("$.facilities[2].distanceMeters").value(radiusMeters))
             .andExpect(jsonPath("$.unlocated.length()").value(2))
             .andReturn();
 
     List<String> actualOrder =
         com.jayway.jsonpath.JsonPath.read(
-            response.getResponse().getContentAsString(), "$.nearby[*].facilityId");
+            response.getResponse().getContentAsString(), "$.facilities[*].facilityId");
     List<String> boundaryOrder =
         java.util.stream.Stream.of(boundaryFacilityOne, boundaryFacilityTwo).sorted().toList();
     assertThat(actualOrder)
@@ -1499,13 +1646,13 @@ class DirectoryOrganizationFacilityApiIT {
                     .header("Authorization", bearer(token(CURATOR)))
                     .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
             .andExpect(status().isOk())
-            .andExpect(jsonPath("$.nearby.length()").value(2))
+            .andExpect(jsonPath("$.facilities.length()").value(2))
             .andExpect(jsonPath("$.unlocated.length()").value(1))
             .andReturn();
     List<String> capabilityFilteredNearby =
         com.jayway.jsonpath.JsonPath.read(
             capabilityFilteredResponse.getResponse().getContentAsString(),
-            "$.nearby[*].facilityId");
+            "$.facilities[*].facilityId");
     assertThat(capabilityFilteredNearby).containsExactly(closeFacility, boundaryFacilityOne);
     List<String> capabilityFilteredUnlocated =
         com.jayway.jsonpath.JsonPath.read(

@@ -10,6 +10,7 @@ import java.util.UUID;
 import org.ayuvahak.directory.application.ActiveExternalIdentifierConflictException;
 import org.ayuvahak.directory.application.DirectoryConceptOwner;
 import org.ayuvahak.directory.application.DirectoryExternalIdentifierHistoryEntry;
+import org.ayuvahak.directory.application.DirectoryFacilitySearchEntry;
 import org.ayuvahak.directory.application.DirectoryScopeLookupUnavailableException;
 import org.ayuvahak.directory.application.DirectoryStore;
 import org.ayuvahak.directory.application.LocatedFacilitySearchResult;
@@ -974,6 +975,46 @@ public class JdbcDirectoryStore implements DirectoryStore {
         query.toString(),
         (result, row) ->
             new UnlocatedFacilitySearchResult(
+                facilityFromSearch(result),
+                result.getObject("l_id", UUID.class) == null
+                    ? Optional.empty()
+                    : Optional.of(locationFromSearch(result))),
+        parameters.toArray());
+  }
+
+  @Override
+  public List<DirectoryFacilitySearchEntry> findFacilities(
+      Optional<InternalId> organizationId,
+      Optional<InternalId> facilityId,
+      List<String> requiredCapabilityCodes,
+      Instant evaluatedAt,
+      int limit,
+      int offset) {
+    StringBuilder query =
+        new StringBuilder(
+            "SELECT "
+                + FACILITY_SEARCH_COLUMNS
+                + ", "
+                + LOCATION_SEARCH_COLUMNS
+                + " FROM directory.facility f "
+                + "JOIN directory.organization o ON o.organization_id = f.managing_organization_id "
+                + "LEFT JOIN directory.location l ON l.facility_id = f.facility_id AND l.is_primary "
+                + "WHERE f.lifecycle_status = 'ACTIVE' AND o.lifecycle_status = 'ACTIVE' "
+                + "AND (?::uuid IS NULL OR f.managing_organization_id = ?) "
+                + "AND (?::uuid IS NULL OR f.facility_id = ?) ");
+    List<Object> parameters = new ArrayList<>();
+    parameters.add(organizationId.map(InternalId::value).orElse(null));
+    parameters.add(organizationId.map(InternalId::value).orElse(null));
+    parameters.add(facilityId.map(InternalId::value).orElse(null));
+    parameters.add(facilityId.map(InternalId::value).orElse(null));
+    appendCapabilityEligibility(query, parameters, requiredCapabilityCodes, evaluatedAt);
+    query.append("ORDER BY f.facility_id LIMIT ? OFFSET ?");
+    parameters.add(limit);
+    parameters.add(offset);
+    return jdbc.query(
+        query.toString(),
+        (result, row) ->
+            new DirectoryFacilitySearchEntry(
                 facilityFromSearch(result),
                 result.getObject("l_id", UUID.class) == null
                     ? Optional.empty()
