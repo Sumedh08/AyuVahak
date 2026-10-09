@@ -187,6 +187,8 @@ class DirectoryOrganizationFacilityApiIT {
                 .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.items.length()").value(1))
+        .andExpect(jsonPath("$.page").value(0))
+        .andExpect(jsonPath("$.size").value(50))
         .andExpect(jsonPath("$.items[0].conceptType").value("ORGANIZATION"))
         .andExpect(jsonPath("$.items[0].externalIdentifier.issuer").value("urn:registry:north"))
         .andExpect(jsonPath("$.items[0].externalIdentifier.resourceType").value("Organization"))
@@ -202,6 +204,153 @@ class DirectoryOrganizationFacilityApiIT {
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.source.issuer").value("urn:synthetic:facility-registry"))
         .andExpect(jsonPath("$.source.reference").value("synthetic-organization-001"));
+  }
+
+  @Test
+  void externalIdentifierReadUsesBoundedPageAndSizeAndRejectsUnknownQueryKeys() throws Exception {
+    grant(ADMIN, CURATOR, "DirectoryCuration", "PLATFORM", null, null, "identifier-page-curator");
+    grant(ADMIN, CURATOR, "DirectoryRead", "PLATFORM", null, null, "identifier-page-reader");
+    String organizationId = createOrganization(CURATOR, "identifier-page-org", "Page Clinic");
+    String firstIdentifier =
+        addExternalIdentifier(
+            CURATOR,
+            "PLATFORM",
+            organizationId,
+            null,
+            "ORGANIZATION",
+            "urn:registry:north",
+            "Organization",
+            "page-001",
+            "identifier-page-add-001");
+    String secondIdentifier =
+        addExternalIdentifier(
+            CURATOR,
+            "PLATFORM",
+            organizationId,
+            null,
+            "ORGANIZATION",
+            "urn:registry:north",
+            "Organization",
+            "page-002",
+            "identifier-page-add-002");
+
+    var firstPage =
+        mockMvc
+            .perform(
+                get(
+                        "/api/v1/directory/concepts/{conceptType}/{conceptId}/external-identifiers",
+                        "ORGANIZATION",
+                        organizationId)
+                    .param("page", "0")
+                    .param("size", "1")
+                    .header("Authorization", bearer(token(CURATOR)))
+                    .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.page").value(0))
+            .andExpect(jsonPath("$.size").value(1))
+            .andExpect(jsonPath("$.items.length()").value(1))
+            .andExpect(jsonPath("$.hasMore").value(true))
+            .andReturn();
+    var secondPage =
+        mockMvc
+            .perform(
+                get(
+                        "/api/v1/directory/concepts/{conceptType}/{conceptId}/external-identifiers",
+                        "ORGANIZATION",
+                        organizationId)
+                    .param("page", "1")
+                    .param("size", "1")
+                    .header("Authorization", bearer(token(CURATOR)))
+                    .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.page").value(1))
+            .andExpect(jsonPath("$.size").value(1))
+            .andExpect(jsonPath("$.items.length()").value(1))
+            .andExpect(jsonPath("$.hasMore").value(false))
+            .andReturn();
+    String firstPageId =
+        com.jayway.jsonpath.JsonPath.read(
+            firstPage.getResponse().getContentAsString(), "$.items[0].id");
+    String secondPageId =
+        com.jayway.jsonpath.JsonPath.read(
+            secondPage.getResponse().getContentAsString(), "$.items[0].id");
+    assertThat(List.of(firstPageId, secondPageId))
+        .containsExactlyInAnyOrder(firstIdentifier, secondIdentifier);
+
+    mockMvc
+        .perform(
+            get(
+                    "/api/v1/directory/concepts/{conceptType}/{conceptId}/external-identifiers",
+                    "ORGANIZATION",
+                    organizationId)
+                .param("unexpected", "ignored")
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+        .andExpect(status().isBadRequest())
+        .andExpect(content().contentTypeCompatibleWith("application/problem+json"))
+        .andExpect(jsonPath("$.code").value("DIRECTORY_VALIDATION_FAILED"))
+        .andExpect(jsonPath("$.correlationId").isNotEmpty());
+  }
+
+  @Test
+  void capabilityVocabularyUsesBoundedPageAndSizeAndRejectsUnknownQueryKeys() throws Exception {
+    grant(ADMIN, CURATOR, "DirectoryCuration", "PLATFORM", null, null, "capability-page-curator");
+    grant(ADMIN, CURATOR, "DirectoryRead", "PLATFORM", null, null, "capability-page-reader");
+    grant(
+        ADMIN,
+        CURATOR,
+        "DirectoryVocabularyAdministration",
+        "PLATFORM",
+        null,
+        null,
+        "capability-page-admin");
+    createCareCapability("PAGE_A", "Page A", null, "capability-page-create-a");
+    createCareCapability("PAGE_B", "Page B", null, "capability-page-create-b");
+
+    var firstPage =
+        mockMvc
+            .perform(
+                get("/api/v1/directory/capabilities")
+                    .param("page", "0")
+                    .param("size", "1")
+                    .header("Authorization", bearer(token(CURATOR)))
+                    .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.page").value(0))
+            .andExpect(jsonPath("$.size").value(1))
+            .andExpect(jsonPath("$.items.length()").value(1))
+            .andExpect(jsonPath("$.hasMore").value(true))
+            .andReturn();
+    String firstCode =
+        com.jayway.jsonpath.JsonPath.read(
+            firstPage.getResponse().getContentAsString(), "$.items[0].code");
+
+    var secondPage =
+        mockMvc
+            .perform(
+                get("/api/v1/directory/capabilities")
+                    .param("page", "1")
+                    .param("size", "1")
+                    .header("Authorization", bearer(token(CURATOR)))
+                    .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.page").value(1))
+            .andExpect(jsonPath("$.size").value(1))
+            .andExpect(jsonPath("$.items.length()").value(1))
+            .andReturn();
+    String secondCode =
+        com.jayway.jsonpath.JsonPath.read(
+            secondPage.getResponse().getContentAsString(), "$.items[0].code");
+    assertThat(firstCode).isLessThan(secondCode);
+
+    mockMvc
+        .perform(
+            get("/api/v1/directory/capabilities")
+                .param("unknown", "ignored")
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("DIRECTORY_VALIDATION_FAILED"));
   }
 
   @Test
@@ -264,6 +413,70 @@ class DirectoryOrganizationFacilityApiIT {
         .andExpect(jsonPath("$.items[1].externalIdentifier.value").value("history-001"))
         .andExpect(jsonPath("$.items[1].provenance.reasonCode").value("REGISTER_IDENTIFIER"))
         .andExpect(jsonPath("$.items[1].changeReasonCode").value("REMOVE_IDENTIFIER"));
+  }
+
+  @Test
+  void removesIdentifierFromDeactivatedFacilityAndReleasesItsActiveTuple() throws Exception {
+    grant(
+        ADMIN, CURATOR, "DirectoryCuration", "PLATFORM", null, null, "identifier-inactive-curator");
+    String organizationId =
+        createOrganization(CURATOR, "identifier-inactive-org", "Inactive Identifier Org");
+    String inactiveFacility =
+        createFacility(
+            CURATOR,
+            "PLATFORM",
+            "identifier-inactive-facility",
+            "Inactive Identifier Facility",
+            organizationId);
+    String identifierId =
+        addExternalIdentifier(
+            CURATOR,
+            "PLATFORM",
+            inactiveFacility,
+            organizationId,
+            "FACILITY",
+            "urn:registry:north",
+            "Facility",
+            "facility-identifier-01",
+            "identifier-inactive-add");
+
+    mockMvc
+        .perform(
+            post("/api/v1/directory/facilities/{facilityId}/deactivation", inactiveFacility)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", "identifier-inactive-facility-deactivate")
+                .contentType("application/json")
+                .content(deactivationBody(1, "FACILITY_CLOSED")))
+        .andExpect(status().isNoContent());
+
+    mockMvc
+        .perform(
+            post("/api/v1/directory/external-identifiers/{identifierId}/removal", identifierId)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", "identifier-inactive-remove")
+                .contentType("application/json")
+                .content(identifierTransitionBody(1, "REGISTRY_IDENTIFIER_RETIRED")))
+        .andExpect(status().isNoContent());
+
+    String replacementFacility =
+        createFacility(
+            CURATOR,
+            "PLATFORM",
+            "identifier-reuse-facility",
+            "Replacement Facility",
+            organizationId);
+    addExternalIdentifier(
+        CURATOR,
+        "PLATFORM",
+        replacementFacility,
+        organizationId,
+        "FACILITY",
+        "urn:registry:north",
+        "Facility",
+        "facility-identifier-01",
+        "identifier-reuse-add");
   }
 
   @Test
@@ -1330,7 +1543,8 @@ class DirectoryOrganizationFacilityApiIT {
             .perform(
                 get("/api/v1/directory/facilities")
                     .param("organizationId", organizationId)
-                    .param("pageSize", "1")
+                    .param("size", "1")
+                    .param("page", "0")
                     .header("Authorization", bearer(token(CURATOR)))
                     .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
             .andExpect(status().isOk())
@@ -1350,8 +1564,8 @@ class DirectoryOrganizationFacilityApiIT {
             .perform(
                 get("/api/v1/directory/facilities")
                     .param("organizationId", organizationId)
-                    .param("pageSize", "1")
-                    .param("offset", "1")
+                    .param("size", "1")
+                    .param("page", "1")
                     .header("Authorization", bearer(token(CURATOR)))
                     .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
             .andExpect(status().isOk())
@@ -1562,7 +1776,8 @@ class DirectoryOrganizationFacilityApiIT {
                     .param("centerLongitude", "0.0")
                     .param("centerLatitude", "0.0")
                     .param("radiusMeters", radiusMeters.toString())
-                    .param("pageSize", "10")
+                    .param("size", "10")
+                    .param("page", "0")
                     .header("Authorization", bearer(token(CURATOR)))
                     .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
             .andExpect(status().isOk())
@@ -1664,7 +1879,8 @@ class DirectoryOrganizationFacilityApiIT {
                     .param("centerLongitude", "0.0")
                     .param("centerLatitude", "0.0")
                     .param("radiusMeters", radiusMeters.toString())
-                    .param("pageSize", "10")
+                    .param("size", "10")
+                    .param("page", "0")
                     .param("requiredCapability", "SEARCH_A", "SEARCH_B")
                     .header("Authorization", bearer(token(CURATOR)))
                     .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
@@ -1695,11 +1911,33 @@ class DirectoryOrganizationFacilityApiIT {
 
     mockMvc
         .perform(
+            get(
+                    "/api/v1/directory/facilities/{facilityId}/capability-evidence",
+                    boundaryFacilityTwo)
+                .param("unknown", "ignored")
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("DIRECTORY_VALIDATION_FAILED"));
+
+    mockMvc
+        .perform(
+            get(
+                    "/api/v1/directory/facilities/{facilityId}/capability-evidence",
+                    boundaryFacilityTwo)
+                .header("Authorization", bearer(token(CURATOR)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("DIRECTORY_VALIDATION_FAILED"));
+
+    mockMvc
+        .perform(
             get("/api/v1/directory/facilities")
                 .param("centerLongitude", "0.0")
                 .param("centerLatitude", "0.0")
                 .param("radiusMeters", radiusMeters.toString())
-                .param("pageSize", "101")
+                .param("size", "101")
+                .param("page", "0")
                 .header("Authorization", bearer(token(CURATOR)))
                 .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
         .andExpect(status().isBadRequest());

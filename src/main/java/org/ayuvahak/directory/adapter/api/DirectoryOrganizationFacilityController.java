@@ -74,6 +74,11 @@ public class DirectoryOrganizationFacilityController {
   public static final String ORGANIZATION_SCOPE_HEADER = "X-AyuVahak-Organization-Id";
   public static final String FACILITY_SCOPE_HEADER = "X-AyuVahak-Facility-Id";
   private static final String DIRECTORY_ISSUER = "urn:ayuvahak:directory";
+  private static final Set<String> EXTERNAL_IDENTIFIER_QUERY_PARAMETERS =
+      Set.of("includeHistory", "page", "size");
+  private static final Set<String> CAPABILITY_QUERY_PARAMETERS = Set.of("page", "size");
+  private static final Set<String> CAPABILITY_EVIDENCE_QUERY_PARAMETERS =
+      Set.of("requiredCapability");
   private static final Set<String> FACILITY_SEARCH_QUERY_PARAMETERS =
       Set.of(
           "centerLongitude",
@@ -82,8 +87,8 @@ public class DirectoryOrganizationFacilityController {
           "organizationId",
           "facilityId",
           "requiredCapability",
-          "pageSize",
-          "offset");
+          "page",
+          "size");
 
   private final DirectoryApplicationService directory;
   private final ExecutionContextFactory contextFactory;
@@ -139,15 +144,17 @@ public class DirectoryOrganizationFacilityController {
       @PathVariable String conceptType,
       @PathVariable String conceptId,
       @RequestParam(defaultValue = "false") boolean includeHistory,
-      @RequestParam(defaultValue = "0") int limit,
-      @RequestParam(defaultValue = "0") int offset) {
+      @RequestParam(required = false) Integer page,
+      @RequestParam(required = false) Integer size,
+      HttpServletRequest servletRequest) {
+    rejectUnknownQueryParameters(servletRequest, EXTERNAL_IDENTIFIER_QUERY_PARAMETERS);
     DirectoryConceptType type = parseConceptType(conceptType);
     InternalId id = parseId(conceptId);
     ExecutionContext context =
         context(
             actor, scope, organizationScope, facilityScope, "DIRECTORY_EXTERNAL_IDENTIFIER_READ");
     return ExternalIdentifierPageRepresentation.from(
-        directory.listExternalIdentifiers(context, type, id, includeHistory, limit, offset));
+        directory.listExternalIdentifiers(context, type, id, includeHistory, page, size));
   }
 
   @PostMapping("/external-identifiers/{identifierId}/removal")
@@ -461,17 +468,24 @@ public class DirectoryOrganizationFacilityController {
   }
 
   @GetMapping("/capabilities")
-  public List<CareCapabilityRepresentation> listCareCapabilities(
+  public CareCapabilityPageRepresentation listCareCapabilities(
       @AuthenticationPrincipal ActorReference actor,
       @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
       @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationScope,
-      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityScope) {
+      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityScope,
+      @RequestParam(required = false) Integer page,
+      @RequestParam(required = false) Integer size,
+      HttpServletRequest servletRequest) {
+    rejectUnknownQueryParameters(servletRequest, CAPABILITY_QUERY_PARAMETERS);
     ExecutionContext context =
         context(
             actor, scope, organizationScope, facilityScope, "DIRECTORY_CARE_CAPABILITY_LIST_READ");
-    return directory.listCareCapabilities(context).stream()
-        .map(CareCapabilityRepresentation::from)
-        .toList();
+    var result = directory.listCareCapabilities(context, page, size);
+    return new CareCapabilityPageRepresentation(
+        result.items().stream().map(CareCapabilityRepresentation::from).toList(),
+        result.page(),
+        result.size(),
+        result.hasMore());
   }
 
   @PatchMapping("/capabilities/{capabilityId}")
@@ -603,7 +617,13 @@ public class DirectoryOrganizationFacilityController {
       @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationScope,
       @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityScope,
       @PathVariable String facilityId,
-      @RequestParam("requiredCapability") List<String> requiredCapabilities) {
+      @RequestParam(name = "requiredCapability", required = false)
+          List<String> requiredCapabilities,
+      HttpServletRequest servletRequest) {
+    rejectUnknownQueryParameters(servletRequest, CAPABILITY_EVIDENCE_QUERY_PARAMETERS);
+    if (requiredCapabilities == null || requiredCapabilities.isEmpty()) {
+      throw searchValidation("At least one requiredCapability must be supplied.");
+    }
     ExecutionContext context =
         context(
             actor,
@@ -628,8 +648,8 @@ public class DirectoryOrganizationFacilityController {
       @RequestParam(required = false) String facilityId,
       @RequestParam(name = "requiredCapability", required = false)
           List<String> requiredCapabilityCodes,
-      @RequestParam(required = false, defaultValue = "0") int pageSize,
-      @RequestParam(required = false, defaultValue = "0") int offset,
+      @RequestParam(required = false) Integer page,
+      @RequestParam(required = false) Integer size,
       HttpServletRequest servletRequest) {
     ExecutionContext context =
         context(actor, scope, organizationScope, facilityScope, "DIRECTORY_FACILITY_SEARCH_READ");
@@ -642,18 +662,13 @@ public class DirectoryOrganizationFacilityController {
     if (!hasLongitude && !hasLatitude && !hasRadius) {
       var result =
           directory.findFacilities(
-              context,
-              organizationFilter,
-              facilityFilter,
-              requiredCapabilityCodes,
-              pageSize,
-              offset);
+              context, organizationFilter, facilityFilter, requiredCapabilityCodes, page, size);
       return new FacilitySearchRepresentation(
           "DIRECTORY_FILTERED",
           result.facilities().stream().map(FacilitySearchItemRepresentation::from).toList(),
           List.of(),
-          result.pageSize(),
-          result.offset(),
+          result.page(),
+          result.size(),
           result.hasMore(),
           false);
     }
@@ -668,14 +683,14 @@ public class DirectoryOrganizationFacilityController {
             organizationFilter,
             facilityFilter,
             requiredCapabilityCodes,
-            pageSize,
-            offset);
+            page,
+            size);
     return new FacilitySearchRepresentation(
         "NEARBY",
         result.nearby().stream().map(FacilitySearchItemRepresentation::from).toList(),
         result.unlocated().stream().map(FacilitySearchItemRepresentation::from).toList(),
-        result.pageSize(),
-        result.offset(),
+        result.page(),
+        result.size(),
         result.hasMoreNearby(),
         result.hasMoreUnlocated());
   }
@@ -1027,11 +1042,16 @@ public class DirectoryOrganizationFacilityController {
   }
 
   private static void rejectUnknownFacilitySearchParameters(HttpServletRequest request) {
+    rejectUnknownQueryParameters(request, FACILITY_SEARCH_QUERY_PARAMETERS);
+  }
+
+  private static void rejectUnknownQueryParameters(
+      HttpServletRequest request, Set<String> allowedParameters) {
     boolean hasUnsupportedParameter =
         request.getParameterMap().keySet().stream()
-            .anyMatch(name -> !FACILITY_SEARCH_QUERY_PARAMETERS.contains(name));
+            .anyMatch(name -> !allowedParameters.contains(name));
     if (hasUnsupportedParameter) {
-      throw searchValidation("The facility search contains an unsupported query parameter.");
+      throw searchValidation("The request contains an unsupported query parameter.");
     }
   }
 
@@ -1197,13 +1217,16 @@ public class DirectoryOrganizationFacilityController {
 
   public record ResourceCreated(String id) {}
 
+  public record CareCapabilityPageRepresentation(
+      List<CareCapabilityRepresentation> items, int page, int size, boolean hasMore) {}
+
   public record ExternalIdentifierPageRepresentation(
-      List<ExternalIdentifierHistoryRepresentation> items, int limit, int offset, boolean hasMore) {
+      List<ExternalIdentifierHistoryRepresentation> items, int page, int size, boolean hasMore) {
     static ExternalIdentifierPageRepresentation from(DirectoryExternalIdentifierPage page) {
       return new ExternalIdentifierPageRepresentation(
           page.items().stream().map(ExternalIdentifierHistoryRepresentation::from).toList(),
-          page.limit(),
-          page.offset(),
+          page.page(),
+          page.size(),
           page.hasMore());
     }
   }
@@ -1444,8 +1467,8 @@ public class DirectoryOrganizationFacilityController {
       String mode,
       List<FacilitySearchItemRepresentation> facilities,
       List<FacilitySearchItemRepresentation> unlocated,
-      int pageSize,
-      int offset,
+      int page,
+      int size,
       boolean hasMore,
       boolean hasMoreUnlocated) {}
 

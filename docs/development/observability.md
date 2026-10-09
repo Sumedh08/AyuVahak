@@ -30,6 +30,8 @@ Console logs use Spring Boot's built-in Logstash JSON format. The request log re
 
 The filter does not read or log request/response bodies, headers, cookies, raw request URIs, or query strings. Route templates come from Spring MVC's matched-handler metadata, not the incoming path. Do not add patient identifiers, clinical context, credentials, tokens, or other sensitive values to log messages, metric names, labels, span attributes, or baggage. Keep metric labels low-cardinality and independent of patient/case identifiers.
 
+Phase 3 Directory requests retain these same defaults. Their search filters and identifier values are not logged, and Directory does not add patient-level metrics or payload-bearing telemetry.
+
 `X-Correlation-ID` is generated or validated by the HTTP correlation filter and is returned to the caller and placed in the logging context for that request. When tracing is active, Spring Boot also places trace and span IDs in structured logs. A correlation ID is not a trace ID, a patient identifier, or a future domain correlation/causation ID. See [HTTP API conventions](http-api.md) for the request-header rules.
 
 ## Tracing and export

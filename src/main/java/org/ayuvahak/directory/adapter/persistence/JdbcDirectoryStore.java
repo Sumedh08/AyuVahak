@@ -536,14 +536,16 @@ public class JdbcDirectoryStore implements DirectoryStore {
   }
 
   @Override
-  public List<CareCapability> listCareCapabilities(boolean activeOnly) {
+  public List<CareCapability> listCareCapabilities(boolean activeOnly, int limit, int offset) {
     return jdbc.query(
         "SELECT "
             + CARE_CAPABILITY_COLUMNS
             + " FROM directory.care_capability WHERE (? = false OR lifecycle_status = 'ACTIVE') "
-            + "ORDER BY code, care_capability_id LIMIT 500",
+            + "ORDER BY code, care_capability_id LIMIT ? OFFSET ?",
         CARE_CAPABILITY_MAPPER,
-        activeOnly);
+        activeOnly,
+        limit,
+        offset);
   }
 
   @Override

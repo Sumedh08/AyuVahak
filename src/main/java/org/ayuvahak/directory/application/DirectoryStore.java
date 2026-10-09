@@ -70,7 +70,7 @@ public interface DirectoryStore extends DirectoryScopeReferenceLookup {
 
   Optional<CareCapability> lockCareCapability(InternalId id);
 
-  List<CareCapability> listCareCapabilities(boolean activeOnly);
+  List<CareCapability> listCareCapabilities(boolean activeOnly, int limit, int offset);
 
   void appendCareCapabilityRevision(CareCapability current, String reasonCode);
 

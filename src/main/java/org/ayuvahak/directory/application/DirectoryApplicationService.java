@@ -64,14 +64,11 @@ import org.springframework.transaction.support.TransactionTemplate;
 public class DirectoryApplicationService {
 
   private static final String DIRECTORY_ISSUER = "urn:ayuvahak:directory";
-  private static final int DEFAULT_SEARCH_PAGE_SIZE = 50;
-  private static final int MAX_SEARCH_PAGE_SIZE = 100;
-  private static final int MAX_SEARCH_OFFSET = 10_000;
+  private static final int DEFAULT_PAGE_SIZE = 50;
+  private static final int MAX_PAGE_SIZE = 100;
+  private static final int MAX_PAGE_OFFSET = 10_000;
   private static final double MAX_SEARCH_RADIUS_METERS = 500_000.0;
   private static final int MAX_REQUIRED_CAPABILITIES = 20;
-  private static final int DEFAULT_EXTERNAL_IDENTIFIER_PAGE_SIZE = 50;
-  private static final int MAX_EXTERNAL_IDENTIFIER_PAGE_SIZE = 100;
-  private static final int MAX_EXTERNAL_IDENTIFIER_OFFSET = 10_000;
   private static final Pattern CAPABILITY_CODE = Pattern.compile("[A-Z][A-Z0-9._-]{0,63}");
   private static final String COMMAND_BUSY_DETAIL =
       "A matching Directory command is still being processed; retry with the same idempotency key.";
@@ -187,8 +184,7 @@ public class DirectoryApplicationService {
                   .lockExternalIdentifier(identifierId)
                   .orElseThrow(DirectoryApplicationService::notFound);
           DirectoryConceptOwner owner =
-              lockActiveConceptOwner(
-                  context, current.conceptType(), current.conceptId(), actionCode);
+              lockConceptOwner(context, current.conceptType(), current.conceptId(), actionCode);
           if (current.status() != ExternalIdentifierStatus.ACTIVE) {
             throw versionConflict();
           }
@@ -296,8 +292,8 @@ public class DirectoryApplicationService {
       DirectoryConceptType conceptType,
       InternalId conceptId,
       boolean includeHistory,
-      int requestedLimit,
-      int offset) {
+      Integer requestedPage,
+      Integer requestedSize) {
     String actionCode = "DIRECTORY_EXTERNAL_IDENTIFIER_READ";
     requireAuthority(
         context,
@@ -311,13 +307,7 @@ public class DirectoryApplicationService {
             .findConceptOwner(conceptType, conceptId)
             .orElseThrow(DirectoryApplicationService::notFound);
     requireConceptReadScope(context, conceptType, conceptId, owner, actionCode);
-    int limit = requestedLimit == 0 ? DEFAULT_EXTERNAL_IDENTIFIER_PAGE_SIZE : requestedLimit;
-    if (limit < 1
-        || limit > MAX_EXTERNAL_IDENTIFIER_PAGE_SIZE
-        || offset < 0
-        || offset > MAX_EXTERNAL_IDENTIFIER_OFFSET) {
-      throw validation("External identifier page size must be 1 to 100 and offset at most 10000.");
-    }
+    PageBounds page = validatedPageBounds(requestedPage, requestedSize);
     auditRead(
         context,
         actionCode,
@@ -326,12 +316,28 @@ public class DirectoryApplicationService {
         owner.organizationId().map(DirectoryApplicationService::organizationReference),
         owner.facilityId().map(DirectoryApplicationService::facilityReference));
     List<DirectoryExternalIdentifierHistoryEntry> entries =
-        store.listExternalIdentifiers(conceptType, conceptId, includeHistory, limit + 1, offset);
+        store.listExternalIdentifiers(
+            conceptType, conceptId, includeHistory, page.size() + 1, page.offset());
     return new DirectoryExternalIdentifierPage(
-        entries.stream().limit(limit).toList(), limit, offset, entries.size() > limit);
+        entries.stream().limit(page.size()).toList(),
+        page.page(),
+        page.size(),
+        entries.size() > page.size());
   }
 
   private DirectoryConceptOwner lockActiveConceptOwner(
+      ExecutionContext context,
+      DirectoryConceptType conceptType,
+      InternalId conceptId,
+      String actionCode) {
+    DirectoryConceptOwner owner = lockConceptOwner(context, conceptType, conceptId, actionCode);
+    if (!owner.active()) {
+      throw inactive();
+    }
+    return owner;
+  }
+
+  private DirectoryConceptOwner lockConceptOwner(
       ExecutionContext context,
       DirectoryConceptType conceptType,
       InternalId conceptId,
@@ -341,9 +347,6 @@ public class DirectoryApplicationService {
             .lockConceptOwner(conceptType, conceptId)
             .orElseThrow(DirectoryApplicationService::notFound);
     requireConceptCurationScope(context, conceptType, conceptId, owner, actionCode);
-    if (!owner.active()) {
-      throw inactive();
-    }
     return owner;
   }
 
@@ -1109,7 +1112,8 @@ public class DirectoryApplicationService {
         });
   }
 
-  public List<CareCapability> listCareCapabilities(ExecutionContext context) {
+  public DirectoryCareCapabilityPage listCareCapabilities(
+      ExecutionContext context, Integer requestedPage, Integer requestedSize) {
     requireAuthority(
         context,
         DirectoryAuthorities.read().code(),
@@ -1117,8 +1121,15 @@ public class DirectoryApplicationService {
         "CareCapabilityVocabulary",
         Optional.empty(),
         Optional.empty());
+    PageBounds page = validatedPageBounds(requestedPage, requestedSize);
     auditVocabularyRead(context);
-    return store.listCareCapabilities(true);
+    List<CareCapability> capabilities =
+        store.listCareCapabilities(true, page.size() + 1, page.offset());
+    return new DirectoryCareCapabilityPage(
+        capabilities.stream().limit(page.size()).toList(),
+        page.page(),
+        page.size(),
+        capabilities.size() > page.size());
   }
 
   public void correctCareCapabilityDisplayName(
@@ -1733,8 +1744,8 @@ public class DirectoryApplicationService {
       Optional<InternalId> requestedOrganizationId,
       Optional<InternalId> requestedFacilityId,
       List<String> requestedCapabilityCodes,
-      int requestedPageSize,
-      int offset) {
+      Integer requestedPage,
+      Integer requestedSize) {
     requireAuthority(
         context,
         DirectoryAuthorities.read().code(),
@@ -1747,7 +1758,7 @@ public class DirectoryApplicationService {
         || radiusMeters > MAX_SEARCH_RADIUS_METERS) {
       throw coordinateInvalid("Radius must be greater than zero and no more than 500000 meters.");
     }
-    int pageSize = validatedSearchPageSize(requestedPageSize, offset);
+    PageBounds page = validatedPageBounds(requestedPage, requestedSize);
     SearchScope searchScope =
         resolveSearchScope(
             context,
@@ -1769,23 +1780,23 @@ public class DirectoryApplicationService {
             radiusMeters,
             requiredCapabilityCodes,
             evaluatedAt,
-            pageSize + 1,
-            offset);
+            page.size() + 1,
+            page.offset());
     List<UnlocatedFacilitySearchResult> unlocated =
         store.findUnlocatedFacilities(
             searchScope.organizationId(),
             searchScope.facilityId(),
             requiredCapabilityCodes,
             evaluatedAt,
-            pageSize + 1,
-            offset);
-    boolean hasMoreNearby = nearby.size() > pageSize;
-    boolean hasMoreUnlocated = unlocated.size() > pageSize;
+            page.size() + 1,
+            page.offset());
+    boolean hasMoreNearby = nearby.size() > page.size();
+    boolean hasMoreUnlocated = unlocated.size() > page.size();
     return new NearbyFacilityPage(
-        nearby.stream().limit(pageSize).toList(),
-        unlocated.stream().limit(pageSize).toList(),
-        pageSize,
-        offset,
+        nearby.stream().limit(page.size()).toList(),
+        unlocated.stream().limit(page.size()).toList(),
+        page.page(),
+        page.size(),
         hasMoreNearby,
         hasMoreUnlocated);
   }
@@ -1795,8 +1806,8 @@ public class DirectoryApplicationService {
       Optional<InternalId> requestedOrganizationId,
       Optional<InternalId> requestedFacilityId,
       List<String> requestedCapabilityCodes,
-      int requestedPageSize,
-      int offset) {
+      Integer requestedPage,
+      Integer requestedSize) {
     requireAuthority(
         context,
         DirectoryAuthorities.read().code(),
@@ -1804,7 +1815,7 @@ public class DirectoryApplicationService {
         "FacilitySearch",
         requestedFacilityId,
         requestedOrganizationId.map(DirectoryApplicationService::organizationReference));
-    int pageSize = validatedSearchPageSize(requestedPageSize, offset);
+    PageBounds page = validatedPageBounds(requestedPage, requestedSize);
     SearchScope searchScope =
         resolveSearchScope(
             context,
@@ -1824,23 +1835,25 @@ public class DirectoryApplicationService {
             searchScope.facilityId(),
             requiredCapabilityCodes,
             evaluatedAt,
-            pageSize + 1,
-            offset);
-    boolean hasMore = facilities.size() > pageSize;
+            page.size() + 1,
+            page.offset());
+    boolean hasMore = facilities.size() > page.size();
     return new DirectoryFacilitySearchPage(
-        facilities.stream().limit(pageSize).toList(), pageSize, offset, hasMore);
+        facilities.stream().limit(page.size()).toList(), page.page(), page.size(), hasMore);
   }
 
-  private static int validatedSearchPageSize(int requestedPageSize, int offset) {
-    int pageSize = requestedPageSize == 0 ? DEFAULT_SEARCH_PAGE_SIZE : requestedPageSize;
-    if (pageSize < 1
-        || pageSize > MAX_SEARCH_PAGE_SIZE
-        || offset < 0
-        || offset > MAX_SEARCH_OFFSET) {
-      throw validation("Search page size must be between 1 and 100 and offset at most 10000.");
+  private static PageBounds validatedPageBounds(Integer requestedPage, Integer requestedSize) {
+    int page = requestedPage == null ? 0 : requestedPage;
+    int size = requestedSize == null ? DEFAULT_PAGE_SIZE : requestedSize;
+    long offset = (long) page * size;
+    if (page < 0 || size < 1 || size > MAX_PAGE_SIZE || offset > MAX_PAGE_OFFSET) {
+      throw validation(
+          "Page must be non-negative, size must be between 1 and 100, and page offset at most 10000.");
     }
-    return pageSize;
+    return new PageBounds(page, size, (int) offset);
   }
+
+  private record PageBounds(int page, int size, int offset) {}
 
   private SearchScope resolveSearchScope(
       ExecutionContext context,
@@ -1951,8 +1964,8 @@ public class DirectoryApplicationService {
   public record NearbyFacilityPage(
       List<LocatedFacilitySearchResult> nearby,
       List<UnlocatedFacilitySearchResult> unlocated,
-      int pageSize,
-      int offset,
+      int page,
+      int size,
       boolean hasMoreNearby,
       boolean hasMoreUnlocated) {
     public NearbyFacilityPage {
@@ -1962,9 +1975,16 @@ public class DirectoryApplicationService {
   }
 
   public record DirectoryFacilitySearchPage(
-      List<DirectoryFacilitySearchEntry> facilities, int pageSize, int offset, boolean hasMore) {
+      List<DirectoryFacilitySearchEntry> facilities, int page, int size, boolean hasMore) {
     public DirectoryFacilitySearchPage {
       facilities = List.copyOf(facilities);
+    }
+  }
+
+  public record DirectoryCareCapabilityPage(
+      List<CareCapability> items, int page, int size, boolean hasMore) {
+    public DirectoryCareCapabilityPage {
+      items = List.copyOf(items);
     }
   }
 
