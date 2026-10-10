@@ -10,6 +10,7 @@ public interface MatchingApplicabilityPort {
 
   RecommendationApplicabilityResult revalidate(
       ExecutionContext authorizedCaller,
+      InternalId referralId,
       InternalId recommendationId,
       ExternalReference candidateFacility,
       long exactReferralRevision);

@@ -24,10 +24,11 @@ public final class MatchingApplicabilityAdapter implements MatchingApplicability
   @Override
   public RecommendationApplicabilityResult revalidate(
       ExecutionContext authorizedCaller,
+      InternalId referralId,
       InternalId recommendationId,
       ExternalReference candidateFacility,
       long exactReferralRevision) {
     return matching.revalidateRecommendationApplicability(
-        authorizedCaller, recommendationId, candidateFacility, exactReferralRevision);
+        authorizedCaller, recommendationId, referralId, candidateFacility, exactReferralRevision);
   }
 }

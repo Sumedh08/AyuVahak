@@ -47,7 +47,7 @@ import org.springframework.stereotype.Service;
 public final class MatchingRecommendationQueries {
 
   private final MatchingStore store;
-  private final MatchingOwnerEvidenceReader ownerEvidence;
+  private final MatchingApplicabilityEvidencePort ownerEvidence;
   private final MatchingPolicyCatalog policies;
   private final AuthorizationService authorization;
   private final AuditWriter auditWriter;
@@ -55,7 +55,7 @@ public final class MatchingRecommendationQueries {
 
   public MatchingRecommendationQueries(
       MatchingStore store,
-      MatchingOwnerEvidenceReader ownerEvidence,
+      MatchingApplicabilityEvidencePort ownerEvidence,
       MatchingPolicyCatalog policies,
       AuthorizationService authorization,
       AuditWriter auditWriter,
@@ -144,7 +144,12 @@ public final class MatchingRecommendationQueries {
       if (candidate.isPresent()) {
         applicability =
             Optional.of(
-                revalidate(latest, requester, candidate.orElseThrow(), latest.referralRevision()));
+                revalidate(
+                    latest,
+                    requester,
+                    referralId,
+                    candidate.orElseThrow(),
+                    latest.referralRevision()));
       }
     }
     recordTargetRead(
@@ -178,9 +183,11 @@ public final class MatchingRecommendationQueries {
   public RecommendationApplicabilityResult revalidateRecommendationApplicability(
       ExecutionContext authorizedCaller,
       InternalId snapshotId,
+      InternalId expectedReferralId,
       ExternalReference candidateFacility,
       long exactReferralRevision) {
     requireTrustedCaller(authorizedCaller);
+    Objects.requireNonNull(expectedReferralId, "expected Referral id");
     RecommendationSnapshot snapshot;
     try {
       snapshot =
@@ -202,7 +209,12 @@ public final class MatchingRecommendationQueries {
     }
     requireDirectoryFacility(candidateFacility);
     RecommendationApplicabilityResult result =
-        revalidate(snapshot, authorizedCaller, candidateFacility, exactReferralRevision);
+        revalidate(
+            snapshot,
+            authorizedCaller,
+            expectedReferralId,
+            candidateFacility,
+            exactReferralRevision);
     recordTargetRead(
         authorizedCaller,
         "MATCHING_RECOMMENDATION_APPLICABILITY_CHECK",
@@ -216,9 +228,18 @@ public final class MatchingRecommendationQueries {
   private RecommendationApplicabilityResult revalidate(
       RecommendationSnapshot snapshot,
       ExecutionContext caller,
+      InternalId expectedReferralId,
       ExternalReference candidateFacility,
       long exactReferralRevision) {
     Instant checkedAt = clock.instant();
+    if (!expectedReferralId.equals(snapshot.referralId())) {
+      return result(
+          snapshot,
+          candidateFacility,
+          RecommendationApplicabilityResult.Status.NOT_APPLICABLE,
+          "REFERRAL_ID_MISMATCH",
+          checkedAt);
+    }
     if (exactReferralRevision != snapshot.referralRevision()) {
       return result(
           snapshot,

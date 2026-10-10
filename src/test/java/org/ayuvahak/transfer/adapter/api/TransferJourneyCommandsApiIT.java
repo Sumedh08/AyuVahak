@@ -148,7 +148,7 @@ class TransferJourneyCommandsApiIT {
       throws Exception {
     Scope scope = createOriginAndDestination();
     grantSender(scope);
-    matching.returnApplicable();
+    matching.returnApplicable(scope.referralId());
 
     var result =
         createRequest(scope, "first-request-01")
@@ -167,6 +167,7 @@ class TransferJourneyCommandsApiIT {
     assertThat(matching.lastCandidateFacility())
         .isEqualTo(directoryReference("Facility", scope.destinationFacilityId()));
     assertThat(matching.lastReferralRevision()).isEqualTo(4L);
+    assertThat(matching.lastExpectedReferralId()).isEqualTo(InternalId.parse(scope.referralId()));
     assertThat(matching.lastCaller().scope().organization().orElseThrow().value())
         .isEqualTo(scope.originOrganizationId());
 
@@ -196,7 +197,7 @@ class TransferJourneyCommandsApiIT {
   void exactRetryReplaysAndDifferentCandidateWithSameKeyConflicts() throws Exception {
     Scope scope = createOriginAndDestination();
     grantSender(scope);
-    matching.returnApplicable();
+    matching.returnApplicable(scope.referralId());
 
     var first =
         createRequest(scope, "stable-request-key").andExpect(status().isCreated()).andReturn();
@@ -238,10 +239,25 @@ class TransferJourneyCommandsApiIT {
   }
 
   @Test
+  void recommendationForDifferentReferralCannotAuthorizeJourneyCreation() throws Exception {
+    Scope scope = createOriginAndDestination();
+    grantSender(scope);
+    matching.returnApplicable(scope.referralId());
+
+    createRequest(scope.withDifferentReferralId(), "recommendation-for-another-referral")
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("TRANSFER_RECOMMENDATION_STALE"));
+
+    assertThat(matching.calls()).isEqualTo(1);
+    assertThat(count("SELECT COUNT(*) FROM transfer.journey")).isZero();
+    assertThat(count("SELECT COUNT(*) FROM transfer.request_attempt")).isZero();
+  }
+
+  @Test
   void missingDeadlinePolicyAndUnauthorizedSenderFailBeforePersistence() throws Exception {
     Scope scope = createOriginAndDestination();
     grantSender(scope);
-    matching.returnApplicable();
+    matching.returnApplicable(scope.referralId());
     transferProperties.setRequestDeadline(null);
 
     createRequest(scope, "missing-deadline")
@@ -404,6 +420,15 @@ class TransferJourneyCommandsApiIT {
           referralId,
           recommendationId);
     }
+
+    Scope withDifferentReferralId() {
+      return new Scope(
+          originOrganizationId,
+          originFacilityId,
+          destinationFacilityId,
+          InternalId.generate().toString(),
+          recommendationId);
+    }
   }
 
   @TestConfiguration(proxyBeanMethods = false)
@@ -424,11 +449,13 @@ class TransferJourneyCommandsApiIT {
     private volatile org.ayuvahak.platform.executioncontext.ExecutionContext lastCaller;
     private volatile InternalId lastRecommendationId;
     private volatile ExternalReference lastCandidateFacility;
+    private volatile InternalId lastExpectedReferralId;
     private volatile long lastReferralRevision;
 
     @Override
     public RecommendationApplicabilityResult revalidate(
         org.ayuvahak.platform.executioncontext.ExecutionContext caller,
+        InternalId referralId,
         InternalId recommendationId,
         ExternalReference candidateFacility,
         long exactReferralRevision) {
@@ -436,14 +463,25 @@ class TransferJourneyCommandsApiIT {
       lastCaller = caller;
       lastRecommendationId = recommendationId;
       lastCandidateFacility = candidateFacility;
+      lastExpectedReferralId = referralId;
       lastReferralRevision = exactReferralRevision;
+      RecommendationApplicabilityResult.Status effectiveStatus = status;
+      java.util.List<String> reasons = java.util.List.of();
+      if (status == RecommendationApplicabilityResult.Status.APPLICABLE
+          && !referralId.equals(expectedReferralId)) {
+        effectiveStatus = RecommendationApplicabilityResult.Status.NOT_APPLICABLE;
+        reasons = java.util.List.of("REFERRAL_ID_MISMATCH");
+      }
       return new RecommendationApplicabilityResult(
-          recommendationId, candidateFacility, status, java.util.List.of(), Instant.now());
+          recommendationId, candidateFacility, effectiveStatus, reasons, Instant.now());
     }
 
-    void returnApplicable() {
+    void returnApplicable(String expectedReferralId) {
       status = RecommendationApplicabilityResult.Status.APPLICABLE;
+      this.expectedReferralId = InternalId.parse(expectedReferralId);
     }
+
+    private volatile InternalId expectedReferralId;
 
     void returnStatus(RecommendationApplicabilityResult.Status status) {
       this.status = status;
@@ -455,7 +493,9 @@ class TransferJourneyCommandsApiIT {
       lastCaller = null;
       lastRecommendationId = null;
       lastCandidateFacility = null;
+      lastExpectedReferralId = null;
       lastReferralRevision = 0;
+      expectedReferralId = null;
     }
 
     int calls() {
@@ -476,6 +516,10 @@ class TransferJourneyCommandsApiIT {
 
     long lastReferralRevision() {
       return lastReferralRevision;
+    }
+
+    InternalId lastExpectedReferralId() {
+      return lastExpectedReferralId;
     }
   }
 }

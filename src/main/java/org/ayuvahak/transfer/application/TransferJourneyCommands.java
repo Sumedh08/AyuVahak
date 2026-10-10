@@ -119,7 +119,8 @@ public final class TransferJourneyCommands {
     RecommendationApplicabilityResult applicability;
     try {
       applicability =
-          matching.revalidate(context, recommendationId, candidateFacility, referralRevision);
+          matching.revalidate(
+              context, referralId, recommendationId, candidateFacility, referralRevision);
     } catch (DataAccessException unavailable) {
       throw matchingUnavailable();
     }

@@ -42,7 +42,7 @@ import org.springframework.stereotype.Service;
 /** Matching's narrow application boundary for minimized, independently authorized owner reads. */
 @Service
 @Lazy
-public final class MatchingOwnerEvidenceReader {
+public final class MatchingOwnerEvidenceReader implements MatchingApplicabilityEvidencePort {
 
   private static final int MAX_CAPACITY_BATCH_SIZE = 100;
 
@@ -79,6 +79,7 @@ public final class MatchingOwnerEvidenceReader {
   }
 
   /** Reads the exact current submitted requirement under the Matching service identity. */
+  @Override
   public ReferralMatchingRequirement readSubmittedRequirement(
       CorrelationId correlationId,
       ExternalReference originOrganization,
@@ -111,6 +112,7 @@ public final class MatchingOwnerEvidenceReader {
   }
 
   /** Reads current Directory facts for one candidate only; no candidate universe is enumerated. */
+  @Override
   public Optional<DirectoryMatchingCandidatePage.Candidate> readCandidate(
       CorrelationId correlationId,
       ExternalReference organization,
@@ -199,6 +201,7 @@ public final class MatchingOwnerEvidenceReader {
   }
 
   /** Evaluates one candidate Facility and the exact mapped dimensions under its owner grant. */
+  @Override
   public CapacityReadinessBatchEvaluation evaluateCandidateCapacityReadiness(
       CorrelationId correlationId,
       ExternalReference organization,
