@@ -16,6 +16,11 @@ class TransferAuthorityConfiguration {
   }
 
   @Bean
+  FunctionalAuthority transferRequestExpiryAuthority() {
+    return TransferAuthorities.requestExpiry();
+  }
+
+  @Bean
   FunctionalAuthority clinicalSuitabilityAuthority() {
     return TransferAuthorities.clinicalSuitability();
   }

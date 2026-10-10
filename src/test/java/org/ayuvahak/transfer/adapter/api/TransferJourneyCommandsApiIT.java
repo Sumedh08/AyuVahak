@@ -17,9 +17,16 @@ import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
 import com.sun.net.httpserver.HttpServer;
 import java.net.InetSocketAddress;
+import java.sql.Connection;
 import java.time.Instant;
 import java.util.Date;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import javax.sql.DataSource;
 import org.ayuvahak.directory.application.DirectoryStore;
 import org.ayuvahak.directory.domain.DirectoryLifecycleStatus;
 import org.ayuvahak.directory.domain.DirectoryProvenance;
@@ -34,6 +41,7 @@ import org.ayuvahak.platform.core.InternalId;
 import org.ayuvahak.platform.core.IssuerId;
 import org.ayuvahak.transfer.adapter.configuration.TransferProperties;
 import org.ayuvahak.transfer.application.MatchingApplicabilityPort;
+import org.ayuvahak.transfer.application.TransferRequestExpirySweep;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -49,6 +57,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
@@ -62,7 +71,8 @@ import org.testcontainers.utility.DockerImageName;
       "ayuvahak.authentication.audience=ayuvahak-api",
       "ayuvahak.authentication.service-client-ids=synthetic-transfer-worker",
       "ayuvahak.authentication.allow-http=true",
-      "ayuvahak.transfer.request-deadline=PT1H"
+      "ayuvahak.transfer.request-deadline=PT1H",
+      "ayuvahak.transfer.expiry-polling-enabled=false"
     })
 @AutoConfigureMockMvc
 @Testcontainers
@@ -92,6 +102,8 @@ class TransferJourneyCommandsApiIT {
   @Autowired private DirectoryStore directory;
   @Autowired private TransferProperties transferProperties;
   @Autowired private StubMatchingApplicability matching;
+  @Autowired private TransferRequestExpirySweep expirySweep;
+  @Autowired private DataSource dataSource;
 
   @DynamicPropertySource
   static void localInfrastructure(DynamicPropertyRegistry registry) {
@@ -535,6 +547,334 @@ class TransferJourneyCommandsApiIT {
   }
 
   @Test
+  void authorizedSenderCanWithdrawPendingRequest() throws Exception {
+    Scope scope = createOriginAndDestination();
+    grantSender(scope);
+    matching.returnApplicable(scope.referralId());
+    String requestAttemptId =
+        com.jayway.jsonpath.JsonPath.read(
+            createRequest(scope, "withdrawal-request")
+                .andExpect(status().isCreated())
+                .andReturn()
+                .getResponse()
+                .getContentAsString(),
+            "$.requestAttemptId");
+
+    withdrawalCommand(
+            scope,
+            requestAttemptId,
+            SENDER,
+            "withdrawal-01",
+            "{\"expectedVersion\":1,\"reasonCode\":\"SENDER_WITHDREW\","
+                + "\"occurredAt\":\"2026-10-10T10:45:00Z\"}")
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.status").value("WITHDRAWN"));
+    withdrawalCommand(
+            scope,
+            requestAttemptId,
+            SENDER,
+            "withdrawal-01",
+            "{\"expectedVersion\":1,\"reasonCode\":\"SENDER_WITHDREW\","
+                + "\"occurredAt\":\"2026-10-10T10:45:00Z\"}")
+        .andExpect(status().isCreated())
+        .andExpect(header().string("Idempotency-Replayed", "true"));
+
+    assertThat(requestStatus(requestAttemptId)).isEqualTo("WITHDRAWN");
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = 'TRANSFER_REQUEST_WITHDRAW'"))
+        .isEqualTo(1);
+    assertThat(count("SELECT COUNT(*) FROM platform_eventing.internal_event")).isZero();
+  }
+
+  @Test
+  void duePendingRequestExpiresUsingTransferServiceAuthority() throws Exception {
+    Scope scope = createOriginAndDestination();
+    grantSender(scope);
+    matching.returnApplicable(scope.referralId());
+    String requestAttemptId =
+        com.jayway.jsonpath.JsonPath.read(
+            createRequest(scope, "expiry-request")
+                .andExpect(status().isCreated())
+                .andReturn()
+                .getResponse()
+                .getContentAsString(),
+            "$.requestAttemptId");
+    grantExpiryWorker(scope);
+    jdbc.update(
+        "UPDATE transfer.request_attempt SET requested_at = ?, expires_at = ? "
+            + "WHERE request_attempt_id = ?",
+        java.sql.Timestamp.from(Instant.now().minusSeconds(120)),
+        java.sql.Timestamp.from(Instant.now().minusSeconds(60)),
+        UUID.fromString(requestAttemptId));
+
+    assertThat(expirySweep.expireDueRequests()).isEqualTo(1);
+
+    assertThat(requestStatus(requestAttemptId)).isEqualTo("EXPIRED");
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = 'TRANSFER_REQUEST_EXPIRE'"))
+        .isEqualTo(1);
+    assertThat(count("SELECT COUNT(*) FROM platform_eventing.internal_event")).isZero();
+  }
+
+  @Test
+  void missingExpiryGrantLeavesDueRequestPendingAndRecordsDenial() throws Exception {
+    Scope scope = createOriginAndDestination();
+    grantSender(scope);
+    matching.returnApplicable(scope.referralId());
+    String requestAttemptId = createRequestAttempt(scope, "expiry-denied-request");
+    jdbc.update(
+        "UPDATE transfer.request_attempt SET requested_at = ?, expires_at = ? "
+            + "WHERE request_attempt_id = ?",
+        java.sql.Timestamp.from(Instant.now().minusSeconds(120)),
+        java.sql.Timestamp.from(Instant.now().minusSeconds(60)),
+        UUID.fromString(requestAttemptId));
+
+    assertThat(expirySweep.expireDueRequests()).isZero();
+
+    assertThat(requestStatus(requestAttemptId)).isEqualTo("PENDING");
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = 'TRANSFER_REQUEST_EXPIRE_DENIED'"))
+        .isEqualTo(1);
+    assertThat(count("SELECT COUNT(*) FROM transfer.command_receipt")).isEqualTo(1);
+  }
+
+  @Test
+  void unauthorizedSenderCannotWithdrawAndDenialIsAudited() throws Exception {
+    Scope scope = createOriginAndDestination();
+    grantSender(scope);
+    matching.returnApplicable(scope.referralId());
+    String requestAttemptId = createRequestAttempt(scope, "unauthorized-withdrawal-request");
+
+    withdrawalCommand(
+            scope,
+            requestAttemptId,
+            "synthetic-unauthorized-sender",
+            "unauthorized-withdrawal",
+            "{\"expectedVersion\":1,\"reasonCode\":\"SENDER_WITHDREW\","
+                + "\"occurredAt\":\"2026-10-10T10:46:00Z\"}")
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.code").value("AUTHORIZATION_DENIED"));
+
+    assertThat(requestStatus(requestAttemptId)).isEqualTo("PENDING");
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = 'TRANSFER_REQUEST_WITHDRAW_DENIED'"))
+        .isEqualTo(1);
+  }
+
+  @Test
+  void requiredWithdrawalAuditFailureRollsBackStateAndReceiptThenRetries() throws Exception {
+    Scope scope = createOriginAndDestination();
+    grantSender(scope);
+    matching.returnApplicable(scope.referralId());
+    String requestAttemptId = createRequestAttempt(scope, "withdraw-audit-request");
+    String body =
+        "{\"expectedVersion\":1,\"reasonCode\":\"SENDER_WITHDREW\","
+            + "\"occurredAt\":\"2026-10-10T10:47:00Z\"}";
+    jdbc.execute(
+        "CREATE FUNCTION transfer.reject_test_withdrawal_audit() RETURNS trigger "
+            + "LANGUAGE plpgsql AS $$ BEGIN "
+            + "IF NEW.action_code = 'TRANSFER_REQUEST_WITHDRAW' THEN "
+            + "RAISE EXCEPTION 'synthetic audit failure'; END IF; RETURN NEW; END $$");
+    jdbc.execute(
+        "CREATE TRIGGER reject_test_withdrawal_audit BEFORE INSERT ON audit.audit_record "
+            + "FOR EACH ROW EXECUTE FUNCTION transfer.reject_test_withdrawal_audit()");
+    try {
+      withdrawalCommand(scope, requestAttemptId, SENDER, "withdraw-audit-retry", body)
+          .andExpect(status().isServiceUnavailable())
+          .andExpect(jsonPath("$.code").value("AUDIT_UNAVAILABLE"));
+      assertThat(requestStatus(requestAttemptId)).isEqualTo("PENDING");
+      assertThat(count("SELECT COUNT(*) FROM transfer.command_receipt")).isEqualTo(1);
+    } finally {
+      jdbc.execute("DROP TRIGGER IF EXISTS reject_test_withdrawal_audit ON audit.audit_record");
+      jdbc.execute("DROP FUNCTION IF EXISTS transfer.reject_test_withdrawal_audit()");
+    }
+
+    withdrawalCommand(scope, requestAttemptId, SENDER, "withdraw-audit-retry", body)
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.status").value("WITHDRAWN"));
+    assertThat(count("SELECT COUNT(*) FROM transfer.command_receipt")).isEqualTo(2);
+    assertThat(requestStatus(requestAttemptId)).isEqualTo("WITHDRAWN");
+  }
+
+  @Test
+  void acceptanceAndSenderWithdrawalRaceHaveOneTerminalWinnerAndReplay() throws Exception {
+    Scope scope = createOriginAndDestination();
+    grantSender(scope);
+    matching.returnApplicable(scope.referralId());
+    String requestAttemptId = createRequestAttempt(scope, "accept-withdraw-race");
+    preparePositiveAcceptance(scope, requestAttemptId);
+
+    ExecutorService executor = Executors.newFixedThreadPool(2);
+    CountDownLatch ready = new CountDownLatch(2);
+    CountDownLatch start = new CountDownLatch(1);
+    try (Connection barrierConnection = dataSource.getConnection()) {
+      barrierConnection.setAutoCommit(false);
+      try (var lock =
+          barrierConnection.prepareStatement(
+              "SELECT request_attempt_id FROM transfer.request_attempt "
+                  + "WHERE request_attempt_id = ? FOR UPDATE")) {
+        lock.setObject(1, UUID.fromString(requestAttemptId));
+        try (var ignored = lock.executeQuery()) {
+          assertThat(ignored.next()).isTrue();
+        }
+      }
+      Future<MvcResult> acceptance =
+          executor.submit(
+              () -> {
+                ready.countDown();
+                start.await();
+                return receivingCommand(
+                        scope,
+                        requestAttemptId,
+                        "acceptance",
+                        "synthetic-receiver",
+                        "race-acceptance",
+                        "{\"expectedVersion\":3,\"occurredAt\":\"2026-10-10T10:50:00Z\"}")
+                    .andReturn();
+              });
+      Future<MvcResult> withdrawal =
+          executor.submit(
+              () -> {
+                ready.countDown();
+                start.await();
+                return withdrawalCommand(
+                        scope,
+                        requestAttemptId,
+                        SENDER,
+                        "race-withdrawal",
+                        "{\"expectedVersion\":3,\"reasonCode\":\"SENDER_WITHDREW\","
+                            + "\"occurredAt\":\"2026-10-10T10:50:00Z\"}")
+                    .andReturn();
+              });
+      assertThat(ready.await(5, TimeUnit.SECONDS)).isTrue();
+      start.countDown();
+      awaitPostgresCasWaiters(2);
+      barrierConnection.commit();
+      MvcResult accepted = acceptance.get(15, TimeUnit.SECONDS);
+      MvcResult withdrawn = withdrawal.get(15, TimeUnit.SECONDS);
+
+      assertThat(
+              java.util.List.of(
+                  accepted.getResponse().getStatus(), withdrawn.getResponse().getStatus()))
+          .containsExactlyInAnyOrder(201, 409);
+      String conflictResponse =
+          accepted.getResponse().getStatus() == 409
+              ? accepted.getResponse().getContentAsString()
+              : withdrawn.getResponse().getContentAsString();
+      assertThat(com.jayway.jsonpath.JsonPath.read(conflictResponse, "$.code").toString())
+          .isIn("TRANSFER_STATE_CONFLICT", "TRANSFER_REQUEST_NOT_PENDING");
+      String winner = requestStatus(requestAttemptId);
+      assertThat(winner).isIn("ACCEPTED", "WITHDRAWN");
+      assertThat(
+              count(
+                  "SELECT COUNT(*) FROM audit.audit_record WHERE action_code IN "
+                      + "('TRANSFER_ACCEPT', 'TRANSFER_REQUEST_WITHDRAW')"))
+          .isEqualTo(1);
+
+      if ("ACCEPTED".equals(winner)) {
+        assertThat(
+                receivingCommand(
+                        scope,
+                        requestAttemptId,
+                        "acceptance",
+                        "synthetic-receiver",
+                        "race-acceptance",
+                        "{\"expectedVersion\":3,\"occurredAt\":\"2026-10-10T10:50:00Z\"}")
+                    .andReturn()
+                    .getResponse()
+                    .getHeader("Idempotency-Replayed"))
+            .isEqualTo("true");
+        assertThat(count("SELECT COUNT(*) FROM transfer.transfer_record")).isEqualTo(1);
+      } else {
+        assertThat(
+                withdrawalCommand(
+                        scope,
+                        requestAttemptId,
+                        SENDER,
+                        "race-withdrawal",
+                        "{\"expectedVersion\":3,\"reasonCode\":\"SENDER_WITHDREW\","
+                            + "\"occurredAt\":\"2026-10-10T10:50:00Z\"}")
+                    .andReturn()
+                    .getResponse()
+                    .getHeader("Idempotency-Replayed"))
+            .isEqualTo("true");
+        assertThat(count("SELECT COUNT(*) FROM transfer.transfer_record")).isZero();
+      }
+    } finally {
+      executor.shutdownNow();
+    }
+  }
+
+  @Test
+  void acceptanceAlreadyLinearizedBeforeDeadlineWinsAgainstConcurrentExpiry() throws Exception {
+    Scope scope = createOriginAndDestination();
+    grantSender(scope);
+    matching.returnApplicable(scope.referralId());
+    String requestAttemptId = createRequestAttempt(scope, "accept-expire-race");
+    preparePositiveAcceptance(scope, requestAttemptId);
+    grantExpiryWorker(scope);
+
+    Instant deadline = Instant.now().plusSeconds(2);
+    jdbc.update(
+        "UPDATE transfer.request_attempt SET expires_at = ? WHERE request_attempt_id = ?",
+        java.sql.Timestamp.from(deadline),
+        UUID.fromString(requestAttemptId));
+    jdbc.execute(
+        "CREATE FUNCTION transfer.delay_test_acceptance() RETURNS trigger LANGUAGE plpgsql AS "
+            + "$$ BEGIN IF NEW.request_status = 'ACCEPTED' THEN PERFORM pg_sleep(4); END IF; "
+            + "RETURN NEW; END $$");
+    jdbc.execute(
+        "CREATE TRIGGER delay_test_acceptance BEFORE UPDATE ON transfer.request_attempt "
+            + "FOR EACH ROW EXECUTE FUNCTION transfer.delay_test_acceptance()");
+
+    ExecutorService executor = Executors.newSingleThreadExecutor();
+    try {
+      Future<MvcResult> acceptance =
+          executor.submit(
+              () ->
+                  receivingCommand(
+                          scope,
+                          requestAttemptId,
+                          "acceptance",
+                          "synthetic-receiver",
+                          "race-expiry-acceptance",
+                          "{\"expectedVersion\":3,\"occurredAt\":\"2026-10-10T10:55:00Z\"}")
+                      .andReturn());
+      awaitPostgresTriggerSleep();
+      while (Instant.now().isBefore(deadline)) {
+        Thread.sleep(20);
+      }
+      assertThat(expirySweep.expireDueRequests()).isZero();
+      MvcResult accepted = acceptance.get(10, TimeUnit.SECONDS);
+      assertThat(accepted.getResponse().getStatus()).isEqualTo(201);
+      assertThat(requestStatus(requestAttemptId)).isEqualTo("ACCEPTED");
+      assertThat(count("SELECT COUNT(*) FROM transfer.request_decision")).isEqualTo(1);
+      assertThat(
+              count(
+                  "SELECT COUNT(*) FROM audit.audit_record WHERE action_code IN "
+                      + "('TRANSFER_ACCEPT', 'TRANSFER_REQUEST_EXPIRE')"))
+          .isEqualTo(1);
+      receivingCommand(
+              scope,
+              requestAttemptId,
+              "acceptance",
+              "synthetic-receiver",
+              "race-expiry-acceptance",
+              "{\"expectedVersion\":3,\"occurredAt\":\"2026-10-10T10:55:00Z\"}")
+          .andExpect(status().isCreated())
+          .andExpect(header().string("Idempotency-Replayed", "true"));
+    } finally {
+      executor.shutdownNow();
+      jdbc.execute("DROP TRIGGER IF EXISTS delay_test_acceptance ON transfer.request_attempt");
+      jdbc.execute("DROP FUNCTION IF EXISTS transfer.delay_test_acceptance()");
+    }
+  }
+
+  @Test
   void receivingAuthoritiesAreIndependentAndBoundToTheAttemptFacility() throws Exception {
     Scope scope = createOriginAndDestination();
     Scope otherFacility = createOriginAndDestination();
@@ -676,6 +1016,93 @@ class TransferJourneyCommandsApiIT {
             .content(body));
   }
 
+  private org.springframework.test.web.servlet.ResultActions withdrawalCommand(
+      Scope scope, String requestAttemptId, String subject, String idempotencyKey, String body)
+      throws Exception {
+    return mockMvc.perform(
+        post("/api/v1/transfer-request-attempts/{attemptId}/withdrawal", requestAttemptId)
+            .header("Authorization", "Bearer " + token(subject))
+            .header("X-AyuVahak-Execution-Scope", "FACILITY")
+            .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+            .header("X-AyuVahak-Facility-Id", scope.originFacilityId())
+            .header("Idempotency-Key", idempotencyKey)
+            .contentType("application/json")
+            .content(body));
+  }
+
+  private String requestStatus(String requestAttemptId) {
+    return jdbc.queryForObject(
+        "SELECT request_status FROM transfer.request_attempt WHERE request_attempt_id = ?",
+        String.class,
+        UUID.fromString(requestAttemptId));
+  }
+
+  private String createRequestAttempt(Scope scope, String idempotencyKey) throws Exception {
+    return com.jayway.jsonpath.JsonPath.read(
+        createRequest(scope, idempotencyKey)
+            .andExpect(status().isCreated())
+            .andReturn()
+            .getResponse()
+            .getContentAsString(),
+        "$.requestAttemptId");
+  }
+
+  private void preparePositiveAcceptance(Scope scope, String requestAttemptId) throws Exception {
+    grantReceivingAuthority(scope, "synthetic-receiver", "ClinicalSuitabilityAuthority");
+    grantReceivingAuthority(scope, "synthetic-receiver", "OperationalReadinessAuthority");
+    grantReceivingAuthority(scope, "synthetic-receiver", "AcceptanceAuthority");
+    receivingCommand(
+            scope,
+            requestAttemptId,
+            "clinical-suitability-assessments",
+            "synthetic-receiver",
+            "race-clinical-assessment",
+            "{\"expectedVersion\":1,\"outcome\":\"SUPPORTS\","
+                + "\"reasonCode\":\"CLINICAL_REVIEW_COMPLETE\","
+                + "\"occurredAt\":\"2026-10-10T10:48:00Z\"}")
+        .andExpect(status().isCreated());
+    receivingCommand(
+            scope,
+            requestAttemptId,
+            "operational-readiness-assessments",
+            "synthetic-receiver",
+            "race-readiness-assessment",
+            "{\"expectedVersion\":2,\"outcome\":\"SUPPORTS\","
+                + "\"reasonCode\":\"READINESS_CONFIRMED\","
+                + "\"occurredAt\":\"2026-10-10T10:49:00Z\"}")
+        .andExpect(status().isCreated());
+  }
+
+  private void awaitPostgresTriggerSleep() throws Exception {
+    Instant timeout = Instant.now().plusSeconds(3);
+    while (Instant.now().isBefore(timeout)) {
+      if (count(
+              "SELECT COUNT(*) FROM pg_stat_activity WHERE datname = current_database() "
+                  + "AND wait_event = 'PgSleep'")
+          > 0) {
+        return;
+      }
+      Thread.sleep(20);
+    }
+    throw new AssertionError("Acceptance did not reach the PostgreSQL concurrency barrier.");
+  }
+
+  private void awaitPostgresCasWaiters(int expectedWaiters) throws Exception {
+    Instant timeout = Instant.now().plusSeconds(10);
+    while (Instant.now().isBefore(timeout)) {
+      if (count(
+              "SELECT COUNT(*) FROM pg_stat_activity WHERE datname = current_database() "
+                  + "AND wait_event_type = 'Lock' "
+                  + "AND query ILIKE 'UPDATE transfer.request_attempt SET request_status = %'")
+          >= expectedWaiters) {
+        return;
+      }
+      Thread.sleep(20);
+    }
+    throw new AssertionError(
+        "Both Transfer commands did not reach the request state compare-and-set barrier.");
+  }
+
   private org.springframework.test.web.servlet.ResultActions createRequest(
       Scope scope, String idempotencyKey) throws Exception {
     return createRequest(scope, idempotencyKey, SENDER);
@@ -788,6 +1215,20 @@ class TransferJourneyCommandsApiIT {
         scope.originOrganizationId(),
         DIRECTORY_ISSUER,
         scope.destinationFacilityId());
+  }
+
+  private void grantExpiryWorker(Scope scope) {
+    jdbc.update(
+        "INSERT INTO identity_access.authorization_grant (grant_id, principal_kind, "
+            + "principal_issuer, principal_identifier_type, principal_identifier, authority_code, "
+            + "scope_kind, organization_issuer, organization_identifier_type, "
+            + "organization_identifier, grant_status, created_at) VALUES (gen_random_uuid(), "
+            + "'SERVICE', ?, 'client_id', 'ayuvahak-transfer-expiry-worker', "
+            + "'TransferRequestExpiry', 'ORGANIZATION', ?, 'Organization', ?, 'ACTIVE', "
+            + "CURRENT_TIMESTAMP)",
+        ISSUER,
+        DIRECTORY_ISSUER,
+        scope.originOrganizationId());
   }
 
   private String token(String subject) throws Exception {

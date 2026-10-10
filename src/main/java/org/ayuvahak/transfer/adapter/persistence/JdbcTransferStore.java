@@ -197,6 +197,23 @@ public class JdbcTransferStore implements TransferStore {
   }
 
   @Override
+  public List<TransferRequestAttempt> findDueRequestAttempts(Instant dueAt, int limit) {
+    if (limit < 1 || limit > 500) {
+      throw new IllegalArgumentException("expiry scan limit must be between 1 and 500");
+    }
+    return jdbc.query(
+        "SELECT request_attempt_id, journey_id, attempt_number, referral_id, referral_revision, "
+            + "recommendation_id, destination_facility_id, request_status, requested_by_kind, "
+            + "requested_by_issuer, requested_by_identifier_type, requested_by_identifier, "
+            + "requested_at, expires_at, version FROM transfer.request_attempt "
+            + "WHERE request_status = 'PENDING' AND expires_at <= ? "
+            + "ORDER BY expires_at, request_attempt_id LIMIT ?",
+        JdbcTransferStore::requestAttempt,
+        Timestamp.from(dueAt),
+        limit);
+  }
+
+  @Override
   public Optional<ReceivingAssessment> findLatestAssessment(
       InternalId requestAttemptId, ReceivingAssessment.Kind kind) {
     List<ReceivingAssessment> rows =
@@ -267,6 +284,20 @@ public class JdbcTransferStore implements TransferStore {
                 + "WHERE request_attempt_id = ? AND request_status = 'PENDING' AND version = ? "
                 + "AND expires_at > ?",
             status,
+            requestAttemptId.value(),
+            expectedVersion,
+            Timestamp.from(now));
+    return changed == 1;
+  }
+
+  @Override
+  public boolean expirePendingRequest(
+      InternalId requestAttemptId, long expectedVersion, Instant now) {
+    int changed =
+        jdbc.update(
+            "UPDATE transfer.request_attempt SET request_status = 'EXPIRED', version = version + 1 "
+                + "WHERE request_attempt_id = ? AND request_status = 'PENDING' AND version = ? "
+                + "AND expires_at <= ?",
             requestAttemptId.value(),
             expectedVersion,
             Timestamp.from(now));

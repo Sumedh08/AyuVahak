@@ -1,6 +1,7 @@
 package org.ayuvahak.transfer.application;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import org.ayuvahak.platform.core.InternalId;
 import org.ayuvahak.platform.idempotency.CommandReceiptKey;
@@ -37,6 +38,8 @@ public interface TransferStore {
 
   Optional<TransferRequestAttempt> findRequestAttempt(InternalId requestAttemptId);
 
+  List<TransferRequestAttempt> findDueRequestAttempts(Instant dueAt, int limit);
+
   Optional<ReceivingAssessment> findLatestAssessment(
       InternalId requestAttemptId, ReceivingAssessment.Kind kind);
 
@@ -47,6 +50,8 @@ public interface TransferStore {
 
   boolean advancePendingRequest(
       InternalId requestAttemptId, long expectedVersion, String status, Instant now);
+
+  boolean expirePendingRequest(InternalId requestAttemptId, long expectedVersion, Instant now);
 
   void insertAssessment(ReceivingAssessment assessment);
 

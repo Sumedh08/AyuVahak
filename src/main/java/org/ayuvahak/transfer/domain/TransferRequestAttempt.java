@@ -53,6 +53,8 @@ public record TransferRequestAttempt(
   public enum Status {
     PENDING,
     ACCEPTED,
-    REJECTED
+    REJECTED,
+    EXPIRED,
+    WITHDRAWN
   }
 }

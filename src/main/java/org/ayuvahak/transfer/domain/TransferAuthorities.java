@@ -11,6 +11,8 @@ public final class TransferAuthorities {
       Set.of(ExecutionScope.Kind.ORGANIZATION, ExecutionScope.Kind.FACILITY);
   private static final FunctionalAuthority REQUEST =
       new FunctionalAuthority("TransferRequest", ORIGIN_SCOPES);
+  private static final FunctionalAuthority REQUEST_EXPIRY =
+      new FunctionalAuthority("TransferRequestExpiry", Set.of(ExecutionScope.Kind.ORGANIZATION));
   private static final FunctionalAuthority CLINICAL_SUITABILITY =
       new FunctionalAuthority("ClinicalSuitabilityAuthority", Set.of(ExecutionScope.Kind.FACILITY));
   private static final FunctionalAuthority OPERATIONAL_READINESS =
@@ -23,6 +25,10 @@ public final class TransferAuthorities {
 
   public static FunctionalAuthority request() {
     return REQUEST;
+  }
+
+  public static FunctionalAuthority requestExpiry() {
+    return REQUEST_EXPIRY;
   }
 
   public static FunctionalAuthority clinicalSuitability() {

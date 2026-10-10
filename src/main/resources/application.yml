@@ -65,6 +65,11 @@ ayuvahak:
     owner-read-client-id: ${AYUVAHAK_MATCHING_OWNER_READ_CLIENT_ID:ayuvahak-matching-owner-read}
     policy:
       active: ${AYUVAHAK_MATCHING_POLICY_ACTIVE:false}
+  transfer:
+    expiry-worker-client-id: ${AYUVAHAK_TRANSFER_EXPIRY_CLIENT_ID:ayuvahak-transfer-expiry-worker}
+    expiry-polling-enabled: ${AYUVAHAK_TRANSFER_EXPIRY_POLLING_ENABLED:true}
+    expiry-poll-interval: ${AYUVAHAK_TRANSFER_EXPIRY_POLL_INTERVAL:PT15S}
+    expiry-batch-size: ${AYUVAHAK_TRANSFER_EXPIRY_BATCH_SIZE:50}
   eventing:
     outbox:
       delivered-event-retention: ${AYUVAHAK_OUTBOX_DELIVERED_EVENT_RETENTION:}
