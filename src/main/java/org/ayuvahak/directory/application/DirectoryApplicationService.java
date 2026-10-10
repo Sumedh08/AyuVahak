@@ -2059,7 +2059,10 @@ public class DirectoryApplicationService {
     return pages;
   }
 
-  /** Uses a caller-selected evaluation instant shared across Matching's owner evidence reads. */
+  /**
+   * Reads one candidate page from a bounded owner snapshot. Callers that need a complete candidate
+   * universe must use {@link #findMatchingCandidatePages} so all pages share the same snapshot.
+   */
   public DirectoryMatchingCandidatePage findMatchingCandidates(
       ExecutionContext context,
       InternalId organizationId,
@@ -2071,8 +2074,26 @@ public class DirectoryApplicationService {
         validateMatchingCandidateSearch(
             context, organizationId, requestedCapabilityCodes, evaluationTime);
     PageBounds page = validatedPageBounds(requestedPage, requestedSize);
-    return loadMatchingCandidates(
-        context, organizationId, capabilityCodes, page, evaluationTime, null);
+    List<DeferredMatchingReadAudit> deferredAudits = new ArrayList<>();
+    DirectoryMatchingCandidatePage result;
+    try {
+      result =
+          Objects.requireNonNull(
+              matchingCandidateReadTransaction.execute(
+                  status ->
+                      loadMatchingCandidates(
+                          context,
+                          organizationId,
+                          capabilityCodes,
+                          page,
+                          evaluationTime,
+                          deferredAudits)),
+              "Directory Matching candidate page transaction result");
+    } catch (DataAccessException | TransactionTimedOutException unavailable) {
+      throw matchingReadUnavailable();
+    }
+    deferredAudits.forEach(this::recordDeferredMatchingReadAudit);
+    return result;
   }
 
   private List<String> validateMatchingCandidateSearch(
