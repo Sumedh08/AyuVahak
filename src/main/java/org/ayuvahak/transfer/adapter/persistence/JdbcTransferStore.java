@@ -15,12 +15,15 @@ import org.ayuvahak.platform.core.IssuerId;
 import org.ayuvahak.platform.idempotency.CommandReceiptKey;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
 import org.ayuvahak.platform.idempotency.configuration.CommandIdempotencyProperties;
+import org.ayuvahak.transfer.application.TransferProgressTarget;
 import org.ayuvahak.transfer.application.TransferStore;
 import org.ayuvahak.transfer.domain.CapacityReservationIntent;
 import org.ayuvahak.transfer.domain.CoordinatedTransfer;
 import org.ayuvahak.transfer.domain.ReceivingAssessment;
 import org.ayuvahak.transfer.domain.TransferDecision;
 import org.ayuvahak.transfer.domain.TransferJourney;
+import org.ayuvahak.transfer.domain.TransferProgressCorrection;
+import org.ayuvahak.transfer.domain.TransferProgressFact;
 import org.ayuvahak.transfer.domain.TransferRequestAttempt;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -299,6 +302,269 @@ public class JdbcTransferStore implements TransferStore {
   }
 
   @Override
+  public Optional<TransferProgressTarget> lockProgressTarget(InternalId transferId) {
+    return progressTarget(transferId, true);
+  }
+
+  @Override
+  public Optional<TransferProgressTarget> findProgressTarget(InternalId transferId) {
+    return progressTarget(transferId, false);
+  }
+
+  private Optional<TransferProgressTarget> progressTarget(InternalId transferId, boolean lock) {
+    String sql =
+        "SELECT t.transfer_id, t.journey_id, t.request_attempt_id, t.transfer_status, "
+            + "t.created_at, t.version AS transfer_version, j.referral_id, "
+            + "j.origin_organization_id, j.origin_facility_id, j.version AS journey_version, "
+            + "d.receiving_organization_id, d.receiving_facility_id "
+            + "FROM transfer.transfer_record t "
+            + "JOIN transfer.journey j ON j.journey_id = t.journey_id "
+            + "JOIN transfer.request_decision d ON d.request_attempt_id = t.request_attempt_id "
+            + "WHERE t.transfer_id = ?"
+            + (lock ? " FOR UPDATE OF t, j" : "");
+    return jdbc
+        .query(
+            sql,
+            (result, row) -> {
+              InternalId journeyId = internalId(result, "journey_id");
+              CoordinatedTransfer transfer =
+                  new CoordinatedTransfer(
+                      internalId(result, "transfer_id"),
+                      journeyId,
+                      internalId(result, "request_attempt_id"),
+                      CoordinatedTransfer.Status.valueOf(result.getString("transfer_status")),
+                      result.getTimestamp("created_at").toInstant(),
+                      result.getLong("transfer_version"));
+              UUID originFacilityId = result.getObject("origin_facility_id", UUID.class);
+              return new TransferProgressTarget(
+                  transfer,
+                  directoryReference(
+                      "Organization", result.getObject("origin_organization_id", UUID.class)),
+                  Optional.ofNullable(originFacilityId)
+                      .map(id -> directoryReference("Facility", id)),
+                  directoryReference(
+                      "Organization", result.getObject("receiving_organization_id", UUID.class)),
+                  directoryReference(
+                      "Facility", result.getObject("receiving_facility_id", UUID.class)),
+                  result.getLong("journey_version"));
+            },
+            transferId.value())
+        .stream()
+        .findFirst();
+  }
+
+  @Override
+  public List<TransferProgressFact> findProgressFacts(InternalId transferId) {
+    return jdbc.query(
+        progressFactSelect() + " WHERE transfer_id = ? ORDER BY aggregate_sequence",
+        JdbcTransferStore::progressFact,
+        transferId.value());
+  }
+
+  @Override
+  public List<TransferProgressCorrection> findProgressCorrections(InternalId transferId) {
+    return jdbc.query(
+        progressCorrectionSelect() + " WHERE transfer_id = ? ORDER BY aggregate_sequence",
+        JdbcTransferStore::progressCorrection,
+        transferId.value());
+  }
+
+  @Override
+  public Optional<TransferProgressFact> findProgressFact(
+      InternalId transferId, InternalId progressFactId) {
+    return jdbc
+        .query(
+            progressFactSelect() + " WHERE transfer_id = ? AND progress_fact_id = ?",
+            JdbcTransferStore::progressFact,
+            transferId.value(),
+            progressFactId.value())
+        .stream()
+        .findFirst();
+  }
+
+  @Override
+  public Optional<TransferProgressCorrection> findProgressCorrectionBySequence(
+      InternalId transferId, long aggregateSequence) {
+    return jdbc
+        .query(
+            progressCorrectionSelect() + " WHERE transfer_id = ? AND aggregate_sequence = ?",
+            JdbcTransferStore::progressCorrection,
+            transferId.value(),
+            aggregateSequence)
+        .stream()
+        .findFirst();
+  }
+
+  @Override
+  public Optional<TransferProgressFact> findProgressFactByVersion(
+      InternalId transferId, long transferVersion) {
+    return jdbc
+        .query(
+            progressFactSelect() + " WHERE transfer_id = ? AND transfer_version = ?",
+            JdbcTransferStore::progressFact,
+            transferId.value(),
+            transferVersion)
+        .stream()
+        .findFirst();
+  }
+
+  @Override
+  public boolean recordProgress(TransferProgressFact fact) {
+    int changed =
+        jdbc.update(
+            "UPDATE transfer.transfer_record SET transfer_status = ?, version = ? "
+                + "WHERE transfer_id = ? AND version = ? AND transfer_status = ?",
+            fact.status().name(),
+            fact.transferVersion(),
+            fact.transferId().value(),
+            fact.transferVersion() - 1,
+            fact.previousStatus().orElseThrow().name());
+    if (changed != 1) {
+      return false;
+    }
+    int journeyChanged =
+        jdbc.update(
+            "UPDATE transfer.journey SET version = ? WHERE journey_id = ? AND version = ?",
+            fact.aggregateSequence(),
+            fact.journeyId().value(),
+            fact.aggregateSequence() - 1);
+    if (journeyChanged != 1) {
+      return false;
+    }
+    jdbc.update(
+        "INSERT INTO transfer.progress_fact (progress_fact_id, transfer_id, journey_id, "
+            + "fact_kind, previous_status, transfer_status, exception_code, reason_code, "
+            + "source_reference, recorded_by_kind, recorded_by_issuer, recorded_by_identifier_type, "
+            + "recorded_by_identifier, authority_code, organization_id, facility_id, occurred_at, "
+            + "recorded_at, transfer_version, aggregate_sequence) "
+            + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        fact.id().value(),
+        fact.transferId().value(),
+        fact.journeyId().value(),
+        fact.kind().name(),
+        fact.previousStatus().map(Enum::name).orElse(null),
+        fact.status().name(),
+        fact.exceptionCode().orElse(null),
+        fact.reasonCode().orElse(null),
+        fact.sourceReference().orElse(null),
+        fact.recordedBy().kind().name(),
+        fact.recordedBy().identity().issuer().value(),
+        fact.recordedBy().identity().resourceType(),
+        fact.recordedBy().identity().value(),
+        fact.authorityCode(),
+        directoryId(fact.organization()),
+        directoryId(fact.facility()),
+        Timestamp.from(fact.occurredAt()),
+        Timestamp.from(fact.recordedAt()),
+        fact.transferVersion(),
+        fact.aggregateSequence());
+    return true;
+  }
+
+  @Override
+  public boolean recordProgressCorrection(TransferProgressCorrection correction) {
+    int journeyChanged =
+        jdbc.update(
+            "UPDATE transfer.journey SET version = ? WHERE journey_id = ? AND version = ?",
+            correction.aggregateSequence(),
+            correction.journeyId().value(),
+            correction.aggregateSequence() - 1);
+    if (journeyChanged != 1) {
+      return false;
+    }
+    jdbc.update(
+        "INSERT INTO transfer.progress_correction (correction_id, transfer_id, journey_id, "
+            + "corrects_progress_fact_id, correction_kind, corrected_occurred_at, "
+            + "corrected_result_code, reason_code, recorded_by_kind, recorded_by_issuer, "
+            + "recorded_by_identifier_type, recorded_by_identifier, authority_code, "
+            + "organization_id, facility_id, recorded_at, transfer_version, aggregate_sequence) "
+            + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        correction.id().value(),
+        correction.transferId().value(),
+        correction.journeyId().value(),
+        correction.correctsProgressFactId().value(),
+        correction.kind().name(),
+        correction.correctedOccurredAt().map(Timestamp::from).orElse(null),
+        correction.correctedResultCode().orElse(null),
+        correction.reasonCode(),
+        correction.recordedBy().kind().name(),
+        correction.recordedBy().identity().issuer().value(),
+        correction.recordedBy().identity().resourceType(),
+        correction.recordedBy().identity().value(),
+        correction.authorityCode(),
+        directoryId(correction.organization()),
+        directoryId(correction.facility()),
+        Timestamp.from(correction.recordedAt()),
+        correction.transferVersion(),
+        correction.aggregateSequence());
+    return true;
+  }
+
+  @Override
+  public Optional<ReceiptClaim> findProgressReceipt(
+      CommandReceiptKey key, RequestFingerprint fingerprint) {
+    return jdbc
+        .query(
+            "SELECT request_fingerprint, receipt_state, response_status, result_reference, "
+                + "result_version FROM transfer.progress_command_receipt "
+                + "WHERE scope_digest = ? AND idempotency_key_digest = ?",
+            (result, row) -> receiptClaim(result, fingerprint),
+            key.scopeDigest(),
+            key.idempotencyKey().value())
+        .stream()
+        .findFirst();
+  }
+
+  @Override
+  public ReceiptClaim claimProgressReceipt(
+      CommandReceiptKey key, RequestFingerprint fingerprint, Instant recordedAt) {
+    int inserted =
+        jdbc.update(
+            "INSERT INTO transfer.progress_command_receipt (scope_digest, idempotency_key_digest, "
+                + "request_fingerprint, receipt_state, recorded_at) VALUES (?, ?, ?, 'IN_PROGRESS', ?) "
+                + "ON CONFLICT DO NOTHING",
+            key.scopeDigest(),
+            key.idempotencyKey().value(),
+            fingerprint.value(),
+            Timestamp.from(recordedAt));
+    if (inserted == 1) {
+      return new ReceiptClaim(
+          ReceiptState.OWNER, Optional.empty(), Optional.empty(), Optional.empty());
+    }
+    return jdbc.queryForObject(
+        "SELECT request_fingerprint, receipt_state, response_status, result_reference, "
+            + "result_version FROM transfer.progress_command_receipt "
+            + "WHERE scope_digest = ? AND idempotency_key_digest = ?",
+        (result, row) -> receiptClaim(result, fingerprint),
+        key.scopeDigest(),
+        key.idempotencyKey().value());
+  }
+
+  @Override
+  public void completeProgressReceipt(
+      CommandReceiptKey key,
+      int responseStatus,
+      InternalId transferId,
+      long resultVersion,
+      Instant recordedAt) {
+    int changed =
+        jdbc.update(
+            "UPDATE transfer.progress_command_receipt SET receipt_state = 'COMPLETED', "
+                + "response_status = ?, result_reference = ?, result_version = ?, recorded_at = ? "
+                + "WHERE scope_digest = ? AND idempotency_key_digest = ? "
+                + "AND receipt_state = 'IN_PROGRESS'",
+            responseStatus,
+            transferId.value(),
+            resultVersion,
+            Timestamp.from(recordedAt),
+            key.scopeDigest(),
+            key.idempotencyKey().value());
+    if (changed != 1) {
+      throw new IllegalStateException("Transfer progress receipt could not be completed");
+    }
+  }
+
+  @Override
   public Optional<CapacityReservationIntent> findReservationIntent(InternalId transferId) {
     return jdbc
         .query(
@@ -353,15 +619,12 @@ public class JdbcTransferStore implements TransferStore {
       return false;
     }
     if (outcome == CapacityReservationIntent.Outcome.RESERVED) {
-      int transferChanged =
-          jdbc.update(
-              "UPDATE transfer.transfer_record SET transfer_status = 'READY', version = version + 1 "
-                  + "WHERE transfer_id = ? AND transfer_status = 'AWAITING_RESERVATION'",
-              transferId.value());
-      if (transferChanged != 1) {
-        throw new IllegalStateException(
-            "Transfer could not advance after confirmed Capacity reservation");
-      }
+      // An actual Arrival may be recorded before a delayed reservation response is reconciled.
+      // Preserve that later factual state; a reservation result must never move it back to READY.
+      jdbc.update(
+          "UPDATE transfer.transfer_record SET transfer_status = 'READY', version = version + 1 "
+              + "WHERE transfer_id = ? AND transfer_status = 'AWAITING_RESERVATION'",
+          transferId.value());
     }
     return true;
   }
@@ -597,6 +860,64 @@ public class JdbcTransferStore implements TransferStore {
         Optional.of(result.getInt("response_status")),
         Optional.of(new InternalId(result.getObject("result_reference", UUID.class))),
         Optional.of(result.getLong("result_version")));
+  }
+
+  private static String progressFactSelect() {
+    return "SELECT progress_fact_id, transfer_id, journey_id, fact_kind, previous_status, "
+        + "transfer_status, exception_code, reason_code, source_reference, recorded_by_kind, "
+        + "recorded_by_issuer, recorded_by_identifier_type, recorded_by_identifier, authority_code, "
+        + "organization_id, facility_id, occurred_at, recorded_at, transfer_version, aggregate_sequence "
+        + "FROM transfer.progress_fact";
+  }
+
+  private static TransferProgressFact progressFact(ResultSet result, int row) throws SQLException {
+    String previousStatus = result.getString("previous_status");
+    return new TransferProgressFact(
+        internalId(result, "progress_fact_id"),
+        internalId(result, "transfer_id"),
+        internalId(result, "journey_id"),
+        TransferProgressFact.Kind.valueOf(result.getString("fact_kind")),
+        Optional.ofNullable(previousStatus).map(CoordinatedTransfer.Status::valueOf),
+        CoordinatedTransfer.Status.valueOf(result.getString("transfer_status")),
+        Optional.ofNullable(result.getString("exception_code")),
+        Optional.ofNullable(result.getString("reason_code")),
+        Optional.ofNullable(result.getString("source_reference")),
+        actor(result, "recorded_by"),
+        result.getString("authority_code"),
+        directoryReference("Organization", result.getObject("organization_id", UUID.class)),
+        directoryReference("Facility", result.getObject("facility_id", UUID.class)),
+        result.getTimestamp("occurred_at").toInstant(),
+        result.getTimestamp("recorded_at").toInstant(),
+        result.getLong("transfer_version"),
+        result.getLong("aggregate_sequence"));
+  }
+
+  private static String progressCorrectionSelect() {
+    return "SELECT correction_id, transfer_id, journey_id, corrects_progress_fact_id, "
+        + "correction_kind, corrected_occurred_at, corrected_result_code, reason_code, "
+        + "recorded_by_kind, recorded_by_issuer, recorded_by_identifier_type, "
+        + "recorded_by_identifier, authority_code, organization_id, facility_id, recorded_at, "
+        + "transfer_version, aggregate_sequence FROM transfer.progress_correction";
+  }
+
+  private static TransferProgressCorrection progressCorrection(ResultSet result, int row)
+      throws SQLException {
+    return new TransferProgressCorrection(
+        internalId(result, "correction_id"),
+        internalId(result, "transfer_id"),
+        internalId(result, "journey_id"),
+        internalId(result, "corrects_progress_fact_id"),
+        TransferProgressCorrection.Kind.valueOf(result.getString("correction_kind")),
+        Optional.ofNullable(result.getTimestamp("corrected_occurred_at")).map(Timestamp::toInstant),
+        Optional.ofNullable(result.getString("corrected_result_code")),
+        result.getString("reason_code"),
+        actor(result, "recorded_by"),
+        result.getString("authority_code"),
+        directoryReference("Organization", result.getObject("organization_id", UUID.class)),
+        directoryReference("Facility", result.getObject("facility_id", UUID.class)),
+        result.getTimestamp("recorded_at").toInstant(),
+        result.getLong("transfer_version"),
+        result.getLong("aggregate_sequence"));
   }
 
   private static TransferJourney journey(ResultSet result, int row) throws SQLException {

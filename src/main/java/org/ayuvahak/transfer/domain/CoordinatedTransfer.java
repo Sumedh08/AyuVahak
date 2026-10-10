@@ -25,6 +25,11 @@ public record CoordinatedTransfer(
 
   public enum Status {
     AWAITING_RESERVATION,
-    READY
+    READY,
+    IN_TRANSIT,
+    INTERRUPTED,
+    ARRIVED,
+    HANDED_OVER,
+    COMPLETED
   }
 }

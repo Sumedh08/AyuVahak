@@ -39,4 +39,19 @@ class TransferAuthorityConfiguration {
   FunctionalAuthority transferReservationReconciliationAuthority() {
     return TransferAuthorities.reservationReconciliation();
   }
+
+  @Bean
+  FunctionalAuthority transferProgressAuthority() {
+    return TransferAuthorities.progress();
+  }
+
+  @Bean
+  FunctionalAuthority transferHandoverAuthority() {
+    return TransferAuthorities.handover();
+  }
+
+  @Bean
+  FunctionalAuthority transferCompletionAuthority() {
+    return TransferAuthorities.completion();
+  }
 }

@@ -10,6 +10,8 @@ import org.ayuvahak.transfer.domain.CapacityReservationIntent;
 import org.ayuvahak.transfer.domain.CoordinatedTransfer;
 import org.ayuvahak.transfer.domain.ReceivingAssessment;
 import org.ayuvahak.transfer.domain.TransferJourney;
+import org.ayuvahak.transfer.domain.TransferProgressCorrection;
+import org.ayuvahak.transfer.domain.TransferProgressFact;
 import org.ayuvahak.transfer.domain.TransferRequestAttempt;
 
 /** Transfer-owned persistence boundary for Journey, first request and command receipts. */
@@ -52,6 +54,38 @@ public interface TransferStore {
   Optional<CoordinatedTransfer> findTransfer(InternalId transferId);
 
   Optional<CapacityReservationIntent> findReservationIntent(InternalId transferId);
+
+  Optional<TransferProgressTarget> lockProgressTarget(InternalId transferId);
+
+  Optional<TransferProgressTarget> findProgressTarget(InternalId transferId);
+
+  List<TransferProgressFact> findProgressFacts(InternalId transferId);
+
+  List<TransferProgressCorrection> findProgressCorrections(InternalId transferId);
+
+  Optional<TransferProgressFact> findProgressFact(InternalId transferId, InternalId progressFactId);
+
+  Optional<TransferProgressCorrection> findProgressCorrectionBySequence(
+      InternalId transferId, long aggregateSequence);
+
+  Optional<TransferProgressFact> findProgressFactByVersion(
+      InternalId transferId, long transferVersion);
+
+  boolean recordProgress(TransferProgressFact fact);
+
+  boolean recordProgressCorrection(TransferProgressCorrection correction);
+
+  Optional<ReceiptClaim> findProgressReceipt(CommandReceiptKey key, RequestFingerprint fingerprint);
+
+  ReceiptClaim claimProgressReceipt(
+      CommandReceiptKey key, RequestFingerprint fingerprint, Instant recordedAt);
+
+  void completeProgressReceipt(
+      CommandReceiptKey key,
+      int responseStatus,
+      InternalId transferId,
+      long resultVersion,
+      Instant recordedAt);
 
   List<CapacityReservationIntent> findDueReservationIntents(Instant dueAt, int limit);
 

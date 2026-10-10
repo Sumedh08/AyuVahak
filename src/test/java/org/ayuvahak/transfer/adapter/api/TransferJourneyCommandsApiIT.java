@@ -2,6 +2,7 @@ package org.ayuvahak.transfer.adapter.api;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -120,6 +121,7 @@ class TransferJourneyCommandsApiIT {
   @Autowired private TransferProperties transferProperties;
   @Autowired private StubMatchingApplicability matching;
   @Autowired private TransferRequestExpirySweep expirySweep;
+  @Autowired private TransferCapacityReservationRecovery reservationRecovery;
   @Autowired private DataSource dataSource;
   @Autowired private CapacityReservationCommands capacityReservations;
   @Autowired private ExecutionContextFactory executionContexts;
@@ -168,6 +170,9 @@ class TransferJourneyCommandsApiIT {
     jdbc.execute(
         "TRUNCATE capacity.reservation_command_receipt, "
             + "capacity.coordination_reservation, capacity.reservation_operation");
+    jdbc.update("DELETE FROM transfer.progress_command_receipt");
+    jdbc.update("DELETE FROM transfer.progress_correction");
+    jdbc.update("DELETE FROM transfer.progress_fact");
     jdbc.update("DELETE FROM transfer.command_receipt");
     jdbc.update("DELETE FROM transfer.capacity_reservation_request");
     jdbc.update("DELETE FROM transfer.request_decision");
@@ -524,6 +529,300 @@ class TransferJourneyCommandsApiIT {
                 String.class,
                 firstTransfer))
         .isEqualTo("READY");
+  }
+
+  @Test
+  void transferProgressKeepsArrivalHandoverAndCompletionDistinctAndPublishesOnce()
+      throws Exception {
+    Scope scope = createOriginAndDestination();
+    String transferId = createReadyTransfer(scope, "progress-happy");
+    grantFacilityAuthority("synthetic-transfer-mover", "TransferProgressAuthority", scope);
+    grantFacilityAuthority("synthetic-transfer-receiver", "TransferProgressAuthority", scope);
+    grantFacilityAuthority("synthetic-transfer-receiver", "TransferHandoverAuthority", scope);
+    grantFacilityAuthority("synthetic-transfer-receiver", "TransferCompletionAuthority", scope);
+
+    progressCommand(
+            scope,
+            transferId,
+            "departure",
+            "synthetic-transfer-mover",
+            "progress-departure",
+            "{\"expectedVersion\":2,\"occurredAt\":\"2026-10-10T10:00:00Z\","
+                + "\"sourceReference\":\"synthetic:departure-1\"}")
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.status").value("IN_TRANSIT"))
+        .andExpect(jsonPath("$.version").value(3));
+    progressCommand(
+            scope,
+            transferId,
+            "arrival",
+            "synthetic-transfer-mover",
+            "progress-arrival",
+            "{\"expectedVersion\":3,\"occurredAt\":\"2026-10-10T10:45:00Z\","
+                + "\"sourceReference\":\"synthetic:arrival-1\"}")
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.status").value("ARRIVED"));
+    progressCommand(
+            scope,
+            transferId,
+            "handover",
+            "synthetic-transfer-receiver",
+            "progress-handover",
+            "{\"expectedVersion\":4,\"occurredAt\":\"2026-10-10T10:50:00Z\"}")
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.status").value("HANDED_OVER"));
+    var completed =
+        progressCommand(
+                scope,
+                transferId,
+                "completion",
+                "synthetic-transfer-receiver",
+                "progress-completion",
+                "{\"expectedVersion\":5,\"occurredAt\":\"2026-10-10T10:55:00Z\","
+                    + "\"reasonCode\":\"COORDINATION_CLOSED\"}")
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.status").value("COMPLETED"))
+            .andReturn();
+    String journeyId =
+        com.jayway.jsonpath.JsonPath.read(
+            completed.getResponse().getContentAsString(), "$.journeyId");
+
+    progressCommand(
+            scope,
+            transferId,
+            "completion",
+            "synthetic-transfer-receiver",
+            "progress-completion",
+            "{\"expectedVersion\":5,\"occurredAt\":\"2026-10-10T10:55:00Z\","
+                + "\"reasonCode\":\"COORDINATION_CLOSED\"}")
+        .andExpect(status().isCreated())
+        .andExpect(header().string("Idempotency-Replayed", "true"));
+
+    mockMvc
+        .perform(
+            get("/api/v1/transfers/{transferId}/progress", transferId)
+                .header("Authorization", "Bearer " + token("synthetic-transfer-receiver"))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                .header("X-AyuVahak-Facility-Id", scope.destinationFacilityId()))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.status").value("COMPLETED"))
+        .andExpect(jsonPath("$.facts.length()").value(4))
+        .andExpect(jsonPath("$.facts[0].kind").value("DEPARTURE"))
+        .andExpect(jsonPath("$.facts[1].kind").value("ARRIVAL"))
+        .andExpect(jsonPath("$.facts[2].kind").value("HANDOVER"))
+        .andExpect(jsonPath("$.facts[3].kind").value("COMPLETION"));
+
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM platform_eventing.internal_event WHERE event_type = "
+                    + "'transfer.completed.v1' AND aggregate_ref = 'transfer-journey/"
+                    + journeyId
+                    + "'"))
+        .isEqualTo(1);
+  }
+
+  @Test
+  void actualArrivalBeforeReservationOrDigitalDepartureIsRecordedWithoutFabricatedMovement()
+      throws Exception {
+    Scope scope = createOriginAndDestination();
+    grantSender(scope);
+    matching.returnApplicable(scope.referralId());
+    ensureReservableCapacityCatalog();
+    grantCapacityReporter(scope);
+    recordCoordinationSlotObservation(scope, 1, "late-arrival-capacity");
+    grantReservationWorker(scope);
+    String requestAttempt = createRequestAttempt(scope, "late-arrival-request");
+    preparePositiveAcceptance(scope, requestAttempt);
+    capacityPort.failNext(new IllegalStateException("Synthetic delayed Capacity response"));
+    String accepted = acceptRequest(scope, requestAttempt, "late-arrival-acceptance");
+    String transferId = com.jayway.jsonpath.JsonPath.read(accepted, "$.transferId");
+    assertThat(com.jayway.jsonpath.JsonPath.read(accepted, "$.status").toString())
+        .isEqualTo("AWAITING_RESERVATION");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT outcome FROM transfer.capacity_reservation_request WHERE transfer_id = ?",
+                String.class,
+                UUID.fromString(transferId)))
+        .isEqualTo("UNAVAILABLE");
+    grantFacilityAuthority("synthetic-transfer-receiver", "TransferProgressAuthority", scope);
+
+    progressCommand(
+            scope,
+            transferId,
+            "arrival",
+            "synthetic-transfer-receiver",
+            "late-arrival-fact",
+            "{\"expectedVersion\":1,\"occurredAt\":\"2026-10-10T09:30:00Z\","
+                + "\"sourceReference\":\"synthetic:arrival-before-update\"}")
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.status").value("ARRIVED"))
+        .andExpect(jsonPath("$.exceptionCode").value("ARRIVAL_BEFORE_RESERVATION_CONFIRMATION"));
+
+    jdbc.update(
+        "UPDATE transfer.capacity_reservation_request SET next_attempt_at = CURRENT_TIMESTAMP - "
+            + "INTERVAL '1 second' WHERE transfer_id = ?",
+        UUID.fromString(transferId));
+    assertThat(reservationRecovery.reconcileDue()).isEqualTo(1);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT outcome FROM transfer.capacity_reservation_request WHERE transfer_id = ?",
+                String.class,
+                UUID.fromString(transferId)))
+        .isEqualTo("RESERVED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
+                String.class,
+                UUID.fromString(transferId)))
+        .isEqualTo("ARRIVED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT version FROM transfer.transfer_record WHERE transfer_id = ?",
+                Long.class,
+                UUID.fromString(transferId)))
+        .isEqualTo(2L);
+
+    mockMvc
+        .perform(
+            get("/api/v1/transfers/{transferId}/progress", transferId)
+                .header("Authorization", "Bearer " + token("synthetic-transfer-receiver"))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                .header("X-AyuVahak-Facility-Id", scope.destinationFacilityId()))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.facts.length()").value(1))
+        .andExpect(jsonPath("$.facts[0].kind").value("ARRIVAL"));
+  }
+
+  @Test
+  void progressCorrectionReferencesOriginalWithoutRewritingFactOrTransferState() throws Exception {
+    Scope scope = createOriginAndDestination();
+    String transferId = createReadyTransfer(scope, "progress-correction");
+    grantFacilityAuthority("synthetic-transfer-receiver", "TransferProgressAuthority", scope);
+
+    progressCommand(
+            scope,
+            transferId,
+            "departure",
+            "synthetic-transfer-receiver",
+            "correction-departure",
+            "{\"expectedVersion\":2,\"occurredAt\":\"2026-10-10T10:00:00Z\"}")
+        .andExpect(status().isCreated());
+    var arrival =
+        progressCommand(
+                scope,
+                transferId,
+                "arrival",
+                "synthetic-transfer-receiver",
+                "correction-arrival",
+                "{\"expectedVersion\":3,\"occurredAt\":\"2026-10-10T10:45:00Z\"}")
+            .andExpect(status().isCreated())
+            .andReturn();
+    String arrivalFactId =
+        com.jayway.jsonpath.JsonPath.read(
+            arrival.getResponse().getContentAsString(), "$.progressFactId");
+
+    mockMvc
+        .perform(
+            post(
+                    "/api/v1/transfers/{transferId}/progress/{progressFactId}/corrections",
+                    transferId,
+                    arrivalFactId)
+                .header("Authorization", "Bearer " + token("synthetic-unauthorized-corrector"))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                .header("X-AyuVahak-Facility-Id", scope.destinationFacilityId())
+                .header("Idempotency-Key", "unauthorized-arrival-correction")
+                .contentType("application/json")
+                .content(
+                    "{\"expectedVersion\":4,\"correctionKind\":\"OCCURRENCE_TIME\","
+                        + "\"correctedOccurredAt\":\"2026-10-10T10:42:00Z\","
+                        + "\"reasonCode\":\"SOURCE_TIME_CORRECTED\"}"))
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.code").value("AUTHORIZATION_DENIED"));
+
+    var correction =
+        mockMvc
+            .perform(
+                post(
+                        "/api/v1/transfers/{transferId}/progress/{progressFactId}/corrections",
+                        transferId,
+                        arrivalFactId)
+                    .header("Authorization", "Bearer " + token("synthetic-transfer-receiver"))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                    .header("X-AyuVahak-Facility-Id", scope.destinationFacilityId())
+                    .header("Idempotency-Key", "arrival-time-correction")
+                    .contentType("application/json")
+                    .content(
+                        "{\"expectedVersion\":4,\"correctionKind\":\"OCCURRENCE_TIME\","
+                            + "\"correctedOccurredAt\":\"2026-10-10T10:42:00Z\","
+                            + "\"reasonCode\":\"SOURCE_TIME_CORRECTED\"}"))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.correctsProgressFactId").value(arrivalFactId))
+            .andExpect(jsonPath("$.correctionKind").value("OCCURRENCE_TIME"))
+            .andExpect(jsonPath("$.correctedOccurredAt").value("2026-10-10T10:42:00Z"))
+            .andReturn();
+    String correctionId =
+        com.jayway.jsonpath.JsonPath.read(
+            correction.getResponse().getContentAsString(), "$.correctionId");
+
+    mockMvc
+        .perform(
+            post(
+                    "/api/v1/transfers/{transferId}/progress/{progressFactId}/corrections",
+                    transferId,
+                    arrivalFactId)
+                .header("Authorization", "Bearer " + token("synthetic-transfer-receiver"))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                .header("X-AyuVahak-Facility-Id", scope.destinationFacilityId())
+                .header("Idempotency-Key", "arrival-time-correction")
+                .contentType("application/json")
+                .content(
+                    "{\"expectedVersion\":4,\"correctionKind\":\"OCCURRENCE_TIME\","
+                        + "\"correctedOccurredAt\":\"2026-10-10T10:42:00Z\","
+                        + "\"reasonCode\":\"SOURCE_TIME_CORRECTED\"}"))
+        .andExpect(status().isCreated())
+        .andExpect(header().string("Idempotency-Replayed", "true"));
+
+    mockMvc
+        .perform(
+            post(
+                    "/api/v1/transfers/{transferId}/progress/{progressFactId}/corrections",
+                    transferId,
+                    arrivalFactId)
+                .header("Authorization", "Bearer " + token("synthetic-transfer-receiver"))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                .header("X-AyuVahak-Facility-Id", scope.destinationFacilityId())
+                .header("Idempotency-Key", "arrival-result-correction")
+                .contentType("application/json")
+                .content(
+                    "{\"expectedVersion\":4,\"correctionKind\":\"REPORTED_RESULT\","
+                        + "\"correctedResultCode\":\"ARRIVAL_REPORT_RETRACTED\","
+                        + "\"reasonCode\":\"REPORT_RETRACTED\"}"))
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.correctsProgressFactId").value(arrivalFactId))
+        .andExpect(jsonPath("$.correctionKind").value("REPORTED_RESULT"))
+        .andExpect(jsonPath("$.correctedResultCode").value("ARRIVAL_REPORT_RETRACTED"));
+
+    mockMvc
+        .perform(
+            get("/api/v1/transfers/{transferId}/progress", transferId)
+                .header("Authorization", "Bearer " + token("synthetic-transfer-receiver"))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                .header("X-AyuVahak-Facility-Id", scope.destinationFacilityId()))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.status").value("ARRIVED"))
+        .andExpect(jsonPath("$.version").value(4))
+        .andExpect(jsonPath("$.facts[1].occurredAt").value("2026-10-10T10:45:00Z"))
+        .andExpect(jsonPath("$.corrections.length()").value(2))
+        .andExpect(jsonPath("$.corrections[0].correctionId").value((Object) correctionId))
+        .andExpect(
+            jsonPath("$.corrections[1].correctedResultCode").value("ARRIVAL_REPORT_RETRACTED"));
   }
 
   @Test
@@ -1204,6 +1503,40 @@ class TransferJourneyCommandsApiIT {
         .getContentAsString();
   }
 
+  private String createReadyTransfer(Scope scope, String fixtureName) throws Exception {
+    grantSender(scope);
+    matching.returnApplicable(scope.referralId());
+    ensureReservableCapacityCatalog();
+    grantCapacityReporter(scope);
+    recordCoordinationSlotObservation(scope, 1, fixtureName + "-capacity");
+    grantReservationWorker(scope);
+    String requestAttempt = createRequestAttempt(scope, fixtureName + "-request");
+    preparePositiveAcceptance(scope, requestAttempt);
+    String accepted = acceptRequest(scope, requestAttempt, fixtureName + "-acceptance");
+    assertThat(com.jayway.jsonpath.JsonPath.read(accepted, "$.status").toString())
+        .isEqualTo("READY");
+    return com.jayway.jsonpath.JsonPath.read(accepted, "$.transferId").toString();
+  }
+
+  private org.springframework.test.web.servlet.ResultActions progressCommand(
+      Scope scope,
+      String transferId,
+      String command,
+      String subject,
+      String idempotencyKey,
+      String body)
+      throws Exception {
+    return mockMvc.perform(
+        post("/api/v1/transfers/{transferId}/{command}", transferId, command)
+            .header("Authorization", "Bearer " + token(subject))
+            .header("X-AyuVahak-Execution-Scope", "FACILITY")
+            .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+            .header("X-AyuVahak-Facility-Id", scope.destinationFacilityId())
+            .header("Idempotency-Key", idempotencyKey)
+            .contentType("application/json")
+            .content(body));
+  }
+
   private org.ayuvahak.platform.executioncontext.ExecutionContext reservationContext(Scope scope) {
     return executionContexts.forBackgroundWork(
         ActorReference.service(new IssuerId(ISSUER), "ayuvahak-transfer-reservation-worker"),
@@ -1399,6 +1732,7 @@ class TransferJourneyCommandsApiIT {
     Scope scope = createOriginAndDestination();
     grantSender(scope);
     matching.returnApplicable(scope.referralId());
+    int existingEvents = count("SELECT COUNT(*) FROM platform_eventing.internal_event");
     String requestAttemptId =
         com.jayway.jsonpath.JsonPath.read(
             createRequest(scope, "withdrawal-request")
@@ -1440,7 +1774,8 @@ class TransferJourneyCommandsApiIT {
     assertThat(withdrawalAudit.occurredAt()).isAfter(withdrawalOccurredAt);
     assertThat(withdrawalAudit.recordedAt()).isAfter(withdrawalAudit.occurredAt());
     assertThat(withdrawalAudit.actorReference()).isEqualTo(SENDER);
-    assertThat(count("SELECT COUNT(*) FROM platform_eventing.internal_event")).isZero();
+    assertThat(count("SELECT COUNT(*) FROM platform_eventing.internal_event"))
+        .isEqualTo(existingEvents);
   }
 
   @Test
