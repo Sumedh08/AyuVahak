@@ -6,6 +6,7 @@ import java.util.Optional;
 import org.ayuvahak.platform.core.InternalId;
 import org.ayuvahak.platform.idempotency.CommandReceiptKey;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
+import org.ayuvahak.transfer.domain.CapacityReservationIntent;
 import org.ayuvahak.transfer.domain.CoordinatedTransfer;
 import org.ayuvahak.transfer.domain.ReceivingAssessment;
 import org.ayuvahak.transfer.domain.TransferJourney;
@@ -48,6 +49,22 @@ public interface TransferStore {
 
   Optional<DecisionResult> findDecisionByVersion(InternalId requestAttemptId, long requestVersion);
 
+  Optional<CoordinatedTransfer> findTransfer(InternalId transferId);
+
+  Optional<CapacityReservationIntent> findReservationIntent(InternalId transferId);
+
+  List<CapacityReservationIntent> findDueReservationIntents(Instant dueAt, int limit);
+
+  boolean recordReservationOutcome(
+      InternalId transferId,
+      int expectedAttemptCount,
+      int nextAttemptCount,
+      CapacityReservationIntent.Outcome outcome,
+      Optional<InternalId> reservationId,
+      Optional<String> reasonCode,
+      Instant nextAttemptAt,
+      Instant recordedAt);
+
   boolean advancePendingRequest(
       InternalId requestAttemptId, long expectedVersion, String status, Instant now);
 
@@ -61,7 +78,8 @@ public interface TransferStore {
 
   void insertDecisionAndOptionalTransfer(
       org.ayuvahak.transfer.domain.TransferDecision decision,
-      Optional<CoordinatedTransfer> transfer);
+      Optional<CoordinatedTransfer> transfer,
+      Optional<CapacityReservationIntent> reservationIntent);
 
   enum ReceiptState {
     OWNER,

@@ -27,6 +27,9 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import javax.sql.DataSource;
+import org.ayuvahak.capacity.application.CapacityReservationCommands;
+import org.ayuvahak.capacity.domain.CapacityReservationRequest;
+import org.ayuvahak.capacity.domain.CapacityReservationResult;
 import org.ayuvahak.directory.application.DirectoryStore;
 import org.ayuvahak.directory.domain.DirectoryLifecycleStatus;
 import org.ayuvahak.directory.domain.DirectoryProvenance;
@@ -35,24 +38,32 @@ import org.ayuvahak.directory.domain.Facility;
 import org.ayuvahak.directory.domain.Organization;
 import org.ayuvahak.matching.application.RecommendationApplicabilityResult;
 import org.ayuvahak.platform.AyuVahakApplication;
+import org.ayuvahak.platform.api.PlatformErrorCode;
+import org.ayuvahak.platform.api.PlatformProblemException;
 import org.ayuvahak.platform.core.ActorReference;
+import org.ayuvahak.platform.core.CorrelationId;
 import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.InternalId;
 import org.ayuvahak.platform.core.IssuerId;
+import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
+import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
 import org.ayuvahak.transfer.adapter.configuration.TransferProperties;
 import org.ayuvahak.transfer.application.MatchingApplicabilityPort;
+import org.ayuvahak.transfer.application.TransferCapacityReservationRecovery;
 import org.ayuvahak.transfer.application.TransferRequestExpirySweep;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.config.AutowireCapableBeanFactory;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
+import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -72,7 +83,12 @@ import org.testcontainers.utility.DockerImageName;
       "ayuvahak.authentication.service-client-ids=synthetic-transfer-worker",
       "ayuvahak.authentication.allow-http=true",
       "ayuvahak.transfer.request-deadline=PT1H",
-      "ayuvahak.transfer.expiry-polling-enabled=false"
+      "ayuvahak.transfer.reservation-dimension=TRANSFER_COORDINATION_SLOT",
+      "ayuvahak.transfer.reservation-unit=slot",
+      "ayuvahak.transfer.reservation-quantity=1",
+      "ayuvahak.transfer.reservation-duration=PT2H",
+      "ayuvahak.transfer.expiry-polling-enabled=false",
+      "ayuvahak.transfer.reservation-polling-enabled=false"
     })
 @AutoConfigureMockMvc
 @Testcontainers
@@ -104,6 +120,10 @@ class TransferJourneyCommandsApiIT {
   @Autowired private StubMatchingApplicability matching;
   @Autowired private TransferRequestExpirySweep expirySweep;
   @Autowired private DataSource dataSource;
+  @Autowired private CapacityReservationCommands capacityReservations;
+  @Autowired private ExecutionContextFactory executionContexts;
+  @Autowired private AutowireCapableBeanFactory beanFactory;
+  @Autowired private StubCapacityReservationPort capacityPort;
 
   @DynamicPropertySource
   static void localInfrastructure(DynamicPropertyRegistry registry) {
@@ -144,7 +164,11 @@ class TransferJourneyCommandsApiIT {
 
   @BeforeEach
   void resetTransferState() {
+    jdbc.execute(
+        "TRUNCATE capacity.reservation_command_receipt, "
+            + "capacity.coordination_reservation, capacity.reservation_operation");
     jdbc.update("DELETE FROM transfer.command_receipt");
+    jdbc.update("DELETE FROM transfer.capacity_reservation_request");
     jdbc.update("DELETE FROM transfer.request_decision");
     jdbc.update("DELETE FROM transfer.transfer_record");
     jdbc.update("DELETE FROM transfer.receiving_assessment");
@@ -155,7 +179,9 @@ class TransferJourneyCommandsApiIT {
     jdbc.update("DELETE FROM identity_access.bootstrap_marker");
     jdbc.update("DELETE FROM identity_access.authorization_grant");
     transferProperties.setRequestDeadline(java.time.Duration.ofHours(1));
+    transferProperties.setReservationPollInterval(java.time.Duration.ofSeconds(15));
     matching.reset();
+    capacityPort.reset();
   }
 
   @Test
@@ -384,7 +410,7 @@ class TransferJourneyCommandsApiIT {
         .isEqualTo(1);
     assertThat(count("SELECT COUNT(*) FROM transfer.command_receipt")).isEqualTo(4);
     assertThat(count("SELECT COUNT(*) FROM audit.audit_record WHERE action_code LIKE 'TRANSFER_%'"))
-        .isEqualTo(4);
+        .isEqualTo(5);
     assertThat(count("SELECT COUNT(*) FROM platform_eventing.internal_event")).isZero();
     assertThat(
             jdbc.queryForObject(
@@ -393,6 +419,650 @@ class TransferJourneyCommandsApiIT {
                 Integer.class,
                 UUID.fromString(transferId)))
         .isEqualTo(1);
+  }
+
+  @Test
+  void acceptancePersistsConfiguredReservationOperationForRecovery() throws Exception {
+    Scope scope = createOriginAndDestination();
+    grantSender(scope);
+    matching.returnApplicable(scope.referralId());
+    String requestAttemptId =
+        com.jayway.jsonpath.JsonPath.read(
+            createRequest(scope, "reservation-intent-request")
+                .andExpect(status().isCreated())
+                .andReturn()
+                .getResponse()
+                .getContentAsString(),
+            "$.requestAttemptId");
+    preparePositiveAcceptance(scope, requestAttemptId);
+
+    String response =
+        receivingCommand(
+                scope,
+                requestAttemptId,
+                "acceptance",
+                "synthetic-receiver",
+                "reservation-intent-acceptance",
+                "{\"expectedVersion\":3,\"occurredAt\":\"2026-10-10T10:50:00Z\"}")
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.status").value("AWAITING_RESERVATION"))
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+    UUID transferId = UUID.fromString(com.jayway.jsonpath.JsonPath.read(response, "$.transferId"));
+
+    var intent =
+        jdbc.queryForMap(
+            "SELECT operation_id, facility_identifier, dimension_code, unit_code, quantity, "
+                + "interval_end > interval_start AS valid_interval, expires_at = interval_end "
+                + "AS expiry_matches_interval, outcome FROM transfer.capacity_reservation_request "
+                + "WHERE transfer_id = ?",
+            transferId);
+
+    assertThat(intent.get("operation_id")).isEqualTo(transferId);
+    assertThat(intent.get("facility_identifier"))
+        .isEqualTo(UUID.fromString(scope.destinationFacilityId()));
+    assertThat(intent.get("dimension_code")).isEqualTo("TRANSFER_COORDINATION_SLOT");
+    assertThat(intent.get("unit_code")).isEqualTo("slot");
+    assertThat((java.math.BigDecimal) intent.get("quantity")).isEqualByComparingTo("1");
+    assertThat(intent.get("valid_interval")).isEqualTo(true);
+    assertThat(intent.get("expiry_matches_interval")).isEqualTo(true);
+    assertThat(intent.get("outcome")).isEqualTo("PENDING");
+  }
+
+  @Test
+  void capacityConfirmationPromotesAcceptedTransferAndLastUnitConflictStaysUnreserved()
+      throws Exception {
+    Scope scope = createOriginAndDestination();
+    grantSender(scope);
+    matching.returnApplicable(scope.referralId());
+    ensureReservableCapacityCatalog();
+    grantCapacityReporter(scope);
+    recordCoordinationSlotObservation(scope, 1, "capacity-one-unit");
+    grantReservationWorker(scope);
+
+    String firstRequest = createRequestAttempt(scope, "capacity-first-request");
+    preparePositiveAcceptance(scope, firstRequest);
+    String firstResponse = acceptRequest(scope, firstRequest, "capacity-first-accept");
+    UUID firstTransfer =
+        UUID.fromString(com.jayway.jsonpath.JsonPath.read(firstResponse, "$.transferId"));
+
+    assertThat(com.jayway.jsonpath.JsonPath.read(firstResponse, "$.status").toString())
+        .isEqualTo("READY");
+    assertThat(count("SELECT COUNT(*) FROM capacity.coordination_reservation")).isEqualTo(1);
+    assertThat(
+            count("SELECT COUNT(*) FROM capacity.reservation_operation WHERE outcome = 'RESERVED'"))
+        .isEqualTo(1);
+
+    Scope secondScope = scope.withDifferentReferralId();
+    matching.returnApplicable(secondScope.referralId());
+    String secondRequest = createRequestAttempt(secondScope, "capacity-second-request");
+    preparePositiveAcceptance(secondScope, secondRequest);
+    String secondResponse = acceptRequest(secondScope, secondRequest, "capacity-second-accept");
+    UUID secondTransfer =
+        UUID.fromString(com.jayway.jsonpath.JsonPath.read(secondResponse, "$.transferId"));
+
+    assertThat(com.jayway.jsonpath.JsonPath.read(secondResponse, "$.status").toString())
+        .isEqualTo("AWAITING_RESERVATION");
+    assertThat(count("SELECT COUNT(*) FROM capacity.coordination_reservation")).isEqualTo(1);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT outcome FROM transfer.capacity_reservation_request WHERE transfer_id = ?",
+                String.class,
+                secondTransfer))
+        .isEqualTo("CONFLICT");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
+                String.class,
+                secondTransfer))
+        .isEqualTo("AWAITING_RESERVATION");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
+                String.class,
+                firstTransfer))
+        .isEqualTo("READY");
+  }
+
+  @Test
+  void staleCapacityEvidenceCannotReserveOrPromoteAcceptedTransfer() throws Exception {
+    Scope scope = createOriginAndDestination();
+    grantSender(scope);
+    matching.returnApplicable(scope.referralId());
+    ensureReservableCapacityCatalog();
+    grantCapacityReporter(scope);
+    Instant now = Instant.now();
+    recordCoordinationSlotObservation(
+        scope, 1, "capacity-stale-observation", now.minusSeconds(1_200), now.plusSeconds(1_200));
+    grantReservationWorker(scope);
+
+    String requestAttempt = createRequestAttempt(scope, "capacity-stale-request");
+    preparePositiveAcceptance(scope, requestAttempt);
+    String response = acceptRequest(scope, requestAttempt, "capacity-stale-accept");
+    UUID transferId = UUID.fromString(com.jayway.jsonpath.JsonPath.read(response, "$.transferId"));
+
+    assertThat(com.jayway.jsonpath.JsonPath.read(response, "$.status").toString())
+        .isEqualTo("AWAITING_RESERVATION");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT outcome FROM transfer.capacity_reservation_request WHERE transfer_id = ?",
+                String.class,
+                transferId))
+        .isEqualTo("UNKNOWN");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT reason_code FROM transfer.capacity_reservation_request WHERE transfer_id = ?",
+                String.class,
+                transferId))
+        .isEqualTo("OBSERVATION_TOO_OLD");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
+                String.class,
+                transferId))
+        .isEqualTo("AWAITING_RESERVATION");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT outcome FROM capacity.reservation_operation WHERE operation_id = ?",
+                String.class,
+                transferId))
+        .isEqualTo("UNKNOWN");
+    assertThat(count("SELECT COUNT(*) FROM capacity.coordination_reservation")).isZero();
+  }
+
+  @Test
+  void downstreamAuthorizationDenialAfterAcceptanceIsPersistedAsNonRetryable() throws Exception {
+    Scope scope = createOriginAndDestination();
+    grantSender(scope);
+    matching.returnApplicable(scope.referralId());
+    ensureReservableCapacityCatalog();
+    grantCapacityReporter(scope);
+    recordCoordinationSlotObservation(scope, 1, "capacity-refusal-one-unit");
+    grantTransferReservationWorker(scope); // CapacityReservation deliberately absent.
+
+    String requestAttempt = createRequestAttempt(scope, "capacity-refusal-request");
+    preparePositiveAcceptance(scope, requestAttempt);
+    String response = acceptRequest(scope, requestAttempt, "capacity-refusal-accept");
+    UUID transferId = UUID.fromString(com.jayway.jsonpath.JsonPath.read(response, "$.transferId"));
+
+    assertThat(com.jayway.jsonpath.JsonPath.read(response, "$.status").toString())
+        .isEqualTo("AWAITING_RESERVATION");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT outcome FROM transfer.capacity_reservation_request WHERE transfer_id = ?",
+                String.class,
+                transferId))
+        .isEqualTo("INVALID");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT reason_code FROM transfer.capacity_reservation_request WHERE transfer_id = ?",
+                String.class,
+                transferId))
+        .isEqualTo("AUTHORIZATION_DENIED");
+    assertThat(count("SELECT COUNT(*) FROM capacity.reservation_operation")).isZero();
+    assertThat(count("SELECT COUNT(*) FROM capacity.coordination_reservation")).isZero();
+    assertThat(count("SELECT COUNT(*) FROM capacity.reservation_command_receipt")).isZero();
+  }
+
+  @Test
+  void missingTransferReservationAuthorityIsAuditedAndLeavesTransferUnreserved() throws Exception {
+    Scope scope = createOriginAndDestination();
+    grantSender(scope);
+    matching.returnApplicable(scope.referralId());
+    ensureReservableCapacityCatalog();
+    grantCapacityReporter(scope);
+    recordCoordinationSlotObservation(scope, 1, "capacity-transfer-authority-denial");
+
+    String requestAttempt = createRequestAttempt(scope, "transfer-authority-denial-request");
+    preparePositiveAcceptance(scope, requestAttempt);
+    String response = acceptRequest(scope, requestAttempt, "transfer-authority-denial-accept");
+    UUID transferId = UUID.fromString(com.jayway.jsonpath.JsonPath.read(response, "$.transferId"));
+
+    assertThat(com.jayway.jsonpath.JsonPath.read(response, "$.status").toString())
+        .isEqualTo("AWAITING_RESERVATION");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT outcome FROM transfer.capacity_reservation_request WHERE transfer_id = ?",
+                String.class,
+                transferId))
+        .isEqualTo("PENDING");
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM audit.audit_record "
+                    + "WHERE action_code = 'TRANSFER_RESERVATION_RECONCILIATION_DENIED'"))
+        .isEqualTo(1);
+    assertThat(capacityPort.idempotencyKeys()).isEmpty();
+    assertThat(count("SELECT COUNT(*) FROM capacity.reservation_operation")).isZero();
+    assertThat(count("SELECT COUNT(*) FROM capacity.coordination_reservation")).isZero();
+    assertThat(count("SELECT COUNT(*) FROM capacity.reservation_command_receipt")).isZero();
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
+                String.class,
+                transferId))
+        .isEqualTo("AWAITING_RESERVATION");
+  }
+
+  @Test
+  void unexpectedCapacityServerFailureRemainsUnavailableAndNeverClaimsReadiness() throws Exception {
+    Scope scope = createOriginAndDestination();
+    grantSender(scope);
+    matching.returnApplicable(scope.referralId());
+    grantTransferReservationWorker(scope);
+
+    String requestAttempt = createRequestAttempt(scope, "capacity-unexpected-failure-request");
+    preparePositiveAcceptance(scope, requestAttempt);
+    capacityPort.failNext(
+        new PlatformProblemException(
+            HttpStatus.INTERNAL_SERVER_ERROR,
+            PlatformErrorCode.INTERNAL_ERROR,
+            "Synthetic owner failure"));
+    String response = acceptRequest(scope, requestAttempt, "capacity-unexpected-failure-accept");
+    UUID transferId = UUID.fromString(com.jayway.jsonpath.JsonPath.read(response, "$.transferId"));
+
+    assertThat(com.jayway.jsonpath.JsonPath.read(response, "$.status").toString())
+        .isEqualTo("AWAITING_RESERVATION");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT outcome FROM transfer.capacity_reservation_request WHERE transfer_id = ?",
+                String.class,
+                transferId))
+        .isEqualTo("UNAVAILABLE");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT reason_code FROM transfer.capacity_reservation_request WHERE transfer_id = ?",
+                String.class,
+                transferId))
+        .isEqualTo("INTERNAL_ERROR");
+    assertThat(capacityPort.idempotencyKeys()).containsExactly("transfer-capacity-" + transferId);
+    assertThat(count("SELECT COUNT(*) FROM capacity.coordination_reservation")).isZero();
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
+                String.class,
+                transferId))
+        .isEqualTo("AWAITING_RESERVATION");
+  }
+
+  @Test
+  void invalidCapacityReservationRequestIsNonRetryableAndNeverClaimsReadiness() throws Exception {
+    Scope scope = createOriginAndDestination();
+    grantSender(scope);
+    matching.returnApplicable(scope.referralId());
+    grantTransferReservationWorker(scope);
+
+    String requestAttempt = createRequestAttempt(scope, "capacity-invalid-request");
+    preparePositiveAcceptance(scope, requestAttempt);
+    capacityPort.failNext(new IllegalArgumentException("Synthetic invalid reservation request"));
+    String response = acceptRequest(scope, requestAttempt, "capacity-invalid-accept");
+    UUID transferId = UUID.fromString(com.jayway.jsonpath.JsonPath.read(response, "$.transferId"));
+
+    assertThat(com.jayway.jsonpath.JsonPath.read(response, "$.status").toString())
+        .isEqualTo("AWAITING_RESERVATION");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT outcome FROM transfer.capacity_reservation_request WHERE transfer_id = ?",
+                String.class,
+                transferId))
+        .isEqualTo("INVALID");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT reason_code FROM transfer.capacity_reservation_request WHERE transfer_id = ?",
+                String.class,
+                transferId))
+        .isEqualTo("CAPACITY_REQUEST_INVALID");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
+                String.class,
+                transferId))
+        .isEqualTo("AWAITING_RESERVATION");
+    assertThat(capacityPort.idempotencyKeys()).containsExactly("transfer-capacity-" + transferId);
+    assertThat(count("SELECT COUNT(*) FROM capacity.coordination_reservation")).isZero();
+  }
+
+  @Test
+  void capacityLastUnitIsSerializedAndExactKeyReplayKeepsItsRecordedOutcome() throws Exception {
+    Scope scope = createOriginAndDestination();
+    ensureReservableCapacityCatalog();
+    grantCapacityReporter(scope);
+    recordCoordinationSlotObservation(scope, 1, "capacity-concurrent-one-unit");
+    grantReservationWorker(scope);
+
+    var context = reservationContext(scope);
+    Instant intervalStart = Instant.now().plusSeconds(120);
+    Instant intervalEnd = intervalStart.plusSeconds(3600);
+    InternalId transferOne = InternalId.generate();
+    InternalId transferTwo = InternalId.generate();
+    var start = new CountDownLatch(1);
+    ExecutorService executor = Executors.newFixedThreadPool(2);
+    try {
+      Future<CapacityReservationResult> first =
+          executor.submit(
+              () ->
+                  reserve(
+                      context,
+                      transferOne,
+                      scope.destinationFacilityId(),
+                      intervalStart,
+                      intervalEnd,
+                      start));
+      Future<CapacityReservationResult> second =
+          executor.submit(
+              () ->
+                  reserve(
+                      context,
+                      transferTwo,
+                      scope.destinationFacilityId(),
+                      intervalStart,
+                      intervalEnd,
+                      start));
+      start.countDown();
+      var outcomes =
+          java.util.List.of(first.get(15, TimeUnit.SECONDS), second.get(15, TimeUnit.SECONDS));
+      assertThat(
+              outcomes.stream()
+                  .filter(r -> r.outcome() == CapacityReservationResult.Outcome.RESERVED))
+          .hasSize(1);
+      assertThat(
+              outcomes.stream()
+                  .filter(r -> r.outcome() == CapacityReservationResult.Outcome.CONFLICT))
+          .hasSize(1);
+      assertThat(count("SELECT COUNT(*) FROM capacity.coordination_reservation")).isEqualTo(1);
+
+      CapacityReservationResult conflict =
+          outcomes.stream()
+              .filter(r -> r.outcome() == CapacityReservationResult.Outcome.CONFLICT)
+              .findFirst()
+              .orElseThrow();
+      CapacityReservationRequest sameOperation =
+          reservationRequest(
+              conflict.operationId(), intervalStart, intervalEnd, scope.destinationFacilityId());
+      CapacityReservationResult exactReplay =
+          capacityReservations.reserve(
+              context, sameOperation, "transfer-capacity-" + conflict.operationId());
+      assertThat(exactReplay.outcome()).isEqualTo(CapacityReservationResult.Outcome.CONFLICT);
+      assertThat(exactReplay.replayed()).isTrue();
+
+      recordCoordinationSlotObservation(scope, 2, "capacity-explicit-re-evaluation");
+      CapacityReservationResult explicitReevaluation =
+          capacityReservations.reserve(
+              context, sameOperation, "explicit-capacity-re-evaluation-" + conflict.operationId());
+      assertThat(explicitReevaluation.outcome())
+          .isEqualTo(CapacityReservationResult.Outcome.RESERVED);
+      CapacityReservationResult immutableReceiptReplay =
+          capacityReservations.reserve(
+              context, sameOperation, "transfer-capacity-" + conflict.operationId());
+      assertThat(immutableReceiptReplay.outcome())
+          .isEqualTo(CapacityReservationResult.Outcome.CONFLICT);
+      assertThat(immutableReceiptReplay.reservationId()).isEmpty();
+      assertThat(immutableReceiptReplay.replayed()).isTrue();
+      assertThat(count("SELECT COUNT(*) FROM capacity.coordination_reservation")).isEqualTo(2);
+    } finally {
+      executor.shutdownNow();
+    }
+  }
+
+  @Test
+  void freshRecoveryInstanceReconcilesCapacityCommitAfterLostResponseUsingSameKey()
+      throws Exception {
+    Scope scope = createOriginAndDestination();
+    grantSender(scope);
+    matching.returnApplicable(scope.referralId());
+    ensureReservableCapacityCatalog();
+    grantCapacityReporter(scope);
+    recordCoordinationSlotObservation(scope, 2, "capacity-lost-response");
+    grantReservationWorker(scope);
+
+    String requestAttempt = createRequestAttempt(scope, "capacity-lost-response-request");
+    preparePositiveAcceptance(scope, requestAttempt);
+    transferProperties.setReservationPollInterval(java.time.Duration.ZERO);
+    capacityPort.loseNextResponseAfterCommit();
+    String accepted = acceptRequest(scope, requestAttempt, "capacity-lost-response-accept");
+    UUID transferId = UUID.fromString(com.jayway.jsonpath.JsonPath.read(accepted, "$.transferId"));
+    assertThat(com.jayway.jsonpath.JsonPath.read(accepted, "$.status").toString())
+        .isEqualTo("AWAITING_RESERVATION");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT outcome FROM transfer.capacity_reservation_request WHERE transfer_id = ?",
+                String.class,
+                transferId))
+        .isEqualTo("UNAVAILABLE");
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM capacity.coordination_reservation WHERE transfer_id = '"
+                    + transferId
+                    + "'::uuid"))
+        .isEqualTo(1);
+
+    TransferCapacityReservationRecovery restarted =
+        beanFactory.createBean(TransferCapacityReservationRecovery.class);
+    assertThat(restarted.reconcileDue()).isEqualTo(1);
+    assertThat(capacityPort.idempotencyKeys())
+        .containsExactly("transfer-capacity-" + transferId, "transfer-capacity-" + transferId);
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
+                String.class,
+                transferId))
+        .isEqualTo("READY");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT outcome FROM transfer.capacity_reservation_request WHERE transfer_id = ?",
+                String.class,
+                transferId))
+        .isEqualTo("RESERVED");
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM capacity.coordination_reservation WHERE transfer_id = '"
+                    + transferId
+                    + "'::uuid"))
+        .isEqualTo(1);
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM capacity.reservation_command_receipt WHERE operation_id = '"
+                    + transferId
+                    + "'::uuid"))
+        .isEqualTo(1);
+  }
+
+  private void ensureReservableCapacityCatalog() throws Exception {
+    Integer dimensions =
+        count(
+            "SELECT COUNT(*) FROM capacity.capacity_dimension WHERE dimension_code = 'TRANSFER_COORDINATION_SLOT'");
+    if (dimensions == 0) {
+      grantPlatformAuthority("synthetic-transfer-capacity-admin", "CapacityPolicyAdministration");
+      mockMvc
+          .perform(
+              post("/api/v1/capacity/policies/dimensions")
+                  .header("Authorization", "Bearer " + token("synthetic-transfer-capacity-admin"))
+                  .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                  .header("Idempotency-Key", "transfer-capacity-dimension")
+                  .contentType("application/json")
+                  .content(
+                      "{\"code\":\"TRANSFER_COORDINATION_SLOT\",\"expectedVersion\":0,"
+                          + "\"displayName\":\"Transfer coordination slot\","
+                          + "\"meaning\":\"Synthetic coordination hold capacity\","
+                          + "\"valueKind\":\"QUANTITY\",\"unit\":\"slot\","
+                          + "\"minimumValue\":0,\"maximumValue\":100,\"allowedStates\":[],"
+                          + "\"usedForReadiness\":true,\"reservable\":true,"
+                          + "\"reasonCode\":\"SYNTHETIC_SETUP\"}"))
+          .andExpect(status().isCreated());
+      mockMvc
+          .perform(
+              post(
+                      "/api/v1/capacity/policies/dimensions/{dimension}/policy",
+                      "TRANSFER_COORDINATION_SLOT")
+                  .header("Authorization", "Bearer " + token("synthetic-transfer-capacity-admin"))
+                  .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                  .header("Idempotency-Key", "transfer-capacity-policy")
+                  .contentType("application/json")
+                  .content(
+                      "{\"expectedVersion\":0,\"dimensionVersion\":1,\"sources\":["
+                          + "{\"sourceCode\":\"manual\",\"priority\":0,"
+                          + "\"fallbackWhenHigherPriorityAbsent\":false,"
+                          + "\"fallbackWhenHigherPriorityStale\":false}],"
+                          + "\"maximumObservationAgeSeconds\":600,\"defaultValiditySeconds\":300,"
+                          + "\"futureSkewToleranceSeconds\":30,\"minimumPassingQuantity\":1,"
+                          + "\"passingStates\":[],\"reasonCode\":\"SYNTHETIC_SETUP\"}"))
+          .andExpect(status().isCreated());
+    }
+  }
+
+  private void grantPlatformAuthority(String subject, String authority) {
+    jdbc.update(
+        "INSERT INTO identity_access.authorization_grant (grant_id, principal_kind, "
+            + "principal_issuer, principal_identifier_type, principal_identifier, authority_code, "
+            + "scope_kind, grant_status, created_at) VALUES (gen_random_uuid(), 'HUMAN', ?, "
+            + "'subject', ?, ?, 'PLATFORM', 'ACTIVE', CURRENT_TIMESTAMP)",
+        ISSUER,
+        subject,
+        authority);
+  }
+
+  private void grantCapacityReporter(Scope scope) {
+    grantFacilityAuthority("synthetic-transfer-capacity-reporter", "CapacityReporting", scope);
+  }
+
+  private void grantReservationWorker(Scope scope) {
+    grantTransferReservationWorker(scope);
+    grantFacilityServiceAuthority("CapacityReservation", scope);
+  }
+
+  private void grantTransferReservationWorker(Scope scope) {
+    grantFacilityServiceAuthority("TransferReservationReconciliation", scope);
+  }
+
+  private void grantFacilityAuthority(String subject, String authority, Scope scope) {
+    jdbc.update(
+        "INSERT INTO identity_access.authorization_grant (grant_id, principal_kind, "
+            + "principal_issuer, principal_identifier_type, principal_identifier, authority_code, "
+            + "scope_kind, organization_issuer, organization_identifier_type, organization_identifier, "
+            + "facility_issuer, facility_identifier_type, facility_identifier, grant_status, created_at) "
+            + "VALUES (gen_random_uuid(), 'HUMAN', ?, 'subject', ?, ?, 'FACILITY', ?, "
+            + "'Organization', ?, ?, 'Facility', ?, 'ACTIVE', CURRENT_TIMESTAMP)",
+        ISSUER,
+        subject,
+        authority,
+        DIRECTORY_ISSUER,
+        scope.originOrganizationId(),
+        DIRECTORY_ISSUER,
+        scope.destinationFacilityId());
+  }
+
+  private void grantFacilityServiceAuthority(String authority, Scope scope) {
+    jdbc.update(
+        "INSERT INTO identity_access.authorization_grant (grant_id, principal_kind, "
+            + "principal_issuer, principal_identifier_type, principal_identifier, authority_code, "
+            + "scope_kind, organization_issuer, organization_identifier_type, organization_identifier, "
+            + "facility_issuer, facility_identifier_type, facility_identifier, grant_status, created_at) "
+            + "VALUES (gen_random_uuid(), 'SERVICE', ?, 'client_id', ?, ?, 'FACILITY', ?, "
+            + "'Organization', ?, ?, 'Facility', ?, 'ACTIVE', CURRENT_TIMESTAMP)",
+        ISSUER,
+        "ayuvahak-transfer-reservation-worker",
+        authority,
+        DIRECTORY_ISSUER,
+        scope.originOrganizationId(),
+        DIRECTORY_ISSUER,
+        scope.destinationFacilityId());
+  }
+
+  private void recordCoordinationSlotObservation(Scope scope, int quantity, String sourceId)
+      throws Exception {
+    recordCoordinationSlotObservation(scope, quantity, sourceId, Instant.now().minusSeconds(1));
+  }
+
+  private void recordCoordinationSlotObservation(
+      Scope scope, int quantity, String sourceId, Instant observedAt) throws Exception {
+    recordCoordinationSlotObservation(scope, quantity, sourceId, observedAt, null);
+  }
+
+  private void recordCoordinationSlotObservation(
+      Scope scope, int quantity, String sourceId, Instant observedAt, Instant validUntil)
+      throws Exception {
+    mockMvc
+        .perform(
+            post("/api/v1/capacity/observations")
+                .header("Authorization", "Bearer " + token("synthetic-transfer-capacity-reporter"))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                .header("X-AyuVahak-Facility-Id", scope.destinationFacilityId())
+                .header("Idempotency-Key", sourceId)
+                .contentType("application/json")
+                .content(
+                    "{\"dimensionCode\":\"TRANSFER_COORDINATION_SLOT\","
+                        + "\"sourceCode\":\"manual\",\"sourceIssuer\":\"urn:synthetic:capacity-source\","
+                        + "\"sourceObservationId\":\""
+                        + sourceId
+                        + "\","
+                        + "\"observationKind\":\"VALUE\",\"valueKind\":\"QUANTITY\","
+                        + "\"quantity\":"
+                        + quantity
+                        + ",\"state\":null,\"unit\":\"slot\","
+                        + "\"observedAt\":\""
+                        + observedAt
+                        + "\","
+                        + "\"validUntil\":"
+                        + (validUntil == null ? "null" : "\"" + validUntil + "\"")
+                        + ",\"reportingMethod\":\"MANUAL_ENTRY\","
+                        + "\"reasonCode\":\"CAPACITY_REPORT\"}"))
+        .andExpect(status().isCreated());
+  }
+
+  private String acceptRequest(Scope scope, String requestAttemptId, String idempotencyKey)
+      throws Exception {
+    return receivingCommand(
+            scope,
+            requestAttemptId,
+            "acceptance",
+            "synthetic-receiver",
+            idempotencyKey,
+            "{\"expectedVersion\":3,\"occurredAt\":\"2026-10-10T10:50:00Z\"}")
+        .andExpect(status().isCreated())
+        .andReturn()
+        .getResponse()
+        .getContentAsString();
+  }
+
+  private org.ayuvahak.platform.executioncontext.ExecutionContext reservationContext(Scope scope) {
+    return executionContexts.forBackgroundWork(
+        ActorReference.service(new IssuerId(ISSUER), "ayuvahak-transfer-reservation-worker"),
+        RequestedExecutionScope.facility(
+            directoryReference("Organization", scope.originOrganizationId()),
+            directoryReference("Facility", scope.destinationFacilityId())),
+        CorrelationId.generate(),
+        java.util.Optional.empty());
+  }
+
+  private CapacityReservationResult reserve(
+      org.ayuvahak.platform.executioncontext.ExecutionContext context,
+      InternalId transferId,
+      String facilityId,
+      Instant intervalStart,
+      Instant intervalEnd,
+      CountDownLatch start)
+      throws Exception {
+    start.await();
+    return capacityReservations.reserve(
+        context,
+        reservationRequest(transferId, intervalStart, intervalEnd, facilityId),
+        "transfer-capacity-" + transferId);
+  }
+
+  private static CapacityReservationRequest reservationRequest(
+      InternalId transferId, Instant intervalStart, Instant intervalEnd, String facilityId) {
+    return new CapacityReservationRequest(
+        transferId,
+        transferId,
+        directoryReference("Facility", facilityId),
+        "TRANSFER_COORDINATION_SLOT",
+        "slot",
+        java.math.BigDecimal.ONE,
+        intervalStart,
+        intervalEnd,
+        intervalEnd);
   }
 
   @Test
@@ -1255,7 +1925,7 @@ class TransferJourneyCommandsApiIT {
             + "organization_identifier, facility_issuer, facility_identifier_type, "
             + "facility_identifier, grant_status, created_at) VALUES (gen_random_uuid(), "
             + "'HUMAN', ?, 'subject', ?, ?, 'FACILITY', ?, 'Organization', ?, "
-            + "?, 'Facility', ?, 'ACTIVE', CURRENT_TIMESTAMP)",
+            + "?, 'Facility', ?, 'ACTIVE', CURRENT_TIMESTAMP) ON CONFLICT DO NOTHING",
         ISSUER,
         subject,
         authority,
@@ -1348,6 +2018,62 @@ class TransferJourneyCommandsApiIT {
     @Primary
     StubMatchingApplicability matchingApplicabilityPort() {
       return new StubMatchingApplicability();
+    }
+
+    @Bean
+    @Primary
+    StubCapacityReservationPort capacityReservationPort(CapacityReservationCommands commands) {
+      return new StubCapacityReservationPort(commands);
+    }
+  }
+
+  static class StubCapacityReservationPort
+      implements org.ayuvahak.transfer.application.CapacityReservationPort {
+    private final CapacityReservationCommands commands;
+    private final java.util.concurrent.atomic.AtomicBoolean loseResponse =
+        new java.util.concurrent.atomic.AtomicBoolean();
+    private final java.util.concurrent.atomic.AtomicReference<RuntimeException> nextFailure =
+        new java.util.concurrent.atomic.AtomicReference<>();
+    private final java.util.concurrent.CopyOnWriteArrayList<String> idempotencyKeys =
+        new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    StubCapacityReservationPort(CapacityReservationCommands commands) {
+      this.commands = commands;
+    }
+
+    @Override
+    public CapacityReservationResult reserve(
+        org.ayuvahak.platform.executioncontext.ExecutionContext context,
+        CapacityReservationRequest request,
+        String idempotencyKey) {
+      idempotencyKeys.add(idempotencyKey);
+      RuntimeException configuredFailure = nextFailure.getAndSet(null);
+      if (configuredFailure != null) {
+        throw configuredFailure;
+      }
+      CapacityReservationResult result = commands.reserve(context, request, idempotencyKey);
+      if (loseResponse.compareAndSet(true, false)) {
+        throw new IllegalStateException("Synthetic lost Capacity response after commit");
+      }
+      return result;
+    }
+
+    void loseNextResponseAfterCommit() {
+      loseResponse.set(true);
+    }
+
+    void failNext(RuntimeException failure) {
+      nextFailure.set(failure);
+    }
+
+    java.util.List<String> idempotencyKeys() {
+      return java.util.List.copyOf(idempotencyKeys);
+    }
+
+    void reset() {
+      loseResponse.set(false);
+      nextFailure.set(null);
+      idempotencyKeys.clear();
     }
   }
 

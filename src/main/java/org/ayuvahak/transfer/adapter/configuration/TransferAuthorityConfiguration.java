@@ -34,4 +34,9 @@ class TransferAuthorityConfiguration {
   FunctionalAuthority transferAcceptanceAuthority() {
     return TransferAuthorities.acceptance();
   }
+
+  @Bean
+  FunctionalAuthority transferReservationReconciliationAuthority() {
+    return TransferAuthorities.reservationReconciliation();
+  }
 }

@@ -26,6 +26,11 @@ class CapacityConfiguration {
   }
 
   @Bean
+  FunctionalAuthority capacityReservationAuthority() {
+    return CapacityAuthorities.reservation();
+  }
+
+  @Bean
   CapacityReportingGrantTargetScopeValidator capacityReportingGrantTargetScopeValidator(
       DirectoryScopeReferenceLookup directoryScopeReferenceLookup) {
     return new CapacityReportingGrantTargetScopeValidator(directoryScopeReferenceLookup);

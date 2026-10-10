@@ -13,6 +13,8 @@ public final class CapacityAuthorities {
       new FunctionalAuthority("CapacityReporting", Set.of(ExecutionScope.Kind.FACILITY));
   private static final FunctionalAuthority EVIDENCE_REVIEW =
       new FunctionalAuthority("CapacityEvidenceReview", Set.of(ExecutionScope.Kind.FACILITY));
+  private static final FunctionalAuthority RESERVATION =
+      new FunctionalAuthority("CapacityReservation", Set.of(ExecutionScope.Kind.FACILITY));
 
   private CapacityAuthorities() {}
 
@@ -26,5 +28,9 @@ public final class CapacityAuthorities {
 
   public static FunctionalAuthority evidenceReview() {
     return EVIDENCE_REVIEW;
+  }
+
+  public static FunctionalAuthority reservation() {
+    return RESERVATION;
   }
 }

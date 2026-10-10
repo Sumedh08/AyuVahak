@@ -17,9 +17,6 @@ public record CoordinatedTransfer(
     Objects.requireNonNull(id, "transfer id");
     Objects.requireNonNull(journeyId, "journey id");
     Objects.requireNonNull(requestAttemptId, "request attempt id");
-    if (status != Status.AWAITING_RESERVATION) {
-      throw new IllegalArgumentException("a newly accepted Transfer awaits reservation");
-    }
     Objects.requireNonNull(createdAt, "creation time");
     if (version < 1) {
       throw new IllegalArgumentException("transfer version must be positive");
@@ -27,6 +24,7 @@ public record CoordinatedTransfer(
   }
 
   public enum Status {
-    AWAITING_RESERVATION
+    AWAITING_RESERVATION,
+    READY
   }
 }

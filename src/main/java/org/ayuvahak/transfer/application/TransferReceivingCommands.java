@@ -22,11 +22,15 @@ import org.ayuvahak.platform.executioncontext.ExecutionContext;
 import org.ayuvahak.platform.executioncontext.ExecutionScope;
 import org.ayuvahak.platform.idempotency.CommandReceiptKey;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
+import org.ayuvahak.transfer.adapter.configuration.TransferProperties;
+import org.ayuvahak.transfer.domain.CapacityReservationIntent;
 import org.ayuvahak.transfer.domain.CoordinatedTransfer;
 import org.ayuvahak.transfer.domain.ReceivingAssessment;
 import org.ayuvahak.transfer.domain.TransferAuthorities;
 import org.ayuvahak.transfer.domain.TransferDecision;
 import org.ayuvahak.transfer.domain.TransferRequestAttempt;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Lazy;
@@ -46,24 +50,32 @@ public final class TransferReceivingCommands {
   private static final String DIRECTORY_ISSUER = "urn:ayuvahak:directory";
   private static final String BUSY_DETAIL =
       "A matching Transfer command is still being processed; retry with the same idempotency key.";
+  private static final Logger logger = LoggerFactory.getLogger(TransferReceivingCommands.class);
 
   private final TransferStore store;
   private final ObjectProvider<AuthorizationService> authorization;
   private final ObjectProvider<AuditWriter> auditWriter;
   private final TransactionTemplate transaction;
   private final Clock clock;
+  private final TransferProperties properties;
+  private final TransferCapacityReservationRecovery reservationRecovery;
 
   public TransferReceivingCommands(
       @Lazy TransferStore store,
       ObjectProvider<AuthorizationService> authorization,
       ObjectProvider<AuditWriter> auditWriter,
       @Lazy PlatformTransactionManager transactionManager,
-      @Qualifier("auditClock") Clock clock) {
+      @Qualifier("auditClock") Clock clock,
+      TransferProperties properties,
+      TransferCapacityReservationRecovery reservationRecovery) {
     this.store = Objects.requireNonNull(store, "Transfer store");
     this.authorization = Objects.requireNonNull(authorization, "authorization");
     this.auditWriter = Objects.requireNonNull(auditWriter, "audit writer");
     this.transaction = new TransactionTemplate(Objects.requireNonNull(transactionManager));
     this.clock = Objects.requireNonNull(clock, "audit clock");
+    this.properties = Objects.requireNonNull(properties, "Transfer properties");
+    this.reservationRecovery =
+        Objects.requireNonNull(reservationRecovery, "Capacity reservation recovery");
   }
 
   public ReceivingAssessmentCommandResult recordAssessment(
@@ -99,43 +111,46 @@ public final class TransferReceivingCommands {
       }
     }
 
-    return execute(
-        () -> {
-          Instant now = clock.instant();
-          store.configureBoundedReceiptWait();
-          TransferStore.ReceiptClaim claim = store.claimReceipt(receiptKey, fingerprint, now);
-          ReceivingAssessmentCommandResult replay = replayAssessment(requestAttemptId, kind, claim);
-          if (replay != null) {
-            return replay;
-          }
-          TransferRequestAttempt attempt = requiredAttempt(requestAttemptId);
-          requireDestination(context, attempt);
-          requirePending(attempt, expectedVersion, now);
-          long resultVersion = expectedVersion + 1;
-          if (!store.advancePendingRequest(requestAttemptId, expectedVersion, "PENDING", now)) {
-            throw stateConflict();
-          }
-          ReceivingAssessment assessment =
-              new ReceivingAssessment(
-                  InternalId.generate(),
-                  requestAttemptId,
-                  kind,
-                  outcome,
-                  reasonCode,
-                  evidenceReference,
-                  context.actor(),
-                  kind.authorityCode(),
-                  context.scope().organization().orElseThrow(),
-                  context.scope().facility().orElseThrow(),
-                  occurredAt,
-                  now,
-                  resultVersion);
-          store.insertAssessment(assessment);
-          auditMutation(context, requestAttemptId, "TRANSFER_" + kind.name() + "_RECORD");
-          store.completeReceipt(
-              receiptKey, HttpStatus.CREATED.value(), attempt.journeyId(), resultVersion, now);
-          return new ReceivingAssessmentCommandResult(assessment, false);
-        });
+    ReceivingAssessmentCommandResult recorded =
+        execute(
+            () -> {
+              Instant now = clock.instant();
+              store.configureBoundedReceiptWait();
+              TransferStore.ReceiptClaim claim = store.claimReceipt(receiptKey, fingerprint, now);
+              ReceivingAssessmentCommandResult replay =
+                  replayAssessment(requestAttemptId, kind, claim);
+              if (replay != null) {
+                return replay;
+              }
+              TransferRequestAttempt attempt = requiredAttempt(requestAttemptId);
+              requireDestination(context, attempt);
+              requirePending(attempt, expectedVersion, now);
+              long resultVersion = expectedVersion + 1;
+              if (!store.advancePendingRequest(requestAttemptId, expectedVersion, "PENDING", now)) {
+                throw stateConflict();
+              }
+              ReceivingAssessment assessment =
+                  new ReceivingAssessment(
+                      InternalId.generate(),
+                      requestAttemptId,
+                      kind,
+                      outcome,
+                      reasonCode,
+                      evidenceReference,
+                      context.actor(),
+                      kind.authorityCode(),
+                      context.scope().organization().orElseThrow(),
+                      context.scope().facility().orElseThrow(),
+                      occurredAt,
+                      now,
+                      resultVersion);
+              store.insertAssessment(assessment);
+              auditMutation(context, requestAttemptId, "TRANSFER_" + kind.name() + "_RECORD");
+              store.completeReceipt(
+                  receiptKey, HttpStatus.CREATED.value(), attempt.journeyId(), resultVersion, now);
+              return new ReceivingAssessmentCommandResult(assessment, false);
+            });
+    return recorded;
   }
 
   public TransferDecisionCommandResult accept(
@@ -204,67 +219,132 @@ public final class TransferReceivingCommands {
       }
     }
 
-    return execute(
-        () -> {
-          Instant now = clock.instant();
-          store.configureBoundedReceiptWait();
-          TransferStore.ReceiptClaim claim = store.claimReceipt(receiptKey, fingerprint, now);
-          TransferDecisionCommandResult replay = replayDecision(requestAttemptId, claim);
-          if (replay != null) {
-            return replay;
-          }
-          TransferRequestAttempt attempt = requiredAttempt(requestAttemptId);
-          requireDestination(context, attempt);
-          requirePending(attempt, expectedVersion, now);
-          Optional<CoordinatedTransfer> transfer = Optional.empty();
-          Optional<InternalId> transferId = Optional.empty();
-          if (kind == TransferDecision.Kind.ACCEPTED) {
-            requireSupportingAssessment(
-                requestAttemptId, ReceivingAssessment.Kind.CLINICAL_SUITABILITY);
-            requireSupportingAssessment(
-                requestAttemptId, ReceivingAssessment.Kind.OPERATIONAL_READINESS);
-            CoordinatedTransfer created =
-                new CoordinatedTransfer(
-                    InternalId.generate(),
-                    attempt.journeyId(),
-                    requestAttemptId,
-                    CoordinatedTransfer.Status.AWAITING_RESERVATION,
-                    now,
-                    1);
-            transfer = Optional.of(created);
-            transferId = Optional.of(created.id());
-          }
-          long resultVersion = expectedVersion + 1;
-          if (!store.advancePendingRequest(
-              requestAttemptId,
-              expectedVersion,
-              kind == TransferDecision.Kind.ACCEPTED ? "ACCEPTED" : "REJECTED",
-              now)) {
-            throw stateConflict();
-          }
-          TransferDecision decision =
-              new TransferDecision(
-                  InternalId.generate(),
+    TransferDecisionCommandResult recorded =
+        execute(
+            () -> {
+              Instant now = clock.instant();
+              store.configureBoundedReceiptWait();
+              TransferStore.ReceiptClaim claim = store.claimReceipt(receiptKey, fingerprint, now);
+              TransferDecisionCommandResult replay = replayDecision(requestAttemptId, claim);
+              if (replay != null) {
+                return replay;
+              }
+              TransferRequestAttempt attempt = requiredAttempt(requestAttemptId);
+              requireDestination(context, attempt);
+              requirePending(attempt, expectedVersion, now);
+              Optional<CoordinatedTransfer> transfer = Optional.empty();
+              Optional<InternalId> transferId = Optional.empty();
+              if (kind == TransferDecision.Kind.ACCEPTED) {
+                requireSupportingAssessment(
+                    requestAttemptId, ReceivingAssessment.Kind.CLINICAL_SUITABILITY);
+                requireSupportingAssessment(
+                    requestAttemptId, ReceivingAssessment.Kind.OPERATIONAL_READINESS);
+                CoordinatedTransfer created =
+                    new CoordinatedTransfer(
+                        InternalId.generate(),
+                        attempt.journeyId(),
+                        requestAttemptId,
+                        CoordinatedTransfer.Status.AWAITING_RESERVATION,
+                        now,
+                        1);
+                transfer = Optional.of(created);
+                transferId = Optional.of(created.id());
+              }
+              long resultVersion = expectedVersion + 1;
+              if (!store.advancePendingRequest(
                   requestAttemptId,
-                  kind,
-                  reasonCode,
-                  transferId,
-                  context.actor(),
-                  TransferAuthorities.acceptance().code(),
-                  context.scope().organization().orElseThrow(),
-                  context.scope().facility().orElseThrow(),
-                  occurredAt,
-                  now,
-                  resultVersion);
-          store.insertDecisionAndOptionalTransfer(decision, transfer);
-          auditMutation(
-              context,
-              requestAttemptId,
-              kind == TransferDecision.Kind.ACCEPTED ? "TRANSFER_ACCEPT" : "TRANSFER_REJECT");
-          store.completeReceipt(
-              receiptKey, HttpStatus.CREATED.value(), attempt.journeyId(), resultVersion, now);
-          return new TransferDecisionCommandResult(decision, transfer, false);
-        });
+                  expectedVersion,
+                  kind == TransferDecision.Kind.ACCEPTED ? "ACCEPTED" : "REJECTED",
+                  now)) {
+                throw stateConflict();
+              }
+              TransferDecision decision =
+                  new TransferDecision(
+                      InternalId.generate(),
+                      requestAttemptId,
+                      kind,
+                      reasonCode,
+                      transferId,
+                      context.actor(),
+                      TransferAuthorities.acceptance().code(),
+                      context.scope().organization().orElseThrow(),
+                      context.scope().facility().orElseThrow(),
+                      occurredAt,
+                      now,
+                      resultVersion);
+              Optional<CapacityReservationIntent> reservationIntent =
+                  transfer.map(created -> reservationIntent(context, attempt, created, now));
+              store.insertDecisionAndOptionalTransfer(decision, transfer, reservationIntent);
+              auditMutation(
+                  context,
+                  requestAttemptId,
+                  kind == TransferDecision.Kind.ACCEPTED ? "TRANSFER_ACCEPT" : "TRANSFER_REJECT");
+              store.completeReceipt(
+                  receiptKey, HttpStatus.CREATED.value(), attempt.journeyId(), resultVersion, now);
+              return new TransferDecisionCommandResult(decision, transfer, false);
+            });
+    if (kind != TransferDecision.Kind.ACCEPTED
+        || recorded.commandReplayed()
+        || recorded.transfer().isEmpty()) {
+      return recorded;
+    }
+    InternalId transferId = recorded.transfer().orElseThrow().id();
+    try {
+      reservationRecovery.reconcile(transferId);
+      Optional<CoordinatedTransfer> refreshed = store.findTransfer(transferId);
+      return new TransferDecisionCommandResult(
+          recorded.decision(), refreshed.or(() -> recorded.transfer()), false);
+    } catch (RuntimeException failure) {
+      logger.warn(
+          "Transfer reservation attempt deferred correlationId={} failureType={}",
+          context.correlationId(),
+          failure.getClass().getSimpleName());
+      return recorded;
+    }
+  }
+
+  private CapacityReservationIntent reservationIntent(
+      ExecutionContext context,
+      TransferRequestAttempt attempt,
+      CoordinatedTransfer transfer,
+      Instant now) {
+    Optional<TransferProperties.ReservationPolicy> configured = properties.reservationPolicy();
+    if (configured.isEmpty()) {
+      return new CapacityReservationIntent(
+          transfer.id(),
+          transfer.id(),
+          context.scope().organization().orElseThrow(),
+          attempt.destinationFacility(),
+          Optional.empty(),
+          Optional.empty(),
+          Optional.empty(),
+          Optional.empty(),
+          Optional.empty(),
+          Optional.empty(),
+          CapacityReservationIntent.Outcome.UNCONFIGURED,
+          Optional.empty(),
+          Optional.empty(),
+          0,
+          now);
+    }
+    TransferProperties.ReservationPolicy policy = configured.orElseThrow();
+    Instant expiresAt = now.plus(policy.duration());
+    return new CapacityReservationIntent(
+        transfer.id(),
+        transfer.id(),
+        context.scope().organization().orElseThrow(),
+        attempt.destinationFacility(),
+        Optional.of(policy.dimension()),
+        Optional.of(policy.unit()),
+        Optional.of(policy.quantity()),
+        Optional.of(now),
+        Optional.of(expiresAt),
+        Optional.of(expiresAt),
+        CapacityReservationIntent.Outcome.PENDING,
+        Optional.empty(),
+        Optional.empty(),
+        0,
+        now);
   }
 
   private void requireSupportingAssessment(

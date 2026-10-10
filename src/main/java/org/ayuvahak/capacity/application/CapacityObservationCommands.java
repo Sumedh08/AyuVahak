@@ -221,7 +221,7 @@ public class CapacityObservationCommands {
 
     CapacityDimension dimension =
         configuration
-            .currentDimension(input.dimensionCode())
+            .lockCurrentDimension(input.dimensionCode())
             .orElseThrow(
                 () ->
                     problem(
@@ -230,7 +230,7 @@ public class CapacityObservationCommands {
                         "The Capacity dimension does not exist."));
     CapacityPolicy policy =
         configuration
-            .currentPolicy(input.dimensionCode())
+            .lockCurrentPolicy(input.dimensionCode())
             .filter(candidate -> candidate.dimensionVersion() == dimension.version())
             .orElseThrow(
                 () ->

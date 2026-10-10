@@ -16,6 +16,7 @@ import org.ayuvahak.platform.idempotency.CommandReceiptKey;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
 import org.ayuvahak.platform.idempotency.configuration.CommandIdempotencyProperties;
 import org.ayuvahak.transfer.application.TransferStore;
+import org.ayuvahak.transfer.domain.CapacityReservationIntent;
 import org.ayuvahak.transfer.domain.CoordinatedTransfer;
 import org.ayuvahak.transfer.domain.ReceivingAssessment;
 import org.ayuvahak.transfer.domain.TransferDecision;
@@ -279,6 +280,93 @@ public class JdbcTransferStore implements TransferStore {
   }
 
   @Override
+  public Optional<CoordinatedTransfer> findTransfer(InternalId transferId) {
+    return jdbc
+        .query(
+            "SELECT transfer_id, journey_id, request_attempt_id, transfer_status, created_at, version "
+                + "FROM transfer.transfer_record WHERE transfer_id = ?",
+            (result, row) ->
+                new CoordinatedTransfer(
+                    internalId(result, "transfer_id"),
+                    internalId(result, "journey_id"),
+                    internalId(result, "request_attempt_id"),
+                    CoordinatedTransfer.Status.valueOf(result.getString("transfer_status")),
+                    result.getTimestamp("created_at").toInstant(),
+                    result.getLong("version")),
+            transferId.value())
+        .stream()
+        .findFirst();
+  }
+
+  @Override
+  public Optional<CapacityReservationIntent> findReservationIntent(InternalId transferId) {
+    return jdbc
+        .query(
+            reservationIntentSelect() + " WHERE transfer_id = ?",
+            JdbcTransferStore::reservationIntent,
+            transferId.value())
+        .stream()
+        .findFirst();
+  }
+
+  @Override
+  public List<CapacityReservationIntent> findDueReservationIntents(Instant dueAt, int limit) {
+    if (limit < 1 || limit > 500) {
+      throw new IllegalArgumentException(
+          "reservation recovery scan limit must be between 1 and 500");
+    }
+    return jdbc.query(
+        reservationIntentSelect()
+            + " WHERE outcome IN ('PENDING', 'UNAVAILABLE') AND next_attempt_at <= ? "
+            + "ORDER BY next_attempt_at, transfer_id LIMIT ?",
+        JdbcTransferStore::reservationIntent,
+        Timestamp.from(dueAt),
+        limit);
+  }
+
+  @Override
+  public boolean recordReservationOutcome(
+      InternalId transferId,
+      int expectedAttemptCount,
+      int nextAttemptCount,
+      CapacityReservationIntent.Outcome outcome,
+      Optional<InternalId> reservationId,
+      Optional<String> reasonCode,
+      Instant nextAttemptAt,
+      Instant recordedAt) {
+    int changed =
+        jdbc.update(
+            "UPDATE transfer.capacity_reservation_request SET outcome = ?, reservation_id = ?, "
+                + "reason_code = ?, attempt_count = ?, next_attempt_at = ?, recorded_at = ? "
+                + "WHERE transfer_id = ? AND outcome <> 'RESERVED' AND attempt_count = ? "
+                + "AND next_attempt_at <= ?",
+            outcome.name(),
+            reservationId.map(InternalId::value).orElse(null),
+            reasonCode.orElse(null),
+            nextAttemptCount,
+            Timestamp.from(nextAttemptAt),
+            Timestamp.from(recordedAt),
+            transferId.value(),
+            expectedAttemptCount,
+            Timestamp.from(recordedAt));
+    if (changed == 0) {
+      return false;
+    }
+    if (outcome == CapacityReservationIntent.Outcome.RESERVED) {
+      int transferChanged =
+          jdbc.update(
+              "UPDATE transfer.transfer_record SET transfer_status = 'READY', version = version + 1 "
+                  + "WHERE transfer_id = ? AND transfer_status = 'AWAITING_RESERVATION'",
+              transferId.value());
+      if (transferChanged != 1) {
+        throw new IllegalStateException(
+            "Transfer could not advance after confirmed Capacity reservation");
+      }
+    }
+    return true;
+  }
+
+  @Override
   public boolean advancePendingRequest(
       InternalId requestAttemptId, long expectedVersion, String status, Instant now) {
     int changed =
@@ -354,7 +442,9 @@ public class JdbcTransferStore implements TransferStore {
 
   @Override
   public void insertDecisionAndOptionalTransfer(
-      TransferDecision decision, Optional<CoordinatedTransfer> transfer) {
+      TransferDecision decision,
+      Optional<CoordinatedTransfer> transfer,
+      Optional<CapacityReservationIntent> reservationIntent) {
     transfer.ifPresent(
         value ->
             jdbc.update(
@@ -366,6 +456,11 @@ public class JdbcTransferStore implements TransferStore {
                 value.status().name(),
                 Timestamp.from(value.createdAt()),
                 value.version()));
+    if (transfer.isPresent() != reservationIntent.isPresent()) {
+      throw new IllegalArgumentException(
+          "accepted Transfer and reservation intent must be persisted together");
+    }
+    reservationIntent.ifPresent(this::insertReservationIntent);
     jdbc.update(
         "INSERT INTO transfer.request_decision (decision_id, request_attempt_id, decision_kind, "
             + "reason_code, transfer_id, recorded_by_kind, recorded_by_issuer, "
@@ -387,6 +482,62 @@ public class JdbcTransferStore implements TransferStore {
         Timestamp.from(decision.occurredAt()),
         Timestamp.from(decision.recordedAt()),
         decision.requestVersion());
+  }
+
+  private void insertReservationIntent(CapacityReservationIntent intent) {
+    jdbc.update(
+        "INSERT INTO transfer.capacity_reservation_request (operation_id, transfer_id, "
+            + "organization_issuer, organization_identifier_type, organization_identifier, "
+            + "facility_issuer, facility_identifier_type, facility_identifier, dimension_code, unit_code, "
+            + "quantity, interval_start, interval_end, expires_at, outcome, reservation_id, reason_code, "
+            + "attempt_count, next_attempt_at, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        intent.operationId().value(),
+        intent.transferId().value(),
+        intent.organization().issuer().value(),
+        intent.organization().resourceType(),
+        UUID.fromString(intent.organization().value()),
+        intent.facility().issuer().value(),
+        intent.facility().resourceType(),
+        UUID.fromString(intent.facility().value()),
+        intent.dimensionCode().orElse(null),
+        intent.unit().orElse(null),
+        intent.quantity().orElse(null),
+        intent.intervalStart().map(Timestamp::from).orElse(null),
+        intent.intervalEnd().map(Timestamp::from).orElse(null),
+        intent.expiresAt().map(Timestamp::from).orElse(null),
+        intent.outcome().name(),
+        intent.reservationId().map(InternalId::value).orElse(null),
+        intent.reasonCode().orElse(null),
+        intent.attemptCount(),
+        Timestamp.from(intent.nextAttemptAt()),
+        Timestamp.from(intent.nextAttemptAt()));
+  }
+
+  private static String reservationIntentSelect() {
+    return "SELECT operation_id, transfer_id, organization_identifier, facility_identifier, "
+        + "dimension_code, unit_code, quantity, interval_start, interval_end, expires_at, outcome, "
+        + "reservation_id, reason_code, attempt_count, next_attempt_at "
+        + "FROM transfer.capacity_reservation_request";
+  }
+
+  private static CapacityReservationIntent reservationIntent(ResultSet result, int row)
+      throws SQLException {
+    return new CapacityReservationIntent(
+        internalId(result, "operation_id"),
+        internalId(result, "transfer_id"),
+        directoryReference("Organization", result.getObject("organization_identifier", UUID.class)),
+        directoryReference("Facility", result.getObject("facility_identifier", UUID.class)),
+        Optional.ofNullable(result.getString("dimension_code")),
+        Optional.ofNullable(result.getString("unit_code")),
+        Optional.ofNullable(result.getBigDecimal("quantity")),
+        Optional.ofNullable(result.getTimestamp("interval_start")).map(Timestamp::toInstant),
+        Optional.ofNullable(result.getTimestamp("interval_end")).map(Timestamp::toInstant),
+        Optional.ofNullable(result.getTimestamp("expires_at")).map(Timestamp::toInstant),
+        CapacityReservationIntent.Outcome.valueOf(result.getString("outcome")),
+        Optional.ofNullable(result.getObject("reservation_id", UUID.class)).map(InternalId::new),
+        Optional.ofNullable(result.getString("reason_code")),
+        result.getInt("attempt_count"),
+        result.getTimestamp("next_attempt_at").toInstant());
   }
 
   private static String assessmentSelect() {

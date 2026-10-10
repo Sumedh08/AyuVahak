@@ -20,6 +20,9 @@ public final class TransferAuthorities {
           "OperationalReadinessAuthority", Set.of(ExecutionScope.Kind.FACILITY));
   private static final FunctionalAuthority ACCEPTANCE =
       new FunctionalAuthority("AcceptanceAuthority", Set.of(ExecutionScope.Kind.FACILITY));
+  private static final FunctionalAuthority RESERVATION_RECONCILIATION =
+      new FunctionalAuthority(
+          "TransferReservationReconciliation", Set.of(ExecutionScope.Kind.FACILITY));
 
   private TransferAuthorities() {}
 
@@ -41,5 +44,9 @@ public final class TransferAuthorities {
 
   public static FunctionalAuthority acceptance() {
     return ACCEPTANCE;
+  }
+
+  public static FunctionalAuthority reservationReconciliation() {
+    return RESERVATION_RECONCILIATION;
   }
 }
