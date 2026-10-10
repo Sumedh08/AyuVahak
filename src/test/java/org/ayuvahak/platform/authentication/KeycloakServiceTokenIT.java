@@ -56,7 +56,7 @@ class KeycloakServiceTokenIT {
 
   @Test
   void verifiesServiceTokenFromLocalKeycloakClientCredentialsFlow() throws Exception {
-    String origin = "http://localhost:" + KEYCLOAK.getMappedPort(8080);
+    String origin = "http://" + KEYCLOAK.getHost() + ":" + KEYCLOAK.getMappedPort(8080);
     HttpResponse<String> discovery =
         httpClient.send(
             HttpRequest.newBuilder(
