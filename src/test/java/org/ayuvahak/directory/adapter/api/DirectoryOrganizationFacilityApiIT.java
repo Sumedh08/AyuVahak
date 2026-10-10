@@ -27,11 +27,16 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import org.ayuvahak.directory.application.DirectoryApplicationService;
 import org.ayuvahak.platform.AyuVahakApplication;
 import org.ayuvahak.platform.authorization.adapter.api.PlatformAccessGrantController;
+import org.ayuvahak.platform.core.ActorReference;
+import org.ayuvahak.platform.core.CorrelationId;
 import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.InternalId;
 import org.ayuvahak.platform.core.IssuerId;
+import org.ayuvahak.platform.executioncontext.ExecutionContext;
+import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
 import org.ayuvahak.platform.executioncontext.ExecutionScopeOwnerValidator;
 import org.ayuvahak.platform.executioncontext.ExecutionScopeValidator;
 import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
@@ -90,6 +95,8 @@ class DirectoryOrganizationFacilityApiIT {
   @Autowired private JdbcTemplate jdbc;
   @Autowired private List<ExecutionScopeOwnerValidator> scopeOwners;
   @Autowired private ExecutionScopeValidator executionScopeValidator;
+  @Autowired private DirectoryApplicationService directory;
+  @Autowired private ExecutionContextFactory executionContextFactory;
 
   @BeforeAll
   static void startLocalJwksServer() throws Exception {
@@ -351,6 +358,88 @@ class DirectoryOrganizationFacilityApiIT {
                 .header("X-AyuVahak-Execution-Scope", "PLATFORM"))
         .andExpect(status().isBadRequest())
         .andExpect(jsonPath("$.code").value("DIRECTORY_VALIDATION_FAILED"));
+  }
+
+  @Test
+  void matchingCandidateReadKeepsUnassertedFacilitiesAndReturnsVersionedOwnerEvidence()
+      throws Exception {
+    grant(ADMIN, CURATOR, "DirectoryCuration", "PLATFORM", null, null, "matching-curator");
+    grant(
+        ADMIN,
+        CURATOR,
+        "DirectoryVocabularyAdministration",
+        "PLATFORM",
+        null,
+        null,
+        "matching-vocabulary-admin");
+    String organizationId = createOrganization(CURATOR, "matching-org", "Synthetic Matching Org");
+    String evidencedFacility =
+        createFacility(
+            CURATOR,
+            "PLATFORM",
+            "matching-facility-evidence",
+            "Synthetic Evidence Facility",
+            organizationId);
+    String unassertedFacility =
+        createFacility(
+            CURATOR,
+            "PLATFORM",
+            "matching-facility-unasserted",
+            "Synthetic Unasserted Facility",
+            organizationId);
+    createCareCapability("MATCHING_DIRECT", "Synthetic direct capability", null, "matching-cap");
+    String assertionId =
+        createCapabilityAssertion(
+            CURATOR,
+            evidencedFacility,
+            "MATCHING_DIRECT",
+            null,
+            "VERIFIED",
+            "matching-assertion",
+            null);
+    grantServiceDirectoryRead("synthetic-worker", organizationId);
+    ExecutionContext matchingContext =
+        executionContextFactory.forBackgroundWork(
+            ActorReference.service(new IssuerId(ISSUER), "synthetic-worker"),
+            RequestedExecutionScope.organization(
+                new ExternalReference(
+                    new IssuerId(DIRECTORY_ISSUER), "Organization", organizationId)),
+            new CorrelationId("matching-directory-correlation"),
+            java.util.Optional.empty());
+
+    var page =
+        directory.findMatchingCandidates(
+            matchingContext, InternalId.parse(organizationId), List.of("MATCHING_DIRECT"), 0, 10);
+
+    assertThat(page.candidates()).hasSize(2);
+    assertThat(page.hasMore()).isFalse();
+    var evidenced =
+        page.candidates().stream()
+            .filter(candidate -> candidate.facility().value().equals(evidencedFacility))
+            .findFirst()
+            .orElseThrow();
+    var unasserted =
+        page.candidates().stream()
+            .filter(candidate -> candidate.facility().value().equals(unassertedFacility))
+            .findFirst()
+            .orElseThrow();
+    assertThat(evidenced.capabilities().getFirst().outcome()).isEqualTo("SATISFIED");
+    assertThat(evidenced.capabilities().getFirst().assertions())
+        .singleElement()
+        .satisfies(
+            assertion -> {
+              assertThat(assertion.reference().value()).isEqualTo(assertionId);
+              assertThat(assertion.version()).isEqualTo(1);
+              assertThat(assertion.verificationStatus()).isEqualTo("VERIFIED");
+              assertThat(assertion.provenance().reasonCode()).isEqualTo("MANUAL_REVIEW");
+            });
+    assertThat(unasserted.capabilities().getFirst().outcome()).isEqualTo("NO_ASSERTION");
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = "
+                    + "'DIRECTORY_MATCHING_EVALUATION_READ' AND reason_code = "
+                    + "'MATCHING_EVALUATION' AND correlation_id = 'matching-directory-correlation'"))
+        .isEqualTo(2);
   }
 
   @Test
@@ -2405,6 +2494,20 @@ class DirectoryOrganizationFacilityApiIT {
                 .contentType("application/json")
                 .content(grantBody(grantee, authority, scope, organizationId, facilityId)))
         .andExpect(status().isCreated());
+  }
+
+  private void grantServiceDirectoryRead(String clientId, String organizationId) {
+    jdbc.update(
+        "INSERT INTO identity_access.authorization_grant (grant_id, principal_kind, "
+            + "principal_issuer, principal_identifier_type, principal_identifier, authority_code, "
+            + "scope_kind, organization_issuer, organization_identifier_type, "
+            + "organization_identifier, grant_status, created_at) VALUES (gen_random_uuid(), "
+            + "'SERVICE', ?, 'client_id', ?, 'DirectoryRead', 'ORGANIZATION', ?, 'Organization', ?, "
+            + "'ACTIVE', CURRENT_TIMESTAMP)",
+        ISSUER,
+        clientId,
+        DIRECTORY_ISSUER,
+        organizationId);
   }
 
   private static String grantBody(

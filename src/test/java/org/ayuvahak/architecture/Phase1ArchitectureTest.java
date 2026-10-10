@@ -31,6 +31,7 @@ class Phase1ArchitectureTest {
     Phase1ArchitectureRules.capacityMustNotDependOnReferralMatchingOrTransfer()
         .check(productionClasses);
     Phase1ArchitectureRules.referralMustNotDependOnMatchingOrTransfer().check(productionClasses);
+    Phase1ArchitectureRules.matchingDomainMustRemainIndependent().check(productionClasses);
   }
 
   @Test
@@ -43,16 +44,26 @@ class Phase1ArchitectureTest {
   }
 
   @Test
-  void activeDirectoryDomainIsPresentAndFrameworkIndependent() {
+  void activeDirectoryAndMatchingDomainsArePresentAndFrameworkIndependent() {
     JavaClasses productionClasses =
         new ClassFileImporter().importPath(Path.of("target", "classes"));
 
     assertThat(productionClasses.get("org.ayuvahak.directory.domain.DirectoryAuthorities"))
         .isNotNull();
+    assertThat(productionClasses.get("org.ayuvahak.matching.domain.MatchingAuthorities"))
+        .isNotNull();
+    assertThat(
+            productionClasses.get("org.ayuvahak.matching.application.MatchingOwnerEvidenceReader"))
+        .isNotNull();
     Phase1ArchitectureRules.productionPackagesArePlatformOnly().check(productionClasses);
     Phase1ArchitectureRules.domainCodeMustNotDependOnFrameworks().check(productionClasses);
     Phase1ArchitectureRules.directoryMustNotDependOnOtherBusinessContexts()
         .check(productionClasses);
+    Phase1ArchitectureRules.businessContextsMustNotDependOnAnotherContextsPersistence()
+        .check(productionClasses);
+    Phase1ArchitectureRules.capacityMustNotDependOnReferralMatchingOrTransfer()
+        .check(productionClasses);
+    Phase1ArchitectureRules.matchingDomainMustRemainIndependent().check(productionClasses);
   }
 
   @Test
@@ -156,5 +167,40 @@ class Phase1ArchitectureTest {
     assertThat(result.getFailureReport().toString())
         .contains("Capacity must evaluate only explicit CapacityDimensions")
         .contains("org.ayuvahak.directory.domain.CareCapability");
+  }
+
+  @Test
+  void matchingDomainBoundaryRuleDetectsOwnerTypeCouplingInTestFixture() {
+    JavaClasses fixtureClasses =
+        new ClassFileImporter()
+            .withImportOption(ImportOption.Predefined.DO_NOT_INCLUDE_JARS)
+            .importClasses(
+                org.ayuvahak.matching.domain.fixture.DirectoryCoupledMatchingFixture.class);
+
+    EvaluationResult result =
+        Phase1ArchitectureRules.matchingDomainMustRemainIndependent().evaluate(fixtureClasses);
+
+    assertThat(result.hasViolation()).isTrue();
+    assertThat(result.getFailureReport().toString())
+        .contains("Matching domain decisions must use Matching-owned evidence types")
+        .contains("org.ayuvahak.directory.domain.DirectoryAuthorities");
+  }
+
+  @Test
+  void matchingDomainBoundaryRuleDetectsFrameworkAndPersistenceDependenciesInTestFixture() {
+    JavaClasses fixtureClasses =
+        new ClassFileImporter()
+            .withImportOption(ImportOption.Predefined.DO_NOT_INCLUDE_JARS)
+            .importClasses(
+                org.ayuvahak.matching.domain.fixture.InfrastructureCoupledMatchingFixture.class);
+
+    EvaluationResult result =
+        Phase1ArchitectureRules.matchingDomainMustRemainIndependent().evaluate(fixtureClasses);
+
+    assertThat(result.hasViolation()).isTrue();
+    assertThat(result.getFailureReport().toString())
+        .contains("Matching domain decisions must use Matching-owned evidence types")
+        .contains("org.springframework.context.ApplicationContext")
+        .contains("java.sql.Connection");
   }
 }

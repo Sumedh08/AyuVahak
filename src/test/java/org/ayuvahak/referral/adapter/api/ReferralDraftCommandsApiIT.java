@@ -20,6 +20,7 @@ import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
 import com.sun.net.httpserver.HttpServer;
 import java.net.InetSocketAddress;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Date;
@@ -30,7 +31,17 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import org.ayuvahak.platform.AyuVahakApplication;
+import org.ayuvahak.platform.core.ActorReference;
+import org.ayuvahak.platform.core.CorrelationId;
+import org.ayuvahak.platform.core.ExternalReference;
+import org.ayuvahak.platform.core.InternalId;
+import org.ayuvahak.platform.core.IssuerId;
 import org.ayuvahak.platform.eventing.application.OutboxDispatcher;
+import org.ayuvahak.platform.executioncontext.ExecutionContext;
+import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
+import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
+import org.ayuvahak.referral.application.ReferralMatchingRequirement;
+import org.ayuvahak.referral.application.ReferralQueries;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -87,6 +98,8 @@ class ReferralDraftCommandsApiIT {
   @Autowired private MockMvc mockMvc;
   @Autowired private JdbcTemplate jdbc;
   @Autowired private OutboxDispatcher outboxDispatcher;
+  @Autowired private ReferralQueries referralQueries;
+  @Autowired private ExecutionContextFactory executionContextFactory;
 
   private String organizationId;
   private String facilityId;
@@ -1308,6 +1321,60 @@ class ReferralDraftCommandsApiIT {
   }
 
   @Test
+  void matchingServiceGetsOnlyCurrentSubmittedRequirementAndItsReadIsAttributed() throws Exception {
+    String patientReference = "opaque-synthetic-patient-matching-contract";
+    String referralId = createDraft("matching-read-create", patientReference);
+    performSubmission(referralId, ORIGINATOR, "matching-read-submit", "{\"expectedVersion\":1}")
+        .andExpect(status().isOk());
+
+    String serviceClient = "synthetic-matching-evaluator";
+    grantService(serviceClient, "ReferralRead", organizationId, facilityId);
+    ExecutionContext serviceContext =
+        executionContextFactory.forBackgroundWork(
+            ActorReference.service(new IssuerId(ISSUER), serviceClient),
+            RequestedExecutionScope.facility(
+                new ExternalReference(
+                    new IssuerId(DIRECTORY_ISSUER), "Organization", organizationId),
+                new ExternalReference(new IssuerId(DIRECTORY_ISSUER), "Facility", facilityId)),
+            new CorrelationId("matching-owner-read-correlation"),
+            java.util.Optional.empty());
+
+    ReferralMatchingRequirement requirement =
+        referralQueries.getSubmittedRequirement(serviceContext, InternalId.parse(referralId), 1);
+
+    assertThat(requirement.referralId()).isEqualTo(InternalId.parse(referralId));
+    assertThat(requirement.revisionNumber()).isEqualTo(1);
+    assertThat(requirement.currentReferralVersion()).isEqualTo(2);
+    assertThat(requirement.requiredCareCapabilityCodes()).containsExactly(CAPABILITY);
+    assertThat(requirement.permittedGeographyCodes()).containsExactly("SYNTHETIC_DISTRICT_01");
+    assertThat(requirement.toString()).doesNotContain(patientReference);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = "
+                    + "'REFERRAL_MATCHING_REQUIREMENT_READ' AND reason_code = "
+                    + "'MATCHING_EVALUATION' AND correlation_id = ?",
+                Integer.class,
+                "matching-owner-read-correlation"))
+        .isEqualTo(1);
+
+    String unauthorizedClient = "synthetic-matching-without-referral-grant";
+    ExecutionContext unauthorizedContext =
+        executionContextFactory.forBackgroundWork(
+            ActorReference.service(new IssuerId(ISSUER), unauthorizedClient),
+            RequestedExecutionScope.facility(
+                new ExternalReference(
+                    new IssuerId(DIRECTORY_ISSUER), "Organization", organizationId),
+                new ExternalReference(new IssuerId(DIRECTORY_ISSUER), "Facility", facilityId)),
+            new CorrelationId("matching-owner-read-denied"),
+            java.util.Optional.empty());
+    assertThatThrownBy(
+            () ->
+                referralQueries.getSubmittedRequirement(
+                    unauthorizedContext, InternalId.parse(referralId), 1))
+        .hasMessageContaining("not authorized");
+  }
+
+  @Test
   void referralReadsRequireReadAuthorityAndHideCrossScopeExistence() throws Exception {
     String referralId = createDraft("query-scope-create", "opaque-synthetic-patient-scope");
     String otherOrganizationId = createOrganization("query-other-organization");
@@ -1398,12 +1465,13 @@ class ReferralDraftCommandsApiIT {
     assertThat(pages).contains(firstReferral, secondReferral);
 
     grant(ORIGINATOR, "ReferralRead", "ORGANIZATION", organizationId, null);
+    Instant queryTime = Instant.now();
     mockMvc
         .perform(
             get("/api/v1/referrals")
                 .queryParam("status", "SUBMITTED")
-                .queryParam("from", "2026-10-09T00:00:00Z")
-                .queryParam("until", "2026-10-10T00:00:00Z")
+                .queryParam("from", queryTime.minus(Duration.ofDays(1)).toString())
+                .queryParam("until", queryTime.plus(Duration.ofDays(1)).toString())
                 .header("Authorization", bearer(token(ORIGINATOR)))
                 .header("X-AyuVahak-Execution-Scope", "ORGANIZATION")
                 .header("X-AyuVahak-Organization-Id", organizationId))
@@ -1694,6 +1762,25 @@ class ReferralDraftCommandsApiIT {
             + "'ACTIVE', CURRENT_TIMESTAMP)",
         ISSUER,
         subject,
+        authority,
+        DIRECTORY_ISSUER,
+        organization,
+        DIRECTORY_ISSUER,
+        facility);
+  }
+
+  private void grantService(
+      String clientId, String authority, String organization, String facility) {
+    jdbc.update(
+        "INSERT INTO identity_access.authorization_grant (grant_id, principal_kind, "
+            + "principal_issuer, principal_identifier_type, principal_identifier, authority_code, "
+            + "scope_kind, organization_issuer, organization_identifier_type, "
+            + "organization_identifier, facility_issuer, facility_identifier_type, "
+            + "facility_identifier, grant_status, created_at) VALUES (gen_random_uuid(), "
+            + "'SERVICE', ?, 'client_id', ?, ?, 'FACILITY', ?, 'Organization', ?, ?, 'Facility', ?, "
+            + "'ACTIVE', CURRENT_TIMESTAMP)",
+        ISSUER,
+        clientId,
         authority,
         DIRECTORY_ISSUER,
         organization,

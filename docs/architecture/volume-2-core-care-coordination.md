@@ -181,6 +181,8 @@ The following modules define design coverage, not production packages to pre-cre
 
 These authority names are policy functions, not global job titles. Phase 2 owns generic scoped grant evaluation. Each deployment maps real roles, teams or governed processes to the functions and may grant one actor more than one function only through explicit grants. Missing, inactive, ambiguous or out-of-scope grants deny. Scope is exact to the action: `PLATFORM`, `ORGANIZATION(orgRef)`, or `FACILITY(orgRef, facilityRef)` under the Phase 2 contract.
 
+For Matching, the human requester is authorized under the `RecommendationRequest` authority at the exact Referral origin. Owner reads execute under a separately configured machine identity, with owner-owned `ReferralRead`, deployment-bounded `DirectoryRead`, and candidate-Facility-scoped `CapacityEvidenceReview` grants. No requester grant is forwarded. Each owner audits its service read; Matching records the human command actor. See ADR 0022 and the Volume II context contracts.
+
 | Context / function | Typical permitted scope and operations |
 | --- | --- |
 | Directory reader / Directory curator | Read is limited to participating/coordinating scope; curation is owned by the Facility/Organization or explicitly delegated directory authority. `CapabilityVocabularyAdministration` is platform-scoped. |

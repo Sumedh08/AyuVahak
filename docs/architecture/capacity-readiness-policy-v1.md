@@ -60,6 +60,8 @@ The initial Capacity implementation derives current evidence at query time from 
 
 An unknown or unconfigured required CapacityDimension, missing readiness rule, or unavailable required evidence produces `UNKNOWN`/`UNAVAILABLE`, never `READY`. The internal caller cannot supply an ad hoc CareCapability-to-dimension mapping; it supplies only the resolved dimension set authorized by the owning application contract. This is distinct from the case-specific Operational Readiness Assessment that a receiving authority records in Phase 7. Capacity does not perform clinical judgement.
 
+Phase 4 exposes the single-Facility `EvaluateOperationalReadiness` contract. Phase 6 adds a bounded owner operation, `EvaluateOperationalReadinessBatch`, for one Matching evaluation: it accepts a bounded set of explicitly authorized Facility scopes, one deduplicated dimension set, and one evaluation instant; it returns an explicit outcome for every requested Facility/dimension pair from one read-only repeatable-read transaction. Capacity validates the Matching service grant independently at each Facility and records service-actor read audit per target. Any invalid or unauthorized pair rejects the batch without a partial positive result. The batch does not change the readiness semantics above and does not permit Matching to read Capacity persistence directly.
+
 Result states and precedence:
 
 1. `NOT_READY` if any required dimension has an explicit current value that fails the rule (for example, unavailable service or insufficient explicitly reported quantity).

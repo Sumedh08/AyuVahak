@@ -62,11 +62,13 @@ final class Phase1ArchitectureRules {
             "org.ayuvahak.capacity",
             "org.ayuvahak.capacity..",
             "org.ayuvahak.referral",
-            "org.ayuvahak.referral..")
+            "org.ayuvahak.referral..",
+            "org.ayuvahak.matching",
+            "org.ayuvahak.matching..")
         .as(
             "Production code contains only implemented platform concerns and the active Directory"
-                + ", Capacity, and Referral contexts; create later healthcare contexts only when"
-                + " their phase begins");
+                + ", Capacity, Referral, and Matching contexts; create later healthcare contexts"
+                + " only when their phase begins");
   }
 
   static ArchRule packageSlicesAreAcyclic() {
@@ -75,7 +77,7 @@ final class Phase1ArchitectureRules {
         .should()
         .beFreeOfCycles()
         .as(
-            "AyuVahak platform and future business-context package slices must not depend on one"
+            "AyuVahak platform and business-context package slices must not depend on one"
                 + " another cyclically");
   }
 
@@ -167,6 +169,43 @@ final class Phase1ArchitectureRules {
         .dependOnClassesThat()
         .resideInAnyPackage("org.ayuvahak.matching..", "org.ayuvahak.transfer..")
         .as("Referral must not depend on Matching or Transfer implementation")
+        .allowEmptyShould(true);
+  }
+
+  static ArchRule matchingDomainMustRemainIndependent() {
+    return noClasses()
+        .that()
+        .resideInAnyPackage("org.ayuvahak.matching.domain..")
+        .should()
+        .dependOnClassesThat()
+        .resideInAnyPackage(
+            "org.ayuvahak.directory..",
+            "org.ayuvahak.capacity..",
+            "org.ayuvahak.referral..",
+            "org.ayuvahak.transfer..",
+            "org.ayuvahak.transport..",
+            "org.ayuvahak.notifications..",
+            "org.ayuvahak.analytics..",
+            "org.springframework..",
+            "java.sql..",
+            "javax.sql..",
+            "org.hibernate..",
+            "org.jooq..",
+            "ca.uhn.fhir..",
+            "org.hl7.fhir..",
+            "org.springframework.ai..",
+            "dev.langchain4j..",
+            "org.tensorflow..",
+            "ai.onnxruntime..",
+            "org.deeplearning4j..",
+            "org.pytorch..",
+            "com.microsoft.onnxruntime..",
+            "com.huggingface..",
+            "com.google.cloud.vertexai..")
+        .as(
+            "Matching domain decisions must use Matching-owned evidence types and remain free of"
+                + " business-context, framework, persistence, interoperability, and AI/ML"
+                + " dependencies; owner projections are translated at the application boundary")
         .allowEmptyShould(true);
   }
 

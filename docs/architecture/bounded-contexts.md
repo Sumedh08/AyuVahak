@@ -46,9 +46,9 @@ The active business contexts for Volume II are Directory, Capacity, Referral, Ma
 - **Purpose:** Evaluate explicit hard eligibility and produce a deterministic, advisory ordering from current evidence.
 - **Owns:** Versioned matching policy, including the CareCapability-to-CapacityDimension operational requirement mapping, and immutable structured Recommendation snapshots/outcomes.
 - **Does not own:** Clinical triage/suitability, source Directory/Capacity facts, Referral lifecycle, destination decision, Acceptance, Reservation, or transport.
-- **Upstream dependencies:** Referral revision, Directory candidate/capability/location queries, Capacity readiness query, optional Matching-owned TravelTimePort, deployment policy.
+- **Upstream dependencies:** Referral revision, Directory candidate/capability/location queries, Capacity readiness query, Phase 2 Identity & Access for the human `RecommendationRequest` authority and the dedicated service identity, Audit, optional Matching-owned TravelTimePort, and deployment policy.
 - **Downstream consumers:** Authorized origin-side users and Transfer's recommendation query.
-- **Allowed communication:** Synchronous context-owned evidence queries; resolve Referral CareCapabilities through the Matching policy, then ask Capacity to evaluate only the resulting dimensions; preserve policy/evidence versions, candidate outcomes, freshness and rationale. Transfer invokes synchronous applicability revalidation before a request.
+- **Allowed communication:** The human explicitly requests evaluation under origin scope; Matching's separate machine identity performs synchronous owner queries under exact owner grants, never inheriting the human's permissions. Resolve Referral CareCapabilities through the Matching policy, then ask Capacity's bounded batch contract to evaluate only the resulting dimensions; preserve policy/evidence versions, candidate outcomes, freshness and rationale. Transfer invokes synchronous applicability revalidation before a request.
 - **Events:** None in Volume II. Current applicability is determined by targeted synchronous owner queries; no speculative invalidation event.
 - **Prohibited coupling:** No opaque/learned score, no unknown-as-negative or positive, no direct source tables, no capacity mutation and no autonomous clinical/destination decision.
 

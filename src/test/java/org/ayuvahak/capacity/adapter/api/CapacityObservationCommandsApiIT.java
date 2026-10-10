@@ -1,6 +1,7 @@
 package org.ayuvahak.capacity.adapter.api;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
@@ -20,11 +21,22 @@ import com.sun.net.httpserver.HttpServer;
 import java.net.InetSocketAddress;
 import java.time.Instant;
 import java.util.Date;
+import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import org.ayuvahak.capacity.application.CapacityReadiness;
+import org.ayuvahak.capacity.application.CapacityReadinessBatchTarget;
 import org.ayuvahak.platform.AyuVahakApplication;
+import org.ayuvahak.platform.core.ActorReference;
+import org.ayuvahak.platform.core.CorrelationId;
+import org.ayuvahak.platform.core.ExternalReference;
+import org.ayuvahak.platform.core.IssuerId;
+import org.ayuvahak.platform.executioncontext.ExecutionContext;
+import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
+import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -78,6 +90,8 @@ class CapacityObservationCommandsApiIT {
 
   @Autowired private MockMvc mockMvc;
   @Autowired private JdbcTemplate jdbc;
+  @Autowired private CapacityReadiness capacityReadiness;
+  @Autowired private ExecutionContextFactory executionContextFactory;
 
   private String organizationId;
   private String facilityId;
@@ -462,6 +476,58 @@ class CapacityObservationCommandsApiIT {
           "DROP TRIGGER IF EXISTS test_fail_capacity_readiness_audit ON audit.audit_record");
       jdbc.execute("DROP FUNCTION IF EXISTS test_fail_capacity_readiness_audit()");
     }
+  }
+
+  @Test
+  void matchingBatchReadUsesOneTimeAndFailsClosedForAnyUnreviewedFacility() throws Exception {
+    String serviceClient = SERVICE_REPORTER;
+    grantService(
+        serviceClient,
+        "CapacityEvidenceReview",
+        organizationId,
+        facilityId,
+        "matching-capacity-reader-grant");
+    String otherFacilityId =
+        createFacility("Unreviewed Synthetic Facility", "matching-unreviewed-facility-setup");
+    ExecutionContext authorized =
+        matchingServiceContext(serviceClient, facilityId, "matching-capacity-batch-01");
+    ExecutionContext unreviewed =
+        matchingServiceContext(serviceClient, otherFacilityId, "matching-capacity-batch-01");
+    Instant evaluatedAt = Instant.now().minusSeconds(1);
+
+    assertThatThrownBy(
+            () ->
+                capacityReadiness.evaluateOperationalReadinessBatch(
+                    List.of(
+                        new CapacityReadinessBatchTarget(authorized, facilityReference(facilityId)),
+                        new CapacityReadinessBatchTarget(
+                            unreviewed, facilityReference(otherFacilityId))),
+                    List.of("COORDINATION_BEDS"),
+                    evaluatedAt))
+        .hasMessageContaining("not authorized");
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = "
+                    + "'CAPACITY_MATCHING_EVALUATION_READ' AND outcome = 'SUCCEEDED'"))
+        .isZero();
+
+    var authorizedBatch =
+        capacityReadiness.evaluateOperationalReadinessBatch(
+            List.of(new CapacityReadinessBatchTarget(authorized, facilityReference(facilityId))),
+            List.of("COORDINATION_BEDS"),
+            evaluatedAt);
+    assertThat(authorizedBatch.evaluationTime()).isEqualTo(evaluatedAt);
+    assertThat(authorizedBatch.facilities()).hasSize(1);
+    assertThat(authorizedBatch.facilities().getFirst().facility())
+        .isEqualTo(facilityReference(facilityId));
+    assertThat(authorizedBatch.facilities().getFirst().dimensions()).hasSize(1);
+    assertThat(authorizedBatch.facilities().getFirst().outcome().name()).isEqualTo("UNKNOWN");
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = "
+                    + "'CAPACITY_MATCHING_EVALUATION_READ' AND outcome = 'SUCCEEDED' "
+                    + "AND reason_code = 'MATCHING_EVALUATION'"))
+        .isEqualTo(1);
   }
 
   @Test
@@ -1257,18 +1323,37 @@ class CapacityObservationCommandsApiIT {
   }
 
   private String createFacility(String name) throws Exception {
+    return createFacility(name, "facility-setup");
+  }
+
+  private String createFacility(String name, String idempotencyKey) throws Exception {
     var response =
         mockMvc
             .perform(
                 post("/api/v1/directory/facilities")
                     .header("Authorization", bearer(token(CURATOR)))
                     .header("X-AyuVahak-Execution-Scope", "PLATFORM")
-                    .header("Idempotency-Key", "facility-setup")
+                    .header("Idempotency-Key", idempotencyKey)
                     .contentType("application/json")
                     .content(directoryFacilityBody(organizationId, name)))
             .andExpect(status().isCreated())
             .andReturn();
     return com.jayway.jsonpath.JsonPath.read(response.getResponse().getContentAsString(), "$.id");
+  }
+
+  private ExecutionContext matchingServiceContext(
+      String clientId, String facilityId, String correlationId) {
+    return executionContextFactory.forBackgroundWork(
+        ActorReference.service(new IssuerId(ISSUER), clientId),
+        RequestedExecutionScope.facility(
+            new ExternalReference(new IssuerId(DIRECTORY_ISSUER), "Organization", organizationId),
+            facilityReference(facilityId)),
+        new CorrelationId(correlationId),
+        Optional.empty());
+  }
+
+  private static ExternalReference facilityReference(String facilityId) {
+    return new ExternalReference(new IssuerId(DIRECTORY_ISSUER), "Facility", facilityId);
   }
 
   private void grant(

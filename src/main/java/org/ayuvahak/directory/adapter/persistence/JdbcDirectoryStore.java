@@ -1024,6 +1024,30 @@ public class JdbcDirectoryStore implements DirectoryStore {
         parameters.toArray());
   }
 
+  @Override
+  public List<DirectoryFacilitySearchEntry> findMatchingCandidateFacilities(
+      InternalId organizationId, int limit, int offset) {
+    return jdbc.query(
+        "SELECT "
+            + FACILITY_SEARCH_COLUMNS
+            + ", "
+            + LOCATION_SEARCH_COLUMNS
+            + " FROM directory.facility f "
+            + "JOIN directory.organization o ON o.organization_id = f.managing_organization_id "
+            + "LEFT JOIN directory.location l ON l.facility_id = f.facility_id AND l.is_primary "
+            + "WHERE f.managing_organization_id = ? AND o.lifecycle_status = 'ACTIVE' "
+            + "ORDER BY f.facility_id LIMIT ? OFFSET ?",
+        (result, row) ->
+            new DirectoryFacilitySearchEntry(
+                facilityFromSearch(result),
+                result.getObject("l_id", UUID.class) == null
+                    ? Optional.empty()
+                    : Optional.of(locationFromSearch(result))),
+        organizationId.value(),
+        limit,
+        offset);
+  }
+
   private static void appendCapabilityEligibility(
       StringBuilder query,
       List<Object> parameters,

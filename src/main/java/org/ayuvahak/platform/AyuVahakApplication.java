@@ -13,7 +13,8 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
       "org.ayuvahak.platform",
       "org.ayuvahak.directory",
       "org.ayuvahak.capacity",
-      "org.ayuvahak.referral"
+      "org.ayuvahak.referral",
+      "org.ayuvahak.matching"
     })
 @EnableConfigurationProperties({
   PlatformProperties.class,

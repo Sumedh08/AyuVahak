@@ -16,7 +16,6 @@ import org.ayuvahak.platform.executioncontext.ExecutionContext;
  * that passes its configured rule; it is not a clinical assessment, Acceptance, or reservation.
  * Missing evidence is UNKNOWN, and an unavailable Capacity store fails as unavailable.
  */
-@FunctionalInterface
 public interface CapacityReadiness {
 
   CapacityReadinessEvaluation evaluateOperationalReadiness(
@@ -24,4 +23,14 @@ public interface CapacityReadiness {
       ExternalReference facility,
       List<String> requiredDimensionCodes,
       Optional<Instant> evaluationTime);
+
+  /**
+   * Evaluates a bounded set of explicitly authorized Facility scopes at one instant. The result is
+   * complete for every requested Facility/dimension pair or the operation fails without exposing a
+   * partial result.
+   */
+  CapacityReadinessBatchEvaluation evaluateOperationalReadinessBatch(
+      List<CapacityReadinessBatchTarget> targets,
+      List<String> requiredDimensionCodes,
+      Instant evaluationTime);
 }

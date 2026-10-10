@@ -167,6 +167,121 @@ public class ReferralQueries {
     return view;
   }
 
+  /**
+   * Returns only the fields needed by Matching for the exact current submitted revision. The
+   * PatientReference and the full Referral aggregate never cross this owner boundary.
+   */
+  public ReferralMatchingRequirement getSubmittedRequirement(
+      ExecutionContext context, InternalId referralId, long revisionNumber) {
+    requireOriginScope(context);
+    requireReadAuthority(context);
+    if (revisionNumber < 1) {
+      throw invalid("A positive submitted Referral revision number is required.");
+    }
+
+    Optional<SubmittedRevisionRead> found;
+    try {
+      found =
+          Objects.requireNonNull(
+              readTransaction.execute(
+                  ignored -> {
+                    Optional<org.ayuvahak.referral.domain.ReferralDraft> current =
+                        drafts.findDraft(referralId);
+                    if (current.isEmpty()) {
+                      return Optional.empty();
+                    }
+                    Optional<org.ayuvahak.referral.domain.SubmittedReferralRevision> requested =
+                        drafts.findSubmittedRevisionNumber(referralId, revisionNumber);
+                    if (requested.isEmpty()) {
+                      return Optional.empty();
+                    }
+                    return Optional.of(
+                        new SubmittedRevisionRead(
+                            current.orElseThrow(),
+                            requested.orElseThrow(),
+                            drafts.findLatestSubmittedRevision(referralId)));
+                  }),
+              "Matching Referral read transaction result");
+    } catch (DataAccessException unavailable) {
+      throw unavailable("Referral requirement could not be read safely for Matching.");
+    }
+
+    if (found.isEmpty()) {
+      recordOutcome(
+          context,
+          "REFERRAL_MATCHING_REQUIREMENT_NOT_FOUND",
+          Optional.of(referralId),
+          AuditOutcome.FAILED,
+          AuditAuthorizationOutcome.ALLOWED,
+          Optional.of("REFERRAL_NOT_FOUND"));
+      throw notFound();
+    }
+
+    SubmittedRevisionRead read = found.orElseThrow();
+    var current = read.current();
+    var requested = read.requested();
+    if (!originMatches(context.scope(), current)
+        || !current.originOrganization().equals(requested.originOrganization())
+        || !current.originFacility().equals(requested.originFacility())) {
+      recordOutcome(
+          context,
+          "REFERRAL_MATCHING_REQUIREMENT_SCOPE_REJECTED",
+          Optional.of(referralId),
+          AuditOutcome.DENIED,
+          AuditAuthorizationOutcome.DENIED,
+          Optional.of("REFERRAL_SCOPE_MISMATCH"));
+      throw notFound();
+    }
+
+    boolean exactCurrentSubmission =
+        current.state() == org.ayuvahak.referral.domain.ReferralState.SUBMITTED
+            && current.version() == requested.referralVersion()
+            && read.latest()
+                    .map(org.ayuvahak.referral.domain.SubmittedReferralRevision::revisionNumber)
+                    .orElse(-1L)
+                == revisionNumber;
+    if (!exactCurrentSubmission) {
+      recordOutcome(
+          context,
+          "REFERRAL_MATCHING_REQUIREMENT_STALE",
+          Optional.of(referralId),
+          AuditOutcome.FAILED,
+          AuditAuthorizationOutcome.ALLOWED,
+          Optional.of("REFERRAL_REVISION_STALE"));
+      throw problem(
+          HttpStatus.CONFLICT,
+          PlatformErrorCode.REFERRAL_VERSION_CONFLICT,
+          "The submitted Referral revision is no longer current for Matching.");
+    }
+
+    recordOutcome(
+        context,
+        "REFERRAL_MATCHING_REQUIREMENT_READ",
+        Optional.of(referralId),
+        AuditOutcome.SUCCEEDED,
+        AuditAuthorizationOutcome.ALLOWED,
+        Optional.of("MATCHING_EVALUATION"));
+    var requirement = requested.careRequirement();
+    return new ReferralMatchingRequirement(
+        requested.referralId(),
+        requested.revisionNumber(),
+        current.version(),
+        requested.originOrganization(),
+        requested.originFacility(),
+        requirement.requiredCareCapabilityCodes(),
+        requirement.requestedStart(),
+        requirement.requestedEnd(),
+        requirement.permittedGeographyCodes(),
+        requirement.selectedDestinationOrganization(),
+        requirement.priorityCode(),
+        requested.submittedAt());
+  }
+
+  private record SubmittedRevisionRead(
+      org.ayuvahak.referral.domain.ReferralDraft current,
+      org.ayuvahak.referral.domain.SubmittedReferralRevision requested,
+      Optional<org.ayuvahak.referral.domain.SubmittedReferralRevision> latest) {}
+
   public ReferralListPage list(ExecutionContext context, ReferralReadFilter filter) {
     requireOriginScope(context);
     requireReadAuthority(context);

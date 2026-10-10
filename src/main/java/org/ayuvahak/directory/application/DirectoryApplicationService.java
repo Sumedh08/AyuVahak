@@ -56,6 +56,7 @@ import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /** Use cases for Directory Organization and Facility facts. */
@@ -77,6 +78,7 @@ public class DirectoryApplicationService {
   private final ObjectProvider<AuthorizationService> authorization;
   private final ObjectProvider<AuditWriter> auditWriter;
   private final TransactionTemplate transaction;
+  private final TransactionTemplate matchingCandidateReadTransaction;
   private final Clock clock;
 
   public DirectoryApplicationService(
@@ -88,8 +90,14 @@ public class DirectoryApplicationService {
     this.store = Objects.requireNonNull(store, "store");
     this.authorization = Objects.requireNonNull(authorization, "authorization");
     this.auditWriter = Objects.requireNonNull(auditWriter, "auditWriter");
-    this.transaction =
-        new TransactionTemplate(Objects.requireNonNull(transactionManager, "transactionManager"));
+    PlatformTransactionManager txManager =
+        Objects.requireNonNull(transactionManager, "transactionManager");
+    this.transaction = new TransactionTemplate(txManager);
+    matchingCandidateReadTransaction = new TransactionTemplate(txManager);
+    matchingCandidateReadTransaction.setPropagationBehavior(
+        TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+    matchingCandidateReadTransaction.setIsolationLevel(
+        TransactionDefinition.ISOLATION_REPEATABLE_READ);
     this.clock = Objects.requireNonNull(clock, "clock");
   }
 
@@ -1479,31 +1487,57 @@ public class DirectoryApplicationService {
     Optional<CareCapability> capability = store.findCareCapabilityByCode(code);
     if (capability.isEmpty()) {
       return new CapabilityRequirementAssessment(
-          code, CapabilityRequirementOutcome.UNKNOWN_CAPABILITY, List.of());
+          code,
+          CapabilityRequirementOutcome.UNKNOWN_CAPABILITY,
+          List.of(),
+          Optional.empty(),
+          Optional.empty(),
+          List.of());
     }
-    if (capability.orElseThrow().status() != DirectoryLifecycleStatus.ACTIVE) {
-      return new CapabilityRequirementAssessment(
-          code, CapabilityRequirementOutcome.INACTIVE_CAPABILITY, List.of());
-    }
+    CareCapability requiredCapability = capability.orElseThrow();
     List<FacilityCapabilityAssertion> assertions =
-        store.listFacilityCapabilityAssertions(facility.id(), capability.orElseThrow().id());
+        store.listFacilityCapabilityAssertions(facility.id(), requiredCapability.id());
+    List<DirectoryMatchingCandidatePage.Assertion> assertionEvidence =
+        assertions.stream().map(this::matchingAssertion).toList();
+    if (requiredCapability.status() != DirectoryLifecycleStatus.ACTIVE) {
+      return new CapabilityRequirementAssessment(
+          code,
+          CapabilityRequirementOutcome.INACTIVE_CAPABILITY,
+          List.of(),
+          Optional.of(requiredCapability.version()),
+          Optional.of(requiredCapability.status().name()),
+          assertionEvidence);
+    }
+    Set<String> satisfyingAssertionIds = new HashSet<>();
+    for (int index = 0; index < assertions.size(); index++) {
+      FacilityCapabilityAssertion assertion = assertions.get(index);
+      if (assertion.verificationStatus() == CapabilityVerificationStatus.VERIFIED
+          && assertion.isEffectiveAt(evaluatedAt)
+          && assertionEvidence.get(index).healthcareServiceActive()) {
+        satisfyingAssertionIds.add(assertion.id().toString());
+      }
+    }
     List<FacilityCapabilityAssertion> qualifying =
         assertions.stream()
-            .filter(
-                assertion ->
-                    assertion.verificationStatus() == CapabilityVerificationStatus.VERIFIED
-                        && assertion.isEffectiveAt(evaluatedAt)
-                        && serviceIsActive(assertion.healthcareServiceId()))
+            .filter(assertion -> satisfyingAssertionIds.contains(assertion.id().toString()))
             .toList();
     if (!qualifying.isEmpty()) {
       return new CapabilityRequirementAssessment(
           code,
           CapabilityRequirementOutcome.SATISFIED,
-          qualifying.stream().map(assertion -> assertion.id().toString()).toList());
+          qualifying.stream().map(assertion -> assertion.id().toString()).toList(),
+          Optional.of(requiredCapability.version()),
+          Optional.of(requiredCapability.status().name()),
+          assertionEvidence);
     }
     if (assertions.isEmpty()) {
       return new CapabilityRequirementAssessment(
-          code, CapabilityRequirementOutcome.NO_ASSERTION, List.of());
+          code,
+          CapabilityRequirementOutcome.NO_ASSERTION,
+          List.of(),
+          Optional.of(requiredCapability.version()),
+          Optional.of(requiredCapability.status().name()),
+          assertionEvidence);
     }
     if (assertions.stream()
         .anyMatch(
@@ -1511,31 +1545,56 @@ public class DirectoryApplicationService {
                 assertion.verificationStatus() == CapabilityVerificationStatus.VERIFIED
                     && assertion.isEffectiveAt(evaluatedAt)
                     && assertion.healthcareServiceId().isPresent()
-                    && !serviceIsActive(assertion.healthcareServiceId()))) {
+                    && !satisfyingAssertionIds.contains(assertion.id().toString()))) {
       return new CapabilityRequirementAssessment(
-          code, CapabilityRequirementOutcome.INACTIVE_OFFERING, List.of());
+          code,
+          CapabilityRequirementOutcome.INACTIVE_OFFERING,
+          List.of(),
+          Optional.of(requiredCapability.version()),
+          Optional.of(requiredCapability.status().name()),
+          assertionEvidence);
     }
     if (assertions.stream()
         .anyMatch(
             assertion -> assertion.verificationStatus() == CapabilityVerificationStatus.VERIFIED)) {
       return new CapabilityRequirementAssessment(
-          code, CapabilityRequirementOutcome.NOT_EFFECTIVE, List.of());
+          code,
+          CapabilityRequirementOutcome.NOT_EFFECTIVE,
+          List.of(),
+          Optional.of(requiredCapability.version()),
+          Optional.of(requiredCapability.status().name()),
+          assertionEvidence);
     }
     if (assertions.stream()
         .anyMatch(
             assertion -> assertion.verificationStatus() == CapabilityVerificationStatus.DISPUTED)) {
       return new CapabilityRequirementAssessment(
-          code, CapabilityRequirementOutcome.DISPUTED, List.of());
+          code,
+          CapabilityRequirementOutcome.DISPUTED,
+          List.of(),
+          Optional.of(requiredCapability.version()),
+          Optional.of(requiredCapability.status().name()),
+          assertionEvidence);
     }
     if (assertions.stream()
         .anyMatch(
             assertion ->
                 assertion.verificationStatus() == CapabilityVerificationStatus.UNVERIFIED)) {
       return new CapabilityRequirementAssessment(
-          code, CapabilityRequirementOutcome.UNVERIFIED, List.of());
+          code,
+          CapabilityRequirementOutcome.UNVERIFIED,
+          List.of(),
+          Optional.of(requiredCapability.version()),
+          Optional.of(requiredCapability.status().name()),
+          assertionEvidence);
     }
     return new CapabilityRequirementAssessment(
-        code, CapabilityRequirementOutcome.NO_CURRENT_ASSERTION, List.of());
+        code,
+        CapabilityRequirementOutcome.NO_CURRENT_ASSERTION,
+        List.of(),
+        Optional.of(requiredCapability.version()),
+        Optional.of(requiredCapability.status().name()),
+        assertionEvidence);
   }
 
   private boolean serviceIsActive(Optional<InternalId> serviceId) {
@@ -1691,9 +1750,18 @@ public class DirectoryApplicationService {
   }
 
   public record CapabilityRequirementAssessment(
-      String code, CapabilityRequirementOutcome outcome, List<String> evidenceAssertionIds) {
+      String code,
+      CapabilityRequirementOutcome outcome,
+      List<String> evidenceAssertionIds,
+      Optional<Long> capabilityVersion,
+      Optional<String> capabilityStatus,
+      List<DirectoryMatchingCandidatePage.Assertion> assertionEvidence) {
+
     public CapabilityRequirementAssessment {
       evidenceAssertionIds = List.copyOf(evidenceAssertionIds);
+      capabilityVersion = Objects.requireNonNull(capabilityVersion, "capability version");
+      capabilityStatus = Objects.requireNonNull(capabilityStatus, "capability status");
+      assertionEvidence = List.copyOf(assertionEvidence);
     }
   }
 
@@ -1735,6 +1803,66 @@ public class DirectoryApplicationService {
         Optional.of(organizationReference(facility.managingOrganizationId())),
         Optional.of(facilityReference(id)));
     return new FacilityDirectoryView(facility, store.listLocations(facility.id()));
+  }
+
+  /**
+   * Returns only the origin facts required by Matching. The owner read uses a distinct audit action
+   * and never discloses Facility or Location names or unrelated Directory records.
+   */
+  public DirectoryMatchingOriginLocation getMatchingOriginLocation(
+      ExecutionContext context, InternalId id, Instant evaluatedAt) {
+    Objects.requireNonNull(evaluatedAt, "evaluation time");
+    requireAuthority(
+        context,
+        DirectoryAuthorities.read().code(),
+        "DIRECTORY_MATCHING_ORIGIN_LOCATION_READ",
+        "Facility",
+        Optional.of(id),
+        Optional.empty());
+    Facility facility = store.findFacility(id).orElseThrow(DirectoryApplicationService::notFound);
+    if (!scopeCanReadFacility(context.scope(), facility)) {
+      denyScope(
+          context,
+          "DIRECTORY_MATCHING_ORIGIN_LOCATION_READ",
+          "Facility",
+          Optional.of(id),
+          Optional.of(organizationReference(facility.managingOrganizationId())),
+          Optional.of(facilityReference(id)));
+      throw scopeMismatch();
+    }
+    auditRead(
+        context,
+        "DIRECTORY_MATCHING_ORIGIN_LOCATION_READ",
+        "Facility",
+        id,
+        Optional.of(organizationReference(facility.managingOrganizationId())),
+        Optional.of(facilityReference(id)));
+    Optional<DirectoryMatchingOriginLocation.Location> primaryLocation =
+        store.listLocations(facility.id()).stream()
+            .filter(DirectoryLocation::primary)
+            .findFirst()
+            .map(
+                location ->
+                    new DirectoryMatchingOriginLocation.Location(
+                        locationReference(location.id()),
+                        location
+                            .coordinate()
+                            .map(
+                                coordinate ->
+                                    new DirectoryMatchingOriginLocation.Coordinate(
+                                        coordinate.longitude(), coordinate.latitude())),
+                        location.version(),
+                        location.source().reference(),
+                        matchingOriginProvenance(location.provenance())));
+    return new DirectoryMatchingOriginLocation(
+        facilityReference(facility.id()),
+        organizationReference(facility.managingOrganizationId()),
+        facility.status().name(),
+        facility.version(),
+        facility.source().reference(),
+        matchingOriginProvenance(facility.provenance()),
+        primaryLocation,
+        evaluatedAt);
   }
 
   public NearbyFacilityPage findNearbyFacilities(
@@ -1840,6 +1968,334 @@ public class DirectoryApplicationService {
     boolean hasMore = facilities.size() > page.size();
     return new DirectoryFacilitySearchPage(
         facilities.stream().limit(page.size()).toList(), page.page(), page.size(), hasMore);
+  }
+
+  /**
+   * Performs a bounded, organization-scoped owner read for Matching. Capability filters are
+   * deliberately not pushed into candidate discovery: facilities without matching assertions must
+   * remain visible as explicit disqualifications.
+   */
+  public DirectoryMatchingCandidatePage findMatchingCandidates(
+      ExecutionContext context,
+      InternalId organizationId,
+      List<String> requestedCapabilityCodes,
+      Integer requestedPage,
+      Integer requestedSize) {
+    return findMatchingCandidates(
+        context,
+        organizationId,
+        requestedCapabilityCodes,
+        requestedPage,
+        requestedSize,
+        clock.instant());
+  }
+
+  /**
+   * Reads all bounded pages for one candidate Organization from one Directory-owned snapshot.
+   * Matching must not merge offset pages obtained from different read-committed snapshots because
+   * concurrent Directory edits could otherwise omit a Facility while the final page appears
+   * complete.
+   */
+  public List<DirectoryMatchingCandidatePage> findMatchingCandidatePages(
+      ExecutionContext context,
+      InternalId organizationId,
+      List<String> requestedCapabilityCodes,
+      Integer requestedSize,
+      Instant evaluationTime) {
+    List<String> capabilityCodes =
+        validateMatchingCandidateSearch(
+            context, organizationId, requestedCapabilityCodes, evaluationTime);
+    int pageSize = validatedPageBounds(0, requestedSize).size();
+    List<DeferredMatchingReadAudit> deferredAudits = new ArrayList<>();
+    List<DirectoryMatchingCandidatePage> pages =
+        matchingCandidateReadTransaction.execute(
+            status -> {
+              List<DirectoryMatchingCandidatePage> pageResults = new ArrayList<>();
+              int pageNumber = 0;
+              while (true) {
+                DirectoryMatchingCandidatePage page =
+                    loadMatchingCandidates(
+                        context,
+                        organizationId,
+                        capabilityCodes,
+                        validatedPageBounds(pageNumber, pageSize),
+                        evaluationTime,
+                        deferredAudits);
+                pageResults.add(page);
+                long nextOffset = (long) (pageNumber + 1) * pageSize;
+                if (!page.hasMore() || nextOffset > MAX_PAGE_OFFSET) {
+                  break;
+                }
+                pageNumber++;
+              }
+              return List.copyOf(pageResults);
+            });
+    deferredAudits.forEach(this::recordDeferredMatchingReadAudit);
+    return pages;
+  }
+
+  /** Uses a caller-selected evaluation instant shared across Matching's owner evidence reads. */
+  public DirectoryMatchingCandidatePage findMatchingCandidates(
+      ExecutionContext context,
+      InternalId organizationId,
+      List<String> requestedCapabilityCodes,
+      Integer requestedPage,
+      Integer requestedSize,
+      Instant evaluationTime) {
+    List<String> capabilityCodes =
+        validateMatchingCandidateSearch(
+            context, organizationId, requestedCapabilityCodes, evaluationTime);
+    PageBounds page = validatedPageBounds(requestedPage, requestedSize);
+    return loadMatchingCandidates(
+        context, organizationId, capabilityCodes, page, evaluationTime, null);
+  }
+
+  private List<String> validateMatchingCandidateSearch(
+      ExecutionContext context,
+      InternalId organizationId,
+      List<String> requestedCapabilityCodes,
+      Instant evaluationTime) {
+    String actionCode = "DIRECTORY_MATCHING_CANDIDATE_SEARCH";
+    Objects.requireNonNull(context, "execution context");
+    Objects.requireNonNull(organizationId, "candidate organization");
+    Objects.requireNonNull(evaluationTime, "candidate evaluation time");
+    if (evaluationTime.isAfter(clock.instant())) {
+      throw validation("Directory candidates cannot be assessed at a future instant.");
+    }
+    if (context.actor().kind() != ActorKind.SERVICE
+        || context.authenticationMechanism() != AuthenticationMechanism.CONFIGURED_SERVICE_IDENTITY
+        || context.sourceKind() != org.ayuvahak.platform.core.SourceKind.BACKGROUND_WORK) {
+      recordDenial(
+          context,
+          actionCode,
+          "FacilitySearch",
+          Optional.empty(),
+          Optional.of(organizationReference(organizationId)),
+          Optional.empty(),
+          "SERVICE_IDENTITY_REQUIRED");
+      throw problem(
+          HttpStatus.FORBIDDEN,
+          PlatformErrorCode.AUTHORIZATION_DENIED,
+          "Matching candidate reads require the configured service identity.");
+    }
+    if (context.scope().kind() != ExecutionScope.Kind.ORGANIZATION
+        || !context
+            .scope()
+            .organization()
+            .orElseThrow()
+            .equals(organizationReference(organizationId))) {
+      denyScope(
+          context,
+          actionCode,
+          "FacilitySearch",
+          Optional.empty(),
+          Optional.of(organizationReference(organizationId)));
+      throw scopeMismatch();
+    }
+    requireAuthority(
+        context,
+        DirectoryAuthorities.read().code(),
+        actionCode,
+        "FacilitySearch",
+        Optional.empty(),
+        Optional.of(organizationReference(organizationId)));
+    return validatedCapabilityRequirements(requestedCapabilityCodes);
+  }
+
+  private DirectoryMatchingCandidatePage loadMatchingCandidates(
+      ExecutionContext context,
+      InternalId organizationId,
+      List<String> capabilityCodes,
+      PageBounds page,
+      Instant evaluationTime,
+      List<DeferredMatchingReadAudit> deferredAudits) {
+    String actionCode = "DIRECTORY_MATCHING_CANDIDATE_SEARCH";
+    Instant evaluatedAt = evaluationTime;
+    List<DirectoryFacilitySearchEntry> entries =
+        store.findMatchingCandidateFacilities(organizationId, page.size() + 1, page.offset());
+    boolean hasMore = entries.size() > page.size();
+    List<DirectoryFacilitySearchEntry> bounded = entries.stream().limit(page.size()).toList();
+    if (deferredAudits == null) {
+      auditSearchRead(
+          context,
+          Optional.of(organizationId),
+          Optional.empty(),
+          "DIRECTORY_MATCHING_CANDIDATE_SEARCH");
+    } else {
+      deferredAudits.add(
+          new DeferredMatchingReadAudit(
+              evidence(
+                  context,
+                  AuditActionKind.SENSITIVE_READ,
+                  "DIRECTORY_MATCHING_CANDIDATE_SEARCH",
+                  "FacilitySearch",
+                  Optional.empty(),
+                  AuditOutcome.SUCCEEDED,
+                  Optional.empty(),
+                  AuditAuthorizationOutcome.ALLOWED,
+                  Optional.of(organizationReference(organizationId)),
+                  Optional.empty()),
+              "The requested Directory results are not disclosed because access evidence is unavailable."));
+    }
+
+    List<DirectoryMatchingCandidatePage.Candidate> candidates =
+        bounded.stream()
+            .map(
+                entry -> {
+                  Facility facility = entry.facility();
+                  List<DirectoryMatchingCandidatePage.Capability> capabilities =
+                      capabilityCodes.stream()
+                          .map(code -> assessCapabilityRequirement(facility, code, evaluatedAt))
+                          .map(
+                              assessment ->
+                                  new DirectoryMatchingCandidatePage.Capability(
+                                      assessment.code(),
+                                      assessment.outcome().name(),
+                                      assessment.capabilityVersion(),
+                                      assessment.capabilityStatus(),
+                                      assessment.assertionEvidence()))
+                          .toList();
+                  if (deferredAudits == null) {
+                    auditMatchingEvaluationRead(context, facility);
+                  } else {
+                    deferredAudits.add(
+                        new DeferredMatchingReadAudit(
+                            evidence(
+                                context,
+                                AuditActionKind.SENSITIVE_READ,
+                                "DIRECTORY_MATCHING_EVALUATION_READ",
+                                "Facility",
+                                Optional.of(facility.id()),
+                                AuditOutcome.SUCCEEDED,
+                                Optional.of("MATCHING_EVALUATION"),
+                                AuditAuthorizationOutcome.ALLOWED,
+                                Optional.of(
+                                    organizationReference(facility.managingOrganizationId())),
+                                Optional.of(facilityReference(facility.id()))),
+                            "The Matching candidate evidence is not disclosed because its read audit is unavailable."));
+                  }
+                  return new DirectoryMatchingCandidatePage.Candidate(
+                      facilityReference(facility.id()),
+                      organizationReference(facility.managingOrganizationId()),
+                      facility.name(),
+                      facility.status().name(),
+                      facility.version(),
+                      facility.source().reference(),
+                      matchingProvenance(facility.provenance()),
+                      entry.primaryLocation().map(DirectoryApplicationService::matchingLocation),
+                      capabilities);
+                })
+            .toList();
+    return new DirectoryMatchingCandidatePage(
+        organizationReference(organizationId),
+        evaluatedAt,
+        candidates,
+        page.page(),
+        page.size(),
+        hasMore);
+  }
+
+  private void recordDeferredMatchingReadAudit(DeferredMatchingReadAudit audit) {
+    try {
+      auditWriter.getObject().recordNonMutating(audit.evidence());
+    } catch (AuditPersistenceUnavailableException failure) {
+      throw problem(
+          HttpStatus.SERVICE_UNAVAILABLE, PlatformErrorCode.AUDIT_UNAVAILABLE, audit.detail());
+    }
+  }
+
+  private record DeferredMatchingReadAudit(AuditEvidence evidence, String detail) {}
+
+  /** Reads exactly one requested candidate Facility for synchronous Matching applicability. */
+  public Optional<DirectoryMatchingCandidatePage.Candidate> getMatchingCandidate(
+      ExecutionContext context,
+      InternalId facilityId,
+      List<String> requestedCapabilityCodes,
+      Instant evaluationTime) {
+    String actionCode = "DIRECTORY_MATCHING_CANDIDATE_READ";
+    Objects.requireNonNull(context, "execution context");
+    Objects.requireNonNull(facilityId, "candidate Facility");
+    Objects.requireNonNull(evaluationTime, "candidate evaluation time");
+    if (evaluationTime.isAfter(clock.instant())) {
+      throw validation("Directory candidates cannot be assessed at a future instant.");
+    }
+    if (context.actor().kind() != ActorKind.SERVICE
+        || context.authenticationMechanism() != AuthenticationMechanism.CONFIGURED_SERVICE_IDENTITY
+        || context.sourceKind() != org.ayuvahak.platform.core.SourceKind.BACKGROUND_WORK) {
+      recordDenial(
+          context,
+          actionCode,
+          "Facility",
+          Optional.of(facilityId),
+          Optional.empty(),
+          Optional.empty(),
+          "SERVICE_IDENTITY_REQUIRED");
+      throw problem(
+          HttpStatus.FORBIDDEN,
+          PlatformErrorCode.AUTHORIZATION_DENIED,
+          "Matching applicability reads require the configured service identity.");
+    }
+    if (context.scope().kind() != ExecutionScope.Kind.ORGANIZATION) {
+      denyScope(context, actionCode, "Facility", Optional.of(facilityId), Optional.empty());
+      throw scopeMismatch();
+    }
+    InternalId organizationId =
+        referenceId(context.scope().organization().orElseThrow(), "Organization");
+    ExternalReference organization = organizationReference(organizationId);
+    requireAuthority(
+        context,
+        DirectoryAuthorities.read().code(),
+        actionCode,
+        "Facility",
+        Optional.of(facilityId),
+        Optional.of(organization));
+    List<String> capabilityCodes = validatedCapabilityRequirements(requestedCapabilityCodes);
+    Facility facility = store.findFacility(facilityId).orElse(null);
+    if (facility == null) {
+      auditSearchRead(context, Optional.of(organizationId), Optional.empty(), actionCode);
+      return Optional.empty();
+    }
+    if (!facility.managingOrganizationId().equals(organizationId)) {
+      denyScope(
+          context,
+          actionCode,
+          "Facility",
+          Optional.of(facilityId),
+          Optional.of(organization),
+          Optional.of(facilityReference(facilityId)));
+      throw scopeMismatch();
+    }
+
+    Instant evaluatedAt = evaluationTime;
+    List<DirectoryMatchingCandidatePage.Capability> capabilities =
+        capabilityCodes.stream()
+            .map(code -> assessCapabilityRequirement(facility, code, evaluatedAt))
+            .map(
+                assessment ->
+                    new DirectoryMatchingCandidatePage.Capability(
+                        assessment.code(),
+                        assessment.outcome().name(),
+                        assessment.capabilityVersion(),
+                        assessment.capabilityStatus(),
+                        assessment.assertionEvidence()))
+            .toList();
+    Optional<DirectoryMatchingCandidatePage.Location> primaryLocation =
+        store.listLocations(facility.id()).stream()
+            .filter(DirectoryLocation::primary)
+            .findFirst()
+            .map(DirectoryApplicationService::matchingLocation);
+    auditMatchingCandidateRead(context, facility);
+    return Optional.of(
+        new DirectoryMatchingCandidatePage.Candidate(
+            facilityReference(facility.id()),
+            organizationReference(facility.managingOrganizationId()),
+            facility.name(),
+            facility.status().name(),
+            facility.version(),
+            facility.source().reference(),
+            matchingProvenance(facility.provenance()),
+            primaryLocation,
+            capabilities));
   }
 
   private static PageBounds validatedPageBounds(Integer requestedPage, Integer requestedSize) {
@@ -2271,6 +2727,38 @@ public class DirectoryApplicationService {
     }
   }
 
+  private void auditMatchingEvaluationRead(ExecutionContext context, Facility facility) {
+    auditMatchingRead(context, facility, "DIRECTORY_MATCHING_EVALUATION_READ");
+  }
+
+  private void auditMatchingCandidateRead(ExecutionContext context, Facility facility) {
+    auditMatchingRead(context, facility, "DIRECTORY_MATCHING_CANDIDATE_READ");
+  }
+
+  private void auditMatchingRead(ExecutionContext context, Facility facility, String actionCode) {
+    try {
+      auditWriter
+          .getObject()
+          .recordNonMutating(
+              evidence(
+                  context,
+                  AuditActionKind.SENSITIVE_READ,
+                  actionCode,
+                  "Facility",
+                  Optional.of(facility.id()),
+                  AuditOutcome.SUCCEEDED,
+                  Optional.of("MATCHING_EVALUATION"),
+                  AuditAuthorizationOutcome.ALLOWED,
+                  Optional.of(organizationReference(facility.managingOrganizationId())),
+                  Optional.of(facilityReference(facility.id()))));
+    } catch (AuditPersistenceUnavailableException failure) {
+      throw problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          PlatformErrorCode.AUDIT_UNAVAILABLE,
+          "The Matching candidate evidence is not disclosed because its read audit is unavailable.");
+    }
+  }
+
   private void denyScope(
       ExecutionContext context,
       String actionCode,
@@ -2458,6 +2946,70 @@ public class DirectoryApplicationService {
 
   private static ExternalReference facilityReference(InternalId id) {
     return new ExternalReference(new IssuerId(DIRECTORY_ISSUER), "Facility", id.toString());
+  }
+
+  private static ExternalReference locationReference(InternalId id) {
+    return new ExternalReference(new IssuerId(DIRECTORY_ISSUER), "Location", id.toString());
+  }
+
+  private static ExternalReference assertionReference(InternalId id) {
+    return new ExternalReference(
+        new IssuerId(DIRECTORY_ISSUER), "FacilityCapabilityAssertion", id.toString());
+  }
+
+  private static ExternalReference healthcareServiceReference(InternalId id) {
+    return new ExternalReference(
+        new IssuerId(DIRECTORY_ISSUER), "HealthcareService", id.toString());
+  }
+
+  private static DirectoryMatchingCandidatePage.Provenance matchingProvenance(
+      DirectoryProvenance provenance) {
+    return new DirectoryMatchingCandidatePage.Provenance(
+        provenance.method(),
+        provenance.observedAt(),
+        provenance.recordedAt(),
+        provenance.reasonCode());
+  }
+
+  private static DirectoryMatchingOriginLocation.Provenance matchingOriginProvenance(
+      DirectoryProvenance provenance) {
+    return new DirectoryMatchingOriginLocation.Provenance(
+        provenance.method(),
+        provenance.observedAt(),
+        provenance.recordedAt(),
+        provenance.reasonCode());
+  }
+
+  private static DirectoryMatchingCandidatePage.Location matchingLocation(
+      DirectoryLocation location) {
+    return new DirectoryMatchingCandidatePage.Location(
+        locationReference(location.id()),
+        location.name(),
+        location
+            .coordinate()
+            .map(
+                coordinate ->
+                    new DirectoryMatchingCandidatePage.Coordinate(
+                        coordinate.longitude(), coordinate.latitude())),
+        location.version(),
+        location.source().reference(),
+        matchingProvenance(location.provenance()));
+  }
+
+  private DirectoryMatchingCandidatePage.Assertion matchingAssertion(
+      FacilityCapabilityAssertion assertion) {
+    return new DirectoryMatchingCandidatePage.Assertion(
+        assertionReference(assertion.id()),
+        assertion.version(),
+        assertion.verificationStatus().name(),
+        assertion.source().reference(),
+        matchingProvenance(assertion.provenance()),
+        assertion.effectiveFrom(),
+        assertion.effectiveUntil(),
+        assertion
+            .healthcareServiceId()
+            .map(DirectoryApplicationService::healthcareServiceReference),
+        serviceIsActive(assertion.healthcareServiceId()));
   }
 
   private static DirectoryProvenance provenance(

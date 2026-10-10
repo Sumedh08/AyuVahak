@@ -36,6 +36,7 @@ ADRs record durable AyuVahak architecture decisions, their context, and the rati
 | [0019](0019-synchronous-recommendation-applicability.md) | Recommendation applicability is synchronously revalidated at use time | Accepted |
 | [0020](0020-declared-future-consumer-delivery-state.md) | A declared same-Volume future consumer uses a durable non-replayable waiting state | Accepted |
 | [0021](0021-grant-registered-authorities-at-declared-scope.md) | Identity & Access administers registered authorities at their declared scope | Accepted |
+| [0022](0022-matching-owner-reads-use-a-dedicated-service-identity.md) | Matching owner reads use a dedicated scoped service identity | Accepted |
 
 ADR 0005 and ADR 0007 have dated amendments for the Phase 2 identity/token boundary and at-least-once/per-aggregate event delivery semantics. These amendments clarify the existing decisions; they do not change the Phase 1 baseline or begin Phase 2 implementation.
 
@@ -44,4 +45,6 @@ ADRs 0015–0017 constrain the Volume II Capacity, Matching, and Transfer domain
 ADRs 0018–0020 resolve cross-phase ownership and event-activation semantics for Volume II. They clarify that operational mapping and current recommendation applicability belong to Matching, and narrowly permit a same-Volume future consumer event to remain durably waiting without automatic replay.
 
 ADR 0021 extends the existing Identity & Access grant-administration boundary for later context-owned authorities. It preserves grant ownership, platform-scoped administration, and the Phase 2 trust/audit/idempotency invariants while permitting an explicit target scope validated by the owner of the referenced organization or facility facts.
+
+ADR 0022 separates the human authority to request a recommendation from the machine identity used to read other contexts' facts. It preserves each context's authorization and audit ownership and documents the exact deployment-scoped read grants required by Matching.
 

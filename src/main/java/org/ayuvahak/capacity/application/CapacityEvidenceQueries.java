@@ -2,6 +2,7 @@ package org.ayuvahak.capacity.application;
 
 import java.time.Clock;
 import java.time.Instant;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -47,12 +48,15 @@ public class CapacityEvidenceQueries implements CapacityReadiness {
 
   private static final int MAX_HISTORY_SIZE = 100;
   private static final int MAX_DIMENSIONS_PER_QUERY = 50;
+  private static final int MAX_FACILITIES_PER_BATCH = 100;
+  private static final String MATCHING_BATCH_ACTION = "CAPACITY_MATCHING_EVALUATION_READ";
 
   private final CapacityEvidenceStore evidence;
   private final CapacityConfigurationLookup configuration;
   private final ObjectProvider<AuthorizationService> authorization;
   private final ObjectProvider<AuditWriter> auditWriter;
   private final TransactionTemplate readTransaction;
+  private final TransactionTemplate batchReadTransaction;
   private final Clock clock;
   private final CapacityEvidenceProjector projector = new CapacityEvidenceProjector();
   private final CapacityReadinessEvaluator readinessEvaluator = new CapacityReadinessEvaluator();
@@ -72,6 +76,10 @@ public class CapacityEvidenceQueries implements CapacityReadiness {
     readTransaction = new TransactionTemplate(Objects.requireNonNull(transactionManager));
     readTransaction.setReadOnly(true);
     readTransaction.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
+    batchReadTransaction = new TransactionTemplate(transactionManager);
+    batchReadTransaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+    batchReadTransaction.setReadOnly(true);
+    batchReadTransaction.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
   }
 
   public List<CapacityEvidenceProjection> current(
@@ -156,6 +164,109 @@ public class CapacityEvidenceQueries implements CapacityReadiness {
     recordRead(context, facility, "CAPACITY_READINESS_EVALUATE");
     return new CapacityReadinessEvaluation(
         facility, evaluationTime, CapacityReadinessEvaluation.aggregate(results), results);
+  }
+
+  @Override
+  public CapacityReadinessBatchEvaluation evaluateOperationalReadinessBatch(
+      List<CapacityReadinessBatchTarget> requestedTargets,
+      List<String> requiredDimensionCodes,
+      Instant evaluationTime) {
+    if (requestedTargets == null
+        || requestedTargets.isEmpty()
+        || requestedTargets.size() > MAX_FACILITIES_PER_BATCH
+        || requestedTargets.stream().anyMatch(Objects::isNull)) {
+      throw invalid("A readiness batch must contain between 1 and 100 Facility targets.");
+    }
+    if (evaluationTime == null || evaluationTime.isAfter(clock.instant())) {
+      throw invalid("Capacity readiness cannot be evaluated at a future or missing instant.");
+    }
+    List<String> dimensions = validateDimensions(requiredDimensionCodes);
+    List<CapacityReadinessBatchTarget> targets =
+        requestedTargets.stream()
+            .sorted(
+                Comparator.comparing(
+                    target ->
+                        target.facility().issuer().value()
+                            + ":"
+                            + target.facility().resourceType()
+                            + ":"
+                            + target.facility().value()))
+            .toList();
+    if (targets.stream().map(CapacityReadinessBatchTarget::facility).distinct().count()
+        != targets.size()) {
+      throw invalid("A readiness batch cannot repeat a Facility target.");
+    }
+
+    ExecutionContext first = targets.getFirst().context();
+    if (first.actor().kind() != ActorKind.SERVICE
+        || first.authenticationMechanism() != AuthenticationMechanism.CONFIGURED_SERVICE_IDENTITY
+        || first.sourceKind() != org.ayuvahak.platform.core.SourceKind.BACKGROUND_WORK
+        || targets.stream()
+            .anyMatch(
+                target ->
+                    !target.context().actor().equals(first.actor())
+                        || !target.context().correlationId().equals(first.correlationId())
+                        || target.context().authenticationMechanism()
+                            != AuthenticationMechanism.CONFIGURED_SERVICE_IDENTITY
+                        || target.context().sourceKind()
+                            != org.ayuvahak.platform.core.SourceKind.BACKGROUND_WORK)) {
+      throw problem(
+          HttpStatus.FORBIDDEN,
+          PlatformErrorCode.AUTHORIZATION_DENIED,
+          "A matching readiness batch requires one configured service identity and correlation.");
+    }
+
+    // Validate every scope and grant before reading any evidence, so no partial positive result is
+    // produced from a subset of a failed cross-facility request.
+    for (CapacityReadinessBatchTarget target : targets) {
+      requireFacility(target.context(), target.facility());
+      requireReviewer(target.context(), MATCHING_BATCH_ACTION, target.facility());
+    }
+
+    List<CapacityReadinessEvaluation> evaluations;
+    try {
+      evaluations =
+          Objects.requireNonNull(
+              batchReadTransaction.execute(
+                  status ->
+                      targets.stream()
+                          .map(
+                              target -> {
+                                List<CapacityDimensionReadiness> results =
+                                    dimensions.stream()
+                                        .map(
+                                            code -> {
+                                              var dimension = configuration.currentDimension(code);
+                                              var policy = configuration.currentPolicy(code);
+                                              var projection =
+                                                  projector.project(
+                                                      target.facility(),
+                                                      code,
+                                                      dimension,
+                                                      policy,
+                                                      evidence.findForProjection(
+                                                          target.facility(), code),
+                                                      evaluationTime);
+                                              return readinessEvaluator.evaluate(
+                                                  code, dimension, policy, projection);
+                                            })
+                                        .toList();
+                                return new CapacityReadinessEvaluation(
+                                    target.facility(),
+                                    evaluationTime,
+                                    CapacityReadinessEvaluation.aggregate(results),
+                                    results);
+                              })
+                          .toList()),
+              "Capacity readiness batch transaction result");
+    } catch (DataAccessException unavailable) {
+      throw unavailable("Capacity readiness batch could not be evaluated safely.");
+    }
+
+    for (CapacityReadinessBatchTarget target : targets) {
+      recordMatchingRead(target.context(), target.facility());
+    }
+    return new CapacityReadinessBatchEvaluation(evaluationTime, evaluations);
   }
 
   public CapacityObservationHistoryPage history(
@@ -278,6 +389,32 @@ public class CapacityEvidenceQueries implements CapacityReadiness {
         AuditAuthorizationOutcome.ALLOWED,
         context.correlationId(),
         authenticationEvidence(context.authenticationMechanism()));
+  }
+
+  private void recordMatchingRead(ExecutionContext context, ExternalReference facility) {
+    try {
+      auditWriter
+          .getObject()
+          .recordNonMutating(
+              new AuditEvidence(
+                  AuditActionKind.SENSITIVE_READ,
+                  Optional.of(context.actor()),
+                  Optional.of(context.scope()),
+                  MATCHING_BATCH_ACTION,
+                  "Facility",
+                  targetId(facility),
+                  clock.instant(),
+                  AuditOutcome.SUCCEEDED,
+                  Optional.of("MATCHING_EVALUATION"),
+                  authenticationEvidence(context.authenticationMechanism()),
+                  AuditAuthorizationOutcome.ALLOWED,
+                  context.correlationId()));
+    } catch (AuditPersistenceUnavailableException unavailable) {
+      throw problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          PlatformErrorCode.AUDIT_UNAVAILABLE,
+          "The matching evidence read outcome could not be recorded durably.");
+    }
   }
 
   private void recordSecurityOutcome(
