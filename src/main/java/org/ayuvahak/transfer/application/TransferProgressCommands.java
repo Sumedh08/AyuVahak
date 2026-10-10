@@ -2,6 +2,7 @@ package org.ayuvahak.transfer.application;
 
 import java.time.Clock;
 import java.time.Instant;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Supplier;
@@ -275,12 +276,11 @@ public final class TransferProgressCommands {
     requireAuthority(
         context, transferId, TransferAuthorities.progress().code(), "TRANSFER_PROGRESS_READ");
     requireParticipant(context, target, transferId, TransferProgressFact.Kind.ARRIVAL);
+    List<TransferProgressFact> facts = store.findProgressFacts(transferId);
+    List<TransferProgressCorrection> corrections = store.findProgressCorrections(transferId);
     recordRead(context, transferId);
     return new TransferProgressHistory(
-        target.transfer().journeyId(),
-        target.transfer(),
-        store.findProgressFacts(transferId),
-        store.findProgressCorrections(transferId));
+        target.transfer().journeyId(), target.transfer(), facts, corrections);
   }
 
   private static void validateCorrection(

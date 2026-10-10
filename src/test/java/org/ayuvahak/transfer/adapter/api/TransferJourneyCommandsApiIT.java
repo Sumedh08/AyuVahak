@@ -623,6 +623,89 @@ class TransferJourneyCommandsApiIT {
   }
 
   @Test
+  void failedProgressHistoryQueryIsNotAuditedAsSuccessful() throws Exception {
+    Scope scope = createOriginAndDestination();
+    String transferId = createReadyTransfer(scope, "progress-history-query-failure");
+    grantFacilityAuthority("synthetic-transfer-receiver", "TransferProgressAuthority", scope);
+
+    jdbc.execute(
+        "ALTER TABLE transfer.progress_correction "
+            + "RENAME TO progress_correction_temporarily_unavailable");
+    try {
+      mockMvc
+          .perform(
+              get("/api/v1/transfers/{transferId}/progress", transferId)
+                  .header("Authorization", "Bearer " + token("synthetic-transfer-receiver"))
+                  .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                  .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                  .header("X-AyuVahak-Facility-Id", scope.destinationFacilityId()))
+          .andExpect(status().is5xxServerError());
+
+      assertThat(
+              count(
+                  "SELECT COUNT(*) FROM audit.audit_record WHERE "
+                      + "action_code = 'TRANSFER_PROGRESS_READ' AND outcome = 'SUCCEEDED'"))
+          .isZero();
+    } finally {
+      jdbc.execute(
+          "ALTER TABLE transfer.progress_correction_temporarily_unavailable "
+              + "RENAME TO progress_correction");
+    }
+  }
+
+  @Test
+  void lateArrivalAfterInterruptionPreservesBothFactsAndMarksTheException() throws Exception {
+    Scope scope = createOriginAndDestination();
+    String transferId = createReadyTransfer(scope, "arrival-after-interruption");
+    grantFacilityAuthority("synthetic-transfer-receiver", "TransferProgressAuthority", scope);
+
+    progressCommand(
+            scope,
+            transferId,
+            "departure",
+            "synthetic-transfer-receiver",
+            "interrupted-progress-departure",
+            "{\"expectedVersion\":2,\"occurredAt\":\"2026-10-10T10:00:00Z\"}")
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.status").value("IN_TRANSIT"));
+    progressCommand(
+            scope,
+            transferId,
+            "interruption",
+            "synthetic-transfer-receiver",
+            "interrupted-progress-interruption",
+            "{\"expectedVersion\":3,\"occurredAt\":\"2026-10-10T10:20:00Z\","
+                + "\"reasonCode\":\"ROUTE_INTERRUPTED\"}")
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.status").value("INTERRUPTED"));
+    progressCommand(
+            scope,
+            transferId,
+            "arrival",
+            "synthetic-transfer-receiver",
+            "interrupted-progress-late-arrival",
+            "{\"expectedVersion\":4,\"occurredAt\":\"2026-10-10T10:45:00Z\"}")
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.status").value("ARRIVED"))
+        .andExpect(jsonPath("$.exceptionCode").value("ARRIVAL_REPORTED_AFTER_INTERRUPTION"));
+
+    mockMvc
+        .perform(
+            get("/api/v1/transfers/{transferId}/progress", transferId)
+                .header("Authorization", "Bearer " + token("synthetic-transfer-receiver"))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                .header("X-AyuVahak-Facility-Id", scope.destinationFacilityId()))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.facts.length()").value(3))
+        .andExpect(jsonPath("$.facts[0].kind").value("DEPARTURE"))
+        .andExpect(jsonPath("$.facts[1].kind").value("INTERRUPTION"))
+        .andExpect(jsonPath("$.facts[2].kind").value("ARRIVAL"))
+        .andExpect(
+            jsonPath("$.facts[2].exceptionCode").value("ARRIVAL_REPORTED_AFTER_INTERRUPTION"));
+  }
+
+  @Test
   void actualArrivalBeforeReservationOrDigitalDepartureIsRecordedWithoutFabricatedMovement()
       throws Exception {
     Scope scope = createOriginAndDestination();

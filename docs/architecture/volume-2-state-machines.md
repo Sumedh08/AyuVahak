@@ -93,6 +93,7 @@ stateDiagram-v2
   READY --> CANCELLATION_PENDING_RELEASE: explicit pre-departure cancellation
   IN_TRANSIT --> ARRIVED: arrival reported
   IN_TRANSIT --> INTERRUPTED: journey reported aborted/exception
+  INTERRUPTED --> ARRIVED: late factual Arrival; interruption remains in history
   INTERRUPTED --> IN_TRANSIT: authorized resumption reported
   INTERRUPTED --> CANCELLED: journey definitively abandoned and hold reconciled
   ARRIVED --> HANDED_OVER: receiving handover acknowledged
@@ -107,6 +108,7 @@ stateDiagram-v2
 
 - `READY` means a current Capacity coordination hold was confirmed; it is not an admission or guarantee against a later risk event.
 - `ARRIVED` may be recorded from `READY` when the physical event occurred before a digital departure update arrived. Store `occurredAt` and `recordedAt`; do not fabricate an `IN_TRANSIT` event. Audit the late report and preserve chronology.
+- A factual Arrival may also be recorded while the current state is `INTERRUPTED` when an arrival report is delayed or the physical event predates the interruption report. Preserve the interruption fact and annotate the Arrival with `ARRIVAL_REPORTED_AFTER_INTERRUPTION`; do not silently rewrite or remove either fact.
 - `HANDED_OVER` requires a distinct receiving acknowledgement. `COMPLETED` closes the coordination workflow; it does not record clinical disposition.
 - Arrival/handover/cancellation reports are idempotent commands. Conflicting facts require an explicit correction/supersession command and provenance; do not edit history silently.
 - This phase does not own dispatch assignment or live vehicle location. `IN_TRANSIT` is a reported coordination state only.
