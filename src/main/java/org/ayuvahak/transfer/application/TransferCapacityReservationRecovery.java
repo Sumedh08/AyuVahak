@@ -139,44 +139,54 @@ public final class TransferCapacityReservationRecovery {
     CapacityReservationIntent.Outcome outcome;
     Optional<InternalId> reservationId = Optional.empty();
     Optional<String> reasonCode = Optional.empty();
-    try {
-      CapacityReservationResult result =
-          capacity.reserve(
-              context,
-              new CapacityReservationRequest(
-                  intent.operationId(),
-                  intent.transferId(),
-                  intent.facility(),
-                  intent.dimensionCode().orElseThrow(),
-                  intent.unit().orElseThrow(),
-                  intent.quantity().orElseThrow(),
-                  intent.intervalStart().orElseThrow(),
-                  intent.intervalEnd().orElseThrow(),
-                  intent.expiresAt().orElseThrow()),
-              "transfer-capacity-" + intent.operationId());
-      if (!result.operationId().equals(intent.operationId())) {
-        outcome = CapacityReservationIntent.Outcome.UNKNOWN;
-        reasonCode = Optional.of("CAPACITY_OPERATION_REFERENCE_MISMATCH");
-      } else {
-        outcome = map(result.outcome());
-        reservationId = result.reservationId();
-        reasonCode = result.reasonCode();
+    if (!isUnexpired(intent, clock.instant())) {
+      outcome = CapacityReservationIntent.Outcome.UNKNOWN;
+      reasonCode = Optional.of("CAPACITY_RESERVATION_EXPIRED_BEFORE_CONFIRMATION");
+    } else {
+      try {
+        CapacityReservationResult result =
+            capacity.reserve(
+                context,
+                new CapacityReservationRequest(
+                    intent.operationId(),
+                    intent.transferId(),
+                    intent.facility(),
+                    intent.dimensionCode().orElseThrow(),
+                    intent.unit().orElseThrow(),
+                    intent.quantity().orElseThrow(),
+                    intent.intervalStart().orElseThrow(),
+                    intent.intervalEnd().orElseThrow(),
+                    intent.expiresAt().orElseThrow()),
+                "transfer-capacity-" + intent.operationId());
+        if (!result.operationId().equals(intent.operationId())) {
+          outcome = CapacityReservationIntent.Outcome.UNKNOWN;
+          reasonCode = Optional.of("CAPACITY_OPERATION_REFERENCE_MISMATCH");
+        } else {
+          outcome = map(result.outcome());
+          reservationId = result.reservationId();
+          reasonCode = result.reasonCode();
+        }
+      } catch (IllegalArgumentException invalidRequest) {
+        outcome = CapacityReservationIntent.Outcome.INVALID;
+        reasonCode = Optional.of("CAPACITY_REQUEST_INVALID");
+      } catch (PlatformProblemException failure) {
+        outcome =
+            retryable(failure)
+                ? CapacityReservationIntent.Outcome.UNAVAILABLE
+                : CapacityReservationIntent.Outcome.INVALID;
+        reasonCode = Optional.of(safeCode(failure));
+      } catch (RuntimeException failure) {
+        outcome = CapacityReservationIntent.Outcome.UNAVAILABLE;
+        reasonCode = Optional.of("CAPACITY_UNAVAILABLE");
       }
-    } catch (IllegalArgumentException invalidRequest) {
-      outcome = CapacityReservationIntent.Outcome.INVALID;
-      reasonCode = Optional.of("CAPACITY_REQUEST_INVALID");
-    } catch (PlatformProblemException failure) {
-      outcome =
-          retryable(failure)
-              ? CapacityReservationIntent.Outcome.UNAVAILABLE
-              : CapacityReservationIntent.Outcome.INVALID;
-      reasonCode = Optional.of(safeCode(failure));
-    } catch (RuntimeException failure) {
-      outcome = CapacityReservationIntent.Outcome.UNAVAILABLE;
-      reasonCode = Optional.of("CAPACITY_UNAVAILABLE");
     }
 
     Instant recordedAt = clock.instant();
+    if (outcome == CapacityReservationIntent.Outcome.RESERVED && !isUnexpired(intent, recordedAt)) {
+      outcome = CapacityReservationIntent.Outcome.UNKNOWN;
+      reservationId = Optional.empty();
+      reasonCode = Optional.of("CAPACITY_RESERVATION_EXPIRED_BEFORE_CONFIRMATION");
+    }
     Instant nextAttemptAt =
         outcome == CapacityReservationIntent.Outcome.UNAVAILABLE
             ? recordedAt.plus(properties.getReservationPollInterval())
@@ -294,6 +304,10 @@ public final class TransferCapacityReservationRecovery {
     return (intent.outcome() == CapacityReservationIntent.Outcome.PENDING
             || intent.outcome() == CapacityReservationIntent.Outcome.UNAVAILABLE)
         && intent.nextAttemptAt().compareTo(clock.instant()) <= 0;
+  }
+
+  private static boolean isUnexpired(CapacityReservationIntent intent, Instant at) {
+    return intent.expiresAt().filter(expiresAt -> expiresAt.isAfter(at)).isPresent();
   }
 
   private static CapacityReservationIntent.Outcome map(CapacityReservationResult.Outcome outcome) {

@@ -76,7 +76,7 @@ stateDiagram-v2
 
 - Capacity alone owns reservation creation, release, expiry, risk, and current held amount. A reservation is a coordination hold for a typed dimension/unit/time interval; it is not physical bed assignment, admission, or an external system guarantee.
 - An insufficient, stale, unknown, conflicted or unavailable capacity projection cannot create a positive hold. Repeating the same stable operation ID/fingerprint returns the same outcome. Same key/different request conflicts.
-- Reservation success and event intent are atomic in Capacity. A reservation-vs-capacity update is serialized in Capacity's database transaction; at most one request can consume the last available coordination quantity.
+- Capacity records reservation success atomically with any event intent required by the canonical event catalog. Phase 7 defines no event for reservation creation or reconciliation, so this command creates no event intent. A reservation-vs-capacity update is serialized in Capacity's database transaction; at most one request can consume the last available coordination quantity.
 
 ## Transfer
 

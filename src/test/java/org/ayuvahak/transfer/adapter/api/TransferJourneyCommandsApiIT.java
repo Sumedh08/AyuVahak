@@ -1,6 +1,7 @@
 package org.ayuvahak.transfer.adapter.api;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -785,12 +786,13 @@ class TransferJourneyCommandsApiIT {
       assertThat(exactReplay.outcome()).isEqualTo(CapacityReservationResult.Outcome.CONFLICT);
       assertThat(exactReplay.replayed()).isTrue();
 
-      recordCoordinationSlotObservation(scope, 2, "capacity-explicit-re-evaluation");
-      CapacityReservationResult explicitReevaluation =
+      recordCoordinationSlotObservation(scope, 2, "capacity-operation-outcome-immutable");
+      CapacityReservationResult newKeyOperationReplay =
           capacityReservations.reserve(
-              context, sameOperation, "explicit-capacity-re-evaluation-" + conflict.operationId());
-      assertThat(explicitReevaluation.outcome())
-          .isEqualTo(CapacityReservationResult.Outcome.RESERVED);
+              context, sameOperation, "new-key-same-operation-" + conflict.operationId());
+      assertThat(newKeyOperationReplay.outcome())
+          .isEqualTo(CapacityReservationResult.Outcome.CONFLICT);
+      assertThat(newKeyOperationReplay.replayed()).isTrue();
       CapacityReservationResult immutableReceiptReplay =
           capacityReservations.reserve(
               context, sameOperation, "transfer-capacity-" + conflict.operationId());
@@ -798,10 +800,70 @@ class TransferJourneyCommandsApiIT {
           .isEqualTo(CapacityReservationResult.Outcome.CONFLICT);
       assertThat(immutableReceiptReplay.reservationId()).isEmpty();
       assertThat(immutableReceiptReplay.replayed()).isTrue();
-      assertThat(count("SELECT COUNT(*) FROM capacity.coordination_reservation")).isEqualTo(2);
+      assertThat(count("SELECT COUNT(*) FROM capacity.coordination_reservation")).isEqualTo(1);
     } finally {
       executor.shutdownNow();
     }
+  }
+
+  @Test
+  void expiredCapacityReservationRequestIsRejectedWithoutCreatingHold() throws Exception {
+    Scope scope = createOriginAndDestination();
+    ensureReservableCapacityCatalog();
+    grantCapacityReporter(scope);
+    recordCoordinationSlotObservation(scope, 2, "capacity-expired-request");
+    grantReservationWorker(scope);
+
+    var context = reservationContext(scope);
+    Instant intervalEnd = Instant.now().minusSeconds(60);
+    Instant intervalStart = intervalEnd.minusSeconds(3600);
+    InternalId transferId = InternalId.generate();
+    CapacityReservationRequest expiredRequest =
+        reservationRequest(transferId, intervalStart, intervalEnd, scope.destinationFacilityId());
+
+    CapacityReservationResult result =
+        capacityReservations.reserve(
+            context, expiredRequest, "expired-capacity-request-" + transferId);
+
+    assertThat(result.outcome()).isEqualTo(CapacityReservationResult.Outcome.INVALID);
+    assertThat(result.reasonCode()).contains("RESERVATION_EXPIRY_NOT_FUTURE");
+    assertThat(result.reservationId()).isEmpty();
+    assertThat(count("SELECT COUNT(*) FROM capacity.coordination_reservation")).isZero();
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT outcome FROM capacity.reservation_operation WHERE operation_id = ?",
+                String.class,
+                transferId.value()))
+        .isEqualTo("INVALID");
+
+    CapacityReservationRequest conflictingOperation =
+        new CapacityReservationRequest(
+            InternalId.generate(),
+            expiredRequest.transferId(),
+            expiredRequest.facility(),
+            expiredRequest.dimensionCode(),
+            expiredRequest.unit(),
+            expiredRequest.quantity(),
+            expiredRequest.intervalStart(),
+            expiredRequest.intervalEnd(),
+            expiredRequest.expiresAt());
+    assertThatThrownBy(
+            () ->
+                capacityReservations.reserve(
+                    context, conflictingOperation, "different-operation-same-transfer"))
+        .isInstanceOf(PlatformProblemException.class)
+        .satisfies(
+            failure ->
+                assertThat(((PlatformProblemException) failure).code())
+                    .isEqualTo(PlatformErrorCode.CAPACITY_RESERVATION_CONFLICT));
+
+    CapacityReservationResult newKeyReplay =
+        capacityReservations.reserve(
+            context, expiredRequest, "expired-capacity-request-retry-" + transferId);
+    assertThat(newKeyReplay.outcome()).isEqualTo(CapacityReservationResult.Outcome.INVALID);
+    assertThat(newKeyReplay.reasonCode()).contains("RESERVATION_EXPIRY_NOT_FUTURE");
+    assertThat(newKeyReplay.replayed()).isTrue();
+    assertThat(count("SELECT COUNT(*) FROM capacity.coordination_reservation")).isZero();
   }
 
   @Test
@@ -866,6 +928,122 @@ class TransferJourneyCommandsApiIT {
                     + transferId
                     + "'::uuid"))
         .isEqualTo(1);
+  }
+
+  @Test
+  void lostCapacityResponseRecoveredAfterExpiryDoesNotMarkTransferReady() throws Exception {
+    Scope scope = createOriginAndDestination();
+    grantSender(scope);
+    matching.returnApplicable(scope.referralId());
+    ensureReservableCapacityCatalog();
+    grantCapacityReporter(scope);
+    recordCoordinationSlotObservation(scope, 2, "capacity-expired-after-commit");
+    grantReservationWorker(scope);
+
+    transferProperties.setReservationDuration(java.time.Duration.ofSeconds(5));
+    transferProperties.setReservationPollInterval(java.time.Duration.ZERO);
+    String requestAttempt = createRequestAttempt(scope, "capacity-expired-after-commit-request");
+    preparePositiveAcceptance(scope, requestAttempt);
+    capacityPort.loseNextResponseAfterCommit();
+    String accepted = acceptRequest(scope, requestAttempt, "capacity-expired-after-commit-accept");
+    UUID transferId = UUID.fromString(com.jayway.jsonpath.JsonPath.read(accepted, "$.transferId"));
+
+    assertThat(com.jayway.jsonpath.JsonPath.read(accepted, "$.status").toString())
+        .isEqualTo("AWAITING_RESERVATION");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT outcome FROM transfer.capacity_reservation_request WHERE transfer_id = ?",
+                String.class,
+                transferId))
+        .isEqualTo("UNAVAILABLE");
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM capacity.coordination_reservation WHERE transfer_id = '"
+                    + transferId
+                    + "'::uuid"))
+        .isEqualTo(1);
+
+    Instant expiresAt =
+        jdbc.queryForObject(
+                "SELECT expires_at FROM transfer.capacity_reservation_request WHERE transfer_id = ?",
+                java.sql.Timestamp.class,
+                transferId)
+            .toInstant();
+    assertThat(expiresAt).isAfter(Instant.now());
+    while (Instant.now().isBefore(expiresAt.plusMillis(250))) {
+      Thread.sleep(20);
+    }
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM capacity.coordination_reservation "
+                    + "WHERE transfer_id = '"
+                    + transferId
+                    + "'::uuid AND expires_at > CURRENT_TIMESTAMP"))
+        .isZero();
+
+    var intent =
+        jdbc.queryForMap(
+            "SELECT dimension_code, unit_code, quantity, interval_start, interval_end, expires_at "
+                + "FROM transfer.capacity_reservation_request WHERE transfer_id = ?",
+            transferId);
+    CapacityReservationRequest expiredReplayRequest =
+        new CapacityReservationRequest(
+            InternalId.parse(transferId.toString()),
+            InternalId.parse(transferId.toString()),
+            directoryReference("Facility", scope.destinationFacilityId()),
+            (String) intent.get("dimension_code"),
+            (String) intent.get("unit_code"),
+            (java.math.BigDecimal) intent.get("quantity"),
+            ((java.sql.Timestamp) intent.get("interval_start")).toInstant(),
+            ((java.sql.Timestamp) intent.get("interval_end")).toInstant(),
+            ((java.sql.Timestamp) intent.get("expires_at")).toInstant());
+    CapacityReservationResult capacityReplay =
+        capacityReservations.reserve(
+            reservationContext(scope), expiredReplayRequest, "transfer-capacity-" + transferId);
+    assertThat(capacityReplay.outcome()).isEqualTo(CapacityReservationResult.Outcome.RESERVED);
+    assertThat(capacityReplay.replayed()).isTrue();
+
+    TransferCapacityReservationRecovery restarted =
+        beanFactory.createBean(TransferCapacityReservationRecovery.class);
+    assertThat(restarted.reconcileDue()).isEqualTo(1);
+    assertThat(capacityPort.idempotencyKeys()).containsExactly("transfer-capacity-" + transferId);
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
+                String.class,
+                transferId))
+        .isEqualTo("AWAITING_RESERVATION");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT outcome FROM transfer.capacity_reservation_request WHERE transfer_id = ?",
+                String.class,
+                transferId))
+        .isEqualTo("UNKNOWN");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT reason_code FROM transfer.capacity_reservation_request WHERE transfer_id = ?",
+                String.class,
+                transferId))
+        .isEqualTo("CAPACITY_RESERVATION_EXPIRED_BEFORE_CONFIRMATION");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT reservation_id FROM transfer.capacity_reservation_request WHERE transfer_id = ?",
+                UUID.class,
+                transferId))
+        .isNull();
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT outcome FROM capacity.reservation_operation WHERE operation_id = ?",
+                String.class,
+                transferId))
+        .isEqualTo("RESERVED");
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM capacity.coordination_reservation WHERE transfer_id = '"
+                    + transferId
+                    + "'::uuid AND expires_at > CURRENT_TIMESTAMP"))
+        .isZero();
   }
 
   private void ensureReservableCapacityCatalog() throws Exception {

@@ -100,8 +100,8 @@ public final class CapacityReservationCommands {
     } catch (DuplicateKeyException conflict) {
       throw problem(
           HttpStatus.CONFLICT,
-          PlatformErrorCode.CAPACITY_OBSERVATION_CONFLICT,
-          "The Capacity reservation conflicts with a concurrent owner decision.");
+          PlatformErrorCode.CAPACITY_RESERVATION_CONFLICT,
+          "A Capacity reservation operation is already bound to this Transfer.");
     } catch (AuditPersistenceUnavailableException unavailable) {
       throw problem(
           HttpStatus.SERVICE_UNAVAILABLE,
@@ -149,10 +149,20 @@ public final class CapacityReservationCommands {
           "The reservation operation identifier is already bound to different inputs.");
     }
     Optional<CapacityReservationResult> prior = operation.current();
-    if (prior
-        .filter(result -> result.outcome() == CapacityReservationResult.Outcome.RESERVED)
-        .isPresent()) {
+    if (prior.isPresent()) {
       CapacityReservationResult result = prior.orElseThrow();
+      completeReceipt(receiptKey, fingerprint, result, now);
+      return result;
+    }
+
+    if (!request.expiresAt().isAfter(now)) {
+      CapacityReservationResult result =
+          recordNonPositive(
+              context,
+              request,
+              now,
+              CapacityReservationResult.Outcome.INVALID,
+              "RESERVATION_EXPIRY_NOT_FUTURE");
       completeReceipt(receiptKey, fingerprint, result, now);
       return result;
     }
@@ -221,6 +231,16 @@ public final class CapacityReservationCommands {
           "INSUFFICIENT_UNHELD_QUANTITY");
     }
 
+    Instant reservationAt = clock.instant();
+    if (!request.expiresAt().isAfter(reservationAt)) {
+      return recordNonPositive(
+          context,
+          request,
+          reservationAt,
+          CapacityReservationResult.Outcome.INVALID,
+          "RESERVATION_EXPIRY_NOT_FUTURE");
+    }
+
     InternalId reservationId = InternalId.generate();
     reservations.createReservation(
         request,
@@ -228,7 +248,7 @@ public final class CapacityReservationCommands {
         policy.orElseThrow().version(),
         projection.evidence().stream().map(item -> item.id()).toList(),
         reservationId,
-        now);
+        reservationAt);
     CapacityReservationResult result =
         new CapacityReservationResult(
             request.operationId(),
@@ -237,7 +257,11 @@ public final class CapacityReservationCommands {
             Optional.empty(),
             false);
     reservations.recordOutcome(
-        request.operationId(), result.outcome(), result.reservationId(), result.reasonCode(), now);
+        request.operationId(),
+        result.outcome(),
+        result.reservationId(),
+        result.reasonCode(),
+        reservationAt);
     audit(context, request, reservationId, "CAPACITY_RESERVATION_CREATE", "RESERVED", true);
     return result;
   }
