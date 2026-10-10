@@ -90,14 +90,15 @@ public final class TransferRequestLifecycleCommands {
           requireOriginTarget(context, journey, requestAttemptId);
           requirePending(attempt, expectedVersion, now);
           long resultVersion = expectedVersion + 1;
-          if (!store.advancePendingRequest(requestAttemptId, expectedVersion, "WITHDRAWN", now)) {
+          if (!store.withdrawPendingRequest(requestAttemptId, expectedVersion, occurredAt, now)) {
             throw stateConflict();
           }
           auditMutation(context, requestAttemptId, "TRANSFER_REQUEST_WITHDRAW", reasonCode, now);
           store.completeReceipt(
               receiptKey, HttpStatus.CREATED.value(), journey.id(), resultVersion, now);
           return new TransferRequestLifecycleCommandResult(
-              attemptWithStatus(attempt, TransferRequestAttempt.Status.WITHDRAWN, resultVersion),
+              attemptWithStatus(
+                  attempt, TransferRequestAttempt.Status.WITHDRAWN, resultVersion, occurredAt, now),
               false);
         });
   }
@@ -139,6 +140,7 @@ public final class TransferRequestLifecycleCommands {
                 "The Transfer request deadline has not elapsed.");
           }
           long resultVersion = expectedVersion + 1;
+          Instant occurredAt = attempt.expiresAt();
           if (!store.expirePendingRequest(requestAttemptId, expectedVersion, now)) {
             throw stateConflict();
           }
@@ -147,7 +149,8 @@ public final class TransferRequestLifecycleCommands {
           store.completeReceipt(
               receiptKey, HttpStatus.CREATED.value(), journey.id(), resultVersion, now);
           return new TransferRequestLifecycleCommandResult(
-              attemptWithStatus(attempt, TransferRequestAttempt.Status.EXPIRED, resultVersion),
+              attemptWithStatus(
+                  attempt, TransferRequestAttempt.Status.EXPIRED, resultVersion, occurredAt, now),
               false);
         });
   }
@@ -361,7 +364,11 @@ public final class TransferRequestLifecycleCommands {
   }
 
   private static TransferRequestAttempt attemptWithStatus(
-      TransferRequestAttempt attempt, TransferRequestAttempt.Status status, long version) {
+      TransferRequestAttempt attempt,
+      TransferRequestAttempt.Status status,
+      long version,
+      Instant occurredAt,
+      Instant recordedAt) {
     return new TransferRequestAttempt(
         attempt.id(),
         attempt.journeyId(),
@@ -374,6 +381,8 @@ public final class TransferRequestLifecycleCommands {
         attempt.requestedBy(),
         attempt.requestedAt(),
         attempt.expiresAt(),
+        Optional.of(occurredAt),
+        Optional.of(recordedAt),
         version);
   }
 

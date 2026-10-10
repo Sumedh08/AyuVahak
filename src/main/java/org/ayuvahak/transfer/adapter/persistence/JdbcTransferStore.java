@@ -175,7 +175,8 @@ public class JdbcTransferStore implements TransferStore {
             "SELECT request_attempt_id, journey_id, attempt_number, referral_id, referral_revision, "
                 + "recommendation_id, destination_facility_id, request_status, requested_by_kind, "
                 + "requested_by_issuer, requested_by_identifier_type, requested_by_identifier, "
-                + "requested_at, expires_at, version FROM transfer.request_attempt "
+                + "requested_at, expires_at, terminal_occurred_at, terminal_recorded_at, version "
+                + "FROM transfer.request_attempt "
                 + "WHERE journey_id = ? AND attempt_number = 1",
             JdbcTransferStore::requestAttempt,
             journeyId.value());
@@ -189,7 +190,8 @@ public class JdbcTransferStore implements TransferStore {
             "SELECT request_attempt_id, journey_id, attempt_number, referral_id, referral_revision, "
                 + "recommendation_id, destination_facility_id, request_status, requested_by_kind, "
                 + "requested_by_issuer, requested_by_identifier_type, requested_by_identifier, "
-                + "requested_at, expires_at, version FROM transfer.request_attempt "
+                + "requested_at, expires_at, terminal_occurred_at, terminal_recorded_at, version "
+                + "FROM transfer.request_attempt "
                 + "WHERE request_attempt_id = ?",
             JdbcTransferStore::requestAttempt,
             requestAttemptId.value());
@@ -205,7 +207,8 @@ public class JdbcTransferStore implements TransferStore {
         "SELECT request_attempt_id, journey_id, attempt_number, referral_id, referral_revision, "
             + "recommendation_id, destination_facility_id, request_status, requested_by_kind, "
             + "requested_by_issuer, requested_by_identifier_type, requested_by_identifier, "
-            + "requested_at, expires_at, version FROM transfer.request_attempt "
+            + "requested_at, expires_at, terminal_occurred_at, terminal_recorded_at, version "
+            + "FROM transfer.request_attempt "
             + "WHERE request_status = 'PENDING' AND expires_at <= ? "
             + "ORDER BY expires_at, request_attempt_id LIMIT ?",
         JdbcTransferStore::requestAttempt,
@@ -291,16 +294,35 @@ public class JdbcTransferStore implements TransferStore {
   }
 
   @Override
-  public boolean expirePendingRequest(
-      InternalId requestAttemptId, long expectedVersion, Instant now) {
+  public boolean withdrawPendingRequest(
+      InternalId requestAttemptId, long expectedVersion, Instant occurredAt, Instant recordedAt) {
     int changed =
         jdbc.update(
-            "UPDATE transfer.request_attempt SET request_status = 'EXPIRED', version = version + 1 "
+            "UPDATE transfer.request_attempt SET request_status = 'WITHDRAWN', "
+                + "terminal_occurred_at = ?, terminal_recorded_at = ?, version = version + 1 "
                 + "WHERE request_attempt_id = ? AND request_status = 'PENDING' AND version = ? "
-                + "AND expires_at <= ?",
+                + "AND expires_at > ?",
+            Timestamp.from(occurredAt),
+            Timestamp.from(recordedAt),
             requestAttemptId.value(),
             expectedVersion,
-            Timestamp.from(now));
+            Timestamp.from(recordedAt));
+    return changed == 1;
+  }
+
+  @Override
+  public boolean expirePendingRequest(
+      InternalId requestAttemptId, long expectedVersion, Instant recordedAt) {
+    int changed =
+        jdbc.update(
+            "UPDATE transfer.request_attempt SET request_status = 'EXPIRED', "
+                + "terminal_occurred_at = expires_at, terminal_recorded_at = ?, version = version + 1 "
+                + "WHERE request_attempt_id = ? AND request_status = 'PENDING' AND version = ? "
+                + "AND expires_at <= ?",
+            Timestamp.from(recordedAt),
+            requestAttemptId.value(),
+            expectedVersion,
+            Timestamp.from(recordedAt));
     return changed == 1;
   }
 
@@ -452,6 +474,8 @@ public class JdbcTransferStore implements TransferStore {
         actor(result, "requested_by"),
         result.getTimestamp("requested_at").toInstant(),
         result.getTimestamp("expires_at").toInstant(),
+        Optional.ofNullable(result.getTimestamp("terminal_occurred_at")).map(Timestamp::toInstant),
+        Optional.ofNullable(result.getTimestamp("terminal_recorded_at")).map(Timestamp::toInstant),
         result.getLong("version"));
   }
 

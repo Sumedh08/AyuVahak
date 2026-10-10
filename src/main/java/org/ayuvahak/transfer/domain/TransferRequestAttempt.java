@@ -2,6 +2,7 @@ package org.ayuvahak.transfer.domain;
 
 import java.time.Instant;
 import java.util.Objects;
+import java.util.Optional;
 import org.ayuvahak.platform.core.ActorReference;
 import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.InternalId;
@@ -19,6 +20,8 @@ public record TransferRequestAttempt(
     ActorReference requestedBy,
     Instant requestedAt,
     Instant expiresAt,
+    Optional<Instant> terminalOccurredAt,
+    Optional<Instant> terminalRecordedAt,
     long version) {
 
   public TransferRequestAttempt {
@@ -42,11 +45,19 @@ public record TransferRequestAttempt(
     Objects.requireNonNull(requestedBy, "requester");
     Objects.requireNonNull(requestedAt, "request time");
     Objects.requireNonNull(expiresAt, "request expiry");
+    terminalOccurredAt = Objects.requireNonNull(terminalOccurredAt, "terminal occurrence time");
+    terminalRecordedAt = Objects.requireNonNull(terminalRecordedAt, "terminal recorded time");
     if (!expiresAt.isAfter(requestedAt)) {
       throw new IllegalArgumentException("request expiry must follow its request time");
     }
     if (version < 1) {
       throw new IllegalArgumentException("request version must be positive");
+    }
+    boolean requiresTerminalTimes = status == Status.EXPIRED || status == Status.WITHDRAWN;
+    if (terminalOccurredAt.isPresent() != requiresTerminalTimes
+        || terminalRecordedAt.isPresent() != requiresTerminalTimes) {
+      throw new IllegalArgumentException(
+          "expired and withdrawn requests require terminal occurrence and recorded times");
     }
   }
 

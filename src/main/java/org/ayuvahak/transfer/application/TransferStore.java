@@ -51,7 +51,11 @@ public interface TransferStore {
   boolean advancePendingRequest(
       InternalId requestAttemptId, long expectedVersion, String status, Instant now);
 
-  boolean expirePendingRequest(InternalId requestAttemptId, long expectedVersion, Instant now);
+  boolean withdrawPendingRequest(
+      InternalId requestAttemptId, long expectedVersion, Instant occurredAt, Instant recordedAt);
+
+  boolean expirePendingRequest(
+      InternalId requestAttemptId, long expectedVersion, Instant recordedAt);
 
   void insertAssessment(ReceivingAssessment assessment);
 

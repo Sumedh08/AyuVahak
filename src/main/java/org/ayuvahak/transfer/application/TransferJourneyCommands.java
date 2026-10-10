@@ -177,6 +177,8 @@ public final class TransferJourneyCommands {
                   context.actor(),
                   now,
                   now.plus(deadline),
+                  Optional.empty(),
+                  Optional.empty(),
                   1);
           store.insertFirstRequest(journey, attempt);
           auditMutation(context, journey);

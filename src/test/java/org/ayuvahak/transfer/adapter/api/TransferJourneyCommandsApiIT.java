@@ -566,16 +566,20 @@ class TransferJourneyCommandsApiIT {
             SENDER,
             "withdrawal-01",
             "{\"expectedVersion\":1,\"reasonCode\":\"SENDER_WITHDREW\","
-                + "\"occurredAt\":\"2026-10-10T10:45:00Z\"}")
+                + "\"occurredAt\":\"2020-10-10T10:45:00Z\"}")
         .andExpect(status().isCreated())
         .andExpect(jsonPath("$.status").value("WITHDRAWN"));
+    Instant withdrawalOccurredAt = Instant.parse("2020-10-10T10:45:00Z");
+    TerminalTimes withdrawalTimes = terminalTimes(requestAttemptId);
+    assertThat(withdrawalTimes.occurredAt()).isEqualTo(withdrawalOccurredAt);
+    assertThat(withdrawalTimes.recordedAt()).isAfter(withdrawalOccurredAt);
     withdrawalCommand(
             scope,
             requestAttemptId,
             SENDER,
             "withdrawal-01",
             "{\"expectedVersion\":1,\"reasonCode\":\"SENDER_WITHDREW\","
-                + "\"occurredAt\":\"2026-10-10T10:45:00Z\"}")
+                + "\"occurredAt\":\"2020-10-10T10:45:00Z\"}")
         .andExpect(status().isCreated())
         .andExpect(header().string("Idempotency-Replayed", "true"));
 
@@ -584,6 +588,10 @@ class TransferJourneyCommandsApiIT {
             count(
                 "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = 'TRANSFER_REQUEST_WITHDRAW'"))
         .isEqualTo(1);
+    AuditTimes withdrawalAudit = auditTimes("TRANSFER_REQUEST_WITHDRAW");
+    assertThat(withdrawalAudit.occurredAt()).isAfter(withdrawalOccurredAt);
+    assertThat(withdrawalAudit.recordedAt()).isAfter(withdrawalAudit.occurredAt());
+    assertThat(withdrawalAudit.actorReference()).isEqualTo(SENDER);
     assertThat(count("SELECT COUNT(*) FROM platform_eventing.internal_event")).isZero();
   }
 
@@ -607,14 +615,27 @@ class TransferJourneyCommandsApiIT {
         java.sql.Timestamp.from(Instant.now().minusSeconds(120)),
         java.sql.Timestamp.from(Instant.now().minusSeconds(60)),
         UUID.fromString(requestAttemptId));
+    Instant effectiveExpiryAt =
+        jdbc.queryForObject(
+                "SELECT expires_at FROM transfer.request_attempt WHERE request_attempt_id = ?",
+                java.sql.Timestamp.class,
+                UUID.fromString(requestAttemptId))
+            .toInstant();
 
     assertThat(expirySweep.expireDueRequests()).isEqualTo(1);
 
     assertThat(requestStatus(requestAttemptId)).isEqualTo("EXPIRED");
+    TerminalTimes expiryTimes = terminalTimes(requestAttemptId);
+    assertThat(expiryTimes.occurredAt()).isEqualTo(effectiveExpiryAt);
+    assertThat(expiryTimes.recordedAt()).isAfter(expiryTimes.occurredAt());
     assertThat(
             count(
                 "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = 'TRANSFER_REQUEST_EXPIRE'"))
         .isEqualTo(1);
+    AuditTimes expiryAudit = auditTimes("TRANSFER_REQUEST_EXPIRE");
+    assertThat(expiryAudit.occurredAt()).isAfter(effectiveExpiryAt);
+    assertThat(expiryAudit.recordedAt()).isAfter(expiryAudit.occurredAt());
+    assertThat(expiryAudit.actorReference()).isEqualTo("ayuvahak-transfer-expiry-worker");
     assertThat(count("SELECT COUNT(*) FROM platform_eventing.internal_event")).isZero();
   }
 
@@ -1036,6 +1057,33 @@ class TransferJourneyCommandsApiIT {
         String.class,
         UUID.fromString(requestAttemptId));
   }
+
+  private TerminalTimes terminalTimes(String requestAttemptId) {
+    return jdbc.queryForObject(
+        "SELECT terminal_occurred_at, terminal_recorded_at FROM transfer.request_attempt "
+            + "WHERE request_attempt_id = ?",
+        (result, row) ->
+            new TerminalTimes(
+                result.getTimestamp("terminal_occurred_at").toInstant(),
+                result.getTimestamp("terminal_recorded_at").toInstant()),
+        UUID.fromString(requestAttemptId));
+  }
+
+  private AuditTimes auditTimes(String actionCode) {
+    return jdbc.queryForObject(
+        "SELECT occurred_at, recorded_at, actor_reference FROM audit.audit_record "
+            + "WHERE action_code = ?",
+        (result, row) ->
+            new AuditTimes(
+                result.getTimestamp("occurred_at").toInstant(),
+                result.getTimestamp("recorded_at").toInstant(),
+                result.getString("actor_reference")),
+        actionCode);
+  }
+
+  private record TerminalTimes(Instant occurredAt, Instant recordedAt) {}
+
+  private record AuditTimes(Instant occurredAt, Instant recordedAt, String actorReference) {}
 
   private String createRequestAttempt(Scope scope, String idempotencyKey) throws Exception {
     return com.jayway.jsonpath.JsonPath.read(
