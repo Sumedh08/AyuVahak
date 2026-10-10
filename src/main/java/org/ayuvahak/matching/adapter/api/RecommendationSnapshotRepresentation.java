@@ -154,7 +154,8 @@ public record RecommendationSnapshotRepresentation(
       Instant observedAt,
       Instant receivedAt,
       Instant validUntil,
-      ReferenceRepresentation provenanceReference) {
+      ReferenceRepresentation provenanceReference,
+      CapacityProjectionRepresentation capacityDetails) {
 
     static EvidenceRepresentation from(EvidenceFact fact) {
       return new EvidenceRepresentation(
@@ -171,7 +172,62 @@ public record RecommendationSnapshotRepresentation(
           fact.observedAt(),
           fact.receivedAt().orElse(null),
           fact.validUntil().orElse(null),
-          fact.provenanceReference().map(ReferenceRepresentation::from).orElse(null));
+          fact.provenanceReference().map(ReferenceRepresentation::from).orElse(null),
+          fact.capacityDetails().map(CapacityProjectionRepresentation::from).orElse(null));
+    }
+  }
+
+  public record CapacityProjectionRepresentation(
+      List<String> reasonCodes,
+      boolean fallbackUsed,
+      List<CapacitySourceEvidenceRepresentation> sourceObservations) {
+
+    static CapacityProjectionRepresentation from(
+        RecommendationSnapshot.CapacityProjectionDetails details) {
+      return new CapacityProjectionRepresentation(
+          details.reasonCodes(),
+          details.fallbackUsed(),
+          details.sourceObservations().stream()
+              .map(CapacitySourceEvidenceRepresentation::from)
+              .toList());
+    }
+  }
+
+  public record CapacitySourceEvidenceRepresentation(
+      ReferenceRepresentation observationReference,
+      String sourceCode,
+      ReferenceRepresentation sourceObservation,
+      long dimensionVersion,
+      long policyVersion,
+      String observationKind,
+      String valueKind,
+      BigDecimal quantity,
+      String state,
+      String unit,
+      Instant observedAt,
+      Instant receivedAt,
+      Instant sourceValidUntil,
+      Instant validUntil,
+      String reasonCode) {
+
+    static CapacitySourceEvidenceRepresentation from(
+        RecommendationSnapshot.CapacitySourceEvidence evidence) {
+      return new CapacitySourceEvidenceRepresentation(
+          ReferenceRepresentation.from(evidence.observationReference()),
+          evidence.sourceCode(),
+          ReferenceRepresentation.from(evidence.sourceObservation()),
+          evidence.dimensionVersion(),
+          evidence.policyVersion(),
+          evidence.observationKind(),
+          evidence.valueKind().orElse(null),
+          evidence.quantity().orElse(null),
+          evidence.state().orElse(null),
+          evidence.unit().orElse(null),
+          evidence.observedAt(),
+          evidence.receivedAt(),
+          evidence.sourceValidUntil().orElse(null),
+          evidence.validUntil().orElse(null),
+          evidence.reasonCode());
     }
   }
 

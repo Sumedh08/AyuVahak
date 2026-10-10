@@ -36,7 +36,7 @@ Do not request, generate, store, expose, commit, or transmit real production cre
 - Phase 3 — Care Service Directory: FROZEN
 - Phase 4 — Capacity & Operational Readiness: FROZEN
 - Phase 5 — Referral: FROZEN
-- Phase 6 — Destination Matching & Recommendation: NOT STARTED
+- Phase 6 — Destination Matching & Recommendation: FROZEN
 - Phase 7 — Transfer Coordination: NOT STARTED
 - Volume III: NOT AUTHORIZED
 
@@ -47,7 +47,7 @@ Do not request, generate, store, expose, commit, or transmit real production cre
 - Do not scaffold or implement a later phase before it is authorized. Do not create placeholder modules, schemas, APIs, dependencies, or infrastructure for future phases.
 - Use `/to-spec`, `/to-tickets`, `/implement-spec`, and related implementation workflows only when the active prompt authorizes them for the current phase. Planning artifacts and tickets default to local Markdown under `.scratch/`; external issue tracking remains subject to the external-mutation policy above.
 - Local Git branches, worktrees, commits, and merges are allowed when required by an authorized phase workflow. Remote Git operations remain prohibited unless the human explicitly authorizes that exact operation under the external-mutation policy.
-- The currently authorized next implementation scope is Phase 6 — Destination Matching & Recommendation. Phase 7 — Transfer Coordination may begin only after Phase 6 passes its acceptance gate and is frozen.
+- The currently authorized next implementation scope is Phase 7 — Transfer Coordination, as authorized by the active Volume II master execution prompt. Phase 7 may proceed only after Phase 6 passes its acceptance gate and is frozen; that gate has now passed. Volume III remains prohibited.
 - Volume III is prohibited until separately authorized by the human.
 - When no phase is explicitly authorized by the active master prompt, do not advance implementation, generate phase tickets, or start a later phase. Stop and request direction if the authorized scope cannot be determined.
 - Keep planning trackers local. Never create external issues without explicit authorization for that exact operation.

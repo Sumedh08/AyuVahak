@@ -987,6 +987,21 @@ class DirectoryCapacityReferralScenarioIT {
         "synthetic-cross-phase-closest-ready",
         "cross-phase-closest-observation-01",
         4);
+    Instant conflictObservedAt = Instant.now().minusSeconds(1);
+    recordCapacityObservation(
+        organizationId,
+        closestIneligibleFacilityId,
+        "synthetic-cross-phase-conflict-a",
+        "cross-phase-conflict-observation-a",
+        3,
+        conflictObservedAt);
+    recordCapacityObservation(
+        organizationId,
+        closestIneligibleFacilityId,
+        "synthetic-cross-phase-conflict-b",
+        "cross-phase-conflict-observation-b",
+        5,
+        conflictObservedAt);
     assertThat(
             jdbc.queryForObject(
                 "SELECT ST_Distance(origin.coordinates, closer.coordinates) "
@@ -1089,6 +1104,34 @@ class DirectoryCapacityReferralScenarioIT {
             .andReturn()
             .getResponse()
             .getContentAsString();
+    String persistedCapacityEvidencePath =
+        "$.candidates[?(@.facility.value=='"
+            + closestIneligibleFacilityId
+            + "')].evidence[?(@.factCode=='CAPACITY_READINESS')].capacityDetails";
+    List<Boolean> persistedFallbackUsed =
+        com.jayway.jsonpath.JsonPath.read(
+            persistedGoldenSnapshot, persistedCapacityEvidencePath + ".fallbackUsed");
+    assertThat(persistedFallbackUsed).containsExactly(true);
+    List<List<String>> persistedCapacityReasons =
+        com.jayway.jsonpath.JsonPath.read(
+            persistedGoldenSnapshot, persistedCapacityEvidencePath + ".reasonCodes");
+    assertThat(persistedCapacityReasons)
+        .singleElement()
+        .satisfies(reasons -> assertThat(reasons).contains("EQUAL_AUTHORITY_DISAGREEMENT"));
+    assertThat(persistedGoldenSnapshot)
+        .contains("cross-phase-conflict-observation-a", "cross-phase-conflict-observation-b");
+    List<Boolean> retrievedFallbackUsed =
+        com.jayway.jsonpath.JsonPath.read(
+            persistedGoldenRecommendation,
+            "$.candidates[?(@.facility.identifier=='"
+                + closestIneligibleFacilityId
+                + "')].evidence[?(@.factCode=='CAPACITY_READINESS')].capacityDetails.fallbackUsed");
+    assertThat(retrievedFallbackUsed).containsExactly(true);
+    assertThat(persistedGoldenRecommendation)
+        .contains(
+            "EQUAL_AUTHORITY_DISAGREEMENT",
+            "cross-phase-conflict-observation-a",
+            "cross-phase-conflict-observation-b");
     assertThat(
             com.jayway.jsonpath.JsonPath.<List<String>>read(
                 persistedGoldenRecommendation,
@@ -1110,6 +1153,39 @@ class DirectoryCapacityReferralScenarioIT {
                 goldenBody,
                 "$.candidates[?(@.facility.identifier=='" + destinationFacilityId + "')].rank"))
         .containsExactly(1);
+    String conflictedCapacityEvidencePath =
+        "$.candidates[?(@.facility.identifier=='"
+            + closestIneligibleFacilityId
+            + "')].evidence[?(@.factCode=='CAPACITY_READINESS')].capacityDetails";
+    List<Boolean> fallbackUsed =
+        com.jayway.jsonpath.JsonPath.read(
+            goldenBody, conflictedCapacityEvidencePath + ".fallbackUsed");
+    assertThat(fallbackUsed).containsExactly(true);
+    List<List<String>> capacityReasons =
+        com.jayway.jsonpath.JsonPath.read(
+            goldenBody, conflictedCapacityEvidencePath + ".reasonCodes");
+    assertThat(capacityReasons)
+        .singleElement()
+        .satisfies(reasons -> assertThat(reasons).contains("EQUAL_AUTHORITY_DISAGREEMENT"));
+    List<List<Map<String, Object>>> sourceEvidence =
+        com.jayway.jsonpath.JsonPath.read(
+            goldenBody, conflictedCapacityEvidencePath + ".sourceObservations");
+    assertThat(sourceEvidence)
+        .singleElement()
+        .satisfies(
+            observations -> {
+              assertThat(observations).hasSize(2);
+              assertThat(observations)
+                  .extracting(observation -> observation.get("sourceCode"))
+                  .containsOnly("manual");
+              assertThat(observations)
+                  .extracting(
+                      observation ->
+                          String.valueOf(
+                              ((Map<?, ?>) observation.get("sourceObservation")).get("identifier")))
+                  .containsExactlyInAnyOrder(
+                      "cross-phase-conflict-observation-a", "cross-phase-conflict-observation-b");
+            });
 
     jdbc.update(
         "DELETE FROM identity_access.authorization_grant WHERE principal_kind = 'SERVICE' "
@@ -1852,8 +1928,11 @@ class DirectoryCapacityReferralScenarioIT {
                 .contentType("application/json")
                 .content(
                     "{\"expectedVersion\":0,\"dimensionVersion\":1,\"sources\":["
-                        + "{\"sourceCode\":\"manual\",\"priority\":0,"
+                        + "{\"sourceCode\":\"primary\",\"priority\":0,"
                         + "\"fallbackWhenHigherPriorityAbsent\":false,"
+                        + "\"fallbackWhenHigherPriorityStale\":false},"
+                        + "{\"sourceCode\":\"manual\",\"priority\":1,"
+                        + "\"fallbackWhenHigherPriorityAbsent\":true,"
                         + "\"fallbackWhenHigherPriorityStale\":false}],"
                         + "\"maximumObservationAgeSeconds\":600,\"defaultValiditySeconds\":300,"
                         + "\"futureSkewToleranceSeconds\":30,\"minimumPassingQuantity\":1,"
@@ -1878,6 +1957,23 @@ class DirectoryCapacityReferralScenarioIT {
       String sourceObservationId,
       int quantity)
       throws Exception {
+    recordCapacityObservation(
+        organizationId,
+        facilityId,
+        idempotencyKey,
+        sourceObservationId,
+        quantity,
+        Instant.now().minusSeconds(2));
+  }
+
+  private void recordCapacityObservation(
+      String organizationId,
+      String facilityId,
+      String idempotencyKey,
+      String sourceObservationId,
+      int quantity,
+      Instant observedAt)
+      throws Exception {
     mockMvc
         .perform(
             post("/api/v1/capacity/observations")
@@ -1900,7 +1996,7 @@ class DirectoryCapacityReferralScenarioIT {
                         + quantity
                         + ",\"state\":null,\"unit\":\"bed\","
                         + "\"observedAt\":\""
-                        + Instant.now().minusSeconds(2)
+                        + observedAt
                         + "\",\"validUntil\":null,\"reportingMethod\":\"MANUAL_ENTRY\","
                         + "\"reasonCode\":\"CAPACITY_REPORT\"}"))
         .andExpect(status().isCreated());

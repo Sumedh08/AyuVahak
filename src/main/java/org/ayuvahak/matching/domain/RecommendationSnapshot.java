@@ -244,7 +244,8 @@ public record RecommendationSnapshot(
       Instant observedAt,
       Optional<Instant> receivedAt,
       Optional<Instant> validUntil,
-      Optional<ExternalReference> provenanceReference) {
+      Optional<ExternalReference> provenanceReference,
+      Optional<CapacityProjectionDetails> capacityDetails) {
 
     public EvidenceFact {
       requireCode(factCode, "evidence fact code");
@@ -281,6 +282,124 @@ public record RecommendationSnapshot(
       }
       provenanceReference = Objects.requireNonNull(provenanceReference, "provenance reference");
       provenanceReference.ifPresent(Objects::requireNonNull);
+      capacityDetails = capacityDetails == null ? Optional.empty() : capacityDetails;
+      if (!"CAPACITY_READINESS".equals(factCode) && capacityDetails.isPresent()) {
+        throw new IllegalArgumentException(
+            "only Capacity readiness evidence may contain projection details");
+      }
+    }
+
+    public EvidenceFact(
+        String factCode,
+        String subjectCode,
+        ExternalReference reference,
+        ExternalReference sourceSystem,
+        long sourceVersion,
+        OptionalLong policyVersion,
+        Optional<String> projectionVersion,
+        String outcomeCode,
+        Optional<BigDecimal> value,
+        Optional<String> unit,
+        Instant observedAt,
+        Optional<Instant> receivedAt,
+        Optional<Instant> validUntil,
+        Optional<ExternalReference> provenanceReference) {
+      this(
+          factCode,
+          subjectCode,
+          reference,
+          sourceSystem,
+          sourceVersion,
+          policyVersion,
+          projectionVersion,
+          outcomeCode,
+          value,
+          unit,
+          observedAt,
+          receivedAt,
+          validUntil,
+          provenanceReference,
+          Optional.empty());
+    }
+  }
+
+  public record CapacityProjectionDetails(
+      List<String> reasonCodes,
+      boolean fallbackUsed,
+      List<CapacitySourceEvidence> sourceObservations) {
+
+    public CapacityProjectionDetails {
+      reasonCodes = normalizedCodes(reasonCodes, "Capacity readiness reasons");
+      sourceObservations =
+          List.copyOf(Objects.requireNonNull(sourceObservations, "Capacity source observations"));
+      if (sourceObservations.stream().anyMatch(Objects::isNull)
+          || sourceObservations.stream()
+                  .map(CapacitySourceEvidence::observationReference)
+                  .distinct()
+                  .count()
+              != sourceObservations.size()) {
+        throw new IllegalArgumentException(
+            "Capacity source observations must be unique and present");
+      }
+    }
+  }
+
+  /** Minimized Capacity source evidence retained to explain a readiness projection. */
+  public record CapacitySourceEvidence(
+      ExternalReference observationReference,
+      String sourceCode,
+      ExternalReference sourceObservation,
+      long dimensionVersion,
+      long policyVersion,
+      String observationKind,
+      Optional<String> valueKind,
+      Optional<BigDecimal> quantity,
+      Optional<String> state,
+      Optional<String> unit,
+      Instant observedAt,
+      Instant receivedAt,
+      Optional<Instant> sourceValidUntil,
+      Optional<Instant> validUntil,
+      String reasonCode) {
+
+    public CapacitySourceEvidence {
+      requireType(observationReference, "CapacityObservation", "Capacity observation");
+      Objects.requireNonNull(sourceCode, "Capacity source code");
+      if (!sourceCode.matches("[A-Za-z][A-Za-z0-9._:-]{0,127}")) {
+        throw new IllegalArgumentException("Capacity source code is invalid");
+      }
+      requireType(sourceObservation, "CapacityObservation", "source observation");
+      if (dimensionVersion < 1 || policyVersion < 1) {
+        throw new IllegalArgumentException("Capacity source versions must be positive");
+      }
+      if (!Set.of("VALUE", "RETRACTION").contains(observationKind)) {
+        throw new IllegalArgumentException("Capacity observation kind is invalid");
+      }
+      valueKind = Objects.requireNonNull(valueKind, "Capacity value kind");
+      quantity = Objects.requireNonNull(quantity, "Capacity quantity");
+      state = Objects.requireNonNull(state, "Capacity state");
+      unit = Objects.requireNonNull(unit, "Capacity unit");
+      if (quantity.filter(value -> value.signum() < 0).isPresent()
+          || valueKind.filter(kind -> !Set.of("QUANTITY", "STATE").contains(kind)).isPresent()
+          || (valueKind.filter("QUANTITY"::equals).isPresent()
+              && (quantity.isEmpty() || unit.isEmpty() || state.isPresent()))
+          || (valueKind.filter("STATE"::equals).isPresent()
+              && (quantity.isPresent() || unit.isPresent() || state.isEmpty()))
+          || (valueKind.isEmpty()
+              && (quantity.isPresent() || state.isPresent() || unit.isPresent()))) {
+        throw new IllegalArgumentException("Capacity source value shape is invalid");
+      }
+      Objects.requireNonNull(observedAt, "Capacity observation time");
+      Objects.requireNonNull(receivedAt, "Capacity receipt time");
+      sourceValidUntil = Objects.requireNonNull(sourceValidUntil, "source validity end");
+      validUntil = Objects.requireNonNull(validUntil, "effective validity end");
+      if (sourceValidUntil.filter(until -> !until.isAfter(observedAt)).isPresent()
+          || validUntil.filter(until -> !until.isAfter(observedAt)).isPresent()) {
+        throw new IllegalArgumentException("Capacity validity must follow observation time");
+      }
+      if (reasonCode == null || !reasonCode.matches("[A-Z][A-Z0-9_]{0,79}")) {
+        throw new IllegalArgumentException("Capacity observation reason must be stable");
+      }
     }
   }
 

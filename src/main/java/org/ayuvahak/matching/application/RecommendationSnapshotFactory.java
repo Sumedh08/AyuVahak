@@ -311,7 +311,38 @@ public final class RecommendationSnapshotFactory {
         latestEvidence.map(CapacityObservation::observedAt).orElse(evaluatedAt),
         latestEvidence.map(CapacityObservation::receivedAt),
         validUntil,
-        provenanceReference);
+        provenanceReference,
+        Optional.of(
+            new RecommendationSnapshot.CapacityProjectionDetails(
+                dimension.reasonCodes(),
+                dimension.fallbackUsed(),
+                dimension.evidence().stream()
+                    .sorted(
+                        Comparator.comparing(CapacityObservation::sourceCode)
+                            .thenComparing(CapacityObservation::observedAt)
+                            .thenComparing(observation -> observation.id().toString()))
+                    .map(
+                        observation ->
+                            new RecommendationSnapshot.CapacitySourceEvidence(
+                                new ExternalReference(
+                                    CAPACITY_ISSUER,
+                                    "CapacityObservation",
+                                    observation.id().toString()),
+                                observation.sourceCode(),
+                                observation.sourceObservation(),
+                                observation.dimensionVersion(),
+                                observation.policyVersion(),
+                                observation.kind().name(),
+                                observation.valueKind().map(Enum::name),
+                                observation.quantity(),
+                                observation.state(),
+                                observation.unit(),
+                                observation.observedAt(),
+                                observation.receivedAt(),
+                                observation.sourceValidUntil(),
+                                observation.validUntil(),
+                                observation.reasonCode()))
+                    .toList())));
   }
 
   private static Instant applicableUntil(
