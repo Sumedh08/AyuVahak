@@ -164,6 +164,9 @@ class DirectoryCapacityReferralScenarioIT {
   @Test
   void directoryFactsCapacityEvidenceAndReferralRequirementComposeWithoutCrossOwnership()
       throws Exception {
+    assertThat(jdbc.getQueryTimeout())
+        .as("all JDBC statements have a finite ceiling, including owner authorization reads")
+        .isEqualTo(30);
     grantPlatform(CURATOR, "DirectoryCuration");
     grantPlatform(CURATOR, "DirectoryVocabularyAdministration");
     grantPlatform(CAPACITY_ADMIN, "CapacityPolicyAdministration");
@@ -1041,6 +1044,67 @@ class DirectoryCapacityReferralScenarioIT {
                     + closestIneligibleFacilityId
                     + "')].reasons[*].code"))
         .contains("CAPABILITY_NOT_ASSERTED");
+    assertThat(
+            com.jayway.jsonpath.JsonPath.<List<String>>read(
+                goldenBody,
+                "$.candidates[?(@.facility.identifier=='"
+                    + closestIneligibleFacilityId
+                    + "')].reasons[?(@.code=='CAPABILITY_NOT_ASSERTED')].subjectCode"))
+        .containsExactly(CAPABILITY);
+    assertThat(
+            com.jayway.jsonpath.JsonPath.<List<String>>read(
+                goldenBody,
+                "$.candidates[?(@.facility.identifier=='"
+                    + closestIneligibleFacilityId
+                    + "')].directoryCapabilityAssessments[?(@.capabilityCode=='"
+                    + CAPABILITY
+                    + "')].outcomeCode"))
+        .containsExactly("NO_ASSERTION");
+    assertThat(
+            com.jayway.jsonpath.JsonPath.<List<Number>>read(
+                goldenBody,
+                "$.candidates[?(@.facility.identifier=='"
+                    + closestIneligibleFacilityId
+                    + "')].directoryCapabilityAssessments[?(@.capabilityCode=='"
+                    + CAPABILITY
+                    + "')].capabilityVersion"))
+        .hasSize(1)
+        .allMatch(version -> version != null && version.longValue() > 0);
+    String goldenRecommendationId = com.jayway.jsonpath.JsonPath.read(goldenBody, "$.id");
+    String persistedGoldenSnapshot =
+        jdbc.queryForObject(
+            "SELECT snapshot_document::text FROM matching.recommendation_snapshot "
+                + "WHERE recommendation_id = ?",
+            String.class,
+            UUID.fromString(goldenRecommendationId));
+    String persistedGoldenRecommendation =
+        mockMvc
+            .perform(
+                get("/api/v1/recommendations/{recommendationId}", goldenRecommendationId)
+                    .header("Authorization", bearer(token(REFERRAL_ORIGINATOR)))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", organizationId)
+                    .header("X-AyuVahak-Facility-Id", originFacilityId))
+            .andExpect(status().isOk())
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+    assertThat(
+            com.jayway.jsonpath.JsonPath.<List<String>>read(
+                persistedGoldenRecommendation,
+                "$.candidates[?(@.facility.identifier=='"
+                    + closestIneligibleFacilityId
+                    + "')].reasons[?(@.code=='CAPABILITY_NOT_ASSERTED')].subjectCode"))
+        .containsExactly(CAPABILITY);
+    assertThat(
+            com.jayway.jsonpath.JsonPath.<List<String>>read(
+                persistedGoldenRecommendation,
+                "$.candidates[?(@.facility.identifier=='"
+                    + closestIneligibleFacilityId
+                    + "')].directoryCapabilityAssessments[?(@.capabilityCode=='"
+                    + CAPABILITY
+                    + "')].outcomeCode"))
+        .containsExactly("NO_ASSERTION");
     assertThat(
             com.jayway.jsonpath.JsonPath.<List<Integer>>read(
                 goldenBody,

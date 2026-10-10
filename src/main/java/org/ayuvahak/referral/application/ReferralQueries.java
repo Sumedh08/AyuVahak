@@ -31,6 +31,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.TransactionTimedOutException;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /** Origin-scoped Referral reads with durable audit-before-disclosure behavior. */
@@ -39,11 +40,13 @@ import org.springframework.transaction.support.TransactionTemplate;
 public class ReferralQueries {
 
   private static final String DIRECTORY_ISSUER = "urn:ayuvahak:directory";
+  private static final int MATCHING_REQUIREMENT_READ_TIMEOUT_SECONDS = 30;
 
   private final ReferralDraftStore drafts;
   private final ObjectProvider<AuthorizationService> authorization;
   private final ObjectProvider<AuditWriter> auditWriter;
   private final TransactionTemplate readTransaction;
+  private final TransactionTemplate matchingRequirementReadTransaction;
   private final Clock clock;
 
   public ReferralQueries(
@@ -59,6 +62,13 @@ public class ReferralQueries {
     readTransaction = new TransactionTemplate(Objects.requireNonNull(transactionManager));
     readTransaction.setReadOnly(true);
     readTransaction.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
+    matchingRequirementReadTransaction = new TransactionTemplate(transactionManager);
+    matchingRequirementReadTransaction.setReadOnly(true);
+    matchingRequirementReadTransaction.setPropagationBehavior(
+        TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+    matchingRequirementReadTransaction.setIsolationLevel(
+        TransactionDefinition.ISOLATION_REPEATABLE_READ);
+    matchingRequirementReadTransaction.setTimeout(MATCHING_REQUIREMENT_READ_TIMEOUT_SECONDS);
   }
 
   public ReferralCurrentView current(ExecutionContext context, InternalId referralId) {
@@ -183,7 +193,7 @@ public class ReferralQueries {
     try {
       found =
           Objects.requireNonNull(
-              readTransaction.execute(
+              matchingRequirementReadTransaction.execute(
                   ignored -> {
                     Optional<org.ayuvahak.referral.domain.ReferralDraft> current =
                         drafts.findDraft(referralId);
@@ -202,7 +212,7 @@ public class ReferralQueries {
                             drafts.findLatestSubmittedRevision(referralId)));
                   }),
               "Matching Referral read transaction result");
-    } catch (DataAccessException unavailable) {
+    } catch (DataAccessException | TransactionTimedOutException unavailable) {
       throw unavailable("Referral requirement could not be read safely for Matching.");
     }
 

@@ -57,6 +57,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.TransactionTimedOutException;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /** Use cases for Directory Organization and Facility facts. */
@@ -68,6 +69,7 @@ public class DirectoryApplicationService {
   private static final int DEFAULT_PAGE_SIZE = 50;
   private static final int MAX_PAGE_SIZE = 100;
   private static final int MAX_PAGE_OFFSET = 10_000;
+  private static final int MATCHING_OWNER_READ_TIMEOUT_SECONDS = 30;
   private static final double MAX_SEARCH_RADIUS_METERS = 500_000.0;
   private static final int MAX_REQUIRED_CAPABILITIES = 20;
   private static final Pattern CAPABILITY_CODE = Pattern.compile("[A-Z][A-Z0-9._-]{0,63}");
@@ -98,6 +100,7 @@ public class DirectoryApplicationService {
         TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     matchingCandidateReadTransaction.setIsolationLevel(
         TransactionDefinition.ISOLATION_REPEATABLE_READ);
+    matchingCandidateReadTransaction.setTimeout(MATCHING_OWNER_READ_TIMEOUT_SECONDS);
     this.clock = Objects.requireNonNull(clock, "clock");
   }
 
@@ -1819,7 +1822,39 @@ public class DirectoryApplicationService {
         "Facility",
         Optional.of(id),
         Optional.empty());
-    Facility facility = store.findFacility(id).orElseThrow(DirectoryApplicationService::notFound);
+    MatchingOriginRead facts;
+    try {
+      facts =
+          Objects.requireNonNull(
+              matchingCandidateReadTransaction.execute(
+                  status -> {
+                    Facility facility =
+                        store.findFacility(id).orElseThrow(DirectoryApplicationService::notFound);
+                    Optional<DirectoryMatchingOriginLocation.Location> primaryLocation =
+                        store.listLocations(facility.id()).stream()
+                            .filter(DirectoryLocation::primary)
+                            .findFirst()
+                            .map(
+                                location ->
+                                    new DirectoryMatchingOriginLocation.Location(
+                                        locationReference(location.id()),
+                                        location
+                                            .coordinate()
+                                            .map(
+                                                coordinate ->
+                                                    new DirectoryMatchingOriginLocation.Coordinate(
+                                                        coordinate.longitude(),
+                                                        coordinate.latitude())),
+                                        location.version(),
+                                        location.source().reference(),
+                                        matchingOriginProvenance(location.provenance())));
+                    return new MatchingOriginRead(facility, primaryLocation);
+                  }),
+              "Directory Matching origin read transaction result");
+    } catch (DataAccessException | TransactionTimedOutException unavailable) {
+      throw matchingReadUnavailable();
+    }
+    Facility facility = facts.facility();
     if (!scopeCanReadFacility(context.scope(), facility)) {
       denyScope(
           context,
@@ -1837,23 +1872,6 @@ public class DirectoryApplicationService {
         id,
         Optional.of(organizationReference(facility.managingOrganizationId())),
         Optional.of(facilityReference(id)));
-    Optional<DirectoryMatchingOriginLocation.Location> primaryLocation =
-        store.listLocations(facility.id()).stream()
-            .filter(DirectoryLocation::primary)
-            .findFirst()
-            .map(
-                location ->
-                    new DirectoryMatchingOriginLocation.Location(
-                        locationReference(location.id()),
-                        location
-                            .coordinate()
-                            .map(
-                                coordinate ->
-                                    new DirectoryMatchingOriginLocation.Coordinate(
-                                        coordinate.longitude(), coordinate.latitude())),
-                        location.version(),
-                        location.source().reference(),
-                        matchingOriginProvenance(location.provenance())));
     return new DirectoryMatchingOriginLocation(
         facilityReference(facility.id()),
         organizationReference(facility.managingOrganizationId()),
@@ -1861,7 +1879,7 @@ public class DirectoryApplicationService {
         facility.version(),
         facility.source().reference(),
         matchingOriginProvenance(facility.provenance()),
-        primaryLocation,
+        facts.primaryLocation(),
         evaluatedAt);
   }
 
@@ -2007,29 +2025,36 @@ public class DirectoryApplicationService {
             context, organizationId, requestedCapabilityCodes, evaluationTime);
     int pageSize = validatedPageBounds(0, requestedSize).size();
     List<DeferredMatchingReadAudit> deferredAudits = new ArrayList<>();
-    List<DirectoryMatchingCandidatePage> pages =
-        matchingCandidateReadTransaction.execute(
-            status -> {
-              List<DirectoryMatchingCandidatePage> pageResults = new ArrayList<>();
-              int pageNumber = 0;
-              while (true) {
-                DirectoryMatchingCandidatePage page =
-                    loadMatchingCandidates(
-                        context,
-                        organizationId,
-                        capabilityCodes,
-                        validatedPageBounds(pageNumber, pageSize),
-                        evaluationTime,
-                        deferredAudits);
-                pageResults.add(page);
-                long nextOffset = (long) (pageNumber + 1) * pageSize;
-                if (!page.hasMore() || nextOffset > MAX_PAGE_OFFSET) {
-                  break;
-                }
-                pageNumber++;
-              }
-              return List.copyOf(pageResults);
-            });
+    List<DirectoryMatchingCandidatePage> pages;
+    try {
+      pages =
+          Objects.requireNonNull(
+              matchingCandidateReadTransaction.execute(
+                  status -> {
+                    List<DirectoryMatchingCandidatePage> pageResults = new ArrayList<>();
+                    int pageNumber = 0;
+                    while (true) {
+                      DirectoryMatchingCandidatePage page =
+                          loadMatchingCandidates(
+                              context,
+                              organizationId,
+                              capabilityCodes,
+                              validatedPageBounds(pageNumber, pageSize),
+                              evaluationTime,
+                              deferredAudits);
+                      pageResults.add(page);
+                      long nextOffset = (long) (pageNumber + 1) * pageSize;
+                      if (!page.hasMore() || nextOffset > MAX_PAGE_OFFSET) {
+                        break;
+                      }
+                      pageNumber++;
+                    }
+                    return List.copyOf(pageResults);
+                  }),
+              "Directory Matching candidate page transaction result");
+    } catch (DataAccessException | TransactionTimedOutException unavailable) {
+      throw matchingReadUnavailable();
+    }
     deferredAudits.forEach(this::recordDeferredMatchingReadAudit);
     return pages;
   }
@@ -2206,6 +2231,12 @@ public class DirectoryApplicationService {
 
   private record DeferredMatchingReadAudit(AuditEvidence evidence, String detail) {}
 
+  private record MatchingOriginRead(
+      Facility facility, Optional<DirectoryMatchingOriginLocation.Location> primaryLocation) {}
+
+  private record MatchingCandidateRead(
+      Facility facility, DirectoryMatchingCandidatePage.Candidate candidate) {}
+
   /** Reads exactly one requested candidate Facility for synchronous Matching applicability. */
   public Optional<DirectoryMatchingCandidatePage.Candidate> getMatchingCandidate(
       ExecutionContext context,
@@ -2250,11 +2281,60 @@ public class DirectoryApplicationService {
         Optional.of(facilityId),
         Optional.of(organization));
     List<String> capabilityCodes = validatedCapabilityRequirements(requestedCapabilityCodes);
-    Facility facility = store.findFacility(facilityId).orElse(null);
-    if (facility == null) {
+    Optional<MatchingCandidateRead> candidateRead;
+    try {
+      candidateRead =
+          Objects.requireNonNull(
+              matchingCandidateReadTransaction.execute(
+                  status ->
+                      store
+                          .findFacility(facilityId)
+                          .map(
+                              facility -> {
+                                Instant evaluatedAt = evaluationTime;
+                                List<DirectoryMatchingCandidatePage.Capability> capabilities =
+                                    capabilityCodes.stream()
+                                        .map(
+                                            code ->
+                                                assessCapabilityRequirement(
+                                                    facility, code, evaluatedAt))
+                                        .map(
+                                            assessment ->
+                                                new DirectoryMatchingCandidatePage.Capability(
+                                                    assessment.code(),
+                                                    assessment.outcome().name(),
+                                                    assessment.capabilityVersion(),
+                                                    assessment.capabilityStatus(),
+                                                    assessment.assertionEvidence()))
+                                        .toList();
+                                Optional<DirectoryMatchingCandidatePage.Location> primaryLocation =
+                                    store.listLocations(facility.id()).stream()
+                                        .filter(DirectoryLocation::primary)
+                                        .findFirst()
+                                        .map(DirectoryApplicationService::matchingLocation);
+                                return new MatchingCandidateRead(
+                                    facility,
+                                    new DirectoryMatchingCandidatePage.Candidate(
+                                        facilityReference(facility.id()),
+                                        organizationReference(facility.managingOrganizationId()),
+                                        facility.name(),
+                                        facility.status().name(),
+                                        facility.version(),
+                                        facility.source().reference(),
+                                        matchingProvenance(facility.provenance()),
+                                        primaryLocation,
+                                        capabilities));
+                              })),
+              "Directory Matching candidate read transaction result");
+    } catch (DataAccessException | TransactionTimedOutException unavailable) {
+      throw matchingReadUnavailable();
+    }
+    if (candidateRead.isEmpty()) {
       auditSearchRead(context, Optional.of(organizationId), Optional.empty(), actionCode);
       return Optional.empty();
     }
+    MatchingCandidateRead facts = candidateRead.orElseThrow();
+    Facility facility = facts.facility();
     if (!facility.managingOrganizationId().equals(organizationId)) {
       denyScope(
           context,
@@ -2266,36 +2346,8 @@ public class DirectoryApplicationService {
       throw scopeMismatch();
     }
 
-    Instant evaluatedAt = evaluationTime;
-    List<DirectoryMatchingCandidatePage.Capability> capabilities =
-        capabilityCodes.stream()
-            .map(code -> assessCapabilityRequirement(facility, code, evaluatedAt))
-            .map(
-                assessment ->
-                    new DirectoryMatchingCandidatePage.Capability(
-                        assessment.code(),
-                        assessment.outcome().name(),
-                        assessment.capabilityVersion(),
-                        assessment.capabilityStatus(),
-                        assessment.assertionEvidence()))
-            .toList();
-    Optional<DirectoryMatchingCandidatePage.Location> primaryLocation =
-        store.listLocations(facility.id()).stream()
-            .filter(DirectoryLocation::primary)
-            .findFirst()
-            .map(DirectoryApplicationService::matchingLocation);
     auditMatchingCandidateRead(context, facility);
-    return Optional.of(
-        new DirectoryMatchingCandidatePage.Candidate(
-            facilityReference(facility.id()),
-            organizationReference(facility.managingOrganizationId()),
-            facility.name(),
-            facility.status().name(),
-            facility.version(),
-            facility.source().reference(),
-            matchingProvenance(facility.provenance()),
-            primaryLocation,
-            capabilities));
+    return Optional.of(facts.candidate());
   }
 
   private static PageBounds validatedPageBounds(Integer requestedPage, Integer requestedSize) {
@@ -3099,6 +3151,13 @@ public class DirectoryApplicationService {
         HttpStatus.CONFLICT,
         PlatformErrorCode.DIRECTORY_IDENTIFIER_CONFLICT,
         "An active external identifier with this issuer, resource type, and value already exists for this Directory concept type.");
+  }
+
+  private static PlatformProblemException matchingReadUnavailable() {
+    return problem(
+        HttpStatus.SERVICE_UNAVAILABLE,
+        PlatformErrorCode.DIRECTORY_UNAVAILABLE,
+        "Directory matching evidence could not be read safely within its bounded owner transaction.");
   }
 
   private static PlatformProblemException problem(

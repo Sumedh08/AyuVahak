@@ -5,6 +5,7 @@ import java.time.Instant;
 import java.util.List;
 import org.ayuvahak.matching.domain.RecommendationSnapshot;
 import org.ayuvahak.matching.domain.RecommendationSnapshot.CandidateEvidence;
+import org.ayuvahak.matching.domain.RecommendationSnapshot.DirectoryCapabilityAssessment;
 import org.ayuvahak.matching.domain.RecommendationSnapshot.EvidenceFact;
 import org.ayuvahak.matching.domain.RecommendationSnapshot.PolicyVersion;
 import org.ayuvahak.platform.core.ExternalReference;
@@ -70,6 +71,7 @@ public record RecommendationSnapshotRepresentation(
       Integer preferenceOrdinal,
       MeasureRepresentation measure,
       List<ReasonRepresentation> reasons,
+      List<DirectoryCapabilityAssessmentRepresentation> directoryCapabilityAssessments,
       List<EvidenceRepresentation> evidence) {
 
     static CandidateRepresentation from(CandidateEvidence candidate) {
@@ -83,7 +85,30 @@ public record RecommendationSnapshotRepresentation(
               : null,
           candidate.measure().map(MeasureRepresentation::from).orElse(null),
           candidate.reasons().stream().map(ReasonRepresentation::from).toList(),
+          candidate.directoryCapabilityAssessments().stream()
+              .map(DirectoryCapabilityAssessmentRepresentation::from)
+              .toList(),
           candidate.evidence().stream().map(EvidenceRepresentation::from).toList());
+    }
+  }
+
+  public record DirectoryCapabilityAssessmentRepresentation(
+      String capabilityCode,
+      String outcomeCode,
+      Long capabilityVersion,
+      String capabilityStatus,
+      ReferenceRepresentation sourceSystem) {
+
+    static DirectoryCapabilityAssessmentRepresentation from(
+        DirectoryCapabilityAssessment assessment) {
+      return new DirectoryCapabilityAssessmentRepresentation(
+          assessment.capabilityCode(),
+          assessment.outcomeCode(),
+          assessment.capabilityVersion().isPresent()
+              ? assessment.capabilityVersion().getAsLong()
+              : null,
+          assessment.capabilityStatus().orElse(null),
+          ReferenceRepresentation.from(assessment.sourceSystem()));
     }
   }
 

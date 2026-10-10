@@ -33,6 +33,8 @@ public final class RecommendationSnapshotFactory {
 
   private static final IssuerId CAPACITY_ISSUER = new IssuerId("urn:ayuvahak:capacity");
   private static final IssuerId INTERNAL_ISSUER = new IssuerId("urn:ayuvahak:internal");
+  private static final ExternalReference DIRECTORY_SYSTEM =
+      new ExternalReference(INTERNAL_ISSUER, "System", "directory");
 
   public RecommendationSnapshot create(
       InternalId recommendationId,
@@ -71,15 +73,46 @@ public final class RecommendationSnapshotFactory {
                     throw new IllegalArgumentException(
                         "a ranked candidate must have eligibility evidence");
                   }
+                  java.util.Set<String> eligibilityReasonCodes =
+                      eligibility.reasons().stream()
+                          .map(reason -> reason.code().name())
+                          .collect(java.util.stream.Collectors.toUnmodifiableSet());
                   List<RecommendationSnapshot.CandidateReason> reasons =
-                      ranked.reasonCodes().stream()
+                      java.util.stream.Stream.concat(
+                              eligibility.reasons().stream()
+                                  .map(
+                                      reason ->
+                                          new RecommendationSnapshot.CandidateReason(
+                                              reason.code().name(), reason.subjectCode())),
+                              ranked.reasonCodes().stream()
+                                  .filter(code -> !eligibilityReasonCodes.contains(code))
+                                  .map(
+                                      code ->
+                                          new RecommendationSnapshot.CandidateReason(
+                                              code, Optional.empty())))
                           .distinct()
-                          .sorted()
-                          .map(
-                              code ->
-                                  new RecommendationSnapshot.CandidateReason(
-                                      code, Optional.empty()))
+                          .sorted(
+                              Comparator.comparing(RecommendationSnapshot.CandidateReason::code)
+                                  .thenComparing(reason -> reason.subjectCode().orElse("")))
                           .toList();
+                  List<RecommendationSnapshot.DirectoryCapabilityAssessment>
+                      directoryCapabilityAssessments =
+                          directoryCandidate.capabilities().stream()
+                              .sorted(
+                                  Comparator.comparing(
+                                      DirectoryMatchingCandidatePage.Capability::code))
+                              .map(
+                                  capability ->
+                                      new RecommendationSnapshot.DirectoryCapabilityAssessment(
+                                          capability.code(),
+                                          capability.outcome(),
+                                          capability.capabilityVersion().isPresent()
+                                              ? OptionalLong.of(
+                                                  capability.capabilityVersion().orElseThrow())
+                                              : OptionalLong.empty(),
+                                          capability.capabilityStatus(),
+                                          DIRECTORY_SYSTEM))
+                              .toList();
                   return new RecommendationSnapshot.CandidateEvidence(
                       ranked.facility(),
                       ranked.organization(),
@@ -88,6 +121,7 @@ public final class RecommendationSnapshotFactory {
                       ranked.preferenceOrdinal(),
                       ranked.measure(),
                       reasons,
+                      directoryCapabilityAssessments,
                       evidenceFacts(
                           directoryCandidate,
                           originLocation,

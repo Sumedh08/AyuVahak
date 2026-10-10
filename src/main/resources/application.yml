@@ -1,6 +1,9 @@
 spring:
   application:
     name: ayuvahak
+  jdbc:
+    template:
+      query-timeout: 30s
   datasource:
     url: ${ayuvahak.database.url}
     username: ${ayuvahak.database.username}

@@ -156,6 +156,7 @@ public record RecommendationSnapshot(
       OptionalInt preferenceOrdinal,
       Optional<Measure> measure,
       List<CandidateReason> reasons,
+      List<DirectoryCapabilityAssessment> directoryCapabilityAssessments,
       List<EvidenceFact> evidence) {
 
     public CandidateEvidence {
@@ -166,10 +167,22 @@ public record RecommendationSnapshot(
       preferenceOrdinal = Objects.requireNonNull(preferenceOrdinal, "preference ordinal");
       measure = Objects.requireNonNull(measure, "candidate measure");
       reasons = List.copyOf(Objects.requireNonNull(reasons, "candidate reasons"));
+      directoryCapabilityAssessments =
+          List.copyOf(
+              Objects.requireNonNull(
+                  directoryCapabilityAssessments, "Directory capability assessments"));
       evidence = List.copyOf(Objects.requireNonNull(evidence, "candidate evidence facts"));
       if (reasons.stream().anyMatch(Objects::isNull)
+          || directoryCapabilityAssessments.stream().anyMatch(Objects::isNull)
           || evidence.stream().anyMatch(Objects::isNull)) {
         throw new IllegalArgumentException("candidate evidence cannot contain null");
+      }
+      if (directoryCapabilityAssessments.stream()
+              .map(DirectoryCapabilityAssessment::capabilityCode)
+              .distinct()
+              .count()
+          != directoryCapabilityAssessments.size()) {
+        throw new IllegalArgumentException("Directory capability assessments must be unique");
       }
       boolean ranked = status == CandidateStatus.RANKED_ELIGIBLE;
       if (ranked != rank.isPresent() || ranked != measure.isPresent()) {
@@ -192,6 +205,27 @@ public record RecommendationSnapshot(
           throw new IllegalArgumentException("candidate evidence facts must be unique");
         }
       }
+    }
+  }
+
+  /** Directory's assessment is retained even when no FacilityCapabilityAssertion exists. */
+  public record DirectoryCapabilityAssessment(
+      String capabilityCode,
+      String outcomeCode,
+      OptionalLong capabilityVersion,
+      Optional<String> capabilityStatus,
+      ExternalReference sourceSystem) {
+
+    public DirectoryCapabilityAssessment {
+      requireCode(capabilityCode, "CareCapability code");
+      requireCode(outcomeCode, "Directory capability assessment outcome");
+      capabilityVersion = Objects.requireNonNull(capabilityVersion, "capability version");
+      if (capabilityVersion.isPresent() && capabilityVersion.getAsLong() < 1) {
+        throw new IllegalArgumentException("capability version must be positive when present");
+      }
+      capabilityStatus = Objects.requireNonNull(capabilityStatus, "capability status");
+      capabilityStatus.ifPresent(status -> requireCode(status, "capability status"));
+      Objects.requireNonNull(sourceSystem, "Directory source system");
     }
   }
 

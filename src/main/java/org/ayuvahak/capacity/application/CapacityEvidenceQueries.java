@@ -39,6 +39,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.TransactionTimedOutException;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /** Authorization and consistent query-time reconstruction of Capacity evidence. */
@@ -49,6 +50,7 @@ public class CapacityEvidenceQueries implements CapacityReadiness {
   private static final int MAX_HISTORY_SIZE = 100;
   private static final int MAX_DIMENSIONS_PER_QUERY = 50;
   private static final int MAX_FACILITIES_PER_BATCH = 100;
+  private static final int MATCHING_BATCH_READ_TIMEOUT_SECONDS = 30;
   private static final String MATCHING_BATCH_ACTION = "CAPACITY_MATCHING_EVALUATION_READ";
 
   private final CapacityEvidenceStore evidence;
@@ -80,6 +82,7 @@ public class CapacityEvidenceQueries implements CapacityReadiness {
     batchReadTransaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     batchReadTransaction.setReadOnly(true);
     batchReadTransaction.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
+    batchReadTransaction.setTimeout(MATCHING_BATCH_READ_TIMEOUT_SECONDS);
   }
 
   public List<CapacityEvidenceProjection> current(
@@ -259,7 +262,7 @@ public class CapacityEvidenceQueries implements CapacityReadiness {
                               })
                           .toList()),
               "Capacity readiness batch transaction result");
-    } catch (DataAccessException unavailable) {
+    } catch (DataAccessException | TransactionTimedOutException unavailable) {
       throw unavailable("Capacity readiness batch could not be evaluated safely.");
     }
 

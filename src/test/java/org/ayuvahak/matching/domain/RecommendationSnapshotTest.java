@@ -101,6 +101,7 @@ class RecommendationSnapshotTest {
                     OptionalInt.empty(),
                     Optional.of(measure()),
                     List.of(),
+                    List.of(),
                     List.of()));
   }
 
@@ -214,6 +215,7 @@ class RecommendationSnapshotTest {
         OptionalInt.empty(),
         Optional.of(measure()),
         reasons,
+        List.of(),
         evidence);
   }
 
