@@ -16,6 +16,9 @@ import org.ayuvahak.platform.idempotency.CommandReceiptKey;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
 import org.ayuvahak.platform.idempotency.configuration.CommandIdempotencyProperties;
 import org.ayuvahak.transfer.application.TransferStore;
+import org.ayuvahak.transfer.domain.CoordinatedTransfer;
+import org.ayuvahak.transfer.domain.ReceivingAssessment;
+import org.ayuvahak.transfer.domain.TransferDecision;
 import org.ayuvahak.transfer.domain.TransferJourney;
 import org.ayuvahak.transfer.domain.TransferRequestAttempt;
 import org.springframework.context.annotation.Lazy;
@@ -177,6 +180,202 @@ public class JdbcTransferStore implements TransferStore {
             JdbcTransferStore::requestAttempt,
             journeyId.value());
     return rows.stream().findFirst();
+  }
+
+  @Override
+  public Optional<TransferRequestAttempt> findRequestAttempt(InternalId requestAttemptId) {
+    List<TransferRequestAttempt> rows =
+        jdbc.query(
+            "SELECT request_attempt_id, journey_id, attempt_number, referral_id, referral_revision, "
+                + "recommendation_id, destination_facility_id, request_status, requested_by_kind, "
+                + "requested_by_issuer, requested_by_identifier_type, requested_by_identifier, "
+                + "requested_at, expires_at, version FROM transfer.request_attempt "
+                + "WHERE request_attempt_id = ?",
+            JdbcTransferStore::requestAttempt,
+            requestAttemptId.value());
+    return rows.stream().findFirst();
+  }
+
+  @Override
+  public Optional<ReceivingAssessment> findLatestAssessment(
+      InternalId requestAttemptId, ReceivingAssessment.Kind kind) {
+    List<ReceivingAssessment> rows =
+        jdbc.query(
+            assessmentSelect()
+                + " WHERE request_attempt_id = ? AND assessment_kind = ? "
+                + "ORDER BY request_version DESC LIMIT 1",
+            (result, row) -> assessment(result),
+            requestAttemptId.value(),
+            kind.name());
+    return rows.stream().findFirst();
+  }
+
+  @Override
+  public Optional<ReceivingAssessment> findAssessmentByVersion(
+      InternalId requestAttemptId, ReceivingAssessment.Kind kind, long requestVersion) {
+    List<ReceivingAssessment> rows =
+        jdbc.query(
+            assessmentSelect()
+                + " WHERE request_attempt_id = ? AND assessment_kind = ? AND request_version = ?",
+            (result, row) -> assessment(result),
+            requestAttemptId.value(),
+            kind.name(),
+            requestVersion);
+    return rows.stream().findFirst();
+  }
+
+  @Override
+  public Optional<DecisionResult> findDecisionByVersion(
+      InternalId requestAttemptId, long requestVersion) {
+    List<DecisionResult> rows =
+        jdbc.query(
+            "SELECT d.decision_id, d.request_attempt_id, d.decision_kind, d.reason_code, "
+                + "d.transfer_id, d.recorded_by_kind, d.recorded_by_issuer, "
+                + "d.recorded_by_identifier_type, d.recorded_by_identifier, d.authority_code, "
+                + "d.receiving_organization_id, d.receiving_facility_id, d.occurred_at, "
+                + "d.recorded_at, d.request_version, t.journey_id, t.transfer_status, "
+                + "t.created_at, t.version AS transfer_version FROM transfer.request_decision d "
+                + "LEFT JOIN transfer.transfer_record t ON t.transfer_id = d.transfer_id "
+                + "WHERE d.request_attempt_id = ? AND d.request_version = ?",
+            (result, row) -> {
+              TransferDecision decision = decision(result);
+              Optional<CoordinatedTransfer> transfer =
+                  result.getObject("transfer_id", UUID.class) == null
+                      ? Optional.empty()
+                      : Optional.of(
+                          new CoordinatedTransfer(
+                              new InternalId(result.getObject("transfer_id", UUID.class)),
+                              new InternalId(result.getObject("journey_id", UUID.class)),
+                              decision.requestAttemptId(),
+                              CoordinatedTransfer.Status.valueOf(
+                                  result.getString("transfer_status")),
+                              result.getTimestamp("created_at").toInstant(),
+                              result.getLong("transfer_version")));
+              return new DecisionResult(decision, transfer);
+            },
+            requestAttemptId.value(),
+            requestVersion);
+    return rows.stream().findFirst();
+  }
+
+  @Override
+  public boolean advancePendingRequest(
+      InternalId requestAttemptId, long expectedVersion, String status, Instant now) {
+    int changed =
+        jdbc.update(
+            "UPDATE transfer.request_attempt SET request_status = ?, version = version + 1 "
+                + "WHERE request_attempt_id = ? AND request_status = 'PENDING' AND version = ? "
+                + "AND expires_at > ?",
+            status,
+            requestAttemptId.value(),
+            expectedVersion,
+            Timestamp.from(now));
+    return changed == 1;
+  }
+
+  @Override
+  public void insertAssessment(ReceivingAssessment assessment) {
+    jdbc.update(
+        "INSERT INTO transfer.receiving_assessment (assessment_id, request_attempt_id, "
+            + "assessment_kind, outcome, reason_code, evidence_reference, recorded_by_kind, "
+            + "recorded_by_issuer, recorded_by_identifier_type, recorded_by_identifier, "
+            + "authority_code, receiving_organization_id, receiving_facility_id, occurred_at, "
+            + "recorded_at, request_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        assessment.id().value(),
+        assessment.requestAttemptId().value(),
+        assessment.kind().name(),
+        assessment.outcome().name(),
+        assessment.reasonCode(),
+        assessment.evidenceReference().orElse(null),
+        assessment.recordedBy().kind().name(),
+        assessment.recordedBy().identity().issuer().value(),
+        assessment.recordedBy().identity().resourceType(),
+        assessment.recordedBy().identity().value(),
+        assessment.authorityCode(),
+        UUID.fromString(assessment.receivingOrganization().value()),
+        UUID.fromString(assessment.receivingFacility().value()),
+        Timestamp.from(assessment.occurredAt()),
+        Timestamp.from(assessment.recordedAt()),
+        assessment.requestVersion());
+  }
+
+  @Override
+  public void insertDecisionAndOptionalTransfer(
+      TransferDecision decision, Optional<CoordinatedTransfer> transfer) {
+    transfer.ifPresent(
+        value ->
+            jdbc.update(
+                "INSERT INTO transfer.transfer_record (transfer_id, journey_id, request_attempt_id, "
+                    + "transfer_status, created_at, version) VALUES (?, ?, ?, ?, ?, ?)",
+                value.id().value(),
+                value.journeyId().value(),
+                value.requestAttemptId().value(),
+                value.status().name(),
+                Timestamp.from(value.createdAt()),
+                value.version()));
+    jdbc.update(
+        "INSERT INTO transfer.request_decision (decision_id, request_attempt_id, decision_kind, "
+            + "reason_code, transfer_id, recorded_by_kind, recorded_by_issuer, "
+            + "recorded_by_identifier_type, recorded_by_identifier, authority_code, "
+            + "receiving_organization_id, receiving_facility_id, occurred_at, recorded_at, "
+            + "request_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        decision.id().value(),
+        decision.requestAttemptId().value(),
+        decision.kind().name(),
+        decision.reasonCode().orElse(null),
+        decision.transferId().map(InternalId::value).orElse(null),
+        decision.recordedBy().kind().name(),
+        decision.recordedBy().identity().issuer().value(),
+        decision.recordedBy().identity().resourceType(),
+        decision.recordedBy().identity().value(),
+        decision.authorityCode(),
+        UUID.fromString(decision.receivingOrganization().value()),
+        UUID.fromString(decision.receivingFacility().value()),
+        Timestamp.from(decision.occurredAt()),
+        Timestamp.from(decision.recordedAt()),
+        decision.requestVersion());
+  }
+
+  private static String assessmentSelect() {
+    return "SELECT assessment_id, request_attempt_id, assessment_kind, outcome, reason_code, "
+        + "evidence_reference, recorded_by_kind, recorded_by_issuer, recorded_by_identifier_type, "
+        + "recorded_by_identifier, authority_code, receiving_organization_id, receiving_facility_id, "
+        + "occurred_at, recorded_at, request_version FROM transfer.receiving_assessment";
+  }
+
+  private static ReceivingAssessment assessment(ResultSet result) throws SQLException {
+    return new ReceivingAssessment(
+        internalId(result, "assessment_id"),
+        internalId(result, "request_attempt_id"),
+        ReceivingAssessment.Kind.valueOf(result.getString("assessment_kind")),
+        ReceivingAssessment.Outcome.valueOf(result.getString("outcome")),
+        result.getString("reason_code"),
+        Optional.ofNullable(result.getString("evidence_reference")),
+        actor(result, "recorded_by"),
+        result.getString("authority_code"),
+        directoryReference(
+            "Organization", result.getObject("receiving_organization_id", UUID.class)),
+        directoryReference("Facility", result.getObject("receiving_facility_id", UUID.class)),
+        result.getTimestamp("occurred_at").toInstant(),
+        result.getTimestamp("recorded_at").toInstant(),
+        result.getLong("request_version"));
+  }
+
+  private static TransferDecision decision(ResultSet result) throws SQLException {
+    return new TransferDecision(
+        internalId(result, "decision_id"),
+        internalId(result, "request_attempt_id"),
+        TransferDecision.Kind.valueOf(result.getString("decision_kind")),
+        Optional.ofNullable(result.getString("reason_code")),
+        Optional.ofNullable(result.getObject("transfer_id", UUID.class)).map(InternalId::new),
+        actor(result, "recorded_by"),
+        result.getString("authority_code"),
+        directoryReference(
+            "Organization", result.getObject("receiving_organization_id", UUID.class)),
+        directoryReference("Facility", result.getObject("receiving_facility_id", UUID.class)),
+        result.getTimestamp("occurred_at").toInstant(),
+        result.getTimestamp("recorded_at").toInstant(),
+        result.getLong("request_version"));
   }
 
   private static ReceiptClaim receiptClaim(ResultSet result, RequestFingerprint fingerprint)

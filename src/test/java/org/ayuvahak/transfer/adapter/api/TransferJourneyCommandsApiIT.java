@@ -133,6 +133,9 @@ class TransferJourneyCommandsApiIT {
   @BeforeEach
   void resetTransferState() {
     jdbc.update("DELETE FROM transfer.command_receipt");
+    jdbc.update("DELETE FROM transfer.request_decision");
+    jdbc.update("DELETE FROM transfer.transfer_record");
+    jdbc.update("DELETE FROM transfer.receiving_assessment");
     jdbc.update("DELETE FROM transfer.request_attempt");
     jdbc.update("DELETE FROM transfer.journey");
     jdbc.update("DELETE FROM audit.audit_record");
@@ -273,6 +276,406 @@ class TransferJourneyCommandsApiIT {
     assertThat(matching.calls()).isZero();
   }
 
+  @Test
+  void separatePositiveReceivingAssessmentsPermitExplicitAcceptanceOnly() throws Exception {
+    Scope scope = createOriginAndDestination();
+    grantSender(scope);
+    matching.returnApplicable(scope.referralId());
+    String requestAttemptId =
+        com.jayway.jsonpath.JsonPath.read(
+            createRequest(scope, "assessed-request-01")
+                .andExpect(status().isCreated())
+                .andReturn()
+                .getResponse()
+                .getContentAsString(),
+            "$.requestAttemptId");
+
+    grantReceivingAuthority(scope, "synthetic-clinical-reviewer", "ClinicalSuitabilityAuthority");
+    grantReceivingAuthority(
+        scope, "synthetic-readiness-coordinator", "OperationalReadinessAuthority");
+    grantReceivingAuthority(scope, "synthetic-receiving-authority", "AcceptanceAuthority");
+
+    receivingCommand(
+            scope,
+            requestAttemptId,
+            "clinical-suitability-assessments",
+            "synthetic-clinical-reviewer",
+            "clinical-support-01",
+            "{\"expectedVersion\":1,\"outcome\":\"SUPPORTS\","
+                + "\"reasonCode\":\"CLINICAL_REVIEW_COMPLETE\","
+                + "\"occurredAt\":\"2026-10-10T10:00:00Z\"}")
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.assessmentKind").value("CLINICAL_SUITABILITY"))
+        .andExpect(jsonPath("$.outcome").value("SUPPORTS"))
+        .andExpect(jsonPath("$.requestVersion").value(2));
+
+    receivingCommand(
+            scope,
+            requestAttemptId,
+            "operational-readiness-assessments",
+            "synthetic-readiness-coordinator",
+            "readiness-support-01",
+            "{\"expectedVersion\":2,\"outcome\":\"SUPPORTS\","
+                + "\"reasonCode\":\"READINESS_CONFIRMED\","
+                + "\"occurredAt\":\"2026-10-10T10:01:00Z\"}")
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.assessmentKind").value("OPERATIONAL_READINESS"))
+        .andExpect(jsonPath("$.outcome").value("SUPPORTS"))
+        .andExpect(jsonPath("$.requestVersion").value(3));
+
+    var accepted =
+        receivingCommand(
+                scope,
+                requestAttemptId,
+                "acceptance",
+                "synthetic-receiving-authority",
+                "acceptance-01",
+                "{\"expectedVersion\":3,\"occurredAt\":\"2026-10-10T10:02:00Z\"}")
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.status").value("AWAITING_RESERVATION"))
+            .andReturn();
+    String transferId =
+        com.jayway.jsonpath.JsonPath.read(
+            accepted.getResponse().getContentAsString(), "$.transferId");
+
+    receivingCommand(
+            scope,
+            requestAttemptId,
+            "acceptance",
+            "synthetic-receiving-authority",
+            "acceptance-01",
+            "{\"expectedVersion\":3,\"occurredAt\":\"2026-10-10T10:02:00Z\"}")
+        .andExpect(status().isCreated())
+        .andExpect(header().string("Idempotency-Replayed", "true"))
+        .andExpect(jsonPath("$.transferId").value(transferId));
+
+    assertThat(count("SELECT COUNT(*) FROM transfer.receiving_assessment")).isEqualTo(2);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT request_status FROM transfer.request_attempt WHERE request_attempt_id = ?",
+                String.class,
+                UUID.fromString(requestAttemptId)))
+        .isEqualTo("ACCEPTED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT version FROM transfer.request_attempt WHERE request_attempt_id = ?",
+                Long.class,
+                UUID.fromString(requestAttemptId)))
+        .isEqualTo(4L);
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM transfer.request_decision WHERE decision_kind = 'ACCEPTED'"))
+        .isEqualTo(1);
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM transfer.transfer_record WHERE transfer_status = 'AWAITING_RESERVATION'"))
+        .isEqualTo(1);
+    assertThat(count("SELECT COUNT(*) FROM transfer.command_receipt")).isEqualTo(4);
+    assertThat(count("SELECT COUNT(*) FROM audit.audit_record WHERE action_code LIKE 'TRANSFER_%'"))
+        .isEqualTo(4);
+    assertThat(count("SELECT COUNT(*) FROM platform_eventing.internal_event")).isZero();
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM transfer.transfer_record WHERE transfer_id = ? "
+                    + "AND transfer_status = 'AWAITING_RESERVATION'",
+                Integer.class,
+                UUID.fromString(transferId)))
+        .isEqualTo(1);
+  }
+
+  @Test
+  void missingOrNegativeLatestAssessmentBlocksAcceptanceButExplicitRejectionIsRecorded()
+      throws Exception {
+    Scope scope = createOriginAndDestination();
+    grantSender(scope);
+    matching.returnApplicable(scope.referralId());
+    String requestAttemptId =
+        com.jayway.jsonpath.JsonPath.read(
+            createRequest(scope, "assessment-rejection-request")
+                .andExpect(status().isCreated())
+                .andReturn()
+                .getResponse()
+                .getContentAsString(),
+            "$.requestAttemptId");
+    grantReceivingAuthority(scope, "synthetic-clinical-reviewer", "ClinicalSuitabilityAuthority");
+    grantReceivingAuthority(
+        scope, "synthetic-readiness-coordinator", "OperationalReadinessAuthority");
+    grantReceivingAuthority(scope, "synthetic-receiving-authority", "AcceptanceAuthority");
+
+    receivingCommand(
+            scope,
+            requestAttemptId,
+            "clinical-suitability-assessments",
+            "synthetic-clinical-reviewer",
+            "clinical-positive-02",
+            "{\"expectedVersion\":1,\"outcome\":\"SUPPORTS\","
+                + "\"reasonCode\":\"CLINICAL_REVIEW_COMPLETE\","
+                + "\"occurredAt\":\"2026-10-10T10:10:00Z\"}")
+        .andExpect(status().isCreated());
+
+    receivingCommand(
+            scope,
+            requestAttemptId,
+            "acceptance",
+            "synthetic-receiving-authority",
+            "missing-readiness-acceptance",
+            "{\"expectedVersion\":2,\"occurredAt\":\"2026-10-10T10:11:00Z\"}")
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("TRANSFER_ASSESSMENT_REQUIRED"));
+
+    receivingCommand(
+            scope,
+            requestAttemptId,
+            "operational-readiness-assessments",
+            "synthetic-readiness-coordinator",
+            "readiness-negative-02",
+            "{\"expectedVersion\":2,\"outcome\":\"DOES_NOT_SUPPORT\","
+                + "\"reasonCode\":\"READINESS_NOT_CONFIRMED\","
+                + "\"occurredAt\":\"2026-10-10T10:12:00Z\"}")
+        .andExpect(status().isCreated());
+
+    receivingCommand(
+            scope,
+            requestAttemptId,
+            "acceptance",
+            "synthetic-receiving-authority",
+            "negative-readiness-acceptance",
+            "{\"expectedVersion\":3,\"occurredAt\":\"2026-10-10T10:13:00Z\"}")
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("TRANSFER_ASSESSMENT_NOT_POSITIVE"));
+
+    String rejectionBody =
+        "{\"expectedVersion\":3,\"reasonCode\":\"DESTINATION_CANNOT_ACCEPT\","
+            + "\"occurredAt\":\"2026-10-10T10:14:00Z\"}";
+    receivingCommand(
+            scope,
+            requestAttemptId,
+            "rejection",
+            "synthetic-receiving-authority",
+            "explicit-rejection-02",
+            rejectionBody)
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.decisionKind").value("REJECTED"))
+        .andExpect(jsonPath("$.status").value("REJECTED"))
+        .andExpect(jsonPath("$.reasonCode").value("DESTINATION_CANNOT_ACCEPT"));
+    receivingCommand(
+            scope,
+            requestAttemptId,
+            "rejection",
+            "synthetic-receiving-authority",
+            "explicit-rejection-02",
+            rejectionBody)
+        .andExpect(status().isCreated())
+        .andExpect(header().string("Idempotency-Replayed", "true"));
+
+    receivingCommand(
+            scope,
+            requestAttemptId,
+            "acceptance",
+            "synthetic-receiving-authority",
+            "accept-after-rejection",
+            "{\"expectedVersion\":4,\"occurredAt\":\"2026-10-10T10:15:00Z\"}")
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("TRANSFER_REQUEST_NOT_PENDING"));
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT request_status FROM transfer.request_attempt WHERE request_attempt_id = ?",
+                String.class,
+                UUID.fromString(requestAttemptId)))
+        .isEqualTo("REJECTED");
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM transfer.request_decision WHERE decision_kind = 'REJECTED'"))
+        .isEqualTo(1);
+    assertThat(count("SELECT COUNT(*) FROM transfer.transfer_record")).isZero();
+    assertThat(count("SELECT COUNT(*) FROM transfer.receiving_assessment")).isEqualTo(2);
+    assertThat(count("SELECT COUNT(*) FROM platform_eventing.internal_event")).isZero();
+  }
+
+  @Test
+  void expiredPendingRequestCannotBeAccepted() throws Exception {
+    Scope scope = createOriginAndDestination();
+    grantSender(scope);
+    matching.returnApplicable(scope.referralId());
+    String requestAttemptId =
+        com.jayway.jsonpath.JsonPath.read(
+            createRequest(scope, "expired-receiving-request")
+                .andExpect(status().isCreated())
+                .andReturn()
+                .getResponse()
+                .getContentAsString(),
+            "$.requestAttemptId");
+    grantReceivingAuthority(scope, "synthetic-receiving-authority", "AcceptanceAuthority");
+    jdbc.update(
+        "UPDATE transfer.request_attempt SET requested_at = ?, expires_at = ? "
+            + "WHERE request_attempt_id = ?",
+        java.sql.Timestamp.from(java.time.Instant.now().minusSeconds(120)),
+        java.sql.Timestamp.from(java.time.Instant.now().minusSeconds(60)),
+        UUID.fromString(requestAttemptId));
+
+    receivingCommand(
+            scope,
+            requestAttemptId,
+            "acceptance",
+            "synthetic-receiving-authority",
+            "expired-request-acceptance",
+            "{\"expectedVersion\":1,\"occurredAt\":\"2026-10-10T10:40:00Z\"}")
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("TRANSFER_REQUEST_EXPIRED"));
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT request_status FROM transfer.request_attempt WHERE request_attempt_id = ?",
+                String.class,
+                UUID.fromString(requestAttemptId)))
+        .isEqualTo("PENDING");
+    assertThat(count("SELECT COUNT(*) FROM transfer.request_decision")).isZero();
+    assertThat(count("SELECT COUNT(*) FROM transfer.transfer_record")).isZero();
+  }
+
+  @Test
+  void receivingAuthoritiesAreIndependentAndBoundToTheAttemptFacility() throws Exception {
+    Scope scope = createOriginAndDestination();
+    Scope otherFacility = createOriginAndDestination();
+    grantSender(scope);
+    matching.returnApplicable(scope.referralId());
+    String requestAttemptId =
+        com.jayway.jsonpath.JsonPath.read(
+            createRequest(scope, "receiving-scope-request")
+                .andExpect(status().isCreated())
+                .andReturn()
+                .getResponse()
+                .getContentAsString(),
+            "$.requestAttemptId");
+    grantReceivingAuthority(
+        otherFacility, "synthetic-clinical-reviewer", "ClinicalSuitabilityAuthority");
+
+    receivingCommand(
+            otherFacility,
+            requestAttemptId,
+            "clinical-suitability-assessments",
+            "synthetic-clinical-reviewer",
+            "wrong-facility-assessment",
+            "{\"expectedVersion\":1,\"outcome\":\"SUPPORTS\","
+                + "\"reasonCode\":\"CLINICAL_REVIEW_COMPLETE\","
+                + "\"occurredAt\":\"2026-10-10T10:20:00Z\"}")
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.code").value("TRANSFER_SCOPE_MISMATCH"));
+
+    grantReceivingAuthority(scope, "synthetic-clinical-reviewer", "ClinicalSuitabilityAuthority");
+    receivingCommand(
+            scope,
+            requestAttemptId,
+            "operational-readiness-assessments",
+            "synthetic-clinical-reviewer",
+            "wrong-functional-authority",
+            "{\"expectedVersion\":1,\"outcome\":\"SUPPORTS\","
+                + "\"reasonCode\":\"READINESS_CONFIRMED\","
+                + "\"occurredAt\":\"2026-10-10T10:21:00Z\"}")
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.code").value("AUTHORIZATION_DENIED"));
+
+    assertThat(count("SELECT COUNT(*) FROM transfer.receiving_assessment")).isZero();
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT version FROM transfer.request_attempt WHERE request_attempt_id = ?",
+                Long.class,
+                UUID.fromString(requestAttemptId)))
+        .isEqualTo(1L);
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = 'TRANSFER_SCOPE_MISMATCH'"))
+        .isEqualTo(1);
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = 'TRANSFER_ASSESSMENT_DENIED'"))
+        .isEqualTo(1);
+  }
+
+  @Test
+  void requiredAuditFailureRollsBackAssessmentAndReceiptThenAllowsExactRetry() throws Exception {
+    Scope scope = createOriginAndDestination();
+    grantSender(scope);
+    matching.returnApplicable(scope.referralId());
+    String requestAttemptId =
+        com.jayway.jsonpath.JsonPath.read(
+            createRequest(scope, "assessment-audit-request")
+                .andExpect(status().isCreated())
+                .andReturn()
+                .getResponse()
+                .getContentAsString(),
+            "$.requestAttemptId");
+    grantReceivingAuthority(scope, "synthetic-clinical-reviewer", "ClinicalSuitabilityAuthority");
+    String body =
+        "{\"expectedVersion\":1,\"outcome\":\"SUPPORTS\","
+            + "\"reasonCode\":\"CLINICAL_REVIEW_COMPLETE\","
+            + "\"occurredAt\":\"2026-10-10T10:30:00Z\"}";
+    jdbc.execute(
+        "CREATE FUNCTION transfer.reject_test_audit() RETURNS trigger "
+            + "LANGUAGE plpgsql AS $$ BEGIN "
+            + "IF NEW.action_code = 'TRANSFER_CLINICAL_SUITABILITY_RECORD' THEN "
+            + "RAISE EXCEPTION 'synthetic audit failure'; END IF; RETURN NEW; END $$");
+    jdbc.execute(
+        "CREATE TRIGGER reject_test_audit BEFORE INSERT ON audit.audit_record "
+            + "FOR EACH ROW EXECUTE FUNCTION transfer.reject_test_audit()");
+    try {
+      receivingCommand(
+              scope,
+              requestAttemptId,
+              "clinical-suitability-assessments",
+              "synthetic-clinical-reviewer",
+              "assessment-audit-retry",
+              body)
+          .andExpect(status().isServiceUnavailable())
+          .andExpect(jsonPath("$.code").value("AUDIT_UNAVAILABLE"));
+      assertThat(count("SELECT COUNT(*) FROM transfer.receiving_assessment")).isZero();
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT version FROM transfer.request_attempt WHERE request_attempt_id = ?",
+                  Long.class,
+                  UUID.fromString(requestAttemptId)))
+          .isEqualTo(1L);
+      assertThat(count("SELECT COUNT(*) FROM transfer.command_receipt")).isEqualTo(1);
+    } finally {
+      jdbc.execute("DROP TRIGGER IF EXISTS reject_test_audit ON audit.audit_record");
+      jdbc.execute("DROP FUNCTION IF EXISTS transfer.reject_test_audit()");
+    }
+
+    receivingCommand(
+            scope,
+            requestAttemptId,
+            "clinical-suitability-assessments",
+            "synthetic-clinical-reviewer",
+            "assessment-audit-retry",
+            body)
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.requestVersion").value(2));
+    assertThat(count("SELECT COUNT(*) FROM transfer.receiving_assessment")).isEqualTo(1);
+    assertThat(count("SELECT COUNT(*) FROM transfer.command_receipt")).isEqualTo(2);
+    assertThat(count("SELECT COUNT(*) FROM audit.audit_record WHERE action_code LIKE 'TRANSFER_%'"))
+        .isEqualTo(2);
+  }
+
+  private org.springframework.test.web.servlet.ResultActions receivingCommand(
+      Scope scope,
+      String requestAttemptId,
+      String command,
+      String subject,
+      String idempotencyKey,
+      String body)
+      throws Exception {
+    return mockMvc.perform(
+        post("/api/v1/transfer-request-attempts/{attemptId}/{command}", requestAttemptId, command)
+            .header("Authorization", "Bearer " + token(subject))
+            .header("X-AyuVahak-Execution-Scope", "FACILITY")
+            .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+            .header("X-AyuVahak-Facility-Id", scope.destinationFacilityId())
+            .header("Idempotency-Key", idempotencyKey)
+            .contentType("application/json")
+            .content(body));
+  }
+
   private org.springframework.test.web.servlet.ResultActions createRequest(
       Scope scope, String idempotencyKey) throws Exception {
     return createRequest(scope, idempotencyKey, SENDER);
@@ -367,6 +770,24 @@ class TransferJourneyCommandsApiIT {
         scope.originOrganizationId(),
         DIRECTORY_ISSUER,
         scope.originFacilityId());
+  }
+
+  private void grantReceivingAuthority(Scope scope, String subject, String authority) {
+    jdbc.update(
+        "INSERT INTO identity_access.authorization_grant (grant_id, principal_kind, "
+            + "principal_issuer, principal_identifier_type, principal_identifier, authority_code, "
+            + "scope_kind, organization_issuer, organization_identifier_type, "
+            + "organization_identifier, facility_issuer, facility_identifier_type, "
+            + "facility_identifier, grant_status, created_at) VALUES (gen_random_uuid(), "
+            + "'HUMAN', ?, 'subject', ?, ?, 'FACILITY', ?, 'Organization', ?, "
+            + "?, 'Facility', ?, 'ACTIVE', CURRENT_TIMESTAMP)",
+        ISSUER,
+        subject,
+        authority,
+        DIRECTORY_ISSUER,
+        scope.originOrganizationId(),
+        DIRECTORY_ISSUER,
+        scope.destinationFacilityId());
   }
 
   private String token(String subject) throws Exception {

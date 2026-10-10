@@ -5,6 +5,8 @@ import java.util.Optional;
 import org.ayuvahak.platform.core.InternalId;
 import org.ayuvahak.platform.idempotency.CommandReceiptKey;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
+import org.ayuvahak.transfer.domain.CoordinatedTransfer;
+import org.ayuvahak.transfer.domain.ReceivingAssessment;
 import org.ayuvahak.transfer.domain.TransferJourney;
 import org.ayuvahak.transfer.domain.TransferRequestAttempt;
 
@@ -33,6 +35,25 @@ public interface TransferStore {
 
   Optional<TransferRequestAttempt> findFirstRequest(InternalId journeyId);
 
+  Optional<TransferRequestAttempt> findRequestAttempt(InternalId requestAttemptId);
+
+  Optional<ReceivingAssessment> findLatestAssessment(
+      InternalId requestAttemptId, ReceivingAssessment.Kind kind);
+
+  Optional<ReceivingAssessment> findAssessmentByVersion(
+      InternalId requestAttemptId, ReceivingAssessment.Kind kind, long requestVersion);
+
+  Optional<DecisionResult> findDecisionByVersion(InternalId requestAttemptId, long requestVersion);
+
+  boolean advancePendingRequest(
+      InternalId requestAttemptId, long expectedVersion, String status, Instant now);
+
+  void insertAssessment(ReceivingAssessment assessment);
+
+  void insertDecisionAndOptionalTransfer(
+      org.ayuvahak.transfer.domain.TransferDecision decision,
+      Optional<CoordinatedTransfer> transfer);
+
   enum ReceiptState {
     OWNER,
     REPLAY,
@@ -45,4 +66,8 @@ public interface TransferStore {
       Optional<Integer> responseStatus,
       Optional<InternalId> resultReference,
       Optional<Long> resultVersion) {}
+
+  record DecisionResult(
+      org.ayuvahak.transfer.domain.TransferDecision decision,
+      Optional<CoordinatedTransfer> transfer) {}
 }

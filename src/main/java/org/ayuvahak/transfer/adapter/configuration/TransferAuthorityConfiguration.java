@@ -14,4 +14,19 @@ class TransferAuthorityConfiguration {
   FunctionalAuthority transferRequestAuthority() {
     return TransferAuthorities.request();
   }
+
+  @Bean
+  FunctionalAuthority clinicalSuitabilityAuthority() {
+    return TransferAuthorities.clinicalSuitability();
+  }
+
+  @Bean
+  FunctionalAuthority operationalReadinessAuthority() {
+    return TransferAuthorities.operationalReadiness();
+  }
+
+  @Bean
+  FunctionalAuthority transferAcceptanceAuthority() {
+    return TransferAuthorities.acceptance();
+  }
 }

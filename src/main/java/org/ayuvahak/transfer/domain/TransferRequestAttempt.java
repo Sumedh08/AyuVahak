@@ -51,6 +51,8 @@ public record TransferRequestAttempt(
   }
 
   public enum Status {
-    PENDING
+    PENDING,
+    ACCEPTED,
+    REJECTED
   }
 }
