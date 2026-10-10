@@ -54,4 +54,4 @@ The full clean verification ran with Java `25.0.4.1+1`, Maven `3.10.0`, the pinn
 
 `docker compose config --quiet` passed. `docker compose up --build --detach` built and started the local app, PostGIS, and Keycloak. After readiness, local GET probes returned HTTP 200 for aggregate health, liveness, readiness, `/api/v1/system-info`, `/actuator/prometheus`, and Keycloak discovery. The read-only schema query showed the Matching schema and no Transfer schema. `docker compose down` stopped the local stack without deleting its database volume. Local ports `18080`/`18081` were used because the default app port was unavailable; the ignored `.env` was not added to Git.
 
-The Phase 6 freeze is a local-only commit. Its hash is recorded in the [acceptance evidence](phase-6-acceptance.md) by a subsequent documentation-only commit.
+The Phase 6 freeze is local-only commit `124be795cedf25f275f4cf7c63885e0c3e58d0c1`. Its hash is recorded in the [acceptance evidence](phase-6-acceptance.md) by a subsequent documentation-only commit.
