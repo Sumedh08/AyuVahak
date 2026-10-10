@@ -770,12 +770,13 @@ class DirectoryCapacityReferralScenarioIT {
                     + "OR column_name = 'dimension_code')",
                 Integer.class))
         .isZero();
+    // Transfer is now implemented; later Transport and Analytics schemas remain absent.
     assertThat(
             jdbc.queryForList(
                 "SELECT schema_name FROM information_schema.schemata "
                     + "WHERE schema_name IN ('matching', 'transfer', 'transport', 'analytics')",
                 String.class))
-        .containsExactly("matching");
+        .containsExactlyInAnyOrder("matching", "transfer");
 
     createLocation(destinationFacilityId, "synthetic-cross-phase-destination-location", 73.0, 19.1);
     String destinationAssertionId = createFacilityCapabilityAssertion(destinationFacilityId);
