@@ -12,6 +12,7 @@ import org.ayuvahak.capacity.domain.CapacityEvidenceProjection;
 import org.ayuvahak.capacity.domain.CapacityEvidenceProjector;
 import org.ayuvahak.capacity.domain.CapacityObservationFact;
 import org.ayuvahak.capacity.domain.CapacityReleaseResult;
+import org.ayuvahak.capacity.domain.CapacityReservationOutcome;
 import org.ayuvahak.capacity.domain.CapacityReservationRequest;
 import org.ayuvahak.capacity.domain.CapacityReservationResult;
 import org.ayuvahak.capacity.domain.CapacityValueKind;
@@ -433,6 +434,61 @@ public final class CapacityReservationCommands {
           PlatformErrorCode.CAPACITY_UNAVAILABLE,
           "Capacity could not evaluate or commit the reservation safely.");
     }
+  }
+
+  /** Returns the current owner lifecycle for a reservation without replaying a stale result. */
+  public CapacityReservationOutcome getReservationOutcome(
+      ExecutionContext context, InternalId operationId, InternalId transferId) {
+    Objects.requireNonNull(context, "execution context");
+    Objects.requireNonNull(operationId, "operation id");
+    Objects.requireNonNull(transferId, "Transfer id");
+    requireFacilityScope(context);
+    requireReservationAuthority(context, operationId);
+    try {
+      CapacityReservationOutcome outcome =
+          reservations.findReservationOutcome(
+              operationId,
+              transferId,
+              context.scope().facility().orElseThrow().value(),
+              clock.instant());
+      auditReservationOutcomeRead(context, operationId, outcome.status());
+      return outcome;
+    } catch (AuditPersistenceUnavailableException unavailable) {
+      throw problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          PlatformErrorCode.AUDIT_UNAVAILABLE,
+          "The Capacity reservation outcome and required read audit could not be recorded.");
+    } catch (DataAccessException unavailable) {
+      throw problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          PlatformErrorCode.CAPACITY_UNAVAILABLE,
+          "Capacity could not confirm the reservation lifecycle safely.");
+    }
+  }
+
+  private void auditReservationOutcomeRead(
+      ExecutionContext context, InternalId operationId, CapacityReservationOutcome.Status status) {
+    auditWriter
+        .getObject()
+        .recordNonMutating(
+            new AuditEvidence(
+                AuditActionKind.SENSITIVE_READ,
+                Optional.of(context.actor()),
+                Optional.of(context.scope()),
+                "CAPACITY_RESERVATION_OUTCOME_READ",
+                "CapacityReservationOperation",
+                Optional.of(operationId),
+                clock.instant(),
+                AuditOutcome.SUCCEEDED,
+                Optional.of("CURRENT_LIFECYCLE_" + status.name()),
+                authenticationEvidence(context.authenticationMechanism()),
+                AuditAuthorizationOutcome.ALLOWED,
+                context.correlationId(),
+                Optional.of(
+                    new AuditTargetContext(
+                        context.scope().kind(),
+                        context.scope().organization(),
+                        context.scope().facility()))));
   }
 
   private CapacityReservationResult reserveInTransaction(

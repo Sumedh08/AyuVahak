@@ -4,6 +4,7 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import org.ayuvahak.capacity.domain.CapacityReservationOutcome;
 import org.ayuvahak.capacity.domain.CapacityReservationRequest;
 import org.ayuvahak.capacity.domain.CapacityReservationResult;
 import org.ayuvahak.platform.core.ExternalReference;
@@ -57,6 +58,9 @@ public interface CapacityReservationStore {
       Instant recordedAt);
 
   Optional<CapacityReservationResult> findOperation(InternalId operationId);
+
+  CapacityReservationOutcome findReservationOutcome(
+      InternalId operationId, InternalId transferId, String facilityIdentifier, Instant at);
 
   ReleaseResult release(InternalId transferId, String facilityIdentifier, Instant releasedAt);
 

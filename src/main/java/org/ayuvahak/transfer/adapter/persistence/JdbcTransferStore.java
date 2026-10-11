@@ -751,7 +751,7 @@ public class JdbcTransferStore implements TransferStore {
     }
     return jdbc.query(
         reservationIntentSelect()
-            + " WHERE outcome IN ('PENDING', 'IN_PROGRESS', 'UNAVAILABLE', 'UNKNOWN') "
+            + " WHERE outcome IN ('PENDING', 'IN_PROGRESS', 'UNAVAILABLE', 'UNKNOWN', 'RESERVED') "
             + "AND next_attempt_at <= ? "
             + "ORDER BY next_attempt_at, transfer_id LIMIT ?",
         JdbcTransferStore::reservationIntent,
@@ -780,13 +780,55 @@ public class JdbcTransferStore implements TransferStore {
                 + "AND outcome IN ('PENDING', 'IN_PROGRESS', 'UNAVAILABLE', 'UNKNOWN') "
                 + "AND next_attempt_at <= ? AND EXISTS (SELECT 1 FROM transfer.transfer_record t "
                 + "WHERE t.transfer_id = r.transfer_id AND transfer_status IN "
-                + "('AWAITING_RESERVATION', 'CANCELLATION_PENDING_RELEASE'))",
+                + "('AWAITING_RESERVATION', 'CANCELLATION_PENDING_RELEASE', 'ARRIVED'))",
             claimedAttemptCount,
             Timestamp.from(leaseUntil),
             Timestamp.from(claimedAt),
             transferId.value(),
             expectedAttemptCount,
             Timestamp.from(claimedAt))
+        == 1;
+  }
+
+  @Override
+  public boolean claimReservationOutcomeCheck(
+      InternalId transferId,
+      int expectedAttemptCount,
+      int claimedAttemptCount,
+      Instant leaseUntil,
+      Instant claimedAt) {
+    if (expectedAttemptCount < 0 || claimedAttemptCount != Math.addExact(expectedAttemptCount, 1)) {
+      throw new IllegalArgumentException("reservation outcome claim must increment once");
+    }
+    if (!leaseUntil.isAfter(claimedAt)) {
+      throw new IllegalArgumentException("reservation outcome lease must be in the future");
+    }
+    return jdbc.update(
+            "UPDATE transfer.capacity_reservation_request r SET attempt_count = ?, "
+                + "next_attempt_at = ?, recorded_at = ? WHERE transfer_id = ? "
+                + "AND attempt_count = ? AND outcome = 'RESERVED' AND next_attempt_at <= ? "
+                + "AND EXISTS (SELECT 1 FROM transfer.transfer_record t "
+                + "WHERE t.transfer_id = r.transfer_id AND transfer_status IN "
+                + "('AWAITING_RESERVATION', 'READY', 'ARRIVED'))",
+            claimedAttemptCount,
+            Timestamp.from(leaseUntil),
+            Timestamp.from(claimedAt),
+            transferId.value(),
+            expectedAttemptCount,
+            Timestamp.from(claimedAt))
+        == 1;
+  }
+
+  @Override
+  public boolean deferReservationOutcomeCheck(
+      InternalId transferId, int expectedAttemptCount, Instant nextAttemptAt, Instant recordedAt) {
+    return jdbc.update(
+            "UPDATE transfer.capacity_reservation_request SET next_attempt_at = ?, recorded_at = ? "
+                + "WHERE transfer_id = ? AND attempt_count = ? AND outcome = 'RESERVED'",
+            Timestamp.from(nextAttemptAt),
+            Timestamp.from(recordedAt),
+            transferId.value(),
+            expectedAttemptCount)
         == 1;
   }
 
@@ -896,7 +938,8 @@ public class JdbcTransferStore implements TransferStore {
         jdbc.update(
             "UPDATE transfer.capacity_reservation_request SET outcome = ?, reservation_id = ?, "
                 + "reason_code = ?, next_attempt_at = ?, recorded_at = ? "
-                + "WHERE transfer_id = ? AND outcome = 'IN_PROGRESS' AND attempt_count = ?",
+                + "WHERE transfer_id = ? AND outcome IN ('IN_PROGRESS', 'RESERVED') "
+                + "AND attempt_count = ?",
             outcome.name(),
             reservationId.map(InternalId::value).orElse(null),
             reasonCode.orElse(null),

@@ -3,6 +3,7 @@ package org.ayuvahak.transfer.adapter.capacity;
 import java.util.Objects;
 import org.ayuvahak.capacity.application.CapacityReservationCommands;
 import org.ayuvahak.capacity.domain.CapacityReleaseResult;
+import org.ayuvahak.capacity.domain.CapacityReservationOutcome;
 import org.ayuvahak.capacity.domain.CapacityReservationRequest;
 import org.ayuvahak.capacity.domain.CapacityReservationResult;
 import org.ayuvahak.platform.core.InternalId;
@@ -30,5 +31,11 @@ public final class CapacityReservationAdapter implements CapacityReservationPort
   @Override
   public CapacityReleaseResult release(ExecutionContext serviceContext, InternalId transferId) {
     return commands.getObject().release(serviceContext, transferId);
+  }
+
+  @Override
+  public CapacityReservationOutcome getReservationOutcome(
+      ExecutionContext serviceContext, InternalId operationId, InternalId transferId) {
+    return commands.getObject().getReservationOutcome(serviceContext, operationId, transferId);
   }
 }

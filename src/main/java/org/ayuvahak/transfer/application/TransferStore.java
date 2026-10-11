@@ -119,6 +119,16 @@ public interface TransferStore {
       Instant leaseUntil,
       Instant claimedAt);
 
+  boolean claimReservationOutcomeCheck(
+      InternalId transferId,
+      int expectedAttemptCount,
+      int claimedAttemptCount,
+      Instant leaseUntil,
+      Instant claimedAt);
+
+  boolean deferReservationOutcomeCheck(
+      InternalId transferId, int expectedAttemptCount, Instant nextAttemptAt, Instant recordedAt);
+
   List<InternalId> findPendingCancellationTransfers(int limit);
 
   boolean claimConsumerEvent(InternalId eventId, EventType eventType, Instant recordedAt);

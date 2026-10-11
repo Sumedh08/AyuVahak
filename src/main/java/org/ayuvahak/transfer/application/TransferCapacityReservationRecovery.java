@@ -5,6 +5,7 @@ import java.time.Instant;
 import java.util.Objects;
 import java.util.Optional;
 import org.ayuvahak.capacity.domain.CapacityReleaseResult;
+import org.ayuvahak.capacity.domain.CapacityReservationOutcome;
 import org.ayuvahak.capacity.domain.CapacityReservationRequest;
 import org.ayuvahak.capacity.domain.CapacityReservationResult;
 import org.ayuvahak.platform.api.PlatformProblemException;
@@ -118,6 +119,37 @@ public final class TransferCapacityReservationRecovery {
     return processed;
   }
 
+  /** Fails closed before departure unless Capacity currently confirms an active reservation. */
+  public boolean hasCurrentActiveReservation(
+      InternalId transferId, CorrelationId correlation, Optional<CausationId> causationId) {
+    try {
+      CapacityReservationIntent intent =
+          transfers
+              .findReservationIntent(transferId)
+              .filter(i -> i.dimensionCode().isPresent())
+              .orElse(null);
+      if (intent == null) {
+        return false;
+      }
+      ExecutionContext context = serviceContext(intent, correlation, causationId);
+      if (!authorizeTransfer(context, intent.operationId())) {
+        return false;
+      }
+      CapacityReservationOutcome outcome =
+          capacity.getReservationOutcome(context, intent.operationId(), intent.transferId());
+      return outcome.operationId().equals(intent.operationId())
+          && outcome.transferId().equals(intent.transferId())
+          && outcome.status() == CapacityReservationOutcome.Status.RESERVED
+          && outcome.reservationId().isPresent();
+    } catch (RuntimeException failure) {
+      logger.warn(
+          "Transfer departure Capacity confirmation deferred correlationId={} failureType={}",
+          correlation,
+          failure.getClass().getSimpleName());
+      return false;
+    }
+  }
+
   /**
    * Releases a Capacity-owned hold only after Transfer has durably entered pending cancellation.
    */
@@ -223,19 +255,14 @@ public final class TransferCapacityReservationRecovery {
 
   private void attempt(CapacityReservationIntent intent) {
     if (intent.outcome() == CapacityReservationIntent.Outcome.UNCONFIGURED
-        || intent.outcome() == CapacityReservationIntent.Outcome.RESERVED
         || intent.dimensionCode().isEmpty()) {
       return;
     }
+    boolean lifecycleCheck = intent.outcome() == CapacityReservationIntent.Outcome.RESERVED;
     CorrelationId correlation = CorrelationId.generate();
     ExecutionContext context;
     try {
-      context =
-          contexts.forBackgroundWork(
-              worker,
-              RequestedExecutionScope.facility(intent.organization(), intent.facility()),
-              correlation,
-              Optional.empty());
+      context = serviceContext(intent, correlation, Optional.empty());
     } catch (RuntimeException deniedScope) {
       logger.warn(
           "Transfer Capacity reservation scope validation deferred correlationId={} failureType={}",
@@ -253,12 +280,19 @@ public final class TransferCapacityReservationRecovery {
       boolean claimed =
           transaction.execute(
               status ->
-                  transfers.claimReservationAttempt(
-                      intent.transferId(),
-                      intent.attemptCount(),
-                      claimedAttemptCount,
-                      claimedAt.plus(properties.getReservationAttemptLease()),
-                      claimedAt));
+                  lifecycleCheck
+                      ? transfers.claimReservationOutcomeCheck(
+                          intent.transferId(),
+                          intent.attemptCount(),
+                          claimedAttemptCount,
+                          claimedAt.plus(properties.getReservationAttemptLease()),
+                          claimedAt)
+                      : transfers.claimReservationAttempt(
+                          intent.transferId(),
+                          intent.attemptCount(),
+                          claimedAttemptCount,
+                          claimedAt.plus(properties.getReservationAttemptLease()),
+                          claimedAt));
       if (!Boolean.TRUE.equals(claimed)) {
         return;
       }
@@ -273,47 +307,101 @@ public final class TransferCapacityReservationRecovery {
     CapacityReservationIntent.Outcome outcome;
     Optional<InternalId> reservationId = Optional.empty();
     Optional<String> reasonCode = Optional.empty();
-    try {
-      CapacityReservationResult result =
-          capacity.reserve(
-              context,
-              new CapacityReservationRequest(
-                  intent.operationId(),
-                  intent.transferId(),
-                  intent.facility(),
-                  intent.dimensionCode().orElseThrow(),
-                  intent.unit().orElseThrow(),
-                  intent.quantity().orElseThrow(),
-                  intent.intervalStart().orElseThrow(),
-                  intent.intervalEnd().orElseThrow(),
-                  intent.expiresAt().orElseThrow()),
-              "transfer-capacity-" + intent.operationId());
-      if (!result.operationId().equals(intent.operationId())) {
-        outcome = CapacityReservationIntent.Outcome.UNKNOWN;
-        reasonCode = Optional.of("CAPACITY_OPERATION_REFERENCE_MISMATCH");
-      } else {
-        outcome = map(result.outcome());
-        reservationId = result.reservationId();
-        reasonCode = result.reasonCode();
+    if (lifecycleCheck) {
+      try {
+        CapacityReservationOutcome current =
+            capacity.getReservationOutcome(context, intent.operationId(), intent.transferId());
+        if (!matchesIntent(current, intent)
+            || current.status() == CapacityReservationOutcome.Status.UNKNOWN) {
+          Instant retryAt = clock.instant().plus(properties.getReservationPollInterval());
+          transaction.executeWithoutResult(
+              status ->
+                  transfers.deferReservationOutcomeCheck(
+                      intent.transferId(), claimedAttemptCount, retryAt, clock.instant()));
+          return;
+        }
+        outcome = map(current.status());
+        reservationId = current.reservationId();
+        reasonCode = current.reasonCode();
+      } catch (RuntimeException failure) {
+        Instant retryAt = clock.instant().plus(properties.getReservationPollInterval());
+        try {
+          transaction.executeWithoutResult(
+              status ->
+                  transfers.deferReservationOutcomeCheck(
+                      intent.transferId(), claimedAttemptCount, retryAt, clock.instant()));
+        } catch (RuntimeException deferFailure) {
+          logger.warn(
+              "Transfer Capacity lifecycle check remains recoverable correlationId={} failureType={}",
+              correlation,
+              deferFailure.getClass().getSimpleName());
+        }
+        logger.warn(
+            "Transfer Capacity lifecycle check deferred correlationId={} failureType={}",
+            correlation,
+            failure.getClass().getSimpleName());
+        return;
       }
-    } catch (IllegalArgumentException invalidRequest) {
-      outcome = CapacityReservationIntent.Outcome.INVALID;
-      reasonCode = Optional.of("CAPACITY_REQUEST_INVALID");
-    } catch (PlatformProblemException failure) {
-      outcome =
-          retryable(failure)
-              ? CapacityReservationIntent.Outcome.UNAVAILABLE
-              : CapacityReservationIntent.Outcome.INVALID;
-      reasonCode = Optional.of(safeCode(failure));
-    } catch (RuntimeException failure) {
-      outcome = CapacityReservationIntent.Outcome.UNAVAILABLE;
-      reasonCode = Optional.of("CAPACITY_UNAVAILABLE");
+    } else {
+      try {
+        CapacityReservationResult result =
+            capacity.reserve(
+                context,
+                new CapacityReservationRequest(
+                    intent.operationId(),
+                    intent.transferId(),
+                    intent.facility(),
+                    intent.dimensionCode().orElseThrow(),
+                    intent.unit().orElseThrow(),
+                    intent.quantity().orElseThrow(),
+                    intent.intervalStart().orElseThrow(),
+                    intent.intervalEnd().orElseThrow(),
+                    intent.expiresAt().orElseThrow()),
+                "transfer-capacity-" + intent.operationId());
+        if (!result.operationId().equals(intent.operationId())) {
+          outcome = CapacityReservationIntent.Outcome.UNKNOWN;
+          reasonCode = Optional.of("CAPACITY_OPERATION_REFERENCE_MISMATCH");
+        } else {
+          outcome = map(result.outcome());
+          reservationId = result.reservationId();
+          reasonCode = result.reasonCode();
+          if (result.outcome() == CapacityReservationResult.Outcome.RESERVED) {
+            CapacityReservationOutcome current =
+                capacity.getReservationOutcome(context, intent.operationId(), intent.transferId());
+            if (!matchesIntent(current, intent)) {
+              outcome = CapacityReservationIntent.Outcome.UNKNOWN;
+              reservationId = Optional.empty();
+              reasonCode = Optional.of("CAPACITY_OPERATION_REFERENCE_MISMATCH");
+            } else {
+              outcome = map(current.status());
+              reservationId = current.reservationId();
+              reasonCode = current.reasonCode();
+            }
+          }
+        }
+      } catch (IllegalArgumentException invalidRequest) {
+        outcome = CapacityReservationIntent.Outcome.INVALID;
+        reservationId = Optional.empty();
+        reasonCode = Optional.of("CAPACITY_REQUEST_INVALID");
+      } catch (PlatformProblemException failure) {
+        outcome =
+            retryable(failure)
+                ? CapacityReservationIntent.Outcome.UNAVAILABLE
+                : CapacityReservationIntent.Outcome.INVALID;
+        reservationId = Optional.empty();
+        reasonCode = Optional.of(safeCode(failure));
+      } catch (RuntimeException failure) {
+        outcome = CapacityReservationIntent.Outcome.UNAVAILABLE;
+        reservationId = Optional.empty();
+        reasonCode = Optional.of("CAPACITY_UNAVAILABLE");
+      }
     }
 
     Instant recordedAt = clock.instant();
     Instant nextAttemptAt =
         outcome == CapacityReservationIntent.Outcome.UNAVAILABLE
                 || outcome == CapacityReservationIntent.Outcome.UNKNOWN
+                || outcome == CapacityReservationIntent.Outcome.RESERVED
             ? recordedAt.plus(properties.getReservationPollInterval())
             : recordedAt;
     CapacityReservationIntent.Outcome resolvedOutcome = outcome;
@@ -441,8 +529,26 @@ public final class TransferCapacityReservationRecovery {
     return (intent.outcome() == CapacityReservationIntent.Outcome.PENDING
             || intent.outcome() == CapacityReservationIntent.Outcome.IN_PROGRESS
             || intent.outcome() == CapacityReservationIntent.Outcome.UNAVAILABLE
-            || intent.outcome() == CapacityReservationIntent.Outcome.UNKNOWN)
+            || intent.outcome() == CapacityReservationIntent.Outcome.UNKNOWN
+            || intent.outcome() == CapacityReservationIntent.Outcome.RESERVED)
         && intent.nextAttemptAt().compareTo(clock.instant()) <= 0;
+  }
+
+  private ExecutionContext serviceContext(
+      CapacityReservationIntent intent,
+      CorrelationId correlation,
+      Optional<CausationId> causationId) {
+    return contexts.forBackgroundWork(
+        worker,
+        RequestedExecutionScope.facility(intent.organization(), intent.facility()),
+        correlation,
+        causationId);
+  }
+
+  private static boolean matchesIntent(
+      CapacityReservationOutcome outcome, CapacityReservationIntent intent) {
+    return outcome.operationId().equals(intent.operationId())
+        && outcome.transferId().equals(intent.transferId());
   }
 
   private static boolean isUnexpired(CapacityReservationIntent intent, Instant at) {
@@ -463,6 +569,16 @@ public final class TransferCapacityReservationRecovery {
       case CONFLICT -> CapacityReservationIntent.Outcome.CONFLICT;
       case UNKNOWN -> CapacityReservationIntent.Outcome.UNKNOWN;
       case INVALID -> CapacityReservationIntent.Outcome.INVALID;
+    };
+  }
+
+  private static CapacityReservationIntent.Outcome map(CapacityReservationOutcome.Status status) {
+    return switch (status) {
+      case RESERVED -> CapacityReservationIntent.Outcome.RESERVED;
+      case AT_RISK -> CapacityReservationIntent.Outcome.AT_RISK;
+      case RELEASED -> CapacityReservationIntent.Outcome.RELEASED;
+      case EXPIRED -> CapacityReservationIntent.Outcome.EXPIRED;
+      case UNKNOWN -> CapacityReservationIntent.Outcome.UNKNOWN;
     };
   }
 

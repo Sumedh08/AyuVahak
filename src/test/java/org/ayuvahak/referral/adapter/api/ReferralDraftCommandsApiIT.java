@@ -781,7 +781,7 @@ class ReferralDraftCommandsApiIT {
     assertThat(
             jdbc.queryForObject(
                 "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = "
-                    + "'REFERRAL_TRANSFER_OUTCOME_DENIED' AND result_code = "
+                    + "'REFERRAL_TRANSFER_OUTCOME_DENIED' AND reason_code = "
                     + "'AUTHORIZATION_STORE_UNAVAILABLE' AND correlation_id = ?",
                 Integer.class,
                 eventCorrelation.value()))

@@ -64,6 +64,7 @@ public final class TransferProgressCommands {
   private final Clock clock;
   private final OutboxWriter outboxWriter;
   private final ObjectMapper objectMapper;
+  private final ObjectProvider<TransferCapacityReservationRecovery> reservationRecovery;
 
   public TransferProgressCommands(
       @Lazy TransferStore store,
@@ -72,7 +73,8 @@ public final class TransferProgressCommands {
       @Lazy PlatformTransactionManager transactionManager,
       @Qualifier("auditClock") Clock clock,
       OutboxWriter outboxWriter,
-      ObjectMapper objectMapper) {
+      ObjectMapper objectMapper,
+      ObjectProvider<TransferCapacityReservationRecovery> reservationRecovery) {
     this.store = Objects.requireNonNull(store, "Transfer store");
     this.authorization = Objects.requireNonNull(authorization, "authorization service");
     this.auditWriter = Objects.requireNonNull(auditWriter, "audit writer");
@@ -80,6 +82,7 @@ public final class TransferProgressCommands {
     this.clock = Objects.requireNonNull(clock, "audit clock");
     this.outboxWriter = Objects.requireNonNull(outboxWriter, "outbox writer");
     this.objectMapper = Objects.requireNonNull(objectMapper, "object mapper");
+    this.reservationRecovery = Objects.requireNonNull(reservationRecovery, "reservation verifier");
   }
 
   public TransferProgressCommandResult record(
@@ -111,6 +114,20 @@ public final class TransferProgressCommands {
       TransferProgressCommandResult replay = replay(transferId, previous.orElseThrow());
       if (replay != null) {
         return replay;
+      }
+    }
+    if (kind == TransferProgressFact.Kind.DEPARTURE) {
+      TransferProgressTarget observedTarget =
+          store.findProgressTarget(transferId).orElseThrow(TransferProgressCommands::notFound);
+      requireParticipant(context, observedTarget, transferId, kind);
+      if (expectedVersion < 1 || observedTarget.transfer().version() != expectedVersion) {
+        throw stateConflict();
+      }
+      if (!reservationRecovery
+          .getObject()
+          .hasCurrentActiveReservation(
+              transferId, context.correlationId(), context.causationId())) {
+        throw stateConflict();
       }
     }
 
