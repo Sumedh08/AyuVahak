@@ -25,11 +25,14 @@ public record CoordinatedTransfer(
 
   public enum Status {
     AWAITING_RESERVATION,
+    CANCELLATION_PENDING_RELEASE,
     READY,
+    COORDINATION_EXCEPTION,
     IN_TRANSIT,
     INTERRUPTED,
     ARRIVED,
     HANDED_OVER,
-    COMPLETED
+    COMPLETED,
+    CANCELLED
   }
 }

@@ -1174,6 +1174,35 @@ public class JdbcDirectoryStore implements DirectoryStore {
     }
   }
 
+  @Override
+  public Optional<ExternalReference> findActiveFacilityOrganization(ExternalReference facility) {
+    try {
+      InternalId facilityId = directoryId(facility, "Facility");
+      if (facilityId == null) {
+        return Optional.empty();
+      }
+      return jdbc
+          .query(
+              "SELECT f.managing_organization_id FROM directory.facility f "
+                  + "JOIN directory.organization o "
+                  + "ON o.organization_id = f.managing_organization_id "
+                  + "WHERE f.facility_id = ? AND f.lifecycle_status = 'ACTIVE' "
+                  + "AND o.lifecycle_status = 'ACTIVE'",
+              (result, rowNumber) -> result.getObject("managing_organization_id", UUID.class),
+              facilityId.value())
+          .stream()
+          .findFirst()
+          .map(
+              organizationId ->
+                  new ExternalReference(
+                      new org.ayuvahak.platform.core.IssuerId("urn:ayuvahak:directory"),
+                      "Organization",
+                      organizationId.toString()));
+    } catch (DataAccessException failure) {
+      throw new DirectoryScopeLookupUnavailableException(failure);
+    }
+  }
+
   private Optional<DirectoryExternalIdentifier> findExternalIdentifier(
       InternalId id, boolean forUpdate) {
     String lock = forUpdate ? " FOR UPDATE" : "";

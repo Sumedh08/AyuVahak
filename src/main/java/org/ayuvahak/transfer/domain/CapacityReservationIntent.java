@@ -71,8 +71,14 @@ public record CapacityReservationIntent(
             || !expiresAt.orElseThrow().equals(intervalEnd.orElseThrow()))) {
       throw new IllegalArgumentException("reservation interval and expiry are inconsistent");
     }
-    if ((outcome == Outcome.RESERVED) != reservationId.isPresent()) {
-      throw new IllegalArgumentException("only a reserved outcome has a reservation reference");
+    boolean hasReservation =
+        outcome == Outcome.RESERVED
+            || outcome == Outcome.AT_RISK
+            || outcome == Outcome.RELEASED
+            || outcome == Outcome.EXPIRED;
+    if (hasReservation != reservationId.isPresent()) {
+      throw new IllegalArgumentException(
+          "reservation lifecycle outcome and reference are inconsistent");
     }
     if (configured == (outcome == Outcome.UNCONFIGURED)) {
       throw new IllegalArgumentException("only an unconfigured outcome omits reservation inputs");
@@ -86,6 +92,10 @@ public record CapacityReservationIntent(
     UNKNOWN,
     UNAVAILABLE,
     INVALID,
-    UNCONFIGURED
+    UNCONFIGURED,
+    AT_RISK,
+    RELEASED,
+    EXPIRED,
+    NOT_RESERVED
   }
 }

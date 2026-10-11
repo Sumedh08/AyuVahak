@@ -29,6 +29,8 @@ public final class TransferAuthorities {
       new FunctionalAuthority("TransferHandoverAuthority", Set.of(ExecutionScope.Kind.FACILITY));
   private static final FunctionalAuthority COMPLETION =
       new FunctionalAuthority("TransferCompletionAuthority", Set.of(ExecutionScope.Kind.FACILITY));
+  private static final FunctionalAuthority CLOSURE =
+      new FunctionalAuthority("TransferJourneyClosureAuthority", ORIGIN_SCOPES);
 
   private TransferAuthorities() {}
 
@@ -66,5 +68,9 @@ public final class TransferAuthorities {
 
   public static FunctionalAuthority completion() {
     return COMPLETION;
+  }
+
+  public static FunctionalAuthority closure() {
+    return CLOSURE;
   }
 }

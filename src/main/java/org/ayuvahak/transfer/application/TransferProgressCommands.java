@@ -360,6 +360,36 @@ public final class TransferProgressCommands {
         }
         yield new Transition(CoordinatedTransfer.Status.COMPLETED, null);
       }
+      case CANCELLATION -> {
+        if (current != CoordinatedTransfer.Status.AWAITING_RESERVATION
+            && current != CoordinatedTransfer.Status.READY
+            && current != CoordinatedTransfer.Status.COORDINATION_EXCEPTION) {
+          throw stateConflict();
+        }
+        yield new Transition(CoordinatedTransfer.Status.CANCELLATION_PENDING_RELEASE, null);
+      }
+      case CANCELLATION_RELEASE -> {
+        if (current != CoordinatedTransfer.Status.CANCELLATION_PENDING_RELEASE) {
+          throw stateConflict();
+        }
+        yield new Transition(CoordinatedTransfer.Status.CANCELLED, null);
+      }
+      case REFERRAL_CANCELLATION -> {
+        if (current != CoordinatedTransfer.Status.AWAITING_RESERVATION
+            && current != CoordinatedTransfer.Status.READY
+            && current != CoordinatedTransfer.Status.COORDINATION_EXCEPTION) {
+          throw stateConflict();
+        }
+        yield new Transition(CoordinatedTransfer.Status.CANCELLATION_PENDING_RELEASE, null);
+      }
+      case CAPACITY_EXCEPTION -> {
+        if (current != CoordinatedTransfer.Status.AWAITING_RESERVATION
+            && current != CoordinatedTransfer.Status.READY
+            && current != CoordinatedTransfer.Status.COORDINATION_EXCEPTION) {
+          throw stateConflict();
+        }
+        yield new Transition(CoordinatedTransfer.Status.COORDINATION_EXCEPTION, null);
+      }
     };
   }
 
@@ -454,13 +484,20 @@ public final class TransferProgressCommands {
       case DEPARTURE, INTERRUPTION, RESUMPTION, ARRIVAL -> TransferAuthorities.progress().code();
       case HANDOVER -> TransferAuthorities.handover().code();
       case COMPLETION -> TransferAuthorities.completion().code();
+      case CANCELLATION -> TransferAuthorities.progress().code();
+      case CANCELLATION_RELEASE -> TransferAuthorities.reservationReconciliation().code();
+      case REFERRAL_CANCELLATION, CAPACITY_EXCEPTION ->
+          TransferAuthorities.reservationReconciliation().code();
     };
   }
 
   private static void requireProgressReason(
       TransferProgressFact.Kind kind, Optional<String> reasonCode) {
     if ((kind == TransferProgressFact.Kind.INTERRUPTION
-            || kind == TransferProgressFact.Kind.COMPLETION)
+            || kind == TransferProgressFact.Kind.COMPLETION
+            || kind == TransferProgressFact.Kind.CANCELLATION
+            || kind == TransferProgressFact.Kind.REFERRAL_CANCELLATION
+            || kind == TransferProgressFact.Kind.CAPACITY_EXCEPTION)
         && reasonCode.isEmpty()) {
       throw problem(
           HttpStatus.UNPROCESSABLE_ENTITY,
@@ -502,7 +539,7 @@ public final class TransferProgressCommands {
     try {
       return CommandReceiptKey.from(
           context,
-          "transfer.progress." + kind.name().toLowerCase(java.util.Locale.ROOT),
+          "transfer.progress." + kind.name().toLowerCase(java.util.Locale.ROOT).replace('_', '-'),
           "transfers/" + transferId,
           idempotencyKey);
     } catch (IllegalArgumentException invalid) {

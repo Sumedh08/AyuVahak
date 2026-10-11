@@ -54,4 +54,9 @@ class TransferAuthorityConfiguration {
   FunctionalAuthority transferCompletionAuthority() {
     return TransferAuthorities.completion();
   }
+
+  @Bean
+  FunctionalAuthority transferJourneyClosureAuthority() {
+    return TransferAuthorities.closure();
+  }
 }

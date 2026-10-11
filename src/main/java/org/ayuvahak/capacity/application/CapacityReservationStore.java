@@ -2,9 +2,11 @@ package org.ayuvahak.capacity.application;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import org.ayuvahak.capacity.domain.CapacityReservationRequest;
 import org.ayuvahak.capacity.domain.CapacityReservationResult;
+import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.InternalId;
 import org.ayuvahak.platform.idempotency.CommandReceiptKey;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
@@ -55,6 +57,80 @@ public interface CapacityReservationStore {
       Instant recordedAt);
 
   Optional<CapacityReservationResult> findOperation(InternalId operationId);
+
+  ReleaseResult release(InternalId transferId, String facilityIdentifier, Instant releasedAt);
+
+  List<LifecycleCandidate> findLifecycleCandidates(Instant at, int limit);
+
+  Optional<LifecycleCandidate> lockLifecycleCandidate(InternalId reservationId);
+
+  Optional<LifecycleCandidate> changeLifecycleStatus(
+      InternalId reservationId, LifecycleStatus expected, LifecycleStatus next, Instant recordedAt);
+
+  void recordLifecycleCheck(InternalId reservationId, Instant checkedAt);
+
+  record LifecycleCandidate(
+      InternalId reservationId,
+      InternalId transferId,
+      ExternalReference facility,
+      String dimensionCode,
+      String unit,
+      BigDecimal quantity,
+      Instant intervalStart,
+      Instant intervalEnd,
+      Instant expiresAt,
+      LifecycleStatus status,
+      long sequence) {
+    public LifecycleCandidate {
+      java.util.Objects.requireNonNull(reservationId, "reservation id");
+      java.util.Objects.requireNonNull(transferId, "transfer id");
+      java.util.Objects.requireNonNull(facility, "facility");
+      java.util.Objects.requireNonNull(dimensionCode, "dimension code");
+      java.util.Objects.requireNonNull(unit, "unit");
+      java.util.Objects.requireNonNull(quantity, "quantity");
+      java.util.Objects.requireNonNull(intervalStart, "interval start");
+      java.util.Objects.requireNonNull(intervalEnd, "interval end");
+      java.util.Objects.requireNonNull(expiresAt, "expiry");
+      java.util.Objects.requireNonNull(status, "status");
+      if (sequence < 1) {
+        throw new IllegalArgumentException("reservation sequence must be positive");
+      }
+    }
+  }
+
+  enum LifecycleStatus {
+    ACTIVE,
+    AT_RISK,
+    RELEASED,
+    EXPIRED
+  }
+
+  record ReleaseResult(
+      ReleaseOutcome outcome,
+      Optional<InternalId> reservationId,
+      long sequence,
+      boolean changed,
+      Optional<Instant> expiresAt) {
+    public ReleaseResult {
+      java.util.Objects.requireNonNull(outcome, "release outcome");
+      reservationId = java.util.Objects.requireNonNull(reservationId, "reservation id");
+      expiresAt = java.util.Objects.requireNonNull(expiresAt, "expiry");
+      if ((outcome == ReleaseOutcome.RELEASED || outcome == ReleaseOutcome.EXPIRED)
+          != reservationId.isPresent()) {
+        throw new IllegalArgumentException("reservation lifecycle result is inconsistent");
+      }
+      if (sequence < 0 || changed && sequence < 2) {
+        throw new IllegalArgumentException("reservation sequence cannot be negative");
+      }
+    }
+  }
+
+  enum ReleaseOutcome {
+    RELEASED,
+    EXPIRED,
+    NOT_RESERVED,
+    SCOPE_MISMATCH
+  }
 
   enum ReceiptState {
     OWNER,

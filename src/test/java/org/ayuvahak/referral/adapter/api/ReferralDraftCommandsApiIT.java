@@ -25,6 +25,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -36,12 +37,20 @@ import org.ayuvahak.platform.core.CorrelationId;
 import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.InternalId;
 import org.ayuvahak.platform.core.IssuerId;
+import org.ayuvahak.platform.core.OccurredAt;
+import org.ayuvahak.platform.core.RecordedAt;
+import org.ayuvahak.platform.event.AggregatePosition;
+import org.ayuvahak.platform.event.EventEnvelope;
+import org.ayuvahak.platform.event.EventEnvelopeJsonCodec;
+import org.ayuvahak.platform.event.EventType;
+import org.ayuvahak.platform.eventing.application.InternalEvent;
 import org.ayuvahak.platform.eventing.application.OutboxDispatcher;
 import org.ayuvahak.platform.executioncontext.ExecutionContext;
 import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
 import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
 import org.ayuvahak.referral.application.ReferralMatchingRequirement;
 import org.ayuvahak.referral.application.ReferralQueries;
+import org.ayuvahak.referral.application.ReferralTransferOutcomeEventHandler;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -59,6 +68,7 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
+import tools.jackson.databind.ObjectMapper;
 
 /** Authenticated command-seam tests against disposable local PostgreSQL/PostGIS. */
 @SpringBootTest(
@@ -67,7 +77,8 @@ import org.testcontainers.utility.DockerImageName;
       "management.tracing.sampling.probability=0.0",
       "ayuvahak.authentication.audience=ayuvahak-api",
       "ayuvahak.authentication.service-client-ids=synthetic-referral-service",
-      "ayuvahak.authentication.allow-http=true"
+      "ayuvahak.authentication.allow-http=true",
+      "ayuvahak.eventing.outbox.dispatcher-enabled=false"
     })
 @AutoConfigureMockMvc
 @Testcontainers
@@ -100,6 +111,9 @@ class ReferralDraftCommandsApiIT {
   @Autowired private OutboxDispatcher outboxDispatcher;
   @Autowired private ReferralQueries referralQueries;
   @Autowired private ExecutionContextFactory executionContextFactory;
+  @Autowired private ReferralTransferOutcomeEventHandler transferOutcomeHandler;
+  @Autowired private EventEnvelopeJsonCodec eventEnvelopeCodec;
+  @Autowired private ObjectMapper objectMapper;
 
   private String organizationId;
   private String facilityId;
@@ -149,6 +163,7 @@ class ReferralDraftCommandsApiIT {
       if (Boolean.TRUE.equals(
           jdbc.queryForObject(
               "SELECT to_regclass('referral.submitted_revision') IS NOT NULL", Boolean.class))) {
+        jdbc.update("DELETE FROM referral.consumer_event_receipt");
         jdbc.execute("TRUNCATE TABLE referral.cancellation, referral.resolution");
         jdbc.execute(
             "TRUNCATE TABLE referral.submitted_revision_required_care_capability, "
@@ -398,7 +413,7 @@ class ReferralDraftCommandsApiIT {
                     + "JOIN platform_eventing.internal_event e USING (event_id) "
                     + "WHERE e.event_type = 'referral.cancelled.v1'",
                 String.class))
-        .isEqualTo("WAITING_FOR_CONSUMER");
+        .isEqualTo("PENDING");
     assertThat(
             jdbc.queryForObject(
                 "SELECT d.attempt_count FROM platform_eventing.outbox_delivery d "
@@ -406,8 +421,11 @@ class ReferralDraftCommandsApiIT {
                     + "WHERE e.event_type = 'referral.cancelled.v1'",
                 Integer.class))
         .isZero();
-    assertThat(
-            outboxDispatcher.dispatchAvailable(Instant.parse("2026-10-09T10:00:00Z")).delivered())
+    jdbc.update(
+        "UPDATE platform_eventing.outbox_delivery SET state = 'WAITING_FOR_CONSUMER' "
+            + "WHERE event_id = (SELECT event_id FROM platform_eventing.internal_event "
+            + "WHERE event_type = 'referral.cancelled.v1')");
+    assertThat(outboxDispatcher.dispatchAvailable(Instant.now().plusSeconds(1)).delivered())
         .isZero();
     assertThat(
             jdbc.queryForObject(
@@ -454,6 +472,201 @@ class ReferralDraftCommandsApiIT {
   }
 
   @Test
+  void unfulfilledTransferEventResolvesSubmittedReferralExactlyOnce() throws Exception {
+    String referralId =
+        createDraft("transfer-unfulfilled-create", "opaque-synthetic-patient-unfulfilled");
+    performSubmission(
+            referralId, ORIGINATOR, "transfer-unfulfilled-submit", "{\"expectedVersion\":1}")
+        .andExpect(status().isOk());
+    grantService(
+        "ayuvahak-transfer-outcome-consumer", "ReferralResolve", organizationId, facilityId);
+
+    InternalId eventId = InternalId.generate();
+    EventType eventType = EventType.parse("transfer.unfulfilled.v1");
+    var scope =
+        RequestedExecutionScope.facility(
+            new ExternalReference(new IssuerId(DIRECTORY_ISSUER), "Organization", organizationId),
+            new ExternalReference(new IssuerId(DIRECTORY_ISSUER), "Facility", facilityId));
+    ExecutionContext producer =
+        executionContextFactory.forBackgroundWork(
+            ActorReference.service(new IssuerId(ISSUER), "synthetic-transfer-producer"),
+            scope,
+            CorrelationId.generate(),
+            Optional.empty());
+    var payload = objectMapper.createObjectNode();
+    payload.put("referralReference", referralId);
+    payload.put("journeyReference", InternalId.generate().toString());
+    payload.put("outcome", "UNFULFILLED");
+    AggregatePosition position =
+        new AggregatePosition("transfer-journey/" + InternalId.generate(), 1);
+    EventEnvelope envelope =
+        new EventEnvelope(
+            eventId,
+            eventType,
+            "transfer",
+            new OccurredAt(Instant.parse("2026-10-10T10:30:00Z")),
+            new RecordedAt(Instant.now()),
+            producer,
+            Optional.of(position),
+            payload);
+    InternalEvent event =
+        new InternalEvent(
+            eventId,
+            eventType,
+            "transfer",
+            Optional.of(position),
+            eventEnvelopeCodec.encode(envelope));
+
+    jdbc.execute(
+        "CREATE FUNCTION audit.reject_transfer_outcome() RETURNS trigger "
+            + "LANGUAGE plpgsql AS $$ BEGIN "
+            + "IF NEW.action_code = 'REFERRAL_TRANSFER_OUTCOME_RECONCILE' THEN "
+            + "RAISE EXCEPTION 'synthetic outcome audit failure'; END IF; RETURN NEW; END $$");
+    jdbc.execute(
+        "CREATE TRIGGER reject_transfer_outcome BEFORE INSERT ON audit.audit_record "
+            + "FOR EACH ROW EXECUTE FUNCTION audit.reject_transfer_outcome()");
+    try {
+      assertThatThrownBy(() -> transferOutcomeHandler.handle(event)).isInstanceOf(Exception.class);
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT state FROM referral.draft WHERE referral_id = ?",
+                  String.class,
+                  UUID.fromString(referralId)))
+          .isEqualTo("SUBMITTED");
+      assertThat(count("SELECT COUNT(*) FROM referral.resolution")).isZero();
+      assertThat(count("SELECT COUNT(*) FROM referral.consumer_event_receipt")).isZero();
+    } finally {
+      jdbc.execute("DROP TRIGGER IF EXISTS reject_transfer_outcome ON audit.audit_record");
+      jdbc.execute("DROP FUNCTION IF EXISTS audit.reject_transfer_outcome()");
+    }
+
+    transferOutcomeHandler.handle(event);
+    transferOutcomeHandler.handle(event);
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT state FROM referral.draft WHERE referral_id = ?",
+                String.class,
+                UUID.fromString(referralId)))
+        .isEqualTo("RESOLVED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT outcome FROM referral.resolution WHERE referral_id = ?",
+                String.class,
+                UUID.fromString(referralId)))
+        .isEqualTo("UNFULFILLED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM referral.consumer_event_receipt WHERE event_id = ?",
+                Integer.class,
+                eventId.value()))
+        .isEqualTo(1);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT outcome FROM referral.consumer_event_receipt WHERE event_id = ?",
+                String.class,
+                eventId.value()))
+        .isEqualTo("UNFULFILLED");
+
+    InternalId lateEventId = InternalId.generate();
+    var latePayload = objectMapper.createObjectNode();
+    latePayload.put("referralReference", referralId);
+    latePayload.put("journeyReference", InternalId.generate().toString());
+    latePayload.put("outcome", "UNFULFILLED");
+    AggregatePosition latePosition =
+        new AggregatePosition(position.aggregateRef(), position.sequence() + 1);
+    EventEnvelope lateEnvelope =
+        new EventEnvelope(
+            lateEventId,
+            eventType,
+            "transfer",
+            new OccurredAt(Instant.parse("2026-10-10T10:31:00Z")),
+            new RecordedAt(Instant.now()),
+            producer,
+            Optional.of(latePosition),
+            latePayload);
+    transferOutcomeHandler.handle(
+        new InternalEvent(
+            lateEventId,
+            eventType,
+            "transfer",
+            Optional.of(latePosition),
+            eventEnvelopeCodec.encode(lateEnvelope)));
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT outcome FROM referral.resolution WHERE referral_id = ?",
+                String.class,
+                UUID.fromString(referralId)))
+        .isEqualTo("UNFULFILLED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT outcome FROM referral.consumer_event_receipt WHERE event_id = ?",
+                String.class,
+                lateEventId.value()))
+        .isEqualTo("TERMINAL_NO_STATE_CHANGE");
+  }
+
+  @Test
+  void completedTransferEventResolvesSubmittedReferralAsFulfilled() throws Exception {
+    String referralId =
+        createDraft("transfer-completed-create", "opaque-synthetic-patient-completed");
+    performSubmission(
+            referralId, ORIGINATOR, "transfer-completed-submit", "{\"expectedVersion\":1}")
+        .andExpect(status().isOk());
+    grantService(
+        "ayuvahak-transfer-outcome-consumer", "ReferralResolve", organizationId, facilityId);
+
+    InternalId eventId = InternalId.generate();
+    EventType eventType = EventType.parse("transfer.completed.v1");
+    var scope =
+        RequestedExecutionScope.facility(
+            new ExternalReference(new IssuerId(DIRECTORY_ISSUER), "Organization", organizationId),
+            new ExternalReference(new IssuerId(DIRECTORY_ISSUER), "Facility", facilityId));
+    ExecutionContext producer =
+        executionContextFactory.forBackgroundWork(
+            ActorReference.service(new IssuerId(ISSUER), "synthetic-transfer-producer"),
+            scope,
+            CorrelationId.generate(),
+            Optional.empty());
+    var payload = objectMapper.createObjectNode();
+    payload.put("referralReference", referralId);
+    payload.put("transferReference", InternalId.generate().toString());
+    payload.put("outcome", "COMPLETED");
+    AggregatePosition position =
+        new AggregatePosition("transfer-journey/" + InternalId.generate(), 1);
+    EventEnvelope envelope =
+        new EventEnvelope(
+            eventId,
+            eventType,
+            "transfer",
+            new OccurredAt(Instant.parse("2026-10-10T10:30:00Z")),
+            new RecordedAt(Instant.now()),
+            producer,
+            Optional.of(position),
+            payload);
+    transferOutcomeHandler.handle(
+        new InternalEvent(
+            eventId,
+            eventType,
+            "transfer",
+            Optional.of(position),
+            eventEnvelopeCodec.encode(envelope)));
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT outcome FROM referral.resolution WHERE referral_id = ?",
+                String.class,
+                UUID.fromString(referralId)))
+        .isEqualTo("FULFILLED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT outcome FROM referral.consumer_event_receipt WHERE event_id = ?",
+                String.class,
+                eventId.value()))
+        .isEqualTo("FULFILLED");
+  }
+
+  @Test
   void outboxFailureRollsBackSubmittedCancellationAuditAndReceiptThenSameKeyCanRetry()
       throws Exception {
     String referralId = createDraft("cancel-outbox-create", "opaque-synthetic-patient-outbox");
@@ -463,7 +676,7 @@ class ReferralDraftCommandsApiIT {
     jdbc.execute(
         "CREATE FUNCTION platform_eventing.reject_referral_cancel_outbox() RETURNS trigger "
             + "LANGUAGE plpgsql AS $$ BEGIN "
-            + "IF NEW.state = 'WAITING_FOR_CONSUMER' THEN "
+            + "IF NEW.state = 'PENDING' THEN "
             + "RAISE EXCEPTION 'synthetic outbox failure'; END IF; RETURN NEW; END $$");
     jdbc.execute(
         "CREATE TRIGGER reject_referral_cancel_outbox BEFORE INSERT ON "

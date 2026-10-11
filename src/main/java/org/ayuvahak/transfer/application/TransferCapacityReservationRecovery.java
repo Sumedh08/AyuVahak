@@ -4,6 +4,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.Optional;
+import org.ayuvahak.capacity.domain.CapacityReleaseResult;
 import org.ayuvahak.capacity.domain.CapacityReservationRequest;
 import org.ayuvahak.capacity.domain.CapacityReservationResult;
 import org.ayuvahak.platform.api.PlatformProblemException;
@@ -25,7 +26,9 @@ import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
 import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
 import org.ayuvahak.transfer.adapter.configuration.TransferProperties;
 import org.ayuvahak.transfer.domain.CapacityReservationIntent;
+import org.ayuvahak.transfer.domain.CoordinatedTransfer;
 import org.ayuvahak.transfer.domain.TransferAuthorities;
+import org.ayuvahak.transfer.domain.TransferProgressFact;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
@@ -101,12 +104,112 @@ public final class TransferCapacityReservationRecovery {
         attempt(intent);
         processed++;
       }
+      for (InternalId transferId :
+          transfers.findPendingCancellationTransfers(properties.getReservationBatchSize())) {
+        reconcileCancellation(transferId);
+        processed++;
+      }
     } catch (RuntimeException failure) {
       logger.warn(
           "Transfer Capacity reservation recovery batch stopped failureType={}",
           failure.getClass().getSimpleName());
     }
     return processed;
+  }
+
+  /**
+   * Releases a Capacity-owned hold only after Transfer has durably entered pending cancellation.
+   */
+  public void reconcileCancellation(InternalId transferId) {
+    try {
+      CapacityReservationIntent intent = transfers.findReservationIntent(transferId).orElseThrow();
+      CorrelationId correlation = CorrelationId.generate();
+      ExecutionContext context =
+          contexts.forBackgroundWork(
+              worker,
+              RequestedExecutionScope.facility(intent.organization(), intent.facility()),
+              correlation,
+              Optional.empty());
+      if (!authorizeTransfer(context, transferId)) {
+        return;
+      }
+      CapacityReleaseResult release = capacity.release(context, transferId);
+      completeCancellationRelease(context, intent, release);
+    } catch (RuntimeException failure) {
+      logger.warn(
+          "Transfer cancellation release remains pending correlationId={} failureType={}",
+          CorrelationId.generate(),
+          failure.getClass().getSimpleName());
+    }
+  }
+
+  private void completeCancellationRelease(
+      ExecutionContext context, CapacityReservationIntent intent, CapacityReleaseResult release) {
+    Instant recordedAt = clock.instant();
+    transaction.executeWithoutResult(
+        status -> {
+          CapacityReservationIntent.Outcome reservationOutcome =
+              CapacityReservationIntent.Outcome.valueOf(release.outcome().name());
+          if (!transfers.recordReservationLifecycle(
+              intent.transferId(),
+              release.sequence(),
+              reservationOutcome,
+              Optional.of("CAPACITY_" + release.outcome().name()))) {
+            return;
+          }
+          TransferProgressTarget target =
+              transfers.lockProgressTarget(intent.transferId()).orElse(null);
+          if (target == null
+              || target.transfer().status()
+                  != CoordinatedTransfer.Status.CANCELLATION_PENDING_RELEASE) {
+            return;
+          }
+          CoordinatedTransfer transfer = target.transfer();
+          TransferProgressFact fact =
+              new TransferProgressFact(
+                  InternalId.generate(),
+                  transfer.id(),
+                  transfer.journeyId(),
+                  TransferProgressFact.Kind.CANCELLATION_RELEASE,
+                  Optional.of(transfer.status()),
+                  CoordinatedTransfer.Status.CANCELLED,
+                  Optional.empty(),
+                  Optional.of("CAPACITY_" + release.outcome().name()),
+                  Optional.empty(),
+                  context.actor(),
+                  TransferAuthorities.reservationReconciliation().code(),
+                  context.scope().organization().orElseThrow(),
+                  context.scope().facility().orElseThrow(),
+                  recordedAt,
+                  recordedAt,
+                  Math.addExact(transfer.version(), 1),
+                  Math.addExact(target.journeyVersion(), 1));
+          if (!transfers.recordProgress(fact)) {
+            return;
+          }
+          auditCancellationRelease(context, transfer.id(), release.outcome());
+        });
+  }
+
+  private void auditCancellationRelease(
+      ExecutionContext context, InternalId transferId, CapacityReleaseResult.Outcome outcome) {
+    auditWriter
+        .getObject()
+        .recordMutation(
+            new AuditEvidence(
+                AuditActionKind.PROTECTED_MUTATION,
+                Optional.of(context.actor()),
+                Optional.of(context.scope()),
+                "TRANSFER_CANCELLATION_RELEASE_RECONCILE",
+                "Transfer",
+                Optional.of(transferId),
+                clock.instant(),
+                AuditOutcome.SUCCEEDED,
+                Optional.of("CAPACITY_" + outcome.name()),
+                AuditAuthenticationEvidence.CONFIGURED_SERVICE_IDENTITY,
+                AuditAuthorizationOutcome.ALLOWED,
+                context.correlationId(),
+                Optional.of(targetContext(context))));
   }
 
   private void attempt(CapacityReservationIntent intent) {

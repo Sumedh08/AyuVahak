@@ -12,6 +12,7 @@ import org.ayuvahak.platform.core.ActorReference;
 import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.InternalId;
 import org.ayuvahak.platform.core.IssuerId;
+import org.ayuvahak.platform.event.EventType;
 import org.ayuvahak.platform.idempotency.CommandReceiptKey;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
 import org.ayuvahak.platform.idempotency.configuration.CommandIdempotencyProperties;
@@ -22,6 +23,7 @@ import org.ayuvahak.transfer.domain.CoordinatedTransfer;
 import org.ayuvahak.transfer.domain.ReceivingAssessment;
 import org.ayuvahak.transfer.domain.TransferDecision;
 import org.ayuvahak.transfer.domain.TransferJourney;
+import org.ayuvahak.transfer.domain.TransferJourneyClosure;
 import org.ayuvahak.transfer.domain.TransferProgressCorrection;
 import org.ayuvahak.transfer.domain.TransferProgressFact;
 import org.ayuvahak.transfer.domain.TransferRequestAttempt;
@@ -155,8 +157,87 @@ public class JdbcTransferStore implements TransferStore {
   }
 
   @Override
+  public Optional<TransferJourney> lockJourney(InternalId journeyId) {
+    return jdbc
+        .query(
+            "SELECT journey_id, referral_id, origin_organization_id, origin_facility_id, "
+                + "created_by_kind, created_by_issuer, created_by_identifier_type, created_by_identifier, "
+                + "created_at, version FROM transfer.journey WHERE journey_id = ? FOR UPDATE",
+            JdbcTransferStore::journey,
+            journeyId.value())
+        .stream()
+        .findFirst();
+  }
+
+  @Override
   public Optional<TransferJourney> findJourneyByReferral(InternalId referralId) {
     return findJourney("referral_id", referralId);
+  }
+
+  @Override
+  public Optional<TransferJourneyClosure> findJourneyClosure(InternalId journeyId) {
+    return jdbc
+        .query(
+            "SELECT journey_id, referral_id, reason_code, closed_by_kind, closed_by_issuer, "
+                + "closed_by_identifier_type, closed_by_identifier, authority_code, organization_id, "
+                + "facility_id, occurred_at, recorded_at, aggregate_sequence "
+                + "FROM transfer.journey_closure WHERE journey_id = ?",
+            JdbcTransferStore::journeyClosure,
+            journeyId.value())
+        .stream()
+        .findFirst();
+  }
+
+  @Override
+  public boolean canCloseJourneyUnfulfilled(InternalId journeyId) {
+    return Boolean.TRUE.equals(
+        jdbc.queryForObject(
+            "SELECT EXISTS (SELECT 1 FROM transfer.request_attempt WHERE journey_id = ?) "
+                + "AND NOT EXISTS (SELECT 1 FROM transfer.request_attempt a "
+                + "LEFT JOIN transfer.transfer_record t ON t.request_attempt_id = a.request_attempt_id "
+                + "LEFT JOIN transfer.capacity_reservation_request r ON r.transfer_id = t.transfer_id "
+                + "WHERE a.journey_id = ? AND (a.request_status = 'PENDING' OR "
+                + "(a.request_status = 'ACCEPTED' AND (t.transfer_id IS NULL "
+                + "OR t.transfer_status <> 'CANCELLED' OR r.outcome IS NULL OR r.outcome NOT IN "
+                + "('CONFLICT', 'INVALID', 'UNCONFIGURED', 'RELEASED', 'EXPIRED', 'NOT_RESERVED'))))) "
+                + "AND NOT EXISTS (SELECT 1 FROM transfer.transfer_record t "
+                + "WHERE t.journey_id = ? AND t.transfer_status <> 'CANCELLED')",
+            Boolean.class,
+            journeyId.value(),
+            journeyId.value(),
+            journeyId.value()));
+  }
+
+  @Override
+  public boolean recordJourneyClosure(TransferJourneyClosure closure, long expectedJourneyVersion) {
+    int changed =
+        jdbc.update(
+            "UPDATE transfer.journey SET version = ? WHERE journey_id = ? AND version = ?",
+            closure.journeyVersion(),
+            closure.journeyId().value(),
+            expectedJourneyVersion);
+    if (changed != 1) {
+      return false;
+    }
+    jdbc.update(
+        "INSERT INTO transfer.journey_closure (journey_id, referral_id, outcome, reason_code, "
+            + "closed_by_kind, closed_by_issuer, closed_by_identifier_type, closed_by_identifier, "
+            + "authority_code, organization_id, facility_id, occurred_at, recorded_at, aggregate_sequence) "
+            + "VALUES (?, ?, 'UNFULFILLED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        closure.journeyId().value(),
+        closure.referralId().value(),
+        closure.reasonCode(),
+        closure.closedBy().kind().name(),
+        closure.closedBy().identity().issuer().value(),
+        closure.closedBy().identity().resourceType(),
+        closure.closedBy().identity().value(),
+        closure.authorityCode(),
+        directoryId(closure.organization()),
+        closure.facility().map(JdbcTransferStore::directoryId).orElse(null),
+        Timestamp.from(closure.occurredAt()),
+        Timestamp.from(closure.recordedAt()),
+        closure.journeyVersion());
+    return true;
   }
 
   private Optional<TransferJourney> findJourney(String column, InternalId id) {
@@ -185,6 +266,93 @@ public class JdbcTransferStore implements TransferStore {
             JdbcTransferStore::requestAttempt,
             journeyId.value());
     return rows.stream().findFirst();
+  }
+
+  @Override
+  public Optional<TransferRequestAttempt> findLatestRequest(InternalId journeyId) {
+    return jdbc
+        .query(
+            "SELECT request_attempt_id, journey_id, attempt_number, referral_id, referral_revision, "
+                + "recommendation_id, destination_facility_id, request_status, requested_by_kind, "
+                + "requested_by_issuer, requested_by_identifier_type, requested_by_identifier, "
+                + "requested_at, expires_at, terminal_occurred_at, terminal_recorded_at, version "
+                + "FROM transfer.request_attempt WHERE journey_id = ? "
+                + "ORDER BY attempt_number DESC LIMIT 1",
+            JdbcTransferStore::requestAttempt,
+            journeyId.value())
+        .stream()
+        .findFirst();
+  }
+
+  @Override
+  public Optional<TransferRequestAttempt> findRequestAttempt(
+      InternalId journeyId, int attemptNumber) {
+    return jdbc
+        .query(
+            "SELECT request_attempt_id, journey_id, attempt_number, referral_id, referral_revision, "
+                + "recommendation_id, destination_facility_id, request_status, requested_by_kind, "
+                + "requested_by_issuer, requested_by_identifier_type, requested_by_identifier, "
+                + "requested_at, expires_at, terminal_occurred_at, terminal_recorded_at, version "
+                + "FROM transfer.request_attempt WHERE journey_id = ? AND attempt_number = ?",
+            JdbcTransferStore::requestAttempt,
+            journeyId.value(),
+            attemptNumber)
+        .stream()
+        .findFirst();
+  }
+
+  @Override
+  public Optional<TransferAttemptState> findAttemptState(InternalId requestAttemptId) {
+    return jdbc
+        .query(
+            "SELECT t.transfer_status, r.outcome AS reservation_outcome "
+                + "FROM transfer.transfer_record t LEFT JOIN transfer.capacity_reservation_request r "
+                + "ON r.transfer_id = t.transfer_id WHERE t.request_attempt_id = ?",
+            (result, row) ->
+                new TransferAttemptState(
+                    Optional.ofNullable(result.getString("transfer_status"))
+                        .map(CoordinatedTransfer.Status::valueOf),
+                    Optional.ofNullable(result.getString("reservation_outcome"))
+                        .map(CapacityReservationIntent.Outcome::valueOf)),
+            requestAttemptId.value())
+        .stream()
+        .findFirst();
+  }
+
+  @Override
+  public boolean insertNextRequest(
+      InternalId journeyId, long expectedJourneyVersion, TransferRequestAttempt attempt) {
+    int changed =
+        jdbc.update(
+            "UPDATE transfer.journey SET version = version + 1 "
+                + "WHERE journey_id = ? AND version = ?",
+            journeyId.value(),
+            expectedJourneyVersion);
+    if (changed != 1) {
+      return false;
+    }
+    jdbc.update(
+        "INSERT INTO transfer.request_attempt (request_attempt_id, journey_id, attempt_number, "
+            + "referral_id, referral_revision, recommendation_id, destination_facility_id, "
+            + "request_status, requested_by_kind, requested_by_issuer, requested_by_identifier_type, "
+            + "requested_by_identifier, requested_at, expires_at, version) "
+            + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        attempt.id().value(),
+        attempt.journeyId().value(),
+        attempt.attemptNumber(),
+        attempt.referralId().value(),
+        attempt.referralRevision(),
+        attempt.recommendationId().value(),
+        directoryId(attempt.destinationFacility()),
+        attempt.status().name(),
+        attempt.requestedBy().kind().name(),
+        attempt.requestedBy().identity().issuer().value(),
+        attempt.requestedBy().identity().resourceType(),
+        attempt.requestedBy().identity().value(),
+        Timestamp.from(attempt.requestedAt()),
+        Timestamp.from(attempt.expiresAt()),
+        attempt.version());
+    return true;
   }
 
   @Override
@@ -591,6 +759,87 @@ public class JdbcTransferStore implements TransferStore {
   }
 
   @Override
+  public List<InternalId> findPendingCancellationTransfers(int limit) {
+    if (limit < 1 || limit > 500) {
+      throw new IllegalArgumentException(
+          "cancellation recovery scan limit must be between 1 and 500");
+    }
+    return jdbc.query(
+        "SELECT transfer_id FROM transfer.transfer_record "
+            + "WHERE transfer_status = 'CANCELLATION_PENDING_RELEASE' "
+            + "ORDER BY created_at, transfer_id LIMIT ?",
+        (result, row) -> new InternalId(result.getObject("transfer_id", UUID.class)),
+        limit);
+  }
+
+  @Override
+  public boolean claimConsumerEvent(InternalId eventId, EventType eventType, Instant recordedAt) {
+    return jdbc.update(
+            "INSERT INTO transfer.consumer_event_receipt "
+                + "(event_id, event_type, event_state, recorded_at) "
+                + "VALUES (?, ?, 'PROCESSING', ?) ON CONFLICT (event_id) DO NOTHING",
+            eventId.value(),
+            eventType.toString(),
+            Timestamp.from(recordedAt))
+        == 1;
+  }
+
+  @Override
+  public void completeConsumerEvent(
+      InternalId eventId, Optional<InternalId> transferId, String outcome, Instant recordedAt) {
+    int changed =
+        jdbc.update(
+            "UPDATE transfer.consumer_event_receipt SET event_state = 'COMPLETED', "
+                + "transfer_id = ?, outcome = ?, recorded_at = ? "
+                + "WHERE event_id = ? AND event_state = 'PROCESSING'",
+            transferId.map(InternalId::value).orElse(null),
+            outcome,
+            Timestamp.from(recordedAt),
+            eventId.value());
+    if (changed != 1) {
+      throw new IllegalStateException("Transfer event consumer receipt could not be completed");
+    }
+  }
+
+  @Override
+  public boolean advanceCapacityEventSequence(InternalId transferId, long sequence) {
+    if (sequence < 1) {
+      throw new IllegalArgumentException("Capacity reservation event sequence must be positive");
+    }
+    return jdbc.update(
+            "UPDATE transfer.capacity_reservation_request SET last_capacity_event_sequence = ? "
+                + "WHERE transfer_id = ? AND last_capacity_event_sequence < ?",
+            sequence,
+            transferId.value(),
+            sequence)
+        == 1;
+  }
+
+  @Override
+  public boolean recordReservationLifecycle(
+      InternalId transferId,
+      long sequence,
+      CapacityReservationIntent.Outcome outcome,
+      Optional<String> reasonCode) {
+    if (sequence < 0) {
+      throw new IllegalArgumentException("Capacity reservation sequence cannot be negative");
+    }
+    return jdbc.update(
+            "UPDATE transfer.capacity_reservation_request SET outcome = ?, "
+                + "reservation_id = CASE WHEN ? IN ('RELEASED', 'EXPIRED', 'AT_RISK') "
+                + "THEN reservation_id ELSE NULL END, reason_code = ?, "
+                + "last_capacity_event_sequence = GREATEST(last_capacity_event_sequence, ?) "
+                + "WHERE transfer_id = ? AND last_capacity_event_sequence <= ?",
+            outcome.name(),
+            outcome.name(),
+            reasonCode.orElse(null),
+            sequence,
+            transferId.value(),
+            sequence)
+        == 1;
+  }
+
+  @Override
   public boolean recordReservationOutcome(
       InternalId transferId,
       int expectedAttemptCount,
@@ -930,6 +1179,22 @@ public class JdbcTransferStore implements TransferStore {
         actor(result, "created_by"),
         result.getTimestamp("created_at").toInstant(),
         result.getLong("version"));
+  }
+
+  private static TransferJourneyClosure journeyClosure(ResultSet result, int row)
+      throws SQLException {
+    return new TransferJourneyClosure(
+        internalId(result, "journey_id"),
+        internalId(result, "referral_id"),
+        result.getString("reason_code"),
+        actor(result, "closed_by"),
+        result.getString("authority_code"),
+        directoryReference("Organization", result.getObject("organization_id", UUID.class)),
+        Optional.ofNullable(result.getObject("facility_id", UUID.class))
+            .map(id -> directoryReference("Facility", id)),
+        result.getTimestamp("occurred_at").toInstant(),
+        result.getTimestamp("recorded_at").toInstant(),
+        result.getLong("aggregate_sequence"));
   }
 
   private static TransferRequestAttempt requestAttempt(ResultSet result, int row)
