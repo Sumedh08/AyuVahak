@@ -69,7 +69,7 @@ public final class TransferViews {
                   recordDenial(context, "TRANSFER_JOURNEY_READ", "TransferJourney", journeyId);
                   return notFound();
                 });
-    Page<RequestAttemptView> attempts = page(rows.attempts(), page, size);
+    Page<RequestAttemptView> attempts = pageWindow(rows.attempts(), page, size);
     recordRead(context, "TRANSFER_JOURNEY_READ", "TransferJourney", journeyId);
     return new JourneyPage(
         rows.journeyId(),
@@ -90,7 +90,7 @@ public final class TransferViews {
     authorize(context, "TRANSFER_INCOMING_REQUESTS_READ", scopeTarget(context.scope()));
     InternalId facilityId = InternalId.parse(context.scope().facility().orElseThrow().value());
     List<IncomingRequest> rows = store.pendingIncoming(facilityId, offset(page, size), size + 1);
-    Page<IncomingRequest> result = page(rows, page, size);
+    Page<IncomingRequest> result = pageWindow(rows, page, size);
     recordRead(context, "TRANSFER_INCOMING_REQUESTS_READ", "TransferRequestCollection", facilityId);
     return result;
   }
@@ -101,7 +101,8 @@ public final class TransferViews {
     requireScope(context, false);
     authorize(context, "TRANSFER_LIST_READ", scopeTarget(context.scope()));
     Page<TransferSummary> result =
-        page(store.transfers(context.scope(), status, offset(page, size), size + 1), page, size);
+        pageWindow(
+            store.transfers(context.scope(), status, offset(page, size), size + 1), page, size);
     recordRead(context, "TRANSFER_LIST_READ", "TransferCollection", scopeTarget(context.scope()));
     return result;
   }
@@ -294,9 +295,10 @@ public final class TransferViews {
     }
   }
 
-  private static <T> Page<T> page(List<T> rows, int page, int size) {
-    boolean hasMore = rows.size() > size;
-    List<T> items = hasMore ? rows.subList(0, size) : rows;
+  /** Adds page metadata to a database-windowed result; the SQL query already applied the offset. */
+  private static <T> Page<T> pageWindow(List<T> windowRows, int page, int size) {
+    boolean hasMore = windowRows.size() > size;
+    List<T> items = hasMore ? windowRows.subList(0, size) : windowRows;
     return new Page<>(items, page, size, hasMore);
   }
 

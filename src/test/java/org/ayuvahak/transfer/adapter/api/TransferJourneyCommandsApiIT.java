@@ -275,6 +275,104 @@ class TransferJourneyCommandsApiIT {
   }
 
   @Test
+  void journeyHistoryLaterPageReturnsNextAttemptWithoutSkippingItTwice() throws Exception {
+    Scope origin = createOriginAndDestination();
+    grantSender(origin);
+    matching.returnApplicable(origin.referralId());
+    String firstResponse =
+        createRequest(origin, "journey-history-page-first")
+            .andExpect(status().isCreated())
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+    String journeyId = com.jayway.jsonpath.JsonPath.read(firstResponse, "$.journeyId");
+    String firstAttemptId = com.jayway.jsonpath.JsonPath.read(firstResponse, "$.requestAttemptId");
+    grantReceivingAuthority(origin, "synthetic-page-receiver", "AcceptanceAuthority");
+    receivingCommand(
+            origin,
+            firstAttemptId,
+            "rejection",
+            "synthetic-page-receiver",
+            "journey-history-page-reject-first",
+            "{\"expectedVersion\":1,\"reasonCode\":\"DESTINATION_UNAVAILABLE\","
+                + "\"occurredAt\":\"2026-10-10T11:20:00Z\"}")
+        .andExpect(status().isCreated());
+
+    InternalId secondFacilityId = InternalId.generate();
+    Instant createdAt = Instant.now();
+    directory.insertFacility(
+        new Facility(
+            secondFacilityId,
+            InternalId.parse(origin.originOrganizationId()),
+            "Synthetic second page destination",
+            new DirectorySource(
+                new ExternalReference(
+                    new IssuerId("urn:synthetic:directory-source"),
+                    "Facility",
+                    "page-destination-" + UUID.randomUUID())),
+            new DirectoryProvenance(
+                "MANUAL_REVIEW",
+                createdAt,
+                ActorReference.human(new IssuerId("urn:synthetic:fixture"), "directory-fixture"),
+                createdAt,
+                "TEST_FIXTURE"),
+            DirectoryLifecycleStatus.ACTIVE,
+            1));
+    matching.returnApplicable(origin.referralId());
+    String secondResponse =
+        mockMvc
+            .perform(
+                post("/api/v1/transfer-journeys/{journeyId}/request-attempts", journeyId)
+                    .header("Authorization", "Bearer " + token(SENDER))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", origin.originOrganizationId())
+                    .header("X-AyuVahak-Facility-Id", origin.originFacilityId())
+                    .header("Idempotency-Key", "journey-history-page-second")
+                    .contentType("application/json")
+                    .content(
+                        "{\"expectedVersion\":1,\"referralRevision\":4,\"recommendationId\":\""
+                            + origin.recommendationId()
+                            + "\",\"candidateFacilityId\":\""
+                            + secondFacilityId
+                            + "\"}"))
+            .andExpect(status().isCreated())
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+    String secondAttemptId =
+        com.jayway.jsonpath.JsonPath.read(secondResponse, "$.requestAttemptId");
+    grantOriginAuthority("synthetic-journey-page-viewer", "TransferViewAuthority", origin);
+
+    mockMvc
+        .perform(
+            get("/api/v1/transfer-journeys/{journeyId}", journeyId)
+                .param("page", "0")
+                .param("size", "1")
+                .header("Authorization", "Bearer " + token("synthetic-journey-page-viewer"))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", origin.originOrganizationId())
+                .header("X-AyuVahak-Facility-Id", origin.originFacilityId()))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.items.length()").value(1))
+        .andExpect(jsonPath("$.items[0].requestAttemptId").value(firstAttemptId))
+        .andExpect(jsonPath("$.hasMore").value(true));
+
+    mockMvc
+        .perform(
+            get("/api/v1/transfer-journeys/{journeyId}", journeyId)
+                .param("page", "1")
+                .param("size", "1")
+                .header("Authorization", "Bearer " + token("synthetic-journey-page-viewer"))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", origin.originOrganizationId())
+                .header("X-AyuVahak-Facility-Id", origin.originFacilityId()))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.items.length()").value(1))
+        .andExpect(jsonPath("$.items[0].requestAttemptId").value(secondAttemptId))
+        .andExpect(jsonPath("$.hasMore").value(false));
+  }
+
+  @Test
   void journeyViewHidesNonparticipantsAndHonorsRevokedGrant() throws Exception {
     Scope scope = createOriginAndDestination();
     grantSender(scope);
@@ -716,6 +814,110 @@ class TransferJourneyCommandsApiIT {
                 "SELECT COUNT(*) FROM audit.audit_record WHERE action_code IN "
                     + "('TRANSFER_LIST_READ', 'TRANSFER_READ') AND outcome = 'SUCCEEDED'"))
         .isEqualTo(2);
+  }
+
+  @Test
+  void transferListOrdersByLatestProgressFactAndFallsBackToCreationBeforeProgress()
+      throws Exception {
+    Scope firstScope = createOriginAndDestination();
+    String firstTransferId = createReadyTransfer(firstScope, "view-order-first");
+
+    InternalId secondFacilityId = InternalId.generate();
+    Instant facilityCreatedAt = Instant.now();
+    directory.insertFacility(
+        new Facility(
+            secondFacilityId,
+            InternalId.parse(firstScope.originOrganizationId()),
+            "Synthetic second transfer-view destination",
+            new DirectorySource(
+                new ExternalReference(
+                    new IssuerId("urn:synthetic:directory-source"),
+                    "Facility",
+                    "transfer-view-order-" + UUID.randomUUID())),
+            new DirectoryProvenance(
+                "MANUAL_REVIEW",
+                facilityCreatedAt,
+                ActorReference.human(new IssuerId("urn:synthetic:fixture"), "directory-fixture"),
+                facilityCreatedAt,
+                "TEST_FIXTURE"),
+            DirectoryLifecycleStatus.ACTIVE,
+            1));
+    Scope secondScope =
+        firstScope.withDifferentReferralId().withDestinationFacility(secondFacilityId.toString());
+    matching.returnApplicable(secondScope.referralId());
+    grantCapacityReporter(secondScope);
+    recordCoordinationSlotObservation(secondScope, 1, "view-order-second-capacity");
+    grantReservationWorker(secondScope);
+    String secondRequest = createRequestAttempt(secondScope, "view-order-second-request");
+    preparePositiveAcceptance(secondScope, secondRequest);
+    String secondAcceptance = acceptRequest(secondScope, secondRequest, "view-order-second-accept");
+    String secondTransferId = com.jayway.jsonpath.JsonPath.read(secondAcceptance, "$.transferId");
+    assertThat(com.jayway.jsonpath.JsonPath.read(secondAcceptance, "$.status").toString())
+        .isEqualTo("READY");
+
+    grantOriginAuthority("synthetic-transfer-order-viewer", "TransferViewAuthority", firstScope);
+    String beforeProgress =
+        mockMvc
+            .perform(
+                get("/api/v1/transfers")
+                    .param("page", "0")
+                    .param("size", "10")
+                    .header("Authorization", "Bearer " + token("synthetic-transfer-order-viewer"))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", firstScope.originOrganizationId())
+                    .header("X-AyuVahak-Facility-Id", firstScope.originFacilityId()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.items.length()").value(2))
+            .andExpect(jsonPath("$.items[0].transferId").value(secondTransferId))
+            .andExpect(jsonPath("$.items[1].transferId").value(firstTransferId))
+            .andExpect(jsonPath("$.items[0].lastAggregateSequence").value(0))
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+    assertThat(
+            com.jayway.jsonpath.JsonPath.read(beforeProgress, "$.items[0].lastEventAt").toString())
+        .isEqualTo(
+            com.jayway.jsonpath.JsonPath.read(beforeProgress, "$.items[0].createdAt").toString());
+
+    grantFacilityAuthority("synthetic-transfer-mover", "TransferProgressAuthority", firstScope);
+    Instant departureAt = Instant.now().plusSeconds(2);
+    progressCommand(
+            firstScope,
+            firstTransferId,
+            "departure",
+            "synthetic-transfer-mover",
+            "view-order-first-departure",
+            "{\"expectedVersion\":2,\"occurredAt\":\""
+                + departureAt
+                + "\",\"sourceReference\":\"synthetic:view-order-departure\"}")
+        .andExpect(status().isCreated());
+    long latestProgressSequence =
+        jdbc.queryForObject(
+            "SELECT aggregate_sequence FROM transfer.progress_fact WHERE transfer_id = ? "
+                + "ORDER BY occurred_at DESC, aggregate_sequence DESC LIMIT 1",
+            Long.class,
+            UUID.fromString(firstTransferId));
+    Instant latestProgressAt =
+        jdbc.queryForObject(
+            "SELECT occurred_at FROM transfer.progress_fact WHERE transfer_id = ? "
+                + "ORDER BY occurred_at DESC, aggregate_sequence DESC LIMIT 1",
+            (result, row) -> result.getTimestamp("occurred_at").toInstant(),
+            UUID.fromString(firstTransferId));
+
+    mockMvc
+        .perform(
+            get("/api/v1/transfers")
+                .param("page", "0")
+                .param("size", "10")
+                .header("Authorization", "Bearer " + token("synthetic-transfer-order-viewer"))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", firstScope.originOrganizationId())
+                .header("X-AyuVahak-Facility-Id", firstScope.originFacilityId()))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.items[0].transferId").value(firstTransferId))
+        .andExpect(jsonPath("$.items[0].lastAggregateSequence").value(latestProgressSequence))
+        .andExpect(jsonPath("$.items[0].lastEventAt").value(latestProgressAt.toString()))
+        .andExpect(jsonPath("$.items[1].transferId").value(secondTransferId));
   }
 
   @Test
