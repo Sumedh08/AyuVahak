@@ -16,7 +16,7 @@ import org.ayuvahak.capacity.domain.CapacityReservationOutcome;
 import org.ayuvahak.capacity.domain.CapacityReservationRequest;
 import org.ayuvahak.capacity.domain.CapacityReservationResult;
 import org.ayuvahak.capacity.domain.CapacityValueKind;
-import org.ayuvahak.directory.application.DirectoryScopeReferenceLookup;
+import org.ayuvahak.directory.application.DirectoryCapacityLifecycleOrganizationLookup;
 import org.ayuvahak.platform.api.PlatformErrorCode;
 import org.ayuvahak.platform.api.PlatformProblemException;
 import org.ayuvahak.platform.audit.application.AuditPersistenceUnavailableException;
@@ -82,7 +82,7 @@ public final class CapacityReservationCommands {
   private final Clock clock;
   private final ObjectMapper objectMapper;
   private final ObjectProvider<OutboxWriter> outboxWriter;
-  private final DirectoryScopeReferenceLookup directory;
+  private final DirectoryCapacityLifecycleOrganizationLookup directory;
   private final ExecutionContextFactory contexts;
   private final CapacityReservationLifecycleProperties lifecycleProperties;
   private final ActorReference lifecycleWorker;
@@ -98,7 +98,7 @@ public final class CapacityReservationCommands {
       @Qualifier("auditClock") Clock clock,
       ObjectMapper objectMapper,
       ObjectProvider<OutboxWriter> outboxWriter,
-      DirectoryScopeReferenceLookup directory,
+      DirectoryCapacityLifecycleOrganizationLookup directory,
       ExecutionContextFactory contexts,
       CapacityReservationLifecycleProperties lifecycleProperties,
       AuthenticationProperties authentication) {
@@ -141,12 +141,14 @@ public final class CapacityReservationCommands {
 
   private boolean reconcileLifecycleCandidate(
       CapacityReservationStore.LifecycleCandidate candidate) {
+    CorrelationId correlation = CorrelationId.generate();
+    ExecutionContext directoryContext =
+        contexts.forDeploymentBoundedBackgroundWork(lifecycleWorker, correlation);
     Optional<ExternalReference> organization =
-        directory.findActiveFacilityOrganization(candidate.facility());
+        directory.getCapacityLifecycleFacilityOrganization(directoryContext, candidate.facility());
     if (organization.isEmpty()) {
       return false;
     }
-    CorrelationId correlation = CorrelationId.generate();
     ExecutionContext context =
         contexts.forBackgroundWork(
             lifecycleWorker,

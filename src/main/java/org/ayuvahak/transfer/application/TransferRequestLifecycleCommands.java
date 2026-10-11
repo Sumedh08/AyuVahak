@@ -86,7 +86,10 @@ public final class TransferRequestLifecycleCommands {
             return replay;
           }
           TransferRequestAttempt attempt = requiredAttempt(requestAttemptId);
-          TransferJourney journey = requiredJourney(attempt);
+          TransferJourney journey =
+              store
+                  .lockJourney(attempt.journeyId())
+                  .orElseThrow(TransferRequestLifecycleCommands::unavailable);
           requireOriginTarget(context, journey, requestAttemptId);
           requirePending(attempt, expectedVersion, now);
           long resultVersion = expectedVersion + 1;
@@ -125,7 +128,10 @@ public final class TransferRequestLifecycleCommands {
             return replay;
           }
           TransferRequestAttempt attempt = requiredAttempt(requestAttemptId);
-          TransferJourney journey = requiredJourney(attempt);
+          TransferJourney journey =
+              store
+                  .lockJourney(attempt.journeyId())
+                  .orElseThrow(TransferRequestLifecycleCommands::unavailable);
           requireOriginOrganization(context, journey, requestAttemptId);
           if (attempt.status() != TransferRequestAttempt.Status.PENDING) {
             throw notPending();
@@ -179,12 +185,6 @@ public final class TransferRequestLifecycleCommands {
 
   private TransferRequestAttempt requiredAttempt(InternalId id) {
     return store.findRequestAttempt(id).orElseThrow(TransferRequestLifecycleCommands::notFound);
-  }
-
-  private TransferJourney requiredJourney(TransferRequestAttempt attempt) {
-    return store
-        .findJourney(attempt.journeyId())
-        .orElseThrow(TransferRequestLifecycleCommands::unavailable);
   }
 
   private static void requireOriginScope(ExecutionContext context) {

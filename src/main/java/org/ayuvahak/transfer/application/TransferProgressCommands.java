@@ -385,6 +385,12 @@ public final class TransferProgressCommands {
         }
         yield new Transition(CoordinatedTransfer.Status.CANCELLATION_PENDING_RELEASE, null);
       }
+      case FINAL_ABANDONMENT -> {
+        if (current != CoordinatedTransfer.Status.INTERRUPTED) {
+          throw stateConflict();
+        }
+        yield new Transition(CoordinatedTransfer.Status.CANCELLATION_PENDING_RELEASE, null);
+      }
       case CANCELLATION_RELEASE -> {
         if (current != CoordinatedTransfer.Status.CANCELLATION_PENDING_RELEASE) {
           throw stateConflict();
@@ -460,9 +466,11 @@ public final class TransferProgressCommands {
         target.originOrganization().equals(organization)
             && target.originFacility().filter(facility::equals).isPresent();
     boolean permitted =
-        kind == TransferProgressFact.Kind.HANDOVER || kind == TransferProgressFact.Kind.COMPLETION
-            ? receiving
-            : receiving || origin;
+        switch (kind) {
+          case HANDOVER, COMPLETION -> receiving;
+          case FINAL_ABANDONMENT -> origin;
+          default -> receiving || origin;
+        };
     if (!permitted) {
       recordDenial(context, transferId, actionCode(kind), "TRANSFER_SCOPE_MISMATCH");
       throw problem(
@@ -502,6 +510,7 @@ public final class TransferProgressCommands {
       case HANDOVER -> TransferAuthorities.handover().code();
       case COMPLETION -> TransferAuthorities.completion().code();
       case CANCELLATION -> TransferAuthorities.progress().code();
+      case FINAL_ABANDONMENT -> TransferAuthorities.progress().code();
       case CANCELLATION_RELEASE -> TransferAuthorities.reservationReconciliation().code();
       case REFERRAL_CANCELLATION, CAPACITY_EXCEPTION ->
           TransferAuthorities.reservationReconciliation().code();
@@ -513,6 +522,7 @@ public final class TransferProgressCommands {
     if ((kind == TransferProgressFact.Kind.INTERRUPTION
             || kind == TransferProgressFact.Kind.COMPLETION
             || kind == TransferProgressFact.Kind.CANCELLATION
+            || kind == TransferProgressFact.Kind.FINAL_ABANDONMENT
             || kind == TransferProgressFact.Kind.REFERRAL_CANCELLATION
             || kind == TransferProgressFact.Kind.CAPACITY_EXCEPTION)
         && reasonCode.isEmpty()) {

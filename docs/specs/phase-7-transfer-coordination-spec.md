@@ -59,6 +59,8 @@ Acceptance transactionally commits in Transfer and creates a Transfer in `AWAITI
 
 Capacity serializes the last-unit race in its own PostgreSQL transaction. For available quantity 1 and two concurrent requests for the same dimension/unit/overlapping time, exactly one hold commits. Holds with non-overlapping intervals only share capacity if the dimension policy explicitly defines that behavior. No distributed lock and no direct Transfer write to Capacity storage.
 
+Capacity's reservation lifecycle worker resolves an active Facility's Organization through Directory's `GetCapacityLifecycleFacilityOrganization` owner operation, with the same correlation used for the Capacity lifecycle action. This operation returns only one Organization reference, requires the dedicated platform-scoped `DirectoryCapacityLifecycleOrganizationRead` service grant, and audits the Facility target and `CAPACITY_LIFECYCLE_RECONCILIATION` purpose before disclosure. Provision that grant only when Directory is bounded to the deployment; neither Capacity nor another context reads Directory persistence directly.
+
 ## Rerouting and golden paths
 
 A rejection, expiry, withdrawal, stale recommendation, unavailable destination, or reservation conflict does not erase history. The next attempt is a new ordered TransferRequestAttempt on the same TransferJourney. Before each new attempt, Transfer calls Matching's synchronous applicability contract for the exact snapshot, candidate and current Referral revision; only `APPLICABLE` permits the request. Recompute a new Recommendation if applicability is `NOT_APPLICABLE`; if it is `INDETERMINATE`, surface the owner-query uncertainty and do not proceed. Only one pending attempt remains at a time.

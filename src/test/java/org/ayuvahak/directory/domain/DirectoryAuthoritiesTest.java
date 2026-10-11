@@ -31,6 +31,11 @@ class DirectoryAuthoritiesTest {
         .isEqualTo("DirectoryVocabularyAdministration");
     assertThat(DirectoryAuthorities.vocabularyAdministration().allowedScopeKinds())
         .isEqualTo(Set.of(ExecutionScope.Kind.PLATFORM));
+
+    assertThat(DirectoryAuthorities.capacityLifecycleOrganizationRead().code())
+        .isEqualTo("DirectoryCapacityLifecycleOrganizationRead");
+    assertThat(DirectoryAuthorities.capacityLifecycleOrganizationRead().allowedScopeKinds())
+        .isEqualTo(Set.of(ExecutionScope.Kind.PLATFORM));
   }
 
   @Test

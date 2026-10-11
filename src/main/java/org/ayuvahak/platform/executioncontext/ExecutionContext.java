@@ -94,6 +94,22 @@ public final class ExecutionContext {
         scopeValidator);
   }
 
+  static ExecutionContext forDeploymentBoundedBackgroundWork(
+      ActorReference configuredServiceActor,
+      CorrelationId correlationId,
+      ExecutionScopeValidator scopeValidator) {
+    requireActorKind(
+        configuredServiceActor, ActorKind.SERVICE, "background work requires a service actor");
+    return create(
+        configuredServiceActor,
+        RequestedExecutionScope.platform(),
+        correlationId,
+        Optional.empty(),
+        SourceKind.BACKGROUND_WORK,
+        AuthenticationMechanism.CONFIGURED_SERVICE_IDENTITY,
+        scopeValidator);
+  }
+
   static ExecutionContext forLocalOperatorBootstrap(
       ActorReference operator, CorrelationId correlationId) {
     requireActorKind(

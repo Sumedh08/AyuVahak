@@ -23,4 +23,9 @@ public class DirectoryAuthorityConfiguration {
   FunctionalAuthority directoryVocabularyAdministrationAuthority() {
     return DirectoryAuthorities.vocabularyAdministration();
   }
+
+  @Bean
+  FunctionalAuthority directoryCapacityLifecycleOrganizationReadAuthority() {
+    return DirectoryAuthorities.capacityLifecycleOrganizationRead();
+  }
 }

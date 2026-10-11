@@ -87,35 +87,35 @@ public final class TransferProgressController {
       @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityId,
       @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
       @RequestBody JsonNode body) {
-    InternalId id = parseId(transferId, "Transfer id");
-    RequestContent content = requestContent(body);
-    ExecutionContext context = executionContext(actor, scope, organizationId, facilityId);
-    TransferProgressCommandResult cancellation =
-        commands.record(
-            context,
-            id,
-            TransferProgressFact.Kind.CANCELLATION,
-            content.occurredAt(),
-            content.reasonCode(),
-            content.sourceReference(),
-            content.expectedVersion(),
-            idempotencyKey,
-            RequestFingerprint.from(content.normalized()));
-    reservationRecovery.reconcileCancellation(id);
-    TransferProgressHistory history = commands.history(context, id);
-    TransferProgressFact latest = history.facts().getLast();
-    HttpHeaders headers = new HttpHeaders();
-    headers.setLocation(URI.create("/api/v1/transfers/" + id + "/progress"));
-    headers.set(CorrelationIdFilter.HEADER_NAME, correlationId().value());
-    if (cancellation.commandReplayed()) {
-      headers.set("Idempotency-Replayed", "true");
-    }
-    HttpStatus status =
-        latest.status() == org.ayuvahak.transfer.domain.CoordinatedTransfer.Status.CANCELLED
-            ? HttpStatus.CREATED
-            : HttpStatus.ACCEPTED;
-    return new ResponseEntity<>(
-        ProgressRepresentation.from(latest, cancellation.commandReplayed()), headers, status);
+    return reconcileCancellation(
+        transferId,
+        actor,
+        scope,
+        organizationId,
+        facilityId,
+        idempotencyKey,
+        body,
+        TransferProgressFact.Kind.CANCELLATION);
+  }
+
+  @PostMapping("/abandonment")
+  public ResponseEntity<ProgressRepresentation> abandonment(
+      @PathVariable String transferId,
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
+      @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationId,
+      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityId,
+      @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+      @RequestBody JsonNode body) {
+    return reconcileCancellation(
+        transferId,
+        actor,
+        scope,
+        organizationId,
+        facilityId,
+        idempotencyKey,
+        body,
+        TransferProgressFact.Kind.FINAL_ABANDONMENT);
   }
 
   @PostMapping("/departure")
@@ -321,6 +321,46 @@ public final class TransferProgressController {
         ProgressRepresentation.from(result.fact(), result.commandReplayed()),
         headers,
         HttpStatus.CREATED);
+  }
+
+  private ResponseEntity<ProgressRepresentation> reconcileCancellation(
+      String transferId,
+      ActorReference actor,
+      String scope,
+      String organizationId,
+      String facilityId,
+      String idempotencyKey,
+      JsonNode body,
+      TransferProgressFact.Kind kind) {
+    InternalId id = parseId(transferId, "Transfer id");
+    RequestContent content = requestContent(body);
+    ExecutionContext context = executionContext(actor, scope, organizationId, facilityId);
+    TransferProgressCommandResult command =
+        commands.record(
+            context,
+            id,
+            kind,
+            content.occurredAt(),
+            content.reasonCode(),
+            content.sourceReference(),
+            content.expectedVersion(),
+            idempotencyKey,
+            RequestFingerprint.from(content.normalized()));
+    reservationRecovery.reconcileCancellation(id);
+    TransferProgressHistory history = commands.history(context, id);
+    TransferProgressFact latest = history.facts().getLast();
+    HttpHeaders headers = new HttpHeaders();
+    headers.setLocation(URI.create("/api/v1/transfers/" + id + "/progress"));
+    headers.set(CorrelationIdFilter.HEADER_NAME, correlationId().value());
+    if (command.commandReplayed()) {
+      headers.set("Idempotency-Replayed", "true");
+    }
+    HttpStatus status =
+        latest.status() == org.ayuvahak.transfer.domain.CoordinatedTransfer.Status.CANCELLED
+            ? HttpStatus.CREATED
+            : HttpStatus.ACCEPTED;
+    return new ResponseEntity<>(
+        ProgressRepresentation.from(latest, command.commandReplayed()), headers, status);
   }
 
   private ExecutionContext executionContext(

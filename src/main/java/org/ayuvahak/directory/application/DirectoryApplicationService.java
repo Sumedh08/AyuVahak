@@ -43,6 +43,7 @@ import org.ayuvahak.platform.core.CorrelationId;
 import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.InternalId;
 import org.ayuvahak.platform.core.IssuerId;
+import org.ayuvahak.platform.core.SourceKind;
 import org.ayuvahak.platform.executioncontext.AuthenticationMechanism;
 import org.ayuvahak.platform.executioncontext.ExecutionContext;
 import org.ayuvahak.platform.executioncontext.ExecutionScope;
@@ -63,7 +64,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 /** Use cases for Directory Organization and Facility facts. */
 @Service
 @Lazy
-public class DirectoryApplicationService {
+public class DirectoryApplicationService implements DirectoryCapacityLifecycleOrganizationLookup {
 
   private static final String DIRECTORY_ISSUER = "urn:ayuvahak:directory";
   private static final int DEFAULT_PAGE_SIZE = 50;
@@ -102,6 +103,116 @@ public class DirectoryApplicationService {
         TransactionDefinition.ISOLATION_REPEATABLE_READ);
     matchingCandidateReadTransaction.setTimeout(MATCHING_OWNER_READ_TIMEOUT_SECONDS);
     this.clock = Objects.requireNonNull(clock, "clock");
+  }
+
+  /** Resolves only the active Organization reference for one Capacity-owned lifecycle Facility. */
+  @Override
+  public Optional<ExternalReference> getCapacityLifecycleFacilityOrganization(
+      ExecutionContext context, ExternalReference facility) {
+    Objects.requireNonNull(context, "execution context");
+    Objects.requireNonNull(facility, "facility reference");
+    if (!DIRECTORY_ISSUER.equals(facility.issuer().value())
+        || !"Facility".equals(facility.resourceType())) {
+      throw validation("A Directory Facility reference is required for lifecycle reconciliation.");
+    }
+    InternalId facilityId;
+    try {
+      facilityId = InternalId.parse(facility.value());
+    } catch (IllegalArgumentException invalidReference) {
+      throw validation("A Directory Facility reference is required for lifecycle reconciliation.");
+    }
+    String actionCode = "DIRECTORY_CAPACITY_LIFECYCLE_ORGANIZATION_READ";
+    if (context.actor().kind() != ActorKind.SERVICE
+        || context.scope().kind() != ExecutionScope.Kind.PLATFORM
+        || context.sourceKind() != SourceKind.BACKGROUND_WORK
+        || context.authenticationMechanism()
+            != AuthenticationMechanism.CONFIGURED_SERVICE_IDENTITY) {
+      recordDenial(
+          context,
+          actionCode,
+          "Facility",
+          Optional.of(facilityId),
+          Optional.empty(),
+          Optional.empty(),
+          "SERVICE_CONTEXT_REQUIRED");
+      throw problem(
+          HttpStatus.FORBIDDEN,
+          PlatformErrorCode.AUTHORIZATION_DENIED,
+          "Capacity lifecycle lookup requires its configured platform-scoped service identity.");
+    }
+    AuthorizationDecision decision =
+        authorization
+            .getObject()
+            .evaluate(context, DirectoryAuthorities.capacityLifecycleOrganizationRead().code());
+    if (!decision.isAllowed()) {
+      String reasonCode = decision.denialReason().map(Enum::name).orElse("AUTHORIZATION_DENIED");
+      recordDenial(
+          context,
+          actionCode,
+          "Facility",
+          Optional.of(facilityId),
+          Optional.empty(),
+          Optional.empty(),
+          reasonCode);
+      if (decision.denialReason().orElse(null)
+          == AuthorizationDecision.DenialReason.GRANT_STORE_UNAVAILABLE) {
+        throw problem(
+            HttpStatus.SERVICE_UNAVAILABLE,
+            PlatformErrorCode.AUTHORIZATION_UNAVAILABLE,
+            "Directory authorization could not be evaluated safely.");
+      }
+      throw problem(
+          HttpStatus.FORBIDDEN,
+          PlatformErrorCode.AUTHORIZATION_DENIED,
+          "The configured service is not authorized for the Capacity lifecycle lookup.");
+    }
+
+    Optional<ExternalReference> organization;
+    try {
+      organization = store.findActiveFacilityOrganization(facility);
+    } catch (DirectoryScopeLookupUnavailableException unavailable) {
+      throw capacityLifecycleReadUnavailable();
+    }
+    auditCapacityLifecycleOrganizationRead(context, facility, facilityId, organization);
+    return organization;
+  }
+
+  private void auditCapacityLifecycleOrganizationRead(
+      ExecutionContext context,
+      ExternalReference facility,
+      InternalId facilityId,
+      Optional<ExternalReference> organization) {
+    Optional<AuditTargetContext> targetContext =
+        organization.map(
+            organizationReference ->
+                new AuditTargetContext(
+                    ExecutionScope.Kind.FACILITY,
+                    Optional.of(organizationReference),
+                    Optional.of(facility)));
+    try {
+      auditWriter
+          .getObject()
+          .recordNonMutating(
+              new AuditEvidence(
+                  AuditActionKind.SENSITIVE_READ,
+                  Optional.of(context.actor()),
+                  Optional.of(context.scope()),
+                  "DIRECTORY_CAPACITY_LIFECYCLE_ORGANIZATION_READ",
+                  "Facility",
+                  Optional.of(facilityId),
+                  clock.instant(),
+                  AuditOutcome.SUCCEEDED,
+                  Optional.of("CAPACITY_LIFECYCLE_RECONCILIATION"),
+                  authenticationEvidence(context.authenticationMechanism()),
+                  AuditAuthorizationOutcome.ALLOWED,
+                  context.correlationId(),
+                  targetContext));
+    } catch (AuditPersistenceUnavailableException unavailable) {
+      throw problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          PlatformErrorCode.AUDIT_UNAVAILABLE,
+          "The Directory Organization reference is not disclosed because its read audit is unavailable.");
+    }
   }
 
   public InternalId addExternalIdentifier(
@@ -3179,6 +3290,13 @@ public class DirectoryApplicationService {
         HttpStatus.SERVICE_UNAVAILABLE,
         PlatformErrorCode.DIRECTORY_UNAVAILABLE,
         "Directory matching evidence could not be read safely within its bounded owner transaction.");
+  }
+
+  private static PlatformProblemException capacityLifecycleReadUnavailable() {
+    return problem(
+        HttpStatus.SERVICE_UNAVAILABLE,
+        PlatformErrorCode.DIRECTORY_UNAVAILABLE,
+        "The Directory Facility reference could not be resolved safely for Capacity lifecycle work.");
   }
 
   private static PlatformProblemException problem(
