@@ -1,6 +1,6 @@
 # Phase 7 Transfer Coordination — Acceptance Record
 
-**Verification result:** PASS. **Freeze status:** pending independent final review and local freeze commit. This record is evidence from the integrated implementation; Phase 7 is not yet frozen.
+**Verification result:** PASS. **Independent final review:** PASS. **Freeze status:** pending the local freeze commit. The follow-up documentation commit will record the frozen program state and freeze hash.
 
 ## Scope and test environment
 
@@ -12,16 +12,16 @@ Verification used Java 25.0.4.1+1, the repository Maven Wrapper, synthetic fixtu
 
 | Requirement | Evidence | Result |
 |---|---|---|
-| Full clean build and verification | `./mvnw -o -B -ntp clean verify` | PASS; Surefire 139 tests and Failsafe 219 tests, with 0 failures, errors, or skips; packaging and Spotless completed. |
-| Phase 7 command/API behavior | `TransferJourneyCommandsApiIT` in the full suite | PASS; 61 tests, including requests, distinct assessments, acceptance, reservations, lifecycle facts, rerouting, participant views, privacy, and failure/recovery paths. |
+| Full clean build and verification | `.\mvnw.cmd -B -ntp clean verify` using Java 25.0.4.1+1 | PASS; Surefire 139 tests and Failsafe 220 tests, with 0 failures, errors, or skips; packaging and Spotless completed. |
+| Phase 7 command/API behavior | `TransferJourneyCommandsApiIT` in the full suite | PASS; 62 tests, including requests, distinct assessments, acceptance, reservations, lifecycle facts, rerouting, participant views, privacy, and failure/recovery paths. |
 | Architecture enforcement | `Phase1ArchitectureTest` in the full suite | PASS; 11 production architecture rules. |
 | PostgreSQL transaction and race semantics | Testcontainers-backed integration suite | PASS; includes last-unit reservation contention, terminal transition races, restart/reconciliation, duplicate and delayed events, and transaction boundaries. |
 | Migrations and database ownership | Fresh Testcontainers database; Flyway history and schema review | PASS; 35 migrations applied, with owner schemas only and no placeholder future business schemas. |
-| Compose local deployment smoke | Isolated local Compose project | PASS; configuration validation, local build/start, health/liveness/readiness, `/api/v1/system-info`, Prometheus, local Keycloak discovery, and local PostgreSQL/PostGIS/Flyway checks succeeded. Project and volume were removed afterward. |
+| Compose local deployment smoke | `docker compose --env-file .env.example -p ayuvahak-p7-final config --quiet`; isolated `up --build --detach`; loopback probes; local SQL inspection; `down --volumes --remove-orphans` | PASS for platform smoke: app readiness/liveness were `UP`; `/api/v1/system-info`, Prometheus and Keycloak discovery returned successfully; PostgreSQL 18.6, PostGIS 3.6.4, Flyway v35, and expected owner schemas were observed. A local synthetic `transfer-agent` client-credentials request authenticated at the app boundary and received the expected 403 because the fresh disposable database has no grant; authorized business behavior is verified in Testcontainers API suites. The isolated project, network and volume were removed. |
 | Privacy and scope | Production source/migration search and dependency-tree review | PASS; Transfer does not persist PatientReference or clinical payload; no prohibited healthcare connector, broker, search/graph database, ORM, or AI/LLM dependency was found. |
 | Formatting and patch hygiene | `./mvnw -o -B -ntp spotless:check`; `git diff --check` | PASS. |
 
-The full clean command returned `BUILD SUCCESS`. Test-runner shutdown emitted connection-refused noise after disposable databases had stopped, and Surefire ended its fork after the successful-exit shutdown window. All reported test results passed; the shutdown messages are a non-blocking cleanup caveat.
+The full clean command returned `BUILD SUCCESS`. Testcontainers shutdown produced connection-refused/pool-validation warnings from scheduled workers after individual disposable databases stopped. All reported test results passed with zero errors; this is test-process cleanup noise, not a healthcare or application-data failure.
 
 ## Reliability and privacy evidence
 
@@ -41,7 +41,7 @@ The full clean command returned `BUILD SUCCESS`. Test-runner shutdown emitted co
 
 ## Review gate
 
-The first Phase 7 specification review found a BLOCKER because this acceptance artifact and P7-08 completion evidence were missing. The evidence is now present. A subsequent independent review identified and resolved the two MAJOR findings above; an independent re-review of the fixes and the clarified conditional patient-context scope must pass before the local Phase 7 freeze commit.
+The first Phase 7 specification review found one BLOCKER because this acceptance artifact and P7-08 completion evidence were missing. The evidence is now present. Independent review identified and resolved the two MAJOR findings above. The specification and standards re-reviews passed: the Arrival state transition and safe logging fixes match their regressions, and the conditional patient-context scope is accurately stated. Minor documentation-status drift was corrected in contributor, database, API and current architecture records. Two maintainability heuristics remain documented and do not block the phase.
 
 With explicit user authorization, two test-only integration fixtures were corrected: the Phase 1 missing-database test asserts the actual fail-closed startup failure, and the frozen Phase 2 outbox test supplies its deterministic handler registry so the historical “future consumer” scenario remains isolated after Phase 7 registers a real handler. Product behavior and the frozen Phase 2 design are unchanged.
 
@@ -49,6 +49,6 @@ With explicit user authorization, two test-only integration fixtures were correc
 
 - No remote Git operation, public healthcare test target, external publication, external mutation, real credential, or patient data was used.
 - No Volume III implementation was created.
-- Phase 7 is **not yet frozen**. Freeze requires the independent re-review to pass, then a local freeze commit. Its hash will be recorded by a subsequent documentation-only commit.
+- Phase 7 acceptance and independent re-review **pass**. Phase 7 is **not yet frozen** until its local freeze commit. Its hash and frozen program status will be recorded by a subsequent documentation-only commit.
 
 See the local [P7-08 integrated acceptance ticket](../../.scratch/phase-7-transfer-coordination/issues/08-integrated-acceptance.md) and [Phase 7 specification](../specs/phase-7-transfer-coordination-spec.md) for the approved gate and complete test contract.
