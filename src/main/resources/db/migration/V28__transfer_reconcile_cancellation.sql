@@ -1,9 +1,3 @@
-ALTER TABLE capacity.coordination_reservation
-    ADD COLUMN reservation_status varchar(16) NOT NULL DEFAULT 'ACTIVE'
-        CHECK (reservation_status IN ('ACTIVE', 'AT_RISK', 'RELEASED', 'EXPIRED')),
-    ADD COLUMN lifecycle_sequence bigint NOT NULL DEFAULT 1 CHECK (lifecycle_sequence > 0),
-    ADD COLUMN status_recorded_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP;
-
 ALTER TABLE transfer.progress_fact
     DROP CONSTRAINT progress_fact_fact_kind_check,
     ADD CONSTRAINT progress_fact_fact_kind_check CHECK (

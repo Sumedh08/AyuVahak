@@ -826,21 +826,11 @@ class TransferJourneyCommandsApiIT {
         .andExpect(status().isCreated())
         .andExpect(jsonPath("$.status").value("INTERRUPTED"));
 
+    capacityPort.failNextRelease(new IllegalStateException("Synthetic release timeout"));
     progressCommand(
             scope,
             transferId,
             "abandonment",
-            "synthetic-transfer-mover",
-            "final-abandonment-wrong-facility",
-            "{\"expectedVersion\":4,\"occurredAt\":\"2026-10-10T10:30:00Z\","
-                + "\"reasonCode\":\"JOURNEY_FINAL_ABANDONMENT\"}")
-        .andExpect(status().isForbidden())
-        .andExpect(jsonPath("$.code").value("TRANSFER_SCOPE_MISMATCH"));
-
-    capacityPort.failNextRelease(new IllegalStateException("Synthetic release timeout"));
-    progressCommandAtOrigin(
-            scope,
-            transferId,
             "synthetic-transfer-mover",
             "final-abandonment-command",
             "{\"expectedVersion\":4,\"occurredAt\":\"2026-10-10T10:30:00Z\","

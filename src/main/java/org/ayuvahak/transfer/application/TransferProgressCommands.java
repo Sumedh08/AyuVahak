@@ -468,7 +468,6 @@ public final class TransferProgressCommands {
     boolean permitted =
         switch (kind) {
           case HANDOVER, COMPLETION -> receiving;
-          case FINAL_ABANDONMENT -> origin;
           default -> receiving || origin;
         };
     if (!permitted) {

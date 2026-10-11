@@ -11,10 +11,3 @@ ALTER TABLE transfer.capacity_reservation_request
         (outcome IN ('RESERVED', 'AT_RISK', 'RELEASED', 'EXPIRED') AND reservation_id IS NOT NULL) OR
         (outcome NOT IN ('RESERVED', 'AT_RISK', 'RELEASED', 'EXPIRED') AND reservation_id IS NULL)
     );
-
-ALTER TABLE capacity.coordination_reservation
-    ADD COLUMN lifecycle_checked_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP;
-
-CREATE INDEX capacity_coordination_reservation_lifecycle_due_idx
-    ON capacity.coordination_reservation (lifecycle_checked_at, expires_at, reservation_id)
-    WHERE reservation_status IN ('ACTIVE', 'AT_RISK');
