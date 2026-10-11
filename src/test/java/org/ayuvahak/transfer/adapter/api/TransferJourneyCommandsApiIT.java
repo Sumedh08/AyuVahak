@@ -2231,6 +2231,41 @@ class TransferJourneyCommandsApiIT {
                 Integer.class,
                 transferUuid))
         .isEqualTo(2);
+
+    grantFacilityAuthority("synthetic-transfer-receiver", "TransferProgressAuthority", scope);
+    long transferVersion =
+        jdbc.queryForObject(
+            "SELECT version FROM transfer.transfer_record WHERE transfer_id = ?",
+            Long.class,
+            transferUuid);
+    progressCommand(
+            scope,
+            transferId,
+            "arrival",
+            "synthetic-transfer-receiver",
+            "arrival-during-capacity-exception",
+            "{\"expectedVersion\":" + transferVersion + ",\"occurredAt\":\"2026-10-10T10:05:00Z\"}")
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.status").value("ARRIVED"))
+        .andExpect(jsonPath("$.exceptionCode").value("ARRIVAL_DURING_COORDINATION_EXCEPTION"));
+  }
+
+  @Test
+  void capacityLifecycleFailureLogOmitsTransferIdentifier(CapturedOutput output) throws Exception {
+    Scope scope = createOriginAndDestination();
+    String transferId = createReadyTransfer(scope, "capacity-lifecycle-safe-log");
+    UUID transferUuid = UUID.fromString(transferId);
+    grantDirectoryLifecycleLookupOnly();
+    jdbc.update(
+        "UPDATE capacity.coordination_reservation SET lifecycle_checked_at = "
+            + "CURRENT_TIMESTAMP - INTERVAL '2 hours' WHERE transfer_id = ?",
+        transferUuid);
+
+    assertThat(capacityReservations.reconcileLifecycle()).isZero();
+
+    assertThat(output.getAll())
+        .contains("Capacity reservation lifecycle reconciliation deferred")
+        .doesNotContain(transferId);
   }
 
   @Test
@@ -3620,6 +3655,17 @@ class TransferJourneyCommandsApiIT {
         scope.originOrganizationId(),
         DIRECTORY_ISSUER,
         scope.destinationFacilityId());
+    jdbc.update(
+        "INSERT INTO identity_access.authorization_grant (grant_id, principal_kind, "
+            + "principal_issuer, principal_identifier_type, principal_identifier, authority_code, "
+            + "scope_kind, grant_status, created_at) VALUES (gen_random_uuid(), 'SERVICE', ?, "
+            + "'client_id', ?, 'DirectoryCapacityLifecycleOrganizationRead', 'PLATFORM', "
+            + "'ACTIVE', CURRENT_TIMESTAMP)",
+        ISSUER,
+        capacityLifecycleProperties.getWorkerClientId());
+  }
+
+  private void grantDirectoryLifecycleLookupOnly() {
     jdbc.update(
         "INSERT INTO identity_access.authorization_grant (grant_id, principal_kind, "
             + "principal_issuer, principal_identifier_type, principal_identifier, authority_code, "

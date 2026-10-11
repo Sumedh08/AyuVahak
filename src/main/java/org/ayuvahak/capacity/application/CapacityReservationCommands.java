@@ -131,8 +131,7 @@ public final class CapacityReservationCommands {
         }
       } catch (RuntimeException failure) {
         logger.warn(
-            "Capacity reservation lifecycle reconciliation deferred transferId={} failureType={}",
-            candidate.transferId(),
+            "Capacity reservation lifecycle reconciliation deferred failureType={}",
             failure.getClass().getSimpleName());
       }
     }

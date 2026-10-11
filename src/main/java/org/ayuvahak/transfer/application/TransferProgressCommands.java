@@ -352,6 +352,7 @@ public final class TransferProgressCommands {
         String exceptionCode =
             switch (current) {
               case AWAITING_RESERVATION -> "ARRIVAL_BEFORE_RESERVATION_CONFIRMATION";
+              case COORDINATION_EXCEPTION -> "ARRIVAL_DURING_COORDINATION_EXCEPTION";
               case READY -> "ARRIVAL_BEFORE_DEPARTURE_RECORDED";
               case INTERRUPTED -> "ARRIVAL_REPORTED_AFTER_INTERRUPTION";
               case IN_TRANSIT -> null;
