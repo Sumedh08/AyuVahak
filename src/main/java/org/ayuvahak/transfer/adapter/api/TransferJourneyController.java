@@ -50,7 +50,7 @@ public final class TransferJourneyController {
   private static final Set<String> REQUEST_FIELDS =
       Set.of("referralId", "referralRevision", "recommendationId", "candidateFacilityId");
   private static final Set<String> NEXT_REQUEST_FIELDS =
-      Set.of("referralRevision", "recommendationId", "candidateFacilityId");
+      Set.of("expectedVersion", "referralRevision", "recommendationId", "candidateFacilityId");
   private static final Set<String> CLOSURE_FIELDS =
       Set.of("expectedVersion", "reasonCode", "occurredAt");
 
@@ -113,12 +113,13 @@ public final class TransferJourneyController {
       @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityId,
       @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
       @RequestBody JsonNode body) {
-    RequestContent content = nextRequestContent(body);
+    NextRequestContent content = nextRequestContent(body);
     ExecutionContext context = executionContext(actor, scope, organizationId, facilityId);
     TransferJourneyCommandResult result =
         nextRequestCommands.createNextRequest(
             context,
             parseId(journeyId, "TransferJourney id"),
+            content.expectedVersion(),
             content.referralRevision(),
             content.recommendationId(),
             content.candidateFacility(),
@@ -228,7 +229,7 @@ public final class TransferJourneyController {
         normalized);
   }
 
-  private RequestContent nextRequestContent(JsonNode body) {
+  private NextRequestContent nextRequestContent(JsonNode body) {
     if (body == null || !body.isObject()) {
       throw problem(
           HttpStatus.BAD_REQUEST,
@@ -242,7 +243,14 @@ public final class TransferJourneyController {
                 throw invalid("The next Transfer request contains an unsupported field.");
               }
             });
+    JsonNode expectedVersion = body.get("expectedVersion");
     JsonNode revision = body.get("referralRevision");
+    if (expectedVersion == null
+        || !expectedVersion.isIntegralNumber()
+        || !expectedVersion.canConvertToLong()
+        || expectedVersion.longValue() < 1) {
+      throw invalid("A positive expected Journey version is required.");
+    }
     if (revision == null
         || !revision.isIntegralNumber()
         || !revision.canConvertToLong()
@@ -252,11 +260,12 @@ public final class TransferJourneyController {
     InternalId recommendationId = parseId(body.get("recommendationId"), "recommendation id");
     InternalId destinationId = parseId(body.get("candidateFacilityId"), "candidate Facility id");
     ObjectNode normalized = objectMapper.createObjectNode();
+    normalized.put("expectedVersion", expectedVersion.longValue());
     normalized.put("referralRevision", revision.longValue());
     normalized.put("recommendationId", recommendationId.toString());
     normalized.put("candidateFacilityId", destinationId.toString());
-    return new RequestContent(
-        null,
+    return new NextRequestContent(
+        expectedVersion.longValue(),
         revision.longValue(),
         recommendationId,
         directoryReference("Facility", destinationId),
@@ -352,6 +361,13 @@ public final class TransferJourneyController {
 
   private record RequestContent(
       InternalId referralId,
+      long referralRevision,
+      InternalId recommendationId,
+      ExternalReference candidateFacility,
+      ObjectNode normalized) {}
+
+  private record NextRequestContent(
+      long expectedVersion,
       long referralRevision,
       InternalId recommendationId,
       ExternalReference candidateFacility,

@@ -41,6 +41,11 @@ class TransferAuthorityConfiguration {
   }
 
   @Bean
+  FunctionalAuthority transferReferralCancellationAuthority() {
+    return TransferAuthorities.referralCancellation();
+  }
+
+  @Bean
   FunctionalAuthority transferProgressAuthority() {
     return TransferAuthorities.progress();
   }

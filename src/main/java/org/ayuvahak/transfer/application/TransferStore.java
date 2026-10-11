@@ -108,6 +108,17 @@ public interface TransferStore {
 
   List<CapacityReservationIntent> findDueReservationIntents(Instant dueAt, int limit);
 
+  /**
+   * Commits a Transfer-owned lease before calling Capacity; the external owner call must not share
+   * this transaction.
+   */
+  boolean claimReservationAttempt(
+      InternalId transferId,
+      int expectedAttemptCount,
+      int claimedAttemptCount,
+      Instant leaseUntil,
+      Instant claimedAt);
+
   List<InternalId> findPendingCancellationTransfers(int limit);
 
   boolean claimConsumerEvent(InternalId eventId, EventType eventType, Instant recordedAt);
@@ -126,10 +137,10 @@ public interface TransferStore {
   boolean recordReservationOutcome(
       InternalId transferId,
       int expectedAttemptCount,
-      int nextAttemptCount,
       CapacityReservationIntent.Outcome outcome,
       Optional<InternalId> reservationId,
       Optional<String> reasonCode,
+      boolean mayMarkReady,
       Instant nextAttemptAt,
       Instant recordedAt);
 

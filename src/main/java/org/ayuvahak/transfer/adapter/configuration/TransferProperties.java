@@ -6,7 +6,7 @@ import java.time.Duration;
 import java.util.Optional;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
-/** Deployment policy for Transfer request deadlines; an absent value blocks request creation. */
+/** Deployment policy for Transfer request deadlines and Capacity reservation recovery. */
 @ConfigurationProperties(prefix = "ayuvahak.transfer")
 public class TransferProperties {
 
@@ -22,6 +22,7 @@ public class TransferProperties {
   private BigDecimal reservationQuantity;
   private Duration reservationDuration;
   private Duration reservationPollInterval = Duration.ofSeconds(15);
+  private Duration reservationAttemptLease = Duration.ofMinutes(1);
   private int reservationBatchSize = 50;
   private boolean reservationPollingEnabled = true;
 
@@ -121,6 +122,14 @@ public class TransferProperties {
     this.reservationPollInterval = reservationPollInterval;
   }
 
+  public Duration getReservationAttemptLease() {
+    return reservationAttemptLease;
+  }
+
+  public void setReservationAttemptLease(Duration reservationAttemptLease) {
+    this.reservationAttemptLease = reservationAttemptLease;
+  }
+
   public int getReservationBatchSize() {
     return reservationBatchSize;
   }
@@ -191,6 +200,11 @@ public class TransferProperties {
         || reservationPollInterval.isZero()
         || reservationPollInterval.isNegative()) {
       throw new IllegalArgumentException("Transfer reservation poll interval must be positive");
+    }
+    if (reservationAttemptLease == null
+        || reservationAttemptLease.isZero()
+        || reservationAttemptLease.isNegative()) {
+      throw new IllegalArgumentException("Transfer reservation attempt lease must be positive");
     }
     if (reservationBatchSize < 1 || reservationBatchSize > 500) {
       throw new IllegalArgumentException(

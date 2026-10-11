@@ -7,7 +7,7 @@ import java.util.Optional;
 import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.InternalId;
 
-/** Transfer-owned retry state for a Capacity command; it does not own the resulting hold. */
+/** Transfer-owned retry/lease state for a Capacity command; it does not own the resulting hold. */
 public record CapacityReservationIntent(
     InternalId operationId,
     InternalId transferId,
@@ -87,6 +87,8 @@ public record CapacityReservationIntent(
 
   public enum Outcome {
     PENDING,
+    /** A committed Transfer claim; Capacity is called only after this claim transaction closes. */
+    IN_PROGRESS,
     RESERVED,
     CONFLICT,
     UNKNOWN,

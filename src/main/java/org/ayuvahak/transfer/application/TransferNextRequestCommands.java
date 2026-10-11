@@ -77,6 +77,7 @@ public final class TransferNextRequestCommands {
   public TransferJourneyCommandResult createNextRequest(
       ExecutionContext context,
       InternalId journeyId,
+      long expectedJourneyVersion,
       long referralRevision,
       InternalId recommendationId,
       ExternalReference candidateFacility,
@@ -89,8 +90,9 @@ public final class TransferNextRequestCommands {
     Objects.requireNonNull(fingerprint, "request fingerprint");
     requireOriginScope(context.scope());
     requireDirectoryFacility(candidateFacility);
-    if (referralRevision < 1) {
-      throw invalid("A positive submitted Referral revision is required.");
+    if (expectedJourneyVersion < 1 || referralRevision < 1) {
+      throw invalid(
+          "A positive expected Journey version and submitted Referral revision are required.");
     }
     requireAuthority(context, journeyId);
     CommandReceiptKey receiptKey = commandKey(context, journeyId, idempotencyKey);
@@ -150,6 +152,9 @@ public final class TransferNextRequestCommands {
             TransferJourney journey =
                 store.lockJourney(journeyId).orElseThrow(TransferNextRequestCommands::notFound);
             requireOriginTarget(context, journey);
+            if (journey.version() != expectedJourneyVersion) {
+              throw stateConflict();
+            }
             if (store.findJourneyClosure(journeyId).isPresent()) {
               throw problem(
                   HttpStatus.CONFLICT,
@@ -185,7 +190,7 @@ public final class TransferNextRequestCommands {
                     Optional.empty(),
                     Optional.empty(),
                     1);
-            if (!store.insertNextRequest(journey.id(), journey.version(), attempt)) {
+            if (!store.insertNextRequest(journey.id(), expectedJourneyVersion, attempt)) {
               throw activeAttemptExists();
             }
             auditMutation(context, journeyId);
@@ -232,7 +237,7 @@ public final class TransferNextRequestCommands {
       org.ayuvahak.transfer.domain.CapacityReservationIntent.Outcome outcome) {
     return switch (outcome) {
       case CONFLICT, INVALID, UNCONFIGURED, RELEASED, EXPIRED, NOT_RESERVED -> true;
-      case PENDING, RESERVED, UNKNOWN, UNAVAILABLE, AT_RISK -> false;
+      case PENDING, IN_PROGRESS, RESERVED, UNKNOWN, UNAVAILABLE, AT_RISK -> false;
     };
   }
 
@@ -400,6 +405,13 @@ public final class TransferNextRequestCommands {
         HttpStatus.CONFLICT,
         PlatformErrorCode.TRANSFER_ACTIVE_ATTEMPT_EXISTS,
         "The prior Transfer request, movement, or Capacity hold is not terminal and reconciled.");
+  }
+
+  private static PlatformProblemException stateConflict() {
+    return problem(
+        HttpStatus.CONFLICT,
+        PlatformErrorCode.TRANSFER_STATE_CONFLICT,
+        "The TransferJourney changed since the caller last observed it.");
   }
 
   private static PlatformProblemException notFound() {

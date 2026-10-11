@@ -35,6 +35,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
@@ -52,6 +53,7 @@ public final class ReferralTransferOutcomeEventHandler implements InternalEventH
   private final ObjectProvider<AuthorizationService> authorization;
   private final ObjectProvider<AuditWriter> auditWriter;
   private final TransactionTemplate transaction;
+  private final TransactionTemplate denialTransaction;
   private final ActorReference worker;
   private final Clock clock;
   private final ObjectMapper mapper;
@@ -71,6 +73,8 @@ public final class ReferralTransferOutcomeEventHandler implements InternalEventH
     this.authorization = authorization;
     this.auditWriter = auditWriter;
     this.transaction = new TransactionTemplate(transactionManager);
+    this.denialTransaction = new TransactionTemplate(transactionManager);
+    this.denialTransaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     worker =
         ActorReference.service(
             new IssuerId(authentication.issuer()), properties.getTransferOutcomeConsumerClientId());
@@ -102,7 +106,12 @@ public final class ReferralTransferOutcomeEventHandler implements InternalEventH
       throw new IllegalArgumentException("unsupported Transfer outcome event");
     }
     Instant occurredAt = Instant.parse(text(envelope, "occurredAt"));
-    transaction.executeWithoutResult(status -> apply(event, envelope, referralId, occurredAt));
+    try {
+      transaction.executeWithoutResult(status -> apply(event, envelope, referralId, occurredAt));
+    } catch (AuthorizationRejected denied) {
+      denialTransaction.executeWithoutResult(status -> auditDenied(denied));
+      throw denied;
+    }
   }
 
   private void apply(
@@ -112,24 +121,25 @@ public final class ReferralTransferOutcomeEventHandler implements InternalEventH
       return;
     }
     ReferralDraft current = drafts.lockDraft(referralId).orElse(null);
+    ExecutionContext context =
+        current == null
+            ? contextFromEnvelope(envelope, event.eventId())
+            : contextFor(current, envelope, event.eventId());
+    var decision =
+        authorization.getObject().evaluate(context, ReferralAuthorities.resolve().code());
+    if (!decision.isAllowed()) {
+      throw new AuthorizationRejected(context, referralId);
+    }
     if (current == null) {
-      ExecutionContext context = contextFromEnvelope(envelope, event.eventId());
       auditNoState(context, referralId, "REFERRAL_TRANSFER_OUTCOME_NO_REFERRAL");
       drafts.completeConsumerEvent(event.eventId(), referralId, "NO_REFERRAL", recordedAt);
       return;
     }
-    ExecutionContext context = contextFor(current, event.eventId());
     if (current.state() != ReferralState.SUBMITTED) {
       auditNoState(context, referralId, "REFERRAL_TRANSFER_OUTCOME_TERMINAL_NO_CHANGE");
       drafts.completeConsumerEvent(
           event.eventId(), referralId, "TERMINAL_NO_STATE_CHANGE", recordedAt);
       return;
-    }
-    var decision =
-        authorization.getObject().evaluate(context, ReferralAuthorities.resolve().code());
-    if (!decision.isAllowed()) {
-      auditDenied(context, referralId);
-      throw new IllegalStateException("Referral outcome consumer is not authorized");
     }
     ReferralResolutionOutcome outcome =
         event.eventType().equals(COMPLETED)
@@ -150,14 +160,14 @@ public final class ReferralTransferOutcomeEventHandler implements InternalEventH
     drafts.completeConsumerEvent(event.eventId(), referralId, outcome.name(), recordedAt);
   }
 
-  private ExecutionContext contextFor(ReferralDraft draft, InternalId eventId) {
+  private ExecutionContext contextFor(ReferralDraft draft, JsonNode envelope, InternalId eventId) {
     RequestedExecutionScope scope =
         draft
             .originFacility()
             .<RequestedExecutionScope>map(
                 facility -> RequestedExecutionScope.facility(draft.originOrganization(), facility))
             .orElseGet(() -> RequestedExecutionScope.organization(draft.originOrganization()));
-    return background(scope, eventId);
+    return background(scope, envelope, eventId);
   }
 
   private ExecutionContext contextFromEnvelope(JsonNode envelope, InternalId eventId) {
@@ -168,12 +178,16 @@ public final class ReferralTransferOutcomeEventHandler implements InternalEventH
         facilityNode == null
             ? RequestedExecutionScope.organization(organization)
             : RequestedExecutionScope.facility(organization, reference(facilityNode));
-    return background(requested, eventId);
+    return background(requested, envelope, eventId);
   }
 
-  private ExecutionContext background(RequestedExecutionScope scope, InternalId eventId) {
+  private ExecutionContext background(
+      RequestedExecutionScope scope, JsonNode envelope, InternalId eventId) {
     return contexts.forBackgroundWork(
-        worker, scope, CorrelationId.generate(), Optional.of(new CausationId(eventId.toString())));
+        worker,
+        scope,
+        new CorrelationId(text(envelope, "correlationId")),
+        Optional.of(new CausationId(eventId.toString())));
   }
 
   private void auditMutation(
@@ -217,7 +231,8 @@ public final class ReferralTransferOutcomeEventHandler implements InternalEventH
                 Optional.of(targetContext(context))));
   }
 
-  private void auditDenied(ExecutionContext context, InternalId referralId) {
+  private void auditDenied(AuthorizationRejected denied) {
+    ExecutionContext context = denied.context();
     auditWriter
         .getObject()
         .recordNonMutating(
@@ -227,7 +242,7 @@ public final class ReferralTransferOutcomeEventHandler implements InternalEventH
                 Optional.of(context.scope()),
                 "REFERRAL_TRANSFER_OUTCOME_DENIED",
                 "Referral",
-                Optional.of(referralId),
+                Optional.of(denied.referralId()),
                 clock.instant(),
                 AuditOutcome.DENIED,
                 Optional.of("AUTHORIZATION_DENIED"),
@@ -268,6 +283,26 @@ public final class ReferralTransferOutcomeEventHandler implements InternalEventH
   private static void requireOutcome(JsonNode payload, String expectedOutcome) {
     if (!expectedOutcome.equals(text(payload, "outcome"))) {
       throw new IllegalArgumentException("Transfer outcome does not match its event type");
+    }
+  }
+
+  private static final class AuthorizationRejected extends RuntimeException {
+
+    private final ExecutionContext context;
+    private final InternalId referralId;
+
+    private AuthorizationRejected(ExecutionContext context, InternalId referralId) {
+      super("Referral outcome event consumer is not authorized");
+      this.context = context;
+      this.referralId = referralId;
+    }
+
+    private ExecutionContext context() {
+      return context;
+    }
+
+    private InternalId referralId() {
+      return referralId;
     }
   }
 }
