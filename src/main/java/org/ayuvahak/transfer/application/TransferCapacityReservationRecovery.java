@@ -147,7 +147,7 @@ public final class TransferCapacityReservationRecovery {
     } catch (RuntimeException failure) {
       logger.warn(
           "Transfer cancellation release remains pending correlationId={} failureType={}",
-          CorrelationId.generate(),
+          correlationId,
           failure.getClass().getSimpleName());
     }
   }
