@@ -4,6 +4,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import org.ayuvahak.platform.core.InternalId;
+import org.ayuvahak.platform.event.EventType;
 import org.ayuvahak.platform.executioncontext.ExecutionScope;
 import org.ayuvahak.platform.idempotency.CommandReceiptKey;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
@@ -48,6 +49,13 @@ public interface ReferralDraftStore {
   Optional<ReferralResolution> findResolution(InternalId referralId);
 
   Optional<ReferralCancellation> findCancellation(InternalId referralId);
+
+  boolean claimConsumerEvent(InternalId eventId, EventType eventType, Instant recordedAt);
+
+  boolean isConsumerEventCompleted(InternalId eventId, EventType eventType);
+
+  void completeConsumerEvent(
+      InternalId eventId, InternalId referralId, String outcome, Instant recordedAt);
 
   ReceiptClaim claimReceipt(
       CommandReceiptKey key, RequestFingerprint fingerprint, Instant recordedAt);

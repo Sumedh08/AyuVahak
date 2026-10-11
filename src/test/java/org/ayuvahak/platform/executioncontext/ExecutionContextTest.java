@@ -182,6 +182,32 @@ class ExecutionContextTest {
   }
 
   @Test
+  void deploymentBoundedBackgroundWorkCreatesAnExplicitPlatformServiceContext() {
+    AtomicReference<RequestedExecutionScope> validatedScope = new AtomicReference<>();
+    ExecutionContextFactory factory =
+        new ExecutionContextFactory(
+            (actor, scope) -> {
+              validatedScope.set(scope);
+              return true;
+            });
+    CorrelationId correlation = new CorrelationId("deployment-boundary-lookup-1");
+
+    ExecutionContext context = factory.forDeploymentBoundedBackgroundWork(SERVICE, correlation);
+
+    assertThat(validatedScope.get()).isInstanceOf(RequestedExecutionScope.Platform.class);
+    assertThat(context.actor()).isEqualTo(SERVICE);
+    assertThat(context.scope().kind()).isEqualTo(ExecutionScope.Kind.PLATFORM);
+    assertThat(context.sourceKind()).isEqualTo(SourceKind.BACKGROUND_WORK);
+    assertThat(context.authenticationMechanism())
+        .isEqualTo(AuthenticationMechanism.CONFIGURED_SERVICE_IDENTITY);
+    assertThat(context.correlationId()).isEqualTo(correlation);
+    assertThat(context.causationId()).isEmpty();
+    assertThatThrownBy(() -> factory.forDeploymentBoundedBackgroundWork(HUMAN, correlation))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessage("background work requires a service actor");
+  }
+
+  @Test
   void correlationAndCausationRemainSeparateTypedReferences() {
     CorrelationId correlation = new CorrelationId("workflow-chain-1");
     CausationId causation = new CausationId("source-command-2");

@@ -4,12 +4,14 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import org.ayuvahak.platform.core.InternalId;
+import org.ayuvahak.platform.event.EventType;
 import org.ayuvahak.platform.idempotency.CommandReceiptKey;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
 import org.ayuvahak.transfer.domain.CapacityReservationIntent;
 import org.ayuvahak.transfer.domain.CoordinatedTransfer;
 import org.ayuvahak.transfer.domain.ReceivingAssessment;
 import org.ayuvahak.transfer.domain.TransferJourney;
+import org.ayuvahak.transfer.domain.TransferJourneyClosure;
 import org.ayuvahak.transfer.domain.TransferProgressCorrection;
 import org.ayuvahak.transfer.domain.TransferProgressFact;
 import org.ayuvahak.transfer.domain.TransferRequestAttempt;
@@ -35,9 +37,26 @@ public interface TransferStore {
 
   Optional<TransferJourney> findJourney(InternalId journeyId);
 
+  Optional<TransferJourney> lockJourney(InternalId journeyId);
+
   Optional<TransferJourney> findJourneyByReferral(InternalId referralId);
 
+  Optional<TransferJourneyClosure> findJourneyClosure(InternalId journeyId);
+
+  boolean canCloseJourneyUnfulfilled(InternalId journeyId);
+
+  boolean recordJourneyClosure(TransferJourneyClosure closure, long expectedJourneyVersion);
+
   Optional<TransferRequestAttempt> findFirstRequest(InternalId journeyId);
+
+  Optional<TransferRequestAttempt> findLatestRequest(InternalId journeyId);
+
+  Optional<TransferRequestAttempt> findRequestAttempt(InternalId journeyId, int attemptNumber);
+
+  Optional<TransferAttemptState> findAttemptState(InternalId requestAttemptId);
+
+  boolean insertNextRequest(
+      InternalId journeyId, long expectedJourneyVersion, TransferRequestAttempt attempt);
 
   Optional<TransferRequestAttempt> findRequestAttempt(InternalId requestAttemptId);
 
@@ -89,13 +108,51 @@ public interface TransferStore {
 
   List<CapacityReservationIntent> findDueReservationIntents(Instant dueAt, int limit);
 
+  /**
+   * Commits a Transfer-owned lease before calling Capacity; the external owner call must not share
+   * this transaction.
+   */
+  boolean claimReservationAttempt(
+      InternalId transferId,
+      int expectedAttemptCount,
+      int claimedAttemptCount,
+      Instant leaseUntil,
+      Instant claimedAt);
+
+  boolean claimReservationOutcomeCheck(
+      InternalId transferId,
+      int expectedAttemptCount,
+      int claimedAttemptCount,
+      Instant leaseUntil,
+      Instant claimedAt);
+
+  boolean deferReservationOutcomeCheck(
+      InternalId transferId, int expectedAttemptCount, Instant nextAttemptAt, Instant recordedAt);
+
+  List<InternalId> findPendingCancellationTransfers(int limit);
+
+  boolean claimConsumerEvent(InternalId eventId, EventType eventType, Instant recordedAt);
+
+  boolean isConsumerEventCompleted(InternalId eventId, EventType eventType);
+
+  void completeConsumerEvent(
+      InternalId eventId, Optional<InternalId> transferId, String outcome, Instant recordedAt);
+
+  boolean advanceCapacityEventSequence(InternalId transferId, long sequence);
+
+  boolean recordReservationLifecycle(
+      InternalId transferId,
+      long sequence,
+      CapacityReservationIntent.Outcome outcome,
+      Optional<String> reasonCode);
+
   boolean recordReservationOutcome(
       InternalId transferId,
       int expectedAttemptCount,
-      int nextAttemptCount,
       CapacityReservationIntent.Outcome outcome,
       Optional<InternalId> reservationId,
       Optional<String> reasonCode,
+      boolean mayMarkReady,
       Instant nextAttemptAt,
       Instant recordedAt);
 
@@ -131,4 +188,8 @@ public interface TransferStore {
   record DecisionResult(
       org.ayuvahak.transfer.domain.TransferDecision decision,
       Optional<CoordinatedTransfer> transfer) {}
+
+  record TransferAttemptState(
+      Optional<CoordinatedTransfer.Status> transferStatus,
+      Optional<CapacityReservationIntent.Outcome> reservationOutcome) {}
 }

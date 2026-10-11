@@ -6,7 +6,7 @@ import java.time.Duration;
 import java.util.Optional;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
-/** Deployment policy for Transfer request deadlines; an absent value blocks request creation. */
+/** Deployment policy for Transfer request deadlines and Capacity reservation recovery. */
 @ConfigurationProperties(prefix = "ayuvahak.transfer")
 public class TransferProperties {
 
@@ -16,11 +16,13 @@ public class TransferProperties {
   private int expiryBatchSize = 50;
   private boolean expiryPollingEnabled = true;
   private String reservationWorkerClientId = "ayuvahak-transfer-reservation-worker";
+  private String ownerEventConsumerClientId = "ayuvahak-transfer-owner-event-consumer";
   private String reservationDimension;
   private String reservationUnit;
   private BigDecimal reservationQuantity;
   private Duration reservationDuration;
   private Duration reservationPollInterval = Duration.ofSeconds(15);
+  private Duration reservationAttemptLease = Duration.ofMinutes(1);
   private int reservationBatchSize = 50;
   private boolean reservationPollingEnabled = true;
 
@@ -68,6 +70,14 @@ public class TransferProperties {
     return reservationWorkerClientId;
   }
 
+  public String getOwnerEventConsumerClientId() {
+    return ownerEventConsumerClientId;
+  }
+
+  public void setOwnerEventConsumerClientId(String clientId) {
+    ownerEventConsumerClientId = clientId;
+  }
+
   public void setReservationWorkerClientId(String reservationWorkerClientId) {
     this.reservationWorkerClientId = reservationWorkerClientId;
   }
@@ -110,6 +120,14 @@ public class TransferProperties {
 
   public void setReservationPollInterval(Duration reservationPollInterval) {
     this.reservationPollInterval = reservationPollInterval;
+  }
+
+  public Duration getReservationAttemptLease() {
+    return reservationAttemptLease;
+  }
+
+  public void setReservationAttemptLease(Duration reservationAttemptLease) {
+    this.reservationAttemptLease = reservationAttemptLease;
   }
 
   public int getReservationBatchSize() {
@@ -155,6 +173,10 @@ public class TransferProperties {
         || !reservationWorkerClientId.matches("[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")) {
       throw new IllegalArgumentException("Transfer reservation worker client id is invalid");
     }
+    if (ownerEventConsumerClientId == null
+        || !ownerEventConsumerClientId.matches("[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")) {
+      throw new IllegalArgumentException("Transfer owner-event consumer client id is invalid");
+    }
     boolean anyReservationValue =
         reservationDimension != null
             || reservationUnit != null
@@ -178,6 +200,11 @@ public class TransferProperties {
         || reservationPollInterval.isZero()
         || reservationPollInterval.isNegative()) {
       throw new IllegalArgumentException("Transfer reservation poll interval must be positive");
+    }
+    if (reservationAttemptLease == null
+        || reservationAttemptLease.isZero()
+        || reservationAttemptLease.isNegative()) {
+      throw new IllegalArgumentException("Transfer reservation attempt lease must be positive");
     }
     if (reservationBatchSize < 1 || reservationBatchSize > 500) {
       throw new IllegalArgumentException(

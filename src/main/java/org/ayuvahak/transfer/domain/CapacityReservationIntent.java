@@ -7,7 +7,7 @@ import java.util.Optional;
 import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.InternalId;
 
-/** Transfer-owned retry state for a Capacity command; it does not own the resulting hold. */
+/** Transfer-owned retry/lease state for a Capacity command; it does not own the resulting hold. */
 public record CapacityReservationIntent(
     InternalId operationId,
     InternalId transferId,
@@ -71,8 +71,14 @@ public record CapacityReservationIntent(
             || !expiresAt.orElseThrow().equals(intervalEnd.orElseThrow()))) {
       throw new IllegalArgumentException("reservation interval and expiry are inconsistent");
     }
-    if ((outcome == Outcome.RESERVED) != reservationId.isPresent()) {
-      throw new IllegalArgumentException("only a reserved outcome has a reservation reference");
+    boolean hasReservation =
+        outcome == Outcome.RESERVED
+            || outcome == Outcome.AT_RISK
+            || outcome == Outcome.RELEASED
+            || outcome == Outcome.EXPIRED;
+    if (hasReservation != reservationId.isPresent()) {
+      throw new IllegalArgumentException(
+          "reservation lifecycle outcome and reference are inconsistent");
     }
     if (configured == (outcome == Outcome.UNCONFIGURED)) {
       throw new IllegalArgumentException("only an unconfigured outcome omits reservation inputs");
@@ -81,11 +87,17 @@ public record CapacityReservationIntent(
 
   public enum Outcome {
     PENDING,
+    /** A committed Transfer claim; Capacity is called only after this claim transaction closes. */
+    IN_PROGRESS,
     RESERVED,
     CONFLICT,
     UNKNOWN,
     UNAVAILABLE,
     INVALID,
-    UNCONFIGURED
+    UNCONFIGURED,
+    AT_RISK,
+    RELEASED,
+    EXPIRED,
+    NOT_RESERVED
   }
 }

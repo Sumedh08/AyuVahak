@@ -28,8 +28,11 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import javax.sql.DataSource;
 import org.ayuvahak.capacity.application.CapacityReservationCommands;
+import org.ayuvahak.capacity.application.CapacityReservationLifecycleProperties;
+import org.ayuvahak.capacity.domain.CapacityReservationOutcome;
 import org.ayuvahak.capacity.domain.CapacityReservationRequest;
 import org.ayuvahak.capacity.domain.CapacityReservationResult;
 import org.ayuvahak.directory.application.DirectoryStore;
@@ -47,11 +50,19 @@ import org.ayuvahak.platform.core.CorrelationId;
 import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.InternalId;
 import org.ayuvahak.platform.core.IssuerId;
+import org.ayuvahak.platform.core.OccurredAt;
+import org.ayuvahak.platform.core.RecordedAt;
+import org.ayuvahak.platform.event.AggregatePosition;
+import org.ayuvahak.platform.event.EventEnvelope;
+import org.ayuvahak.platform.event.EventEnvelopeJsonCodec;
+import org.ayuvahak.platform.event.EventType;
+import org.ayuvahak.platform.eventing.application.InternalEvent;
 import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
 import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
 import org.ayuvahak.transfer.adapter.configuration.TransferProperties;
 import org.ayuvahak.transfer.application.MatchingApplicabilityPort;
 import org.ayuvahak.transfer.application.TransferCapacityReservationRecovery;
+import org.ayuvahak.transfer.application.TransferOwnerEventHandler;
 import org.ayuvahak.transfer.application.TransferRequestExpirySweep;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -75,6 +86,7 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
+import tools.jackson.databind.ObjectMapper;
 
 /** Transfer's first-request command over HTTP and real disposable PostgreSQL/PostGIS. */
 @SpringBootTest(
@@ -90,7 +102,9 @@ import org.testcontainers.utility.DockerImageName;
       "ayuvahak.transfer.reservation-quantity=1",
       "ayuvahak.transfer.reservation-duration=PT2H",
       "ayuvahak.transfer.expiry-polling-enabled=false",
-      "ayuvahak.transfer.reservation-polling-enabled=false"
+      "ayuvahak.transfer.reservation-polling-enabled=false",
+      "ayuvahak.capacity.reservation-lifecycle.enabled=false",
+      "ayuvahak.eventing.outbox.dispatcher-enabled=false"
     })
 @AutoConfigureMockMvc
 @Testcontainers
@@ -124,9 +138,13 @@ class TransferJourneyCommandsApiIT {
   @Autowired private TransferCapacityReservationRecovery reservationRecovery;
   @Autowired private DataSource dataSource;
   @Autowired private CapacityReservationCommands capacityReservations;
+  @Autowired private CapacityReservationLifecycleProperties capacityLifecycleProperties;
   @Autowired private ExecutionContextFactory executionContexts;
   @Autowired private AutowireCapableBeanFactory beanFactory;
   @Autowired private StubCapacityReservationPort capacityPort;
+  @Autowired private TransferOwnerEventHandler ownerEventHandler;
+  @Autowired private EventEnvelopeJsonCodec eventCodec;
+  @Autowired private ObjectMapper objectMapper;
 
   @DynamicPropertySource
   static void localInfrastructure(DynamicPropertyRegistry registry) {
@@ -170,6 +188,10 @@ class TransferJourneyCommandsApiIT {
     jdbc.execute(
         "TRUNCATE capacity.reservation_command_receipt, "
             + "capacity.coordination_reservation, capacity.reservation_operation");
+    jdbc.update("DELETE FROM transfer.consumer_event_receipt");
+    jdbc.update("DELETE FROM platform_eventing.delivery_command_receipt");
+    jdbc.update("DELETE FROM platform_eventing.outbox_delivery");
+    jdbc.update("DELETE FROM platform_eventing.internal_event");
     jdbc.update("DELETE FROM transfer.progress_command_receipt");
     jdbc.update("DELETE FROM transfer.progress_correction");
     jdbc.update("DELETE FROM transfer.progress_fact");
@@ -178,6 +200,7 @@ class TransferJourneyCommandsApiIT {
     jdbc.update("DELETE FROM transfer.request_decision");
     jdbc.update("DELETE FROM transfer.transfer_record");
     jdbc.update("DELETE FROM transfer.receiving_assessment");
+    jdbc.update("DELETE FROM transfer.journey_closure");
     jdbc.update("DELETE FROM transfer.request_attempt");
     jdbc.update("DELETE FROM transfer.journey");
     jdbc.update("DELETE FROM audit.audit_record");
@@ -623,6 +646,1354 @@ class TransferJourneyCommandsApiIT {
   }
 
   @Test
+  void cancellationReleasesCapacityBeforeItBecomesTerminalAndBlocksDeparture() throws Exception {
+    Scope scope = createOriginAndDestination();
+    String transferId = createReadyTransfer(scope, "cancellation-release");
+    grantOriginAuthority(SENDER, "TransferJourneyClosureAuthority", scope);
+    UUID journeyId =
+        jdbc.queryForObject(
+            "SELECT journey_id FROM transfer.transfer_record WHERE transfer_id = ?",
+            UUID.class,
+            UUID.fromString(transferId));
+    mockMvc
+        .perform(
+            post("/api/v1/transfer-journeys/{journeyId}/closure", journeyId)
+                .header("Authorization", "Bearer " + token(SENDER))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                .header("X-AyuVahak-Facility-Id", scope.originFacilityId())
+                .header("Idempotency-Key", "closure-before-capacity-release")
+                .contentType("application/json")
+                .content(
+                    "{\"expectedVersion\":1,\"reasonCode\":\"TRANSFER_CANCELLED\","
+                        + "\"occurredAt\":\"2026-10-10T09:59:00Z\"}"))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("TRANSFER_STATE_CONFLICT"));
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM transfer.journey_closure WHERE journey_id = ?",
+                Integer.class,
+                journeyId))
+        .isZero();
+    grantFacilityAuthority("synthetic-transfer-mover", "TransferProgressAuthority", scope);
+
+    mockMvc
+        .perform(
+            post("/api/v1/transfers/{transferId}/cancellation", transferId)
+                .header("Authorization", "Bearer " + token("synthetic-transfer-mover"))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                .header("X-AyuVahak-Facility-Id", scope.destinationFacilityId())
+                .header("Idempotency-Key", "cancellation-release-command")
+                .contentType("application/json")
+                .content(
+                    "{\"expectedVersion\":2,\"occurredAt\":\"2026-10-10T10:00:00Z\","
+                        + "\"reasonCode\":\"ROUTE_CANCELLED\"}"))
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.status").value("CANCELLED"));
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT reservation_status FROM capacity.coordination_reservation "
+                    + "WHERE transfer_id = ?",
+                String.class,
+                UUID.fromString(transferId)))
+        .isEqualTo("RELEASED");
+    long journeyVersion =
+        jdbc.queryForObject(
+            "SELECT version FROM transfer.journey WHERE journey_id = ?", Long.class, journeyId);
+    mockMvc
+        .perform(
+            post("/api/v1/transfer-journeys/{journeyId}/closure", journeyId)
+                .header("Authorization", "Bearer " + token(SENDER))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                .header("X-AyuVahak-Facility-Id", scope.originFacilityId())
+                .header("Idempotency-Key", "closure-after-capacity-release")
+                .contentType("application/json")
+                .content(
+                    "{\"expectedVersion\":"
+                        + journeyVersion
+                        + ",\"reasonCode\":\"TRANSFER_CANCELLED\","
+                        + "\"occurredAt\":\"2026-10-10T10:02:00Z\"}"))
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.outcome").value("UNFULFILLED"));
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT aggregate_sequence FROM platform_eventing.internal_event "
+                    + "WHERE event_type = 'transfer.unfulfilled.v1'",
+                Long.class))
+        .isEqualTo(journeyVersion + 1);
+    progressCommand(
+            scope,
+            transferId,
+            "departure",
+            "synthetic-transfer-mover",
+            "departure-after-cancellation",
+            "{\"expectedVersion\":2,\"occurredAt\":\"2026-10-10T10:01:00Z\"}")
+        .andExpect(status().isConflict());
+  }
+
+  @Test
+  void cancellationReleaseSurvivesOwnerTimeoutAndRestartedRecovery() throws Exception {
+    Scope scope = createOriginAndDestination();
+    String transferId = createReadyTransfer(scope, "cancellation-release-recovery");
+    UUID transferUuid = UUID.fromString(transferId);
+    grantFacilityAuthority("synthetic-transfer-mover", "TransferProgressAuthority", scope);
+    capacityPort.failNextRelease(new IllegalStateException("Synthetic Capacity release timeout"));
+
+    progressCommand(
+            scope,
+            transferId,
+            "cancellation",
+            "synthetic-transfer-mover",
+            "cancellation-release-timeout",
+            "{\"expectedVersion\":2,\"occurredAt\":\"2026-10-10T10:00:00Z\","
+                + "\"reasonCode\":\"ROUTE_CANCELLED\"}")
+        .andExpect(status().isAccepted())
+        .andExpect(jsonPath("$.status").value("CANCELLATION_PENDING_RELEASE"));
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
+                String.class,
+                transferUuid))
+        .isEqualTo("CANCELLATION_PENDING_RELEASE");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT reservation_status FROM capacity.coordination_reservation "
+                    + "WHERE transfer_id = ?",
+                String.class,
+                transferUuid))
+        .isEqualTo("ACTIVE");
+
+    TransferCapacityReservationRecovery restarted =
+        beanFactory.createBean(TransferCapacityReservationRecovery.class);
+    assertThat(restarted.reconcileDue()).isEqualTo(1);
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
+                String.class,
+                transferUuid))
+        .isEqualTo("CANCELLED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT reservation_status FROM capacity.coordination_reservation "
+                    + "WHERE transfer_id = ?",
+                String.class,
+                transferUuid))
+        .isEqualTo("RELEASED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM transfer.progress_fact WHERE transfer_id = ? "
+                    + "AND fact_kind = 'CANCELLATION_RELEASE'",
+                Integer.class,
+                transferUuid))
+        .isEqualTo(1);
+  }
+
+  @Test
+  void finalAbandonmentFromInterruptedWaitsForCapacityReleaseBeforeRerouting() throws Exception {
+    Scope scope = createOriginAndDestination();
+    String transferId = createReadyTransfer(scope, "final-abandonment");
+    UUID transferUuid = UUID.fromString(transferId);
+    UUID journeyId =
+        jdbc.queryForObject(
+            "SELECT journey_id FROM transfer.transfer_record WHERE transfer_id = ?",
+            UUID.class,
+            transferUuid);
+    grantFacilityAuthority("synthetic-transfer-mover", "TransferProgressAuthority", scope);
+    grantOriginAuthority("synthetic-transfer-mover", "TransferProgressAuthority", scope);
+
+    progressCommand(
+            scope,
+            transferId,
+            "departure",
+            "synthetic-transfer-mover",
+            "final-abandonment-departure",
+            "{\"expectedVersion\":2,\"occurredAt\":\"2026-10-10T10:00:00Z\"}")
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.status").value("IN_TRANSIT"));
+    progressCommand(
+            scope,
+            transferId,
+            "interruption",
+            "synthetic-transfer-mover",
+            "final-abandonment-interruption",
+            "{\"expectedVersion\":3,\"occurredAt\":\"2026-10-10T10:15:00Z\","
+                + "\"reasonCode\":\"JOURNEY_INTERRUPTED\"}")
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.status").value("INTERRUPTED"));
+
+    capacityPort.failNextRelease(new IllegalStateException("Synthetic release timeout"));
+    progressCommand(
+            scope,
+            transferId,
+            "abandonment",
+            "synthetic-transfer-mover",
+            "final-abandonment-command",
+            "{\"expectedVersion\":4,\"occurredAt\":\"2026-10-10T10:30:00Z\","
+                + "\"reasonCode\":\"JOURNEY_FINAL_ABANDONMENT\","
+                + "\"sourceReference\":\"synthetic:abandonment-1\"}")
+        .andExpect(status().isAccepted())
+        .andExpect(jsonPath("$.status").value("CANCELLATION_PENDING_RELEASE"));
+
+    assertThat(
+            jdbc.queryForList(
+                "SELECT fact_kind FROM transfer.progress_fact WHERE transfer_id = ? "
+                    + "ORDER BY aggregate_sequence",
+                String.class,
+                transferUuid))
+        .containsExactly("DEPARTURE", "INTERRUPTION", "FINAL_ABANDONMENT");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
+                String.class,
+                transferUuid))
+        .isEqualTo("CANCELLATION_PENDING_RELEASE");
+
+    matching.returnApplicable(scope.referralId());
+    mockMvc
+        .perform(
+            post("/api/v1/transfer-journeys/{journeyId}/request-attempts", journeyId)
+                .header("Authorization", "Bearer " + token(SENDER))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                .header("X-AyuVahak-Facility-Id", scope.originFacilityId())
+                .header("Idempotency-Key", "reroute-before-abandonment-release")
+                .contentType("application/json")
+                .content(
+                    "{\"expectedVersion\":4,\"referralRevision\":4,\"recommendationId\":\""
+                        + scope.recommendationId()
+                        + "\",\"candidateFacilityId\":\""
+                        + InternalId.generate()
+                        + "\"}"))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("TRANSFER_ACTIVE_ATTEMPT_EXISTS"));
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM transfer.request_attempt WHERE journey_id = ?",
+                Integer.class,
+                journeyId))
+        .isEqualTo(1);
+
+    TransferCapacityReservationRecovery restarted =
+        beanFactory.createBean(TransferCapacityReservationRecovery.class);
+    assertThat(restarted.reconcileDue()).isEqualTo(1);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
+                String.class,
+                transferUuid))
+        .isEqualTo("CANCELLED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT reservation_status FROM capacity.coordination_reservation "
+                    + "WHERE transfer_id = ?",
+                String.class,
+                transferUuid))
+        .isEqualTo("RELEASED");
+    assertThat(
+            jdbc.queryForList(
+                "SELECT fact_kind FROM transfer.progress_fact WHERE transfer_id = ? "
+                    + "ORDER BY aggregate_sequence",
+                String.class,
+                transferUuid))
+        .containsExactly("DEPARTURE", "INTERRUPTION", "FINAL_ABANDONMENT", "CANCELLATION_RELEASE");
+  }
+
+  @Test
+  void factualArrivalAfterInterruptionIsPreservedAndBlocksFinalAbandonment() throws Exception {
+    Scope scope = createOriginAndDestination();
+    String transferId = createReadyTransfer(scope, "arrival-before-final-abandonment");
+    UUID transferUuid = UUID.fromString(transferId);
+    grantFacilityAuthority("synthetic-transfer-mover", "TransferProgressAuthority", scope);
+    grantOriginAuthority("synthetic-transfer-mover", "TransferProgressAuthority", scope);
+    progressCommand(
+            scope,
+            transferId,
+            "departure",
+            "synthetic-transfer-mover",
+            "arrival-before-abandonment-departure",
+            "{\"expectedVersion\":2,\"occurredAt\":\"2026-10-10T10:00:00Z\"}")
+        .andExpect(status().isCreated());
+    progressCommand(
+            scope,
+            transferId,
+            "interruption",
+            "synthetic-transfer-mover",
+            "arrival-before-abandonment-interruption",
+            "{\"expectedVersion\":3,\"occurredAt\":\"2026-10-10T10:15:00Z\","
+                + "\"reasonCode\":\"JOURNEY_INTERRUPTED\"}")
+        .andExpect(status().isCreated());
+    progressCommand(
+            scope,
+            transferId,
+            "arrival",
+            "synthetic-transfer-mover",
+            "arrival-before-abandonment-arrival",
+            "{\"expectedVersion\":4,\"occurredAt\":\"2026-10-10T10:10:00Z\"}")
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.status").value("ARRIVED"));
+
+    progressCommandAtOrigin(
+            scope,
+            transferId,
+            "synthetic-transfer-mover",
+            "arrival-before-abandonment-command",
+            "{\"expectedVersion\":5,\"occurredAt\":\"2026-10-10T10:30:00Z\","
+                + "\"reasonCode\":\"JOURNEY_FINAL_ABANDONMENT\"}")
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("TRANSFER_STATE_CONFLICT"));
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
+                String.class,
+                transferUuid))
+        .isEqualTo("ARRIVED");
+    assertThat(
+            jdbc.queryForList(
+                "SELECT fact_kind FROM transfer.progress_fact WHERE transfer_id = ? "
+                    + "ORDER BY aggregate_sequence",
+                String.class,
+                transferUuid))
+        .containsExactly("DEPARTURE", "INTERRUPTION", "ARRIVAL");
+  }
+
+  @Test
+  void cancellationWaitsForLostCapacityReservationResponseToBeReconciled() throws Exception {
+    Scope scope = createOriginAndDestination();
+    grantSender(scope);
+    matching.returnApplicable(scope.referralId());
+    ensureReservableCapacityCatalog();
+    grantCapacityReporter(scope);
+    recordCoordinationSlotObservation(scope, 1, "capacity-reservation-cancel-timeout");
+    grantReservationWorker(scope);
+    String requestAttemptId = createRequestAttempt(scope, "capacity-reservation-cancel-request");
+    preparePositiveAcceptance(scope, requestAttemptId);
+    capacityPort.loseNextResponseAfterCommit();
+    String accepted =
+        acceptRequest(scope, requestAttemptId, "capacity-reservation-cancel-acceptance");
+    UUID transferId = UUID.fromString(com.jayway.jsonpath.JsonPath.read(accepted, "$.transferId"));
+    grantFacilityAuthority("synthetic-transfer-mover", "TransferProgressAuthority", scope);
+
+    progressCommand(
+            scope,
+            transferId.toString(),
+            "cancellation",
+            "synthetic-transfer-mover",
+            "capacity-reservation-cancel-command",
+            "{\"expectedVersion\":1,\"occurredAt\":\"2026-10-10T10:49:00Z\","
+                + "\"reasonCode\":\"ROUTE_CANCELLED\"}")
+        .andExpect(status().isAccepted())
+        .andExpect(jsonPath("$.status").value("CANCELLATION_PENDING_RELEASE"));
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT outcome FROM transfer.capacity_reservation_request WHERE transfer_id = ?",
+                String.class,
+                transferId))
+        .isEqualTo("UNAVAILABLE");
+    assertThat(capacityPort.releaseCalls()).isZero();
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT reservation_status FROM capacity.coordination_reservation "
+                    + "WHERE transfer_id = ?",
+                String.class,
+                transferId))
+        .isEqualTo("ACTIVE");
+
+    jdbc.update(
+        "UPDATE transfer.capacity_reservation_request SET next_attempt_at = CURRENT_TIMESTAMP - "
+            + "INTERVAL '1 second' WHERE transfer_id = ? AND outcome = 'UNAVAILABLE'",
+        transferId);
+    TransferCapacityReservationRecovery restarted =
+        beanFactory.createBean(TransferCapacityReservationRecovery.class);
+    assertThat(restarted.reconcileDue()).isGreaterThanOrEqualTo(1);
+
+    assertThat(capacityPort.idempotencyKeys())
+        .isNotEmpty()
+        .containsOnly("transfer-capacity-" + transferId);
+    java.util.List<ReservationOutcomeQuery> outcomeQueries =
+        capacityPort.reservationOutcomeQueries();
+    assertThat(capacityPort.idempotencyKeys().size() > 1 || !outcomeQueries.isEmpty()).isTrue();
+    assertThat(outcomeQueries)
+        .allSatisfy(
+            query -> {
+              assertThat(query.operationId()).isEqualTo(InternalId.parse(transferId.toString()));
+              assertThat(query.transferId()).isEqualTo(InternalId.parse(transferId.toString()));
+            });
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM capacity.reservation_command_receipt WHERE operation_id = '"
+                    + transferId
+                    + "'::uuid"))
+        .isEqualTo(1);
+    assertThat(capacityPort.releaseCalls()).isEqualTo(1);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
+                String.class,
+                transferId))
+        .isEqualTo("CANCELLED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT reservation_status FROM capacity.coordination_reservation "
+                    + "WHERE transfer_id = ?",
+                String.class,
+                transferId))
+        .isEqualTo("RELEASED");
+  }
+
+  @Test
+  void cancellationWaitsForDefinitiveReservationOutcomeAndRecoveryReleasesLateHold()
+      throws Exception {
+    Scope scope = createOriginAndDestination();
+    grantSender(scope);
+    matching.returnApplicable(scope.referralId());
+    ensureReservableCapacityCatalog();
+    grantCapacityReporter(scope);
+    recordCoordinationSlotObservation(scope, 1, "reservation-cancellation-race-capacity");
+    grantReservationWorker(scope);
+    String requestAttemptId = createRequestAttempt(scope, "reservation-cancellation-race-request");
+    preparePositiveAcceptance(scope, requestAttemptId);
+    UUID requestAttemptUuid = UUID.fromString(requestAttemptId);
+    ReserveGate reserveGate = capacityPort.pauseNextReserve();
+    ExecutorService executor = Executors.newFixedThreadPool(2);
+    try {
+      Future<MvcResult> acceptance =
+          executor.submit(
+              () ->
+                  receivingCommand(
+                          scope,
+                          requestAttemptId,
+                          "acceptance",
+                          "synthetic-receiver",
+                          "reservation-cancellation-race-acceptance",
+                          "{\"expectedVersion\":3,\"occurredAt\":\"2026-10-10T10:50:00Z\"}")
+                      .andReturn());
+      assertThat(reserveGate.entered.await(15, TimeUnit.SECONDS)).isTrue();
+      UUID transferUuid =
+          jdbc.queryForObject(
+              "SELECT transfer_id FROM transfer.transfer_record WHERE request_attempt_id = ?",
+              UUID.class,
+              requestAttemptUuid);
+      grantFacilityAuthority("synthetic-transfer-mover", "TransferProgressAuthority", scope);
+      Future<MvcResult> cancellation =
+          executor.submit(
+              () ->
+                  progressCommand(
+                          scope,
+                          transferUuid.toString(),
+                          "cancellation",
+                          "synthetic-transfer-mover",
+                          "reservation-cancellation-race-command",
+                          "{\"expectedVersion\":1,\"occurredAt\":\"2026-10-10T10:51:00Z\","
+                              + "\"reasonCode\":\"ROUTE_CANCELLED\"}")
+                      .andReturn());
+
+      boolean cancellationReturnedWhileReservationWasPaused;
+      try {
+        MvcResult result = cancellation.get(2, TimeUnit.SECONDS);
+        cancellationReturnedWhileReservationWasPaused = result.getResponse().getStatus() == 202;
+      } catch (TimeoutException stillWaitingForReservation) {
+        cancellationReturnedWhileReservationWasPaused = false;
+      }
+
+      assertThat(cancellationReturnedWhileReservationWasPaused).isTrue();
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
+                  String.class,
+                  transferUuid))
+          .isEqualTo("CANCELLATION_PENDING_RELEASE");
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT outcome FROM transfer.capacity_reservation_request WHERE transfer_id = ?",
+                  String.class,
+                  transferUuid))
+          .isEqualTo("IN_PROGRESS");
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT COUNT(*) FROM capacity.coordination_reservation WHERE transfer_id = ?",
+                  Integer.class,
+                  transferUuid))
+          .isZero();
+
+      jdbc.update(
+          "UPDATE transfer.capacity_reservation_request SET next_attempt_at = CURRENT_TIMESTAMP - "
+              + "INTERVAL '1 second' WHERE transfer_id = ? AND outcome = 'IN_PROGRESS'",
+          transferUuid);
+      TransferCapacityReservationRecovery restarted =
+          beanFactory.createBean(TransferCapacityReservationRecovery.class);
+      assertThat(restarted.reconcileDue()).isGreaterThanOrEqualTo(1);
+
+      reserveGate.resume.countDown();
+
+      assertThat(acceptance.get(30, TimeUnit.SECONDS).getResponse().getStatus()).isEqualTo(201);
+      assertThat(cancellation.get(30, TimeUnit.SECONDS).getResponse().getStatus()).isEqualTo(202);
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
+                  String.class,
+                  transferUuid))
+          .isEqualTo("CANCELLED");
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT reservation_status FROM capacity.coordination_reservation "
+                      + "WHERE transfer_id = ?",
+                  String.class,
+                  transferUuid))
+          .isEqualTo("RELEASED");
+
+      int reservationCalls = capacityPort.idempotencyKeys().size();
+      restarted.reconcile(InternalId.parse(transferUuid.toString()));
+      assertThat(capacityPort.idempotencyKeys()).hasSize(reservationCalls);
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
+                  String.class,
+                  transferUuid))
+          .isEqualTo("CANCELLED");
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT reservation_status FROM capacity.coordination_reservation "
+                      + "WHERE transfer_id = ?",
+                  String.class,
+                  transferUuid))
+          .isEqualTo("RELEASED");
+    } finally {
+      reserveGate.resume.countDown();
+      executor.shutdownNow();
+    }
+  }
+
+  @Test
+  void referralCancellationEventWithdrawsPendingAttemptExactlyOnce() throws Exception {
+    Scope scope = createOriginAndDestination();
+    grantSender(scope);
+    matching.returnApplicable(scope.referralId());
+    String response =
+        createRequest(scope, "referral-event-request")
+            .andExpect(status().isCreated())
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+    String journeyId = com.jayway.jsonpath.JsonPath.read(response, "$.journeyId");
+    String attemptId = com.jayway.jsonpath.JsonPath.read(response, "$.requestAttemptId");
+    CorrelationId eventCorrelation = new CorrelationId("transfer-referral-cancel-correlation");
+    grantOwnerEventConsumer(scope, scope.originFacilityId(), "TransferReferralCancellation");
+
+    var payload = objectMapper.createObjectNode();
+    payload.put("referralReference", scope.referralId());
+    payload.put("revisionNumber", 4);
+    payload.put("reasonCode", "ORIGIN_NO_LONGER_REQUIRED");
+    payload.put("sourceKind", "HUMAN");
+    InternalEvent event =
+        internalEvent(
+            EventType.parse("referral.cancelled.v1"),
+            reservationContext(scope, eventCorrelation),
+            "referral/" + scope.referralId(),
+            5,
+            Instant.parse("2026-10-10T10:00:00Z"),
+            payload);
+
+    ownerEventHandler.handle(event);
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT request_status FROM transfer.request_attempt WHERE request_attempt_id = ?",
+                String.class,
+                UUID.fromString(attemptId)))
+        .isEqualTo("WITHDRAWN");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM transfer.consumer_event_receipt WHERE event_id = ?",
+                Integer.class,
+                event.eventId().value()))
+        .isEqualTo(1);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT outcome FROM transfer.consumer_event_receipt WHERE event_id = ?",
+                String.class,
+                event.eventId().value()))
+        .isEqualTo("PENDING_REQUEST_WITHDRAWN");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE correlation_id = ?",
+                Integer.class,
+                eventCorrelation.value()))
+        .isPositive();
+    jdbc.update(
+        "DELETE FROM identity_access.authorization_grant WHERE principal_kind = 'SERVICE' "
+            + "AND principal_issuer = ? AND principal_identifier_type = 'client_id' "
+            + "AND principal_identifier = ? AND authority_code = ?",
+        ISSUER,
+        transferProperties.getOwnerEventConsumerClientId(),
+        "TransferReferralCancellation");
+    ownerEventHandler.handle(event);
+    assertThat(count("SELECT COUNT(*) FROM transfer.consumer_event_receipt")).isEqualTo(1);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = "
+                    + "'TRANSFER_OWNER_EVENT_DENIED' AND correlation_id = ?",
+                Integer.class,
+                eventCorrelation.value()))
+        .isZero();
+    assertThat(journeyId).isNotBlank();
+  }
+
+  @Test
+  void referralCancellationReleasePreservesEnvelopeCorrelationAndCausation() throws Exception {
+    Scope scope = createOriginAndDestination();
+    String transferId = createReadyTransfer(scope, "referral-event-capacity-release");
+    grantOwnerEventConsumer(scope, scope.originFacilityId(), "TransferReferralCancellation");
+    grantOwnerEventConsumer(
+        scope, scope.destinationFacilityId(), "TransferReservationReconciliation");
+    CorrelationId eventCorrelation = new CorrelationId("transfer-cancel-release-correlation");
+    var payload = objectMapper.createObjectNode();
+    payload.put("referralReference", scope.referralId());
+    payload.put("revisionNumber", 4);
+    payload.put("reasonCode", "ORIGIN_NO_LONGER_REQUIRED");
+    payload.put("sourceKind", "HUMAN");
+    InternalEvent event =
+        internalEvent(
+            EventType.parse("referral.cancelled.v1"),
+            reservationContext(scope, eventCorrelation),
+            "referral/" + scope.referralId(),
+            5,
+            Instant.parse("2026-10-10T10:00:00Z"),
+            payload);
+
+    ownerEventHandler.handle(event);
+
+    assertThat(capacityPort.releaseCalls()).isEqualTo(1);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
+                String.class,
+                UUID.fromString(transferId)))
+        .isEqualTo("CANCELLED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = "
+                    + "'CAPACITY_RESERVATION_RELEASE' AND correlation_id = ?",
+                Integer.class,
+                eventCorrelation.value()))
+        .isEqualTo(1);
+    assertThat(capacityPort.lastReleaseContext().correlationId()).isEqualTo(eventCorrelation);
+    assertThat(capacityPort.lastReleaseContext().causationId())
+        .hasValue(new org.ayuvahak.platform.core.CausationId(event.eventId().toString()));
+
+    jdbc.update(
+        "DELETE FROM identity_access.authorization_grant WHERE principal_kind = 'SERVICE' "
+            + "AND principal_issuer = ? AND principal_identifier_type = 'client_id' "
+            + "AND principal_identifier = ? AND authority_code IN (?, ?)",
+        ISSUER,
+        transferProperties.getOwnerEventConsumerClientId(),
+        "TransferReferralCancellation",
+        "TransferReservationReconciliation");
+    ownerEventHandler.handle(event);
+    assertThat(capacityPort.releaseCalls()).isEqualTo(1);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = "
+                    + "'TRANSFER_OWNER_EVENT_DENIED' AND correlation_id = ?",
+                Integer.class,
+                eventCorrelation.value()))
+        .isZero();
+  }
+
+  @Test
+  void unavailableGrantStoreIsDurablyAuditedWithDistinctCodeAndCanRetry() throws Exception {
+    Scope scope = createOriginAndDestination();
+    grantSender(scope);
+    matching.returnApplicable(scope.referralId());
+    String response =
+        createRequest(scope, "referral-event-grant-store-unavailable-request")
+            .andExpect(status().isCreated())
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+    String attemptId = com.jayway.jsonpath.JsonPath.read(response, "$.requestAttemptId");
+    CorrelationId eventCorrelation =
+        new CorrelationId("transfer-grant-store-unavailable-correlation");
+    var payload = objectMapper.createObjectNode();
+    payload.put("referralReference", scope.referralId());
+    payload.put("revisionNumber", 4);
+    payload.put("reasonCode", "ORIGIN_NO_LONGER_REQUIRED");
+    payload.put("sourceKind", "HUMAN");
+    InternalEvent event =
+        internalEvent(
+            EventType.parse("referral.cancelled.v1"),
+            reservationContext(scope, eventCorrelation),
+            "referral/" + scope.referralId(),
+            5,
+            Instant.parse("2026-10-10T10:00:00Z"),
+            payload);
+
+    jdbc.execute(
+        "ALTER TABLE identity_access.authorization_grant RENAME TO authorization_grant_unavailable");
+    try {
+      assertThatThrownBy(() -> ownerEventHandler.handle(event)).isInstanceOf(Exception.class);
+    } finally {
+      jdbc.execute(
+          "ALTER TABLE identity_access.authorization_grant_unavailable RENAME TO authorization_grant");
+    }
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT request_status FROM transfer.request_attempt WHERE request_attempt_id = ?",
+                String.class,
+                UUID.fromString(attemptId)))
+        .isEqualTo("PENDING");
+    assertThat(count("SELECT COUNT(*) FROM transfer.consumer_event_receipt")).isZero();
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = "
+                    + "'TRANSFER_OWNER_EVENT_DENIED' AND reason_code = "
+                    + "'AUTHORIZATION_STORE_UNAVAILABLE' AND correlation_id = ?",
+                Integer.class,
+                eventCorrelation.value()))
+        .isEqualTo(1);
+
+    grantOwnerEventConsumer(scope, scope.originFacilityId(), "TransferReferralCancellation");
+    ownerEventHandler.handle(event);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT request_status FROM transfer.request_attempt WHERE request_attempt_id = ?",
+                String.class,
+                UUID.fromString(attemptId)))
+        .isEqualTo("WITHDRAWN");
+  }
+
+  @Test
+  void deniedReferralCancellationEventIsAuditedAndRemainsRetryable() throws Exception {
+    Scope scope = createOriginAndDestination();
+    grantSender(scope);
+    matching.returnApplicable(scope.referralId());
+    String response =
+        createRequest(scope, "referral-event-authorization-request")
+            .andExpect(status().isCreated())
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+    String attemptId = com.jayway.jsonpath.JsonPath.read(response, "$.requestAttemptId");
+    CorrelationId eventCorrelation = new CorrelationId("transfer-referral-denied-correlation");
+    var payload = objectMapper.createObjectNode();
+    payload.put("referralReference", scope.referralId());
+    payload.put("revisionNumber", 4);
+    payload.put("reasonCode", "ORIGIN_NO_LONGER_REQUIRED");
+    payload.put("sourceKind", "HUMAN");
+    InternalEvent event =
+        internalEvent(
+            EventType.parse("referral.cancelled.v1"),
+            reservationContext(scope, eventCorrelation),
+            "referral/" + scope.referralId(),
+            5,
+            Instant.parse("2026-10-10T10:00:00Z"),
+            payload);
+
+    assertThatThrownBy(() -> ownerEventHandler.handle(event)).isInstanceOf(Exception.class);
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT request_status FROM transfer.request_attempt WHERE request_attempt_id = ?",
+                String.class,
+                UUID.fromString(attemptId)))
+        .isEqualTo("PENDING");
+    assertThat(count("SELECT COUNT(*) FROM transfer.consumer_event_receipt")).isZero();
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = "
+                    + "'TRANSFER_OWNER_EVENT_DENIED' AND outcome = 'DENIED' "
+                    + "AND authorization_outcome = 'DENIED' AND correlation_id = ?",
+                Integer.class,
+                eventCorrelation.value()))
+        .isEqualTo(1);
+
+    grantOwnerEventConsumer(scope, scope.originFacilityId(), "TransferReferralCancellation");
+    ownerEventHandler.handle(event);
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT request_status FROM transfer.request_attempt WHERE request_attempt_id = ?",
+                String.class,
+                UUID.fromString(attemptId)))
+        .isEqualTo("WITHDRAWN");
+    assertThat(count("SELECT COUNT(*) FROM transfer.consumer_event_receipt")).isEqualTo(1);
+  }
+
+  @Test
+  void capacityAtRiskAndExpiryEventsReconcileByReservationSequence() throws Exception {
+    Scope scope = createOriginAndDestination();
+    String transferId = createReadyTransfer(scope, "capacity-lifecycle-event");
+    grantOwnerEventConsumer(
+        scope, scope.destinationFacilityId(), "TransferReservationReconciliation");
+    UUID transferUuid = UUID.fromString(transferId);
+    UUID reservationId =
+        jdbc.queryForObject(
+            "SELECT reservation_id FROM transfer.capacity_reservation_request WHERE transfer_id = ?",
+            UUID.class,
+            transferUuid);
+
+    var atRiskPayload = objectMapper.createObjectNode();
+    atRiskPayload.put("transferReference", transferId);
+    atRiskPayload.put("reservationReference", reservationId.toString());
+    atRiskPayload.put("evidenceVersion", 3);
+    atRiskPayload.put("reasonCode", "CAPACITY_BASIS_REDUCED");
+    InternalEvent atRisk =
+        internalEvent(
+            EventType.parse("capacity.reservation-at-risk.v1"),
+            reservationContext(scope),
+            "capacity-reservation/" + reservationId,
+            2,
+            Instant.parse("2026-10-10T10:00:00Z"),
+            atRiskPayload);
+    ownerEventHandler.handle(atRisk);
+    ownerEventHandler.handle(atRisk);
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
+                String.class,
+                transferUuid))
+        .isEqualTo("COORDINATION_EXCEPTION");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT outcome FROM transfer.capacity_reservation_request WHERE transfer_id = ?",
+                String.class,
+                transferUuid))
+        .isEqualTo("AT_RISK");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT reservation_status FROM capacity.coordination_reservation "
+                    + "WHERE reservation_id = ?",
+                String.class,
+                reservationId))
+        .isEqualTo("ACTIVE");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM transfer.progress_fact WHERE transfer_id = ? "
+                    + "AND fact_kind = 'CAPACITY_EXCEPTION'",
+                Integer.class,
+                transferUuid))
+        .isEqualTo(1);
+
+    var expiredPayload = objectMapper.createObjectNode();
+    expiredPayload.put("transferReference", transferId);
+    expiredPayload.put("reservationReference", reservationId.toString());
+    expiredPayload.put("expiresAt", "2026-10-10T10:00:00Z");
+    expiredPayload.put("reasonCode", "RESERVATION_EXPIRED");
+    InternalEvent expired =
+        internalEvent(
+            EventType.parse("capacity.reservation-expired.v1"),
+            reservationContext(scope),
+            "capacity-reservation/" + reservationId,
+            3,
+            Instant.parse("2026-10-10T10:00:00Z"),
+            expiredPayload);
+    ownerEventHandler.handle(expired);
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT outcome FROM transfer.capacity_reservation_request WHERE transfer_id = ?",
+                String.class,
+                transferUuid))
+        .isEqualTo("EXPIRED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT last_capacity_event_sequence FROM transfer.capacity_reservation_request "
+                    + "WHERE transfer_id = ?",
+                Long.class,
+                transferUuid))
+        .isEqualTo(3L);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM transfer.consumer_event_receipt WHERE transfer_id = ?",
+                Integer.class,
+                transferUuid))
+        .isEqualTo(2);
+  }
+
+  @Test
+  void expiryEventWaitsForLostReservationResponseAndReconcilesAfterStableReplay() throws Exception {
+    Scope scope = createOriginAndDestination();
+    grantSender(scope);
+    matching.returnApplicable(scope.referralId());
+    ensureReservableCapacityCatalog();
+    grantCapacityReporter(scope);
+    recordCoordinationSlotObservation(scope, 1, "expiry-before-reservation-response-capacity");
+    grantReservationWorker(scope);
+    grantCapacityLifecycleWorker(scope);
+    String requestAttemptId = createRequestAttempt(scope, "expiry-before-response-request");
+    preparePositiveAcceptance(scope, requestAttemptId);
+    ReserveGate responseGate = capacityPort.pauseNextResponseAfterCommit();
+    ExecutorService executor = Executors.newSingleThreadExecutor();
+    try {
+      Future<MvcResult> acceptance =
+          executor.submit(
+              () ->
+                  receivingCommand(
+                          scope,
+                          requestAttemptId,
+                          "acceptance",
+                          "synthetic-receiver",
+                          "expiry-before-response-acceptance",
+                          "{\"expectedVersion\":3,\"occurredAt\":\"2026-10-10T10:50:00Z\"}")
+                      .andReturn());
+      assertThat(responseGate.entered.await(15, TimeUnit.SECONDS)).isTrue();
+      UUID transferId =
+          jdbc.queryForObject(
+              "SELECT transfer_id FROM transfer.transfer_record WHERE request_attempt_id = ?",
+              UUID.class,
+              UUID.fromString(requestAttemptId));
+      UUID reservationId =
+          jdbc.queryForObject(
+              "SELECT reservation_id FROM capacity.coordination_reservation WHERE transfer_id = ?",
+              UUID.class,
+              transferId);
+
+      jdbc.update(
+          "UPDATE capacity.coordination_reservation SET interval_start = CURRENT_TIMESTAMP "
+              + "- INTERVAL '2 hours', interval_end = CURRENT_TIMESTAMP - INTERVAL '1 hour', "
+              + "expires_at = CURRENT_TIMESTAMP - INTERVAL '1 hour' WHERE reservation_id = ?",
+          reservationId);
+      assertThat(capacityReservations.reconcileLifecycle()).isGreaterThan(0);
+
+      InternalEvent expired =
+          capacityEventFromOutbox(
+              EventType.parse("capacity.reservation-expired.v1"),
+              "capacity-reservation/" + reservationId);
+      grantOwnerEventConsumer(
+          scope, scope.destinationFacilityId(), "TransferReservationReconciliation");
+
+      assertThatThrownBy(() -> ownerEventHandler.handle(expired))
+          .isInstanceOf(IllegalStateException.class)
+          .hasMessageContaining("awaits reservation outcome reconciliation");
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT COUNT(*) FROM transfer.consumer_event_receipt WHERE event_id = ?",
+                  Integer.class,
+                  expired.eventId().value()))
+          .isZero();
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT outcome FROM transfer.capacity_reservation_request WHERE transfer_id = ?",
+                  String.class,
+                  transferId))
+          .isEqualTo("IN_PROGRESS");
+
+      jdbc.update(
+          "UPDATE transfer.capacity_reservation_request SET next_attempt_at = CURRENT_TIMESTAMP "
+              + "- INTERVAL '1 hour' WHERE transfer_id = ? AND outcome = 'IN_PROGRESS'",
+          transferId);
+      TransferCapacityReservationRecovery restarted =
+          beanFactory.createBean(TransferCapacityReservationRecovery.class);
+      assertThat(restarted.reconcileDue()).isGreaterThanOrEqualTo(1);
+      ownerEventHandler.handle(expired);
+
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
+                  String.class,
+                  transferId))
+          .isEqualTo("COORDINATION_EXCEPTION");
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT outcome FROM transfer.capacity_reservation_request WHERE transfer_id = ?",
+                  String.class,
+                  transferId))
+          .isEqualTo("EXPIRED");
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT reservation_id FROM transfer.capacity_reservation_request "
+                      + "WHERE transfer_id = ?",
+                  UUID.class,
+                  transferId))
+          .isEqualTo(reservationId);
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT outcome FROM transfer.consumer_event_receipt WHERE event_id = ?",
+                  String.class,
+                  expired.eventId().value()))
+          .isEqualTo("EXPIRED_EXCEPTION_RECORDED");
+      acceptance.get(15, TimeUnit.SECONDS);
+    } finally {
+      responseGate.resume.countDown();
+      executor.shutdownNow();
+    }
+  }
+
+  @Test
+  void stableReserveReplayUsesCurrentCapacityLifecycleBeforeMarkingTransferReady()
+      throws Exception {
+    Scope scope = createOriginAndDestination();
+    grantSender(scope);
+    matching.returnApplicable(scope.referralId());
+    ensureReservableCapacityCatalog();
+    grantCapacityReporter(scope);
+    recordCoordinationSlotObservation(scope, 1, "stale-reserved-replay-capacity");
+    grantReservationWorker(scope);
+    grantCapacityLifecycleWorker(scope);
+    String requestAttemptId = createRequestAttempt(scope, "stale-reserved-replay-request");
+    preparePositiveAcceptance(scope, requestAttemptId);
+    capacityPort.loseNextResponseAfterCommit();
+
+    String accepted = acceptRequest(scope, requestAttemptId, "stale-reserved-replay-acceptance");
+    UUID transferId = UUID.fromString(com.jayway.jsonpath.JsonPath.read(accepted, "$.transferId"));
+    UUID reservationId =
+        jdbc.queryForObject(
+            "SELECT reservation_id FROM capacity.coordination_reservation WHERE transfer_id = ?",
+            UUID.class,
+            transferId);
+
+    assertThat(com.jayway.jsonpath.JsonPath.read(accepted, "$.status").toString())
+        .isEqualTo("AWAITING_RESERVATION");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT outcome FROM capacity.reservation_operation WHERE operation_id = ?",
+                String.class,
+                transferId))
+        .isEqualTo("RESERVED");
+
+    jdbc.update(
+        "UPDATE capacity.coordination_reservation SET interval_start = CURRENT_TIMESTAMP "
+            + "- INTERVAL '3 hours', interval_end = CURRENT_TIMESTAMP - INTERVAL '1 hour', "
+            + "expires_at = CURRENT_TIMESTAMP - INTERVAL '1 hour', "
+            + "reservation_status = 'EXPIRED', lifecycle_sequence = lifecycle_sequence + 1, "
+            + "status_recorded_at = CURRENT_TIMESTAMP WHERE reservation_id = ?",
+        reservationId);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT reservation_status FROM capacity.coordination_reservation "
+                    + "WHERE reservation_id = ?",
+                String.class,
+                reservationId))
+        .isEqualTo("EXPIRED");
+
+    var expiredPayload = objectMapper.createObjectNode();
+    expiredPayload.put("transferReference", transferId.toString());
+    expiredPayload.put("reservationReference", reservationId.toString());
+    expiredPayload.put("expiresAt", Instant.now().minusSeconds(3600).toString());
+    expiredPayload.put("reasonCode", "RESERVATION_EXPIRED");
+    InternalEvent expired =
+        internalEvent(
+            EventType.parse("capacity.reservation-expired.v1"),
+            reservationContext(scope),
+            "capacity-reservation/" + reservationId,
+            2,
+            Instant.now().minusSeconds(3600),
+            expiredPayload);
+    jdbc.update(
+        "UPDATE transfer.capacity_reservation_request SET next_attempt_at = CURRENT_TIMESTAMP "
+            + "- INTERVAL '1 hour' WHERE transfer_id = ? AND outcome = 'UNAVAILABLE'",
+        transferId);
+
+    TransferCapacityReservationRecovery restarted =
+        beanFactory.createBean(TransferCapacityReservationRecovery.class);
+    assertThat(restarted.reconcileDue()).isGreaterThanOrEqualTo(1);
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT outcome FROM transfer.capacity_reservation_request WHERE transfer_id = ?",
+                String.class,
+                transferId))
+        .isEqualTo("EXPIRED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT reservation_id FROM transfer.capacity_reservation_request "
+                    + "WHERE transfer_id = ?",
+                UUID.class,
+                transferId))
+        .isEqualTo(reservationId);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
+                String.class,
+                transferId))
+        .isEqualTo("AWAITING_RESERVATION");
+
+    grantOwnerEventConsumer(
+        scope, scope.destinationFacilityId(), "TransferReservationReconciliation");
+    ownerEventHandler.handle(expired);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
+                String.class,
+                transferId))
+        .isEqualTo("COORDINATION_EXCEPTION");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM transfer.consumer_event_receipt WHERE event_id = ?",
+                Integer.class,
+                expired.eventId().value()))
+        .isEqualTo(1);
+  }
+
+  @Test
+  void capacityReservationOutcomeQueryUsesCurrentLifecycleAndOwnerClock() throws Exception {
+    Scope scope = createOriginAndDestination();
+    String transferId = createReadyTransfer(scope, "capacity-outcome-current-lifecycle");
+    InternalId transferReference = InternalId.parse(transferId);
+    UUID reservationId =
+        jdbc.queryForObject(
+            "SELECT reservation_id FROM capacity.coordination_reservation WHERE transfer_id = ?",
+            UUID.class,
+            UUID.fromString(transferId));
+    var context = reservationContext(scope);
+
+    CapacityReservationOutcome active =
+        capacityReservations.getReservationOutcome(context, transferReference, transferReference);
+    assertThat(active.status()).isEqualTo(CapacityReservationOutcome.Status.RESERVED);
+    assertThat(active.reservationId()).contains(new InternalId(reservationId));
+    var readAudit =
+        jdbc.queryForMap(
+            "SELECT action_kind, actor_kind, actor_reference, scope_kind, facility_reference, "
+                + "outcome, authorization_outcome, reason_code FROM audit.audit_record "
+                + "WHERE action_code = 'CAPACITY_RESERVATION_OUTCOME_READ' AND target_id = ? "
+                + "ORDER BY recorded_at DESC LIMIT 1",
+            transferReference.value());
+    assertThat(readAudit)
+        .containsEntry("action_kind", "SENSITIVE_READ")
+        .containsEntry("actor_kind", "SERVICE")
+        .containsEntry("actor_reference", "ayuvahak-transfer-reservation-worker")
+        .containsEntry("scope_kind", "FACILITY")
+        .containsEntry("facility_reference", scope.destinationFacilityId())
+        .containsEntry("outcome", "SUCCEEDED")
+        .containsEntry("authorization_outcome", "ALLOWED")
+        .containsEntry("reason_code", "CURRENT_LIFECYCLE_RESERVED");
+
+    jdbc.update(
+        "UPDATE capacity.coordination_reservation SET reservation_status = 'AT_RISK' "
+            + "WHERE reservation_id = ?",
+        reservationId);
+    CapacityReservationOutcome atRisk =
+        capacityReservations.getReservationOutcome(context, transferReference, transferReference);
+    assertThat(atRisk.status()).isEqualTo(CapacityReservationOutcome.Status.AT_RISK);
+
+    jdbc.update(
+        "UPDATE capacity.coordination_reservation SET reservation_status = 'RELEASED' "
+            + "WHERE reservation_id = ?",
+        reservationId);
+    CapacityReservationOutcome released =
+        capacityReservations.getReservationOutcome(context, transferReference, transferReference);
+    assertThat(released.status()).isEqualTo(CapacityReservationOutcome.Status.RELEASED);
+
+    jdbc.update(
+        "UPDATE capacity.coordination_reservation SET reservation_status = 'ACTIVE', "
+            + "interval_start = CURRENT_TIMESTAMP "
+            + "- INTERVAL '3 hours', interval_end = CURRENT_TIMESTAMP - INTERVAL '1 hour', "
+            + "expires_at = CURRENT_TIMESTAMP - INTERVAL '1 hour' WHERE reservation_id = ?",
+        reservationId);
+    CapacityReservationOutcome expiredByOwnerClock =
+        capacityReservations.getReservationOutcome(context, transferReference, transferReference);
+    assertThat(expiredByOwnerClock.status()).isEqualTo(CapacityReservationOutcome.Status.EXPIRED);
+    assertThat(expiredByOwnerClock.reservationId()).contains(new InternalId(reservationId));
+
+    CapacityReservationOutcome unknown =
+        capacityReservations.getReservationOutcome(
+            context, InternalId.generate(), transferReference);
+    assertThat(unknown.status()).isEqualTo(CapacityReservationOutcome.Status.UNKNOWN);
+    assertThat(unknown.reservationId()).isEmpty();
+
+    jdbc.execute(
+        "CREATE FUNCTION transfer.reject_test_reservation_outcome_audit() RETURNS trigger "
+            + "LANGUAGE plpgsql AS $$ BEGIN "
+            + "IF NEW.action_code = 'CAPACITY_RESERVATION_OUTCOME_READ' THEN "
+            + "RAISE EXCEPTION 'synthetic reservation outcome audit failure'; "
+            + "END IF; RETURN NEW; END $$");
+    jdbc.execute(
+        "CREATE TRIGGER reject_test_reservation_outcome_audit BEFORE INSERT ON audit.audit_record "
+            + "FOR EACH ROW EXECUTE FUNCTION transfer.reject_test_reservation_outcome_audit()");
+    try {
+      assertThatThrownBy(
+              () ->
+                  capacityReservations.getReservationOutcome(
+                      context, transferReference, transferReference))
+          .isInstanceOfSatisfying(
+              PlatformProblemException.class,
+              failure -> assertThat(failure.code()).isEqualTo(PlatformErrorCode.AUDIT_UNAVAILABLE));
+    } finally {
+      jdbc.execute(
+          "DROP TRIGGER IF EXISTS reject_test_reservation_outcome_audit ON audit.audit_record");
+      jdbc.execute("DROP FUNCTION IF EXISTS transfer.reject_test_reservation_outcome_audit()");
+    }
+  }
+
+  @Test
+  void departureFailsClosedWhenCapacityLifecycleIsExpired() throws Exception {
+    Scope scope = createOriginAndDestination();
+    String transferId = createReadyTransfer(scope, "departure-after-capacity-expiry");
+    UUID transferUuid = UUID.fromString(transferId);
+    UUID reservationId =
+        jdbc.queryForObject(
+            "SELECT reservation_id FROM capacity.coordination_reservation WHERE transfer_id = ?",
+            UUID.class,
+            transferUuid);
+    jdbc.update(
+        "UPDATE transfer.capacity_reservation_request SET next_attempt_at = CURRENT_TIMESTAMP "
+            + "- INTERVAL '1 hour' WHERE transfer_id = ? AND outcome = 'RESERVED'",
+        transferUuid);
+    TransferCapacityReservationRecovery restarted =
+        beanFactory.createBean(TransferCapacityReservationRecovery.class);
+    assertThat(restarted.reconcileDue()).isGreaterThanOrEqualTo(1);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT outcome FROM transfer.capacity_reservation_request WHERE transfer_id = ?",
+                String.class,
+                transferUuid))
+        .isEqualTo("RESERVED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
+                String.class,
+                transferUuid))
+        .isEqualTo("READY");
+    jdbc.update(
+        "UPDATE capacity.coordination_reservation SET interval_start = CURRENT_TIMESTAMP "
+            + "- INTERVAL '2 hours', interval_end = CURRENT_TIMESTAMP - INTERVAL '1 hour', "
+            + "expires_at = CURRENT_TIMESTAMP - INTERVAL '1 hour', "
+            + "reservation_status = 'EXPIRED', lifecycle_sequence = lifecycle_sequence + 1, "
+            + "status_recorded_at = CURRENT_TIMESTAMP WHERE reservation_id = ?",
+        reservationId);
+    jdbc.update(
+        "UPDATE transfer.capacity_reservation_request SET next_attempt_at = CURRENT_TIMESTAMP "
+            + "- INTERVAL '1 hour' WHERE transfer_id = ? AND outcome = 'RESERVED'",
+        transferUuid);
+    assertThat(restarted.reconcileDue()).isGreaterThanOrEqualTo(1);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT outcome FROM transfer.capacity_reservation_request WHERE transfer_id = ?",
+                String.class,
+                transferUuid))
+        .isEqualTo("EXPIRED");
+    grantFacilityAuthority("synthetic-transfer-mover", "TransferProgressAuthority", scope);
+
+    MvcResult departureResponse =
+        progressCommand(
+                scope,
+                transferId,
+                "departure",
+                "synthetic-transfer-mover",
+                "departure-after-capacity-expiry",
+                "{\"expectedVersion\":2,\"occurredAt\":\"2026-10-10T10:00:00Z\","
+                    + "\"sourceReference\":\"synthetic:departure-after-expiry\"}")
+            .andExpect(status().isConflict())
+            .andExpect(jsonPath("$.code").value("TRANSFER_STATE_CONFLICT"))
+            .andReturn();
+    String requestCorrelation = departureResponse.getResponse().getHeader("X-Correlation-ID");
+    assertThat(requestCorrelation).isNotBlank();
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT correlation_id FROM audit.audit_record "
+                    + "WHERE action_code = 'CAPACITY_RESERVATION_OUTCOME_READ' AND target_id = ? "
+                    + "ORDER BY recorded_at DESC LIMIT 1",
+                String.class,
+                transferUuid))
+        .isEqualTo(requestCorrelation);
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
+                String.class,
+                transferUuid))
+        .isEqualTo("READY");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM transfer.progress_fact "
+                    + "WHERE transfer_id = ? AND fact_kind = 'DEPARTURE'",
+                Integer.class,
+                transferUuid))
+        .isZero();
+  }
+
+  @Test
+  void reducedCapacityEvidenceMarksOwnerHoldAtRiskAndWritesSequencedEvent() throws Exception {
+    Scope scope = createOriginAndDestination();
+    String transferId = createReadyTransfer(scope, "capacity-at-risk-producer");
+    grantCapacityLifecycleWorker(scope);
+    UUID transferUuid = UUID.fromString(transferId);
+    UUID reservationId =
+        jdbc.queryForObject(
+            "SELECT reservation_id FROM capacity.coordination_reservation WHERE transfer_id = ?",
+            UUID.class,
+            transferUuid);
+
+    jdbc.update(
+        "UPDATE capacity.coordination_reservation SET lifecycle_checked_at = "
+            + "CURRENT_TIMESTAMP - INTERVAL '1 hour' WHERE reservation_id = ?",
+        reservationId);
+    recordCoordinationSlotObservation(scope, 0, "capacity-reduced-after-reservation");
+    assertThat(capacityReservations.reconcileLifecycle()).isGreaterThan(0);
+
+    String capacityCorrelation =
+        jdbc.queryForObject(
+            "SELECT correlation_id FROM audit.audit_record WHERE action_code = "
+                + "'CAPACITY_RESERVATION_AT_RISK' AND target_id = ?",
+            String.class,
+            transferUuid);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = "
+                    + "'DIRECTORY_CAPACITY_LIFECYCLE_ORGANIZATION_READ' "
+                    + "AND correlation_id = ? AND action_kind = 'SENSITIVE_READ' "
+                    + "AND actor_reference = ? AND scope_kind = 'PLATFORM' "
+                    + "AND target_facility_reference = ? AND target_organization_reference = ?",
+                Integer.class,
+                capacityCorrelation,
+                capacityLifecycleProperties.getWorkerClientId(),
+                scope.destinationFacilityId(),
+                scope.originOrganizationId()))
+        .isEqualTo(1);
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT reservation_status FROM capacity.coordination_reservation "
+                    + "WHERE reservation_id = ?",
+                String.class,
+                reservationId))
+        .isEqualTo("AT_RISK");
+    var event =
+        jdbc.queryForMap(
+            "SELECT e.event_type, e.aggregate_sequence, e.envelope::text AS envelope, d.state "
+                + "FROM platform_eventing.internal_event e "
+                + "JOIN platform_eventing.outbox_delivery d USING (event_id) "
+                + "WHERE e.event_type = 'capacity.reservation-at-risk.v1' "
+                + "AND e.aggregate_ref = ?",
+            "capacity-reservation/" + reservationId);
+    assertThat(event.get("event_type")).isEqualTo("capacity.reservation-at-risk.v1");
+    assertThat(event.get("aggregate_sequence")).isEqualTo(2L);
+    assertThat(event.get("state")).isEqualTo("PENDING");
+    assertThat(event.get("envelope").toString())
+        .contains("evidenceVersion", "CAPACITY_EVIDENCE_NO_LONGER_SUPPORTS_HOLD");
+
+    jdbc.update(
+        "UPDATE capacity.coordination_reservation SET interval_start = CURRENT_TIMESTAMP "
+            + "- INTERVAL '2 hours', interval_end = CURRENT_TIMESTAMP - INTERVAL '1 hour', "
+            + "expires_at = CURRENT_TIMESTAMP - INTERVAL '1 hour' WHERE reservation_id = ?",
+        reservationId);
+    assertThat(capacityReservations.reconcileLifecycle()).isGreaterThan(0);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT reservation_status FROM capacity.coordination_reservation "
+                    + "WHERE reservation_id = ?",
+                String.class,
+                reservationId))
+        .isEqualTo("EXPIRED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT aggregate_sequence FROM platform_eventing.internal_event "
+                    + "WHERE event_type = 'capacity.reservation-expired.v1' "
+                    + "AND aggregate_ref = ?",
+                Long.class,
+                "capacity-reservation/" + reservationId))
+        .isEqualTo(3L);
+  }
+
+  @Test
   void failedProgressHistoryQueryIsNotAuditedAsSuccessful() throws Exception {
     Scope scope = createOriginAndDestination();
     String transferId = createReadyTransfer(scope, "progress-history-query-failure");
@@ -744,7 +2115,7 @@ class TransferJourneyCommandsApiIT {
 
     jdbc.update(
         "UPDATE transfer.capacity_reservation_request SET next_attempt_at = CURRENT_TIMESTAMP - "
-            + "INTERVAL '1 second' WHERE transfer_id = ?",
+            + "INTERVAL '1 hour' WHERE transfer_id = ?",
         UUID.fromString(transferId));
     assertThat(reservationRecovery.reconcileDue()).isEqualTo(1);
     assertThat(
@@ -1352,7 +2723,7 @@ class TransferJourneyCommandsApiIT {
                 transferId)
             .toInstant();
     assertThat(expiresAt).isAfter(Instant.now());
-    while (Instant.now().isBefore(expiresAt.plusMillis(250))) {
+    while (Instant.now().isBefore(expiresAt.plusSeconds(2))) {
       Thread.sleep(20);
     }
     assertThat(
@@ -1388,7 +2759,8 @@ class TransferJourneyCommandsApiIT {
     TransferCapacityReservationRecovery restarted =
         beanFactory.createBean(TransferCapacityReservationRecovery.class);
     assertThat(restarted.reconcileDue()).isEqualTo(1);
-    assertThat(capacityPort.idempotencyKeys()).containsExactly("transfer-capacity-" + transferId);
+    assertThat(capacityPort.idempotencyKeys())
+        .containsExactly("transfer-capacity-" + transferId, "transfer-capacity-" + transferId);
 
     assertThat(
             jdbc.queryForObject(
@@ -1401,25 +2773,31 @@ class TransferJourneyCommandsApiIT {
                 "SELECT outcome FROM transfer.capacity_reservation_request WHERE transfer_id = ?",
                 String.class,
                 transferId))
-        .isEqualTo("UNKNOWN");
+        .isEqualTo("EXPIRED");
     assertThat(
             jdbc.queryForObject(
                 "SELECT reason_code FROM transfer.capacity_reservation_request WHERE transfer_id = ?",
                 String.class,
                 transferId))
-        .isEqualTo("CAPACITY_RESERVATION_EXPIRED_BEFORE_CONFIRMATION");
+        .isEqualTo("CAPACITY_RESERVATION_EXPIRED");
     assertThat(
             jdbc.queryForObject(
                 "SELECT reservation_id FROM transfer.capacity_reservation_request WHERE transfer_id = ?",
                 UUID.class,
                 transferId))
-        .isNull();
+        .isNotNull();
     assertThat(
             jdbc.queryForObject(
                 "SELECT outcome FROM capacity.reservation_operation WHERE operation_id = ?",
                 String.class,
                 transferId))
         .isEqualTo("RESERVED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM capacity.reservation_command_receipt WHERE operation_id = ?",
+                Integer.class,
+                transferId))
+        .isEqualTo(1);
     assertThat(
             count(
                 "SELECT COUNT(*) FROM capacity.coordination_reservation WHERE transfer_id = '"
@@ -1495,6 +2873,48 @@ class TransferJourneyCommandsApiIT {
     grantFacilityServiceAuthority("TransferReservationReconciliation", scope);
   }
 
+  private void grantOwnerEventConsumer(Scope scope, String facilityId, String authority) {
+    jdbc.update(
+        "INSERT INTO identity_access.authorization_grant (grant_id, principal_kind, "
+            + "principal_issuer, principal_identifier_type, principal_identifier, authority_code, "
+            + "scope_kind, organization_issuer, organization_identifier_type, organization_identifier, "
+            + "facility_issuer, facility_identifier_type, facility_identifier, grant_status, created_at) "
+            + "VALUES (gen_random_uuid(), 'SERVICE', ?, 'client_id', ?, "
+            + "?, 'FACILITY', ?, 'Organization', ?, ?, "
+            + "'Facility', ?, 'ACTIVE', CURRENT_TIMESTAMP)",
+        ISSUER,
+        transferProperties.getOwnerEventConsumerClientId(),
+        authority,
+        DIRECTORY_ISSUER,
+        scope.originOrganizationId(),
+        DIRECTORY_ISSUER,
+        facilityId);
+  }
+
+  private void grantCapacityLifecycleWorker(Scope scope) {
+    jdbc.update(
+        "INSERT INTO identity_access.authorization_grant (grant_id, principal_kind, "
+            + "principal_issuer, principal_identifier_type, principal_identifier, authority_code, "
+            + "scope_kind, organization_issuer, organization_identifier_type, organization_identifier, "
+            + "facility_issuer, facility_identifier_type, facility_identifier, grant_status, created_at) "
+            + "VALUES (gen_random_uuid(), 'SERVICE', ?, 'client_id', ?, 'CapacityReservation', "
+            + "'FACILITY', ?, 'Organization', ?, ?, 'Facility', ?, 'ACTIVE', CURRENT_TIMESTAMP)",
+        ISSUER,
+        capacityLifecycleProperties.getWorkerClientId(),
+        DIRECTORY_ISSUER,
+        scope.originOrganizationId(),
+        DIRECTORY_ISSUER,
+        scope.destinationFacilityId());
+    jdbc.update(
+        "INSERT INTO identity_access.authorization_grant (grant_id, principal_kind, "
+            + "principal_issuer, principal_identifier_type, principal_identifier, authority_code, "
+            + "scope_kind, grant_status, created_at) VALUES (gen_random_uuid(), 'SERVICE', ?, "
+            + "'client_id', ?, 'DirectoryCapacityLifecycleOrganizationRead', 'PLATFORM', "
+            + "'ACTIVE', CURRENT_TIMESTAMP)",
+        ISSUER,
+        capacityLifecycleProperties.getWorkerClientId());
+  }
+
   private void grantFacilityAuthority(String subject, String authority, Scope scope) {
     jdbc.update(
         "INSERT INTO identity_access.authorization_grant (grant_id, principal_kind, "
@@ -1510,6 +2930,23 @@ class TransferJourneyCommandsApiIT {
         scope.originOrganizationId(),
         DIRECTORY_ISSUER,
         scope.destinationFacilityId());
+  }
+
+  private void grantOriginAuthority(String subject, String authority, Scope scope) {
+    jdbc.update(
+        "INSERT INTO identity_access.authorization_grant (grant_id, principal_kind, "
+            + "principal_issuer, principal_identifier_type, principal_identifier, authority_code, "
+            + "scope_kind, organization_issuer, organization_identifier_type, organization_identifier, "
+            + "facility_issuer, facility_identifier_type, facility_identifier, grant_status, created_at) "
+            + "VALUES (gen_random_uuid(), 'HUMAN', ?, 'subject', ?, ?, 'FACILITY', ?, "
+            + "'Organization', ?, ?, 'Facility', ?, 'ACTIVE', CURRENT_TIMESTAMP)",
+        ISSUER,
+        subject,
+        authority,
+        DIRECTORY_ISSUER,
+        scope.originOrganizationId(),
+        DIRECTORY_ISSUER,
+        scope.originFacilityId());
   }
 
   private void grantFacilityServiceAuthority(String authority, Scope scope) {
@@ -1620,14 +3057,82 @@ class TransferJourneyCommandsApiIT {
             .content(body));
   }
 
+  private org.springframework.test.web.servlet.ResultActions progressCommandAtOrigin(
+      Scope scope, String transferId, String subject, String idempotencyKey, String body)
+      throws Exception {
+    return mockMvc.perform(
+        post("/api/v1/transfers/{transferId}/abandonment", transferId)
+            .header("Authorization", "Bearer " + token(subject))
+            .header("X-AyuVahak-Execution-Scope", "FACILITY")
+            .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+            .header("X-AyuVahak-Facility-Id", scope.originFacilityId())
+            .header("Idempotency-Key", idempotencyKey)
+            .contentType("application/json")
+            .content(body));
+  }
+
   private org.ayuvahak.platform.executioncontext.ExecutionContext reservationContext(Scope scope) {
+    return reservationContext(scope, CorrelationId.generate());
+  }
+
+  private org.ayuvahak.platform.executioncontext.ExecutionContext reservationContext(
+      Scope scope, CorrelationId correlationId) {
     return executionContexts.forBackgroundWork(
         ActorReference.service(new IssuerId(ISSUER), "ayuvahak-transfer-reservation-worker"),
         RequestedExecutionScope.facility(
             directoryReference("Organization", scope.originOrganizationId()),
             directoryReference("Facility", scope.destinationFacilityId())),
-        CorrelationId.generate(),
+        correlationId,
         java.util.Optional.empty());
+  }
+
+  private InternalEvent internalEvent(
+      EventType type,
+      org.ayuvahak.platform.executioncontext.ExecutionContext producer,
+      String aggregateRef,
+      long sequence,
+      Instant occurredAt,
+      tools.jackson.databind.node.ObjectNode payload) {
+    Instant recordedAt = Instant.now();
+    EventEnvelope envelope =
+        new EventEnvelope(
+            InternalId.generate(),
+            type,
+            type.context(),
+            new OccurredAt(occurredAt),
+            new RecordedAt(recordedAt),
+            producer,
+            java.util.Optional.of(new AggregatePosition(aggregateRef, sequence)),
+            payload);
+    return new InternalEvent(
+        envelope.eventId(),
+        envelope.eventType(),
+        envelope.producerContext(),
+        envelope.aggregatePosition(),
+        eventCodec.encode(envelope));
+  }
+
+  private InternalEvent capacityEventFromOutbox(EventType eventType, String aggregateRef)
+      throws Exception {
+    var row =
+        jdbc.queryForMap(
+            "SELECT e.event_id, e.event_type, e.producer_context, e.aggregate_ref, "
+                + "e.aggregate_sequence, e.envelope::text AS envelope "
+                + "FROM platform_eventing.internal_event e WHERE e.event_type = ? "
+                + "AND e.aggregate_ref = ? ORDER BY e.aggregate_sequence DESC LIMIT 1",
+            eventType.toString(),
+            aggregateRef);
+    String json = (String) row.get("envelope");
+    var envelope = objectMapper.readTree(json);
+    return new InternalEvent(
+        InternalId.parse(envelope.get("eventId").stringValue()),
+        EventType.parse((String) row.get("event_type")),
+        (String) row.get("producer_context"),
+        java.util.Optional.of(
+            new AggregatePosition(
+                (String) row.get("aggregate_ref"),
+                ((Number) row.get("aggregate_sequence")).longValue())),
+        json.getBytes(java.nio.charset.StandardCharsets.UTF_8));
   }
 
   private CapacityReservationResult reserve(
@@ -1862,6 +3367,298 @@ class TransferJourneyCommandsApiIT {
   }
 
   @Test
+  void rejectedDestinationCanBeFollowedByAnOrderedRevalidatedAttempt() throws Exception {
+    Scope scope = createOriginAndDestination();
+    grantSender(scope);
+    matching.returnApplicable(scope.referralId());
+    String firstAttemptId = createRequestAttempt(scope, "reroute-first-request");
+    UUID journeyId =
+        jdbc.queryForObject(
+            "SELECT journey_id FROM transfer.request_attempt WHERE request_attempt_id = ?",
+            UUID.class,
+            UUID.fromString(firstAttemptId));
+    grantReceivingAuthority(scope, "synthetic-receiver", "AcceptanceAuthority");
+
+    receivingCommand(
+            scope,
+            firstAttemptId,
+            "rejection",
+            "synthetic-receiver",
+            "reroute-first-rejection",
+            "{\"expectedVersion\":1,\"reasonCode\":\"DESTINATION_UNAVAILABLE\","
+                + "\"occurredAt\":\"2026-10-10T10:20:00Z\"}")
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.status").value("REJECTED"));
+
+    String secondDestination = InternalId.generate().toString();
+    matching.returnApplicable(scope.referralId());
+    mockMvc
+        .perform(
+            post("/api/v1/transfer-journeys/{journeyId}/request-attempts", journeyId)
+                .header("Authorization", "Bearer " + token(SENDER))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                .header("X-AyuVahak-Facility-Id", scope.originFacilityId())
+                .header("Idempotency-Key", "reroute-second-request")
+                .contentType("application/json")
+                .content(
+                    "{\"expectedVersion\":1,\"referralRevision\":4,\"recommendationId\":\""
+                        + scope.recommendationId()
+                        + "\",\"candidateFacilityId\":\""
+                        + secondDestination
+                        + "\"}"))
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.attemptNumber").value(2))
+        .andExpect(jsonPath("$.destinationFacilityId").value(secondDestination));
+
+    assertThat(matching.calls()).isEqualTo(2);
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM transfer.request_attempt WHERE journey_id = '"
+                    + journeyId
+                    + "'::uuid"))
+        .isEqualTo(2);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT request_status FROM transfer.request_attempt WHERE request_attempt_id = ?",
+                String.class,
+                UUID.fromString(firstAttemptId)))
+        .isEqualTo("REJECTED");
+  }
+
+  @Test
+  void rerouteRequiresTheCallerExpectedJourneyVersion() throws Exception {
+    Scope scope = createOriginAndDestination();
+    grantSender(scope);
+    matching.returnApplicable(scope.referralId());
+    String firstAttemptId = createRequestAttempt(scope, "reroute-stale-version-request");
+    UUID journeyId =
+        jdbc.queryForObject(
+            "SELECT journey_id FROM transfer.request_attempt WHERE request_attempt_id = ?",
+            UUID.class,
+            UUID.fromString(firstAttemptId));
+    grantReceivingAuthority(scope, "synthetic-stale-version-receiver", "AcceptanceAuthority");
+    receivingCommand(
+            scope,
+            firstAttemptId,
+            "rejection",
+            "synthetic-stale-version-receiver",
+            "reroute-stale-version-rejection",
+            "{\"expectedVersion\":1,\"reasonCode\":\"DESTINATION_UNAVAILABLE\","
+                + "\"occurredAt\":\"2026-10-10T10:20:00Z\"}")
+        .andExpect(status().isCreated());
+
+    String secondDestination = scope.destinationFacilityId();
+    matching.returnApplicable(scope.referralId());
+    String secondResponse =
+        mockMvc
+            .perform(
+                post("/api/v1/transfer-journeys/{journeyId}/request-attempts", journeyId)
+                    .header("Authorization", "Bearer " + token(SENDER))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                    .header("X-AyuVahak-Facility-Id", scope.originFacilityId())
+                    .header("Idempotency-Key", "reroute-version-advance")
+                    .contentType("application/json")
+                    .content(
+                        "{\"expectedVersion\":1,\"referralRevision\":4,\"recommendationId\":\""
+                            + scope.recommendationId()
+                            + "\",\"candidateFacilityId\":\""
+                            + secondDestination
+                            + "\"}"))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.attemptNumber").value(2))
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+    String secondAttemptId =
+        com.jayway.jsonpath.JsonPath.read(secondResponse, "$.requestAttemptId");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT version FROM transfer.journey WHERE journey_id = ?", Long.class, journeyId))
+        .isEqualTo(2L);
+    receivingCommand(
+            scope,
+            secondAttemptId,
+            "rejection",
+            "synthetic-stale-version-receiver",
+            "reroute-stale-version-second-rejection",
+            "{\"expectedVersion\":1,\"reasonCode\":\"DESTINATION_UNAVAILABLE\","
+                + "\"occurredAt\":\"2026-10-10T10:21:00Z\"}")
+        .andExpect(status().isCreated());
+    matching.returnApplicable(scope.referralId());
+
+    mockMvc
+        .perform(
+            post("/api/v1/transfer-journeys/{journeyId}/request-attempts", journeyId)
+                .header("Authorization", "Bearer " + token(SENDER))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                .header("X-AyuVahak-Facility-Id", scope.originFacilityId())
+                .header("Idempotency-Key", "reroute-stale-version")
+                .contentType("application/json")
+                .content(
+                    "{\"expectedVersion\":1,\"referralRevision\":4,\"recommendationId\":\""
+                        + scope.recommendationId()
+                        + "\",\"candidateFacilityId\":\""
+                        + scope.destinationFacilityId()
+                        + "\"}"))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("TRANSFER_STATE_CONFLICT"));
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM transfer.request_attempt WHERE journey_id = ?",
+                Integer.class,
+                journeyId))
+        .isEqualTo(2);
+  }
+
+  @Test
+  void terminalUnfulfilledJourneyCanBeClosedWithAnOrderedReferralEvent() throws Exception {
+    Scope scope = createOriginAndDestination();
+    grantSender(scope);
+    grantOriginAuthority(SENDER, "TransferJourneyClosureAuthority", scope);
+    matching.returnApplicable(scope.referralId());
+    String requestAttemptId = createRequestAttempt(scope, "unfulfilled-closure-request");
+    UUID journeyId =
+        jdbc.queryForObject(
+            "SELECT journey_id FROM transfer.request_attempt WHERE request_attempt_id = ?",
+            UUID.class,
+            UUID.fromString(requestAttemptId));
+    grantReceivingAuthority(scope, "synthetic-closure-receiver", "AcceptanceAuthority");
+    receivingCommand(
+            scope,
+            requestAttemptId,
+            "rejection",
+            "synthetic-closure-receiver",
+            "unfulfilled-closure-rejection",
+            "{\"expectedVersion\":1,\"reasonCode\":\"DESTINATION_UNAVAILABLE\","
+                + "\"occurredAt\":\"2026-10-10T10:20:00Z\"}")
+        .andExpect(status().isCreated());
+
+    var closed =
+        mockMvc
+            .perform(
+                post("/api/v1/transfer-journeys/{journeyId}/closure", journeyId)
+                    .header("Authorization", "Bearer " + token(SENDER))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                    .header("X-AyuVahak-Facility-Id", scope.originFacilityId())
+                    .header("Idempotency-Key", "unfulfilled-closure")
+                    .contentType("application/json")
+                    .content(
+                        "{\"expectedVersion\":1,\"reasonCode\":\"NO_SAFE_DESTINATION\","
+                            + "\"occurredAt\":\"2026-10-10T10:30:00Z\"}"))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.journeyId").value(journeyId.toString()))
+            .andExpect(jsonPath("$.outcome").value("UNFULFILLED"))
+            .andExpect(jsonPath("$.reasonCode").value("NO_SAFE_DESTINATION"))
+            .andExpect(jsonPath("$.journeyVersion").value(2))
+            .andReturn();
+
+    mockMvc
+        .perform(
+            post("/api/v1/transfer-journeys/{journeyId}/closure", journeyId)
+                .header("Authorization", "Bearer " + token(SENDER))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                .header("X-AyuVahak-Facility-Id", scope.originFacilityId())
+                .header("Idempotency-Key", "unfulfilled-closure")
+                .contentType("application/json")
+                .content(
+                    "{\"expectedVersion\":1,\"reasonCode\":\"NO_SAFE_DESTINATION\","
+                        + "\"occurredAt\":\"2026-10-10T10:30:00Z\"}"))
+        .andExpect(status().isCreated())
+        .andExpect(header().string("Idempotency-Replayed", "true"));
+
+    receivingCommand(
+            scope,
+            requestAttemptId,
+            "acceptance",
+            "synthetic-closure-receiver",
+            "accept-after-unfulfilled-closure",
+            "{\"expectedVersion\":2,\"occurredAt\":\"2026-10-10T10:35:00Z\"}")
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("TRANSFER_STATE_CONFLICT"));
+    mockMvc
+        .perform(
+            post("/api/v1/transfer-journeys/{journeyId}/request-attempts", journeyId)
+                .header("Authorization", "Bearer " + token(SENDER))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                .header("X-AyuVahak-Facility-Id", scope.originFacilityId())
+                .header("Idempotency-Key", "reroute-after-unfulfilled-closure")
+                .contentType("application/json")
+                .content(
+                    "{\"expectedVersion\":2,\"referralRevision\":5,\"recommendationId\":\""
+                        + scope.recommendationId()
+                        + "\",\"candidateFacilityId\":\""
+                        + scope.destinationFacilityId()
+                        + "\"}"))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("TRANSFER_STATE_CONFLICT"));
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM transfer.journey_closure WHERE journey_id = ?",
+                Integer.class,
+                journeyId))
+        .isEqualTo(1);
+    var event =
+        jdbc.queryForMap(
+            "SELECT e.aggregate_sequence, e.aggregate_ref, e.envelope::text AS envelope "
+                + "FROM platform_eventing.internal_event e "
+                + "WHERE e.event_type = 'transfer.unfulfilled.v1'");
+    assertThat(event.get("aggregate_sequence")).isEqualTo(2L);
+    assertThat(event.get("aggregate_ref")).isEqualTo("transfer-journey/" + journeyId);
+    assertThat(event.get("envelope").toString())
+        .contains("referralReference", scope.referralId(), "journeyReference", "UNFULFILLED");
+    assertThat(closed.getResponse().getContentAsString()).contains("NO_SAFE_DESTINATION");
+  }
+
+  @Test
+  void unfulfilledClosureRejectsPendingRequest() throws Exception {
+    Scope scope = createOriginAndDestination();
+    grantSender(scope);
+    grantOriginAuthority(SENDER, "TransferJourneyClosureAuthority", scope);
+    matching.returnApplicable(scope.referralId());
+    String requestAttemptId = createRequestAttempt(scope, "pending-closure-request");
+    UUID journeyId =
+        jdbc.queryForObject(
+            "SELECT journey_id FROM transfer.request_attempt WHERE request_attempt_id = ?",
+            UUID.class,
+            UUID.fromString(requestAttemptId));
+
+    mockMvc
+        .perform(
+            post("/api/v1/transfer-journeys/{journeyId}/closure", journeyId)
+                .header("Authorization", "Bearer " + token(SENDER))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                .header("X-AyuVahak-Facility-Id", scope.originFacilityId())
+                .header("Idempotency-Key", "pending-request-closure")
+                .contentType("application/json")
+                .content(
+                    "{\"expectedVersion\":1,\"reasonCode\":\"NO_SAFE_DESTINATION\","
+                        + "\"occurredAt\":\"2026-10-10T10:30:00Z\"}"))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("TRANSFER_STATE_CONFLICT"));
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM transfer.journey_closure WHERE journey_id = ?",
+                Integer.class,
+                journeyId))
+        .isZero();
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM platform_eventing.internal_event WHERE event_type = "
+                    + "'transfer.unfulfilled.v1'"))
+        .isZero();
+  }
+
+  @Test
   void duePendingRequestExpiresUsingTransferServiceAuthority() throws Exception {
     Scope scope = createOriginAndDestination();
     grantSender(scope);
@@ -2047,6 +3844,14 @@ class TransferJourneyCommandsApiIT {
       assertThat(
               java.util.List.of(
                   accepted.getResponse().getStatus(), withdrawn.getResponse().getStatus()))
+          .as(
+              "acceptance status=%s correlation=%s body=%s; withdrawal status=%s correlation=%s body=%s",
+              accepted.getResponse().getStatus(),
+              accepted.getResponse().getHeader("X-Correlation-ID"),
+              accepted.getResponse().getContentAsString(),
+              withdrawn.getResponse().getStatus(),
+              withdrawn.getResponse().getHeader("X-Correlation-ID"),
+              withdrawn.getResponse().getContentAsString())
           .containsExactlyInAnyOrder(201, 409);
       String conflictResponse =
           accepted.getResponse().getStatus() == 409
@@ -2404,17 +4209,26 @@ class TransferJourneyCommandsApiIT {
   private void awaitPostgresCasWaiters(int expectedWaiters) throws Exception {
     Instant timeout = Instant.now().plusSeconds(10);
     while (Instant.now().isBefore(timeout)) {
-      if (count(
+      int requestAttemptWaiters =
+          count(
               "SELECT COUNT(*) FROM pg_stat_activity WHERE datname = current_database() "
                   + "AND wait_event_type = 'Lock' "
-                  + "AND query ILIKE 'UPDATE transfer.request_attempt SET request_status = %'")
-          >= expectedWaiters) {
+                  + "AND query ILIKE 'UPDATE transfer.request_attempt SET request_status = %'");
+      int journeyWaiters =
+          count(
+              "SELECT COUNT(*) FROM pg_stat_activity WHERE datname = current_database() "
+                  + "AND wait_event_type = 'Lock' "
+                  + "AND query ILIKE 'SELECT journey_id, referral_id, origin_organization_id%' "
+                  + "AND query ILIKE '%FROM transfer.journey%' "
+                  + "AND query ILIKE '%FOR UPDATE%'");
+      if (requestAttemptWaiters >= 1 && journeyWaiters >= 1) {
         return;
       }
       Thread.sleep(20);
     }
     throw new AssertionError(
-        "Both Transfer commands did not reach the request state compare-and-set barrier.");
+        "Acceptance did not reach the request compare-and-set while withdrawal waited on the "
+            + "Journey lock.");
   }
 
   private org.springframework.test.web.servlet.ResultActions createRequest(
@@ -2607,6 +4421,8 @@ class TransferJourneyCommandsApiIT {
     }
   }
 
+  private record ReservationOutcomeQuery(InternalId operationId, InternalId transferId) {}
+
   @TestConfiguration(proxyBeanMethods = false)
   static class TestPorts {
 
@@ -2628,10 +4444,21 @@ class TransferJourneyCommandsApiIT {
     private final CapacityReservationCommands commands;
     private final java.util.concurrent.atomic.AtomicBoolean loseResponse =
         new java.util.concurrent.atomic.AtomicBoolean();
+    private final java.util.concurrent.atomic.AtomicReference<ReserveGate> nextReserveGate =
+        new java.util.concurrent.atomic.AtomicReference<>();
     private final java.util.concurrent.atomic.AtomicReference<RuntimeException> nextFailure =
+        new java.util.concurrent.atomic.AtomicReference<>();
+    private final java.util.concurrent.atomic.AtomicReference<RuntimeException> nextReleaseFailure =
         new java.util.concurrent.atomic.AtomicReference<>();
     private final java.util.concurrent.CopyOnWriteArrayList<String> idempotencyKeys =
         new java.util.concurrent.CopyOnWriteArrayList<>();
+    private final java.util.concurrent.atomic.AtomicInteger releaseCallCount =
+        new java.util.concurrent.atomic.AtomicInteger();
+    private final java.util.concurrent.CopyOnWriteArrayList<ReservationOutcomeQuery>
+        reservationOutcomeQueries = new java.util.concurrent.CopyOnWriteArrayList<>();
+    private final java.util.concurrent.atomic.AtomicReference<
+            org.ayuvahak.platform.executioncontext.ExecutionContext>
+        lastReleaseContext = new java.util.concurrent.atomic.AtomicReference<>();
 
     StubCapacityReservationPort(CapacityReservationCommands commands) {
       this.commands = commands;
@@ -2647,11 +4474,39 @@ class TransferJourneyCommandsApiIT {
       if (configuredFailure != null) {
         throw configuredFailure;
       }
+      ReserveGate gate = nextReserveGate.getAndSet(null);
+      if (gate != null && !gate.afterCommit) {
+        pause(gate);
+      }
       CapacityReservationResult result = commands.reserve(context, request, idempotencyKey);
+      if (gate != null && gate.afterCommit) {
+        pause(gate);
+      }
       if (loseResponse.compareAndSet(true, false)) {
         throw new IllegalStateException("Synthetic lost Capacity response after commit");
       }
       return result;
+    }
+
+    @Override
+    public org.ayuvahak.capacity.domain.CapacityReleaseResult release(
+        org.ayuvahak.platform.executioncontext.ExecutionContext context, InternalId transferId) {
+      releaseCallCount.incrementAndGet();
+      lastReleaseContext.set(context);
+      RuntimeException configuredFailure = nextReleaseFailure.getAndSet(null);
+      if (configuredFailure != null) {
+        throw configuredFailure;
+      }
+      return commands.release(context, transferId);
+    }
+
+    @Override
+    public CapacityReservationOutcome getReservationOutcome(
+        org.ayuvahak.platform.executioncontext.ExecutionContext context,
+        InternalId operationId,
+        InternalId transferId) {
+      reservationOutcomeQueries.add(new ReservationOutcomeQuery(operationId, transferId));
+      return commands.getReservationOutcome(context, operationId, transferId);
     }
 
     void loseNextResponseAfterCommit() {
@@ -2662,14 +4517,72 @@ class TransferJourneyCommandsApiIT {
       nextFailure.set(failure);
     }
 
+    void failNextRelease(RuntimeException failure) {
+      nextReleaseFailure.set(failure);
+    }
+
+    ReserveGate pauseNextReserve() {
+      ReserveGate gate = new ReserveGate(false);
+      nextReserveGate.set(gate);
+      return gate;
+    }
+
+    ReserveGate pauseNextResponseAfterCommit() {
+      ReserveGate gate = new ReserveGate(true);
+      nextReserveGate.set(gate);
+      return gate;
+    }
+
+    private static void pause(ReserveGate gate) {
+      gate.entered.countDown();
+      try {
+        if (!gate.resume.await(15, TimeUnit.SECONDS)) {
+          throw new IllegalStateException("Synthetic Capacity reservation barrier timed out");
+        }
+      } catch (InterruptedException interrupted) {
+        Thread.currentThread().interrupt();
+        throw new IllegalStateException("Synthetic Capacity reservation barrier interrupted");
+      }
+    }
+
     java.util.List<String> idempotencyKeys() {
       return java.util.List.copyOf(idempotencyKeys);
+    }
+
+    int releaseCalls() {
+      return releaseCallCount.get();
+    }
+
+    java.util.List<ReservationOutcomeQuery> reservationOutcomeQueries() {
+      return java.util.List.copyOf(reservationOutcomeQueries);
+    }
+
+    org.ayuvahak.platform.executioncontext.ExecutionContext lastReleaseContext() {
+      return lastReleaseContext.get();
     }
 
     void reset() {
       loseResponse.set(false);
       nextFailure.set(null);
+      nextReleaseFailure.set(null);
+      releaseCallCount.set(0);
+      reservationOutcomeQueries.clear();
+      lastReleaseContext.set(null);
+      ReserveGate gate = nextReserveGate.getAndSet(null);
+      if (gate != null) {
+        gate.resume.countDown();
+      }
       idempotencyKeys.clear();
+    }
+  }
+
+  static final class ReserveGate {
+    final boolean afterCommit;
+    final CountDownLatch entered = new CountDownLatch(1);
+    final CountDownLatch resume = new CountDownLatch(1);
+
+    ReserveGate(boolean afterCommit) {
+      this.afterCommit = afterCommit;
     }
   }
 

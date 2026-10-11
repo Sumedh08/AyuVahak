@@ -12,6 +12,7 @@ import org.ayuvahak.platform.core.ActorReference;
 import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.InternalId;
 import org.ayuvahak.platform.core.IssuerId;
+import org.ayuvahak.platform.event.EventType;
 import org.ayuvahak.platform.executioncontext.ExecutionScope;
 import org.ayuvahak.platform.idempotency.CommandReceiptKey;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
@@ -489,6 +490,46 @@ public class JdbcReferralDraftStore implements ReferralDraftStore {
             referralId.value())
         .stream()
         .findFirst();
+  }
+
+  @Override
+  public boolean claimConsumerEvent(InternalId eventId, EventType eventType, Instant recordedAt) {
+    return jdbc.update(
+            "INSERT INTO referral.consumer_event_receipt "
+                + "(event_id, event_type, event_state, recorded_at) "
+                + "VALUES (?, ?, 'PROCESSING', ?) ON CONFLICT (event_id) DO NOTHING",
+            eventId.value(),
+            eventType.toString(),
+            Timestamp.from(recordedAt))
+        == 1;
+  }
+
+  @Override
+  public boolean isConsumerEventCompleted(InternalId eventId, EventType eventType) {
+    return Boolean.TRUE.equals(
+        jdbc.queryForObject(
+            "SELECT EXISTS (SELECT 1 FROM referral.consumer_event_receipt "
+                + "WHERE event_id = ? AND event_type = ? AND event_state = 'COMPLETED')",
+            Boolean.class,
+            eventId.value(),
+            eventType.toString()));
+  }
+
+  @Override
+  public void completeConsumerEvent(
+      InternalId eventId, InternalId referralId, String outcome, Instant recordedAt) {
+    int changed =
+        jdbc.update(
+            "UPDATE referral.consumer_event_receipt SET event_state = 'COMPLETED', "
+                + "referral_id = ?, outcome = ?, recorded_at = ? "
+                + "WHERE event_id = ? AND event_state = 'PROCESSING'",
+            referralId.value(),
+            outcome,
+            Timestamp.from(recordedAt),
+            eventId.value());
+    if (changed != 1) {
+      throw new IllegalStateException("Referral event consumer receipt could not be completed");
+    }
   }
 
   @Override

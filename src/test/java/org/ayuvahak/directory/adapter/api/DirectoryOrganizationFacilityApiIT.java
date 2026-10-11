@@ -1,6 +1,7 @@
 package org.ayuvahak.directory.adapter.api;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -211,6 +212,110 @@ class DirectoryOrganizationFacilityApiIT {
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.source.issuer").value("urn:synthetic:facility-registry"))
         .andExpect(jsonPath("$.source.reference").value("synthetic-organization-001"));
+  }
+
+  @Test
+  void capacityLifecycleOrganizationLookupIsNarrowAuthorizedAndAudited() throws Exception {
+    grant(ADMIN, CURATOR, "DirectoryCuration", "PLATFORM", null, null, "capacity-lookup-curator");
+    String organizationId = createOrganization(CURATOR, "capacity-lookup-org", "Capacity Clinic");
+    String facilityId =
+        createFacility(
+            CURATOR, "PLATFORM", "capacity-lookup-facility", "Capacity Facility", organizationId);
+    grantServicePlatform("synthetic-worker", "DirectoryCapacityLifecycleOrganizationRead");
+    String correlation = "capacity-lifecycle-directory-read-01";
+
+    var result =
+        directory.getCapacityLifecycleFacilityOrganization(
+            servicePlatformContext(correlation), directoryFacilityReference(facilityId));
+
+    assertThat(result).contains(directoryOrganizationReference(organizationId));
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = "
+                    + "'DIRECTORY_CAPACITY_LIFECYCLE_ORGANIZATION_READ' AND outcome = 'SUCCEEDED' "
+                    + "AND action_kind = 'SENSITIVE_READ' AND actor_kind = 'SERVICE' "
+                    + "AND actor_reference = 'synthetic-worker' AND scope_kind = 'PLATFORM' "
+                    + "AND correlation_id = '"
+                    + correlation
+                    + "' AND reason_code = "
+                    + "'CAPACITY_LIFECYCLE_RECONCILIATION' AND target_facility_reference = '"
+                    + facilityId
+                    + "' "
+                    + "AND target_organization_reference = '"
+                    + organizationId
+                    + "'"))
+        .isEqualTo(1);
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM identity_access.authorization_grant WHERE "
+                    + "principal_kind = 'SERVICE' AND principal_identifier = 'synthetic-worker' "
+                    + "AND authority_code = 'DirectoryRead'"))
+        .isZero();
+  }
+
+  @Test
+  void capacityLifecycleOrganizationLookupDoesNotInheritBroadDirectoryRead() throws Exception {
+    grant(ADMIN, CURATOR, "DirectoryCuration", "PLATFORM", null, null, "capacity-denied-curator");
+    String organizationId = createOrganization(CURATOR, "capacity-denied-org", "Denied Clinic");
+    String facilityId =
+        createFacility(
+            CURATOR, "PLATFORM", "capacity-denied-facility", "Denied Facility", organizationId);
+    grantServicePlatform("synthetic-worker", "DirectoryRead");
+    String correlation = "capacity-lifecycle-directory-denied-01";
+
+    assertThatThrownBy(
+            () ->
+                directory.getCapacityLifecycleFacilityOrganization(
+                    servicePlatformContext(correlation), directoryFacilityReference(facilityId)))
+        .isInstanceOfSatisfying(
+            org.ayuvahak.platform.api.PlatformProblemException.class,
+            failure ->
+                assertThat(failure.code())
+                    .isEqualTo(org.ayuvahak.platform.api.PlatformErrorCode.AUTHORIZATION_DENIED));
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = "
+                    + "'DIRECTORY_CAPACITY_LIFECYCLE_ORGANIZATION_READ' AND outcome = 'DENIED' "
+                    + "AND actor_kind = 'SERVICE' AND actor_reference = 'synthetic-worker' "
+                    + "AND correlation_id = '"
+                    + correlation
+                    + "' AND reason_code = 'NO_ACTIVE_GRANT' "
+                    + "AND target_type = 'Facility' AND target_id::text = '"
+                    + facilityId
+                    + "'"))
+        .isEqualTo(1);
+  }
+
+  @Test
+  void capacityLifecycleOrganizationLookupWithholdsResultWhenAuditFails() throws Exception {
+    grant(ADMIN, CURATOR, "DirectoryCuration", "PLATFORM", null, null, "capacity-audit-curator");
+    String organizationId = createOrganization(CURATOR, "capacity-audit-org", "Audit Clinic");
+    String facilityId =
+        createFacility(
+            CURATOR, "PLATFORM", "capacity-audit-facility", "Audit Facility", organizationId);
+    grantServicePlatform("synthetic-worker", "DirectoryCapacityLifecycleOrganizationRead");
+    jdbc.execute(
+        "CREATE FUNCTION test_fail_audit_insert() RETURNS trigger LANGUAGE plpgsql AS "
+            + "'BEGIN RAISE EXCEPTION ''synthetic audit failure''; END'");
+    jdbc.execute(
+        "CREATE TRIGGER test_fail_audit_insert BEFORE INSERT ON audit.audit_record "
+            + "FOR EACH ROW EXECUTE FUNCTION test_fail_audit_insert()");
+
+    assertThatThrownBy(
+            () ->
+                directory.getCapacityLifecycleFacilityOrganization(
+                    servicePlatformContext("capacity-lifecycle-directory-audit-fail"),
+                    directoryFacilityReference(facilityId)))
+        .isInstanceOfSatisfying(
+            org.ayuvahak.platform.api.PlatformProblemException.class,
+            failure ->
+                assertThat(failure.code())
+                    .isEqualTo(org.ayuvahak.platform.api.PlatformErrorCode.AUDIT_UNAVAILABLE));
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = "
+                    + "'DIRECTORY_CAPACITY_LIFECYCLE_ORGANIZATION_READ' AND outcome = 'SUCCEEDED'"))
+        .isZero();
   }
 
   @Test
@@ -2508,6 +2613,31 @@ class DirectoryOrganizationFacilityApiIT {
         clientId,
         DIRECTORY_ISSUER,
         organizationId);
+  }
+
+  private void grantServicePlatform(String clientId, String authority) {
+    jdbc.update(
+        "INSERT INTO identity_access.authorization_grant (grant_id, principal_kind, "
+            + "principal_issuer, principal_identifier_type, principal_identifier, authority_code, "
+            + "scope_kind, grant_status, created_at) VALUES (gen_random_uuid(), 'SERVICE', ?, "
+            + "'client_id', ?, ?, 'PLATFORM', 'ACTIVE', CURRENT_TIMESTAMP)",
+        ISSUER,
+        clientId,
+        authority);
+  }
+
+  private ExecutionContext servicePlatformContext(String correlation) {
+    return executionContextFactory.forDeploymentBoundedBackgroundWork(
+        ActorReference.service(new IssuerId(ISSUER), "synthetic-worker"),
+        new CorrelationId(correlation));
+  }
+
+  private static ExternalReference directoryFacilityReference(String facilityId) {
+    return new ExternalReference(new IssuerId(DIRECTORY_ISSUER), "Facility", facilityId);
+  }
+
+  private static ExternalReference directoryOrganizationReference(String organizationId) {
+    return new ExternalReference(new IssuerId(DIRECTORY_ISSUER), "Organization", organizationId);
   }
 
   private static String grantBody(

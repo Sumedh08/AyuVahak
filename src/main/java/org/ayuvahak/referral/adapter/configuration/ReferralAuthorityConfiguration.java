@@ -2,11 +2,13 @@ package org.ayuvahak.referral.adapter.configuration;
 
 import org.ayuvahak.platform.authorization.domain.FunctionalAuthority;
 import org.ayuvahak.referral.domain.ReferralAuthorities;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /** Registers Referral-owned functional authorities with the platform authorization catalog. */
 @Configuration(proxyBeanMethods = false)
+@EnableConfigurationProperties(ReferralProperties.class)
 public class ReferralAuthorityConfiguration {
 
   @Bean

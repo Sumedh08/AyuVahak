@@ -20,6 +20,9 @@ public final class DirectoryAuthorities {
   private static final FunctionalAuthority VOCABULARY_ADMINISTRATION =
       new FunctionalAuthority(
           "DirectoryVocabularyAdministration", Set.of(ExecutionScope.Kind.PLATFORM));
+  private static final FunctionalAuthority CAPACITY_LIFECYCLE_ORGANIZATION_READ =
+      new FunctionalAuthority(
+          "DirectoryCapacityLifecycleOrganizationRead", Set.of(ExecutionScope.Kind.PLATFORM));
 
   private DirectoryAuthorities() {}
 
@@ -33,5 +36,9 @@ public final class DirectoryAuthorities {
 
   public static FunctionalAuthority vocabularyAdministration() {
     return VOCABULARY_ADMINISTRATION;
+  }
+
+  public static FunctionalAuthority capacityLifecycleOrganizationRead() {
+    return CAPACITY_LIFECYCLE_ORGANIZATION_READ;
   }
 }

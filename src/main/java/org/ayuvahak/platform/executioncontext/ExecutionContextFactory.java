@@ -46,6 +46,16 @@ public final class ExecutionContextFactory {
         configuredServiceActor, requestedScope, correlationId, causationId, scopeValidator);
   }
 
+  /**
+   * Creates a platform-scoped worker context for a narrow owner read when that owner is bounded to
+   * one deployment. The caller must still require the owner's explicit platform authority.
+   */
+  public ExecutionContext forDeploymentBoundedBackgroundWork(
+      ActorReference configuredServiceActor, CorrelationId correlationId) {
+    return ExecutionContext.forDeploymentBoundedBackgroundWork(
+        configuredServiceActor, correlationId, scopeValidator);
+  }
+
   /** Creates the explicit out-of-band context used only by the one-shot local grant bootstrap. */
   public ExecutionContext forLocalOperatorBootstrap(
       ActorReference operator, CorrelationId correlationId) {

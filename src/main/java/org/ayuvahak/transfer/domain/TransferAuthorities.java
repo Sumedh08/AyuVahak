@@ -23,12 +23,16 @@ public final class TransferAuthorities {
   private static final FunctionalAuthority RESERVATION_RECONCILIATION =
       new FunctionalAuthority(
           "TransferReservationReconciliation", Set.of(ExecutionScope.Kind.FACILITY));
+  private static final FunctionalAuthority REFERRAL_CANCELLATION =
+      new FunctionalAuthority("TransferReferralCancellation", ORIGIN_SCOPES);
   private static final FunctionalAuthority PROGRESS =
       new FunctionalAuthority("TransferProgressAuthority", Set.of(ExecutionScope.Kind.FACILITY));
   private static final FunctionalAuthority HANDOVER =
       new FunctionalAuthority("TransferHandoverAuthority", Set.of(ExecutionScope.Kind.FACILITY));
   private static final FunctionalAuthority COMPLETION =
       new FunctionalAuthority("TransferCompletionAuthority", Set.of(ExecutionScope.Kind.FACILITY));
+  private static final FunctionalAuthority CLOSURE =
+      new FunctionalAuthority("TransferJourneyClosureAuthority", ORIGIN_SCOPES);
 
   private TransferAuthorities() {}
 
@@ -56,6 +60,10 @@ public final class TransferAuthorities {
     return RESERVATION_RECONCILIATION;
   }
 
+  public static FunctionalAuthority referralCancellation() {
+    return REFERRAL_CANCELLATION;
+  }
+
   public static FunctionalAuthority progress() {
     return PROGRESS;
   }
@@ -66,5 +74,9 @@ public final class TransferAuthorities {
 
   public static FunctionalAuthority completion() {
     return COMPLETION;
+  }
+
+  public static FunctionalAuthority closure() {
+    return CLOSURE;
   }
 }

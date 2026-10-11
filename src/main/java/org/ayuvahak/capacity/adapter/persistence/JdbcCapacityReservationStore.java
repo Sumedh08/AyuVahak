@@ -7,9 +7,12 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.ayuvahak.capacity.application.CapacityReservationStore;
+import org.ayuvahak.capacity.domain.CapacityReservationOutcome;
 import org.ayuvahak.capacity.domain.CapacityReservationRequest;
 import org.ayuvahak.capacity.domain.CapacityReservationResult;
+import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.InternalId;
+import org.ayuvahak.platform.core.IssuerId;
 import org.ayuvahak.platform.idempotency.CommandReceiptKey;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
 import org.springframework.context.annotation.Lazy;
@@ -155,6 +158,7 @@ public class JdbcCapacityReservationStore implements CapacityReservationStore {
         "SELECT COALESCE(SUM(quantity), 0) FROM capacity.coordination_reservation "
             + "WHERE facility_issuer = ? AND facility_identifier = ?::uuid "
             + "AND dimension_code = ? AND unit_code = ? AND expires_at > ? "
+            + "AND reservation_status IN ('ACTIVE', 'AT_RISK') "
             + "AND interval_start < ? AND interval_end > ?",
         BigDecimal.class,
         facilityIssuer,
@@ -243,6 +247,229 @@ public class JdbcCapacityReservationStore implements CapacityReservationStore {
         .map(row -> result(operationId, row, true));
   }
 
+  @Override
+  public CapacityReservationOutcome findReservationOutcome(
+      InternalId operationId, InternalId transferId, String facilityIdentifier, Instant at) {
+    List<ReservationOutcomeRow> rows =
+        jdbc.query(
+            "SELECT o.outcome AS operation_outcome, r.reservation_id, r.reservation_status, "
+                + "r.expires_at, r.lifecycle_sequence FROM capacity.reservation_operation o "
+                + "LEFT JOIN capacity.coordination_reservation r ON r.operation_id = o.operation_id "
+                + "AND r.transfer_id = o.transfer_id AND r.facility_issuer = 'urn:ayuvahak:directory' "
+                + "AND r.facility_identifier_type = 'Facility' AND r.facility_identifier = ? "
+                + "WHERE o.operation_id = ? AND o.transfer_id = ?",
+            (result, rowNumber) ->
+                new ReservationOutcomeRow(
+                    result.getString("operation_outcome"),
+                    result.getObject("reservation_id", UUID.class),
+                    result.getString("reservation_status"),
+                    result.getTimestamp("expires_at") == null
+                        ? null
+                        : result.getTimestamp("expires_at").toInstant(),
+                    result.getObject("lifecycle_sequence", Long.class)),
+            UUID.fromString(facilityIdentifier),
+            operationId.value(),
+            transferId.value());
+    ReservationOutcomeRow row = rows.stream().findFirst().orElse(null);
+    if (row == null
+        || !"RESERVED".equals(row.operationOutcome())
+        || row.reservationId() == null
+        || row.reservationStatus() == null
+        || row.expiresAt() == null
+        || row.lifecycleSequence() == null) {
+      return unknownReservationOutcome(operationId, transferId);
+    }
+    CapacityReservationOutcome.Status status;
+    if ("RELEASED".equals(row.reservationStatus())) {
+      status = CapacityReservationOutcome.Status.RELEASED;
+    } else if (!row.expiresAt().isAfter(at) || "EXPIRED".equals(row.reservationStatus())) {
+      status = CapacityReservationOutcome.Status.EXPIRED;
+    } else {
+      status =
+          switch (row.reservationStatus()) {
+            case "ACTIVE" -> CapacityReservationOutcome.Status.RESERVED;
+            case "AT_RISK" -> CapacityReservationOutcome.Status.AT_RISK;
+            case "RELEASED" -> CapacityReservationOutcome.Status.RELEASED;
+            default -> CapacityReservationOutcome.Status.UNKNOWN;
+          };
+    }
+    if (status == CapacityReservationOutcome.Status.UNKNOWN) {
+      return unknownReservationOutcome(operationId, transferId);
+    }
+    return new CapacityReservationOutcome(
+        operationId,
+        transferId,
+        status,
+        Optional.of(new InternalId(row.reservationId())),
+        status == CapacityReservationOutcome.Status.RESERVED
+            ? Optional.empty()
+            : Optional.of("CAPACITY_RESERVATION_" + status.name()),
+        Optional.of(row.expiresAt()),
+        row.lifecycleSequence());
+  }
+
+  private static CapacityReservationOutcome unknownReservationOutcome(
+      InternalId operationId, InternalId transferId) {
+    return new CapacityReservationOutcome(
+        operationId,
+        transferId,
+        CapacityReservationOutcome.Status.UNKNOWN,
+        Optional.empty(),
+        Optional.of("CAPACITY_RESERVATION_OUTCOME_UNKNOWN"),
+        Optional.empty(),
+        0);
+  }
+
+  @Override
+  public ReleaseResult release(
+      InternalId transferId, String facilityIdentifier, Instant releasedAt) {
+    List<ReservationOperationLockRow> operation =
+        jdbc.query(
+            "SELECT o.outcome, o.reservation_id, r.facility_identifier "
+                + "FROM capacity.reservation_operation o LEFT JOIN capacity.coordination_reservation r "
+                + "ON r.reservation_id = o.reservation_id WHERE o.transfer_id = ? FOR UPDATE OF o",
+            (result, rowNumber) ->
+                new ReservationOperationLockRow(
+                    result.getString("outcome"),
+                    result.getObject("reservation_id", UUID.class),
+                    result.getObject("facility_identifier", UUID.class)),
+            transferId.value());
+    if (operation.isEmpty() || !"RESERVED".equals(operation.getFirst().outcome())) {
+      return new ReleaseResult(
+          ReleaseOutcome.NOT_RESERVED, Optional.empty(), 0, false, Optional.empty());
+    }
+    UUID reservedFacility = operation.getFirst().facilityIdentifier();
+    if (reservedFacility != null && !reservedFacility.toString().equals(facilityIdentifier)) {
+      return new ReleaseResult(
+          ReleaseOutcome.SCOPE_MISMATCH, Optional.empty(), 0, false, Optional.empty());
+    }
+    List<ReservationLifecycleRow> changed =
+        jdbc.query(
+            "UPDATE capacity.coordination_reservation SET reservation_status = "
+                + "CASE WHEN expires_at <= ? THEN 'EXPIRED' ELSE 'RELEASED' END, "
+                + "lifecycle_sequence = lifecycle_sequence + 1, status_recorded_at = ? "
+                + "WHERE transfer_id = ? AND reservation_status IN ('ACTIVE', 'AT_RISK') "
+                + "RETURNING reservation_id, reservation_status, lifecycle_sequence, expires_at",
+            (result, rowNumber) ->
+                new ReservationLifecycleRow(
+                    result.getObject("reservation_id", UUID.class),
+                    result.getString("reservation_status"),
+                    result.getLong("lifecycle_sequence"),
+                    result.getTimestamp("expires_at").toInstant()),
+            Timestamp.from(releasedAt),
+            Timestamp.from(releasedAt),
+            transferId.value());
+    if (!changed.isEmpty()) {
+      ReservationLifecycleRow row = changed.getFirst();
+      return new ReleaseResult(
+          ReleaseOutcome.valueOf(row.status()),
+          Optional.of(new InternalId(row.reservationId())),
+          row.sequence(),
+          true,
+          Optional.of(row.expiresAt()));
+    }
+    ReservationLifecycleRow row =
+        jdbc.queryForObject(
+            "SELECT reservation_id, reservation_status, lifecycle_sequence, expires_at "
+                + "FROM capacity.coordination_reservation WHERE transfer_id = ?",
+            (result, rowNumber) ->
+                new ReservationLifecycleRow(
+                    result.getObject("reservation_id", UUID.class),
+                    result.getString("reservation_status"),
+                    result.getLong("lifecycle_sequence"),
+                    result.getTimestamp("expires_at").toInstant()),
+            transferId.value());
+    ReleaseOutcome outcome =
+        "EXPIRED".equals(row.status()) ? ReleaseOutcome.EXPIRED : ReleaseOutcome.RELEASED;
+    return new ReleaseResult(
+        outcome,
+        Optional.of(new InternalId(row.reservationId())),
+        row.sequence(),
+        false,
+        Optional.of(row.expiresAt()));
+  }
+
+  @Override
+  public List<LifecycleCandidate> findLifecycleCandidates(Instant at, int limit) {
+    return jdbc.query(
+        "SELECT reservation_id, transfer_id, facility_identifier, dimension_code, unit_code, "
+            + "quantity, interval_start, interval_end, expires_at, reservation_status, "
+            + "lifecycle_sequence FROM capacity.coordination_reservation "
+            + "WHERE reservation_status IN ('ACTIVE', 'AT_RISK') "
+            + "AND (expires_at <= ? OR (reservation_status = 'ACTIVE' AND lifecycle_checked_at < ?)) "
+            + "ORDER BY lifecycle_checked_at, expires_at, reservation_id LIMIT ?",
+        JdbcCapacityReservationStore::lifecycleCandidate,
+        Timestamp.from(at),
+        Timestamp.from(at),
+        limit);
+  }
+
+  @Override
+  public Optional<LifecycleCandidate> lockLifecycleCandidate(InternalId reservationId) {
+    return jdbc
+        .query(
+            "SELECT reservation_id, transfer_id, facility_identifier, dimension_code, unit_code, "
+                + "quantity, interval_start, interval_end, expires_at, reservation_status, "
+                + "lifecycle_sequence FROM capacity.coordination_reservation "
+                + "WHERE reservation_id = ? FOR UPDATE",
+            JdbcCapacityReservationStore::lifecycleCandidate,
+            reservationId.value())
+        .stream()
+        .findFirst();
+  }
+
+  @Override
+  public Optional<LifecycleCandidate> changeLifecycleStatus(
+      InternalId reservationId,
+      LifecycleStatus expected,
+      LifecycleStatus next,
+      Instant recordedAt) {
+    return jdbc
+        .query(
+            "UPDATE capacity.coordination_reservation SET reservation_status = ?, "
+                + "lifecycle_sequence = lifecycle_sequence + 1, status_recorded_at = ?, "
+                + "lifecycle_checked_at = ? WHERE reservation_id = ? AND reservation_status = ? "
+                + "RETURNING reservation_id, transfer_id, facility_identifier, dimension_code, "
+                + "unit_code, quantity, interval_start, interval_end, expires_at, "
+                + "reservation_status, lifecycle_sequence",
+            JdbcCapacityReservationStore::lifecycleCandidate,
+            next.name(),
+            Timestamp.from(recordedAt),
+            Timestamp.from(recordedAt),
+            reservationId.value(),
+            expected.name())
+        .stream()
+        .findFirst();
+  }
+
+  @Override
+  public void recordLifecycleCheck(InternalId reservationId, Instant checkedAt) {
+    jdbc.update(
+        "UPDATE capacity.coordination_reservation SET lifecycle_checked_at = ? "
+            + "WHERE reservation_id = ? AND reservation_status = 'ACTIVE'",
+        Timestamp.from(checkedAt),
+        reservationId.value());
+  }
+
+  private static LifecycleCandidate lifecycleCandidate(java.sql.ResultSet result, int rowNumber)
+      throws java.sql.SQLException {
+    return new LifecycleCandidate(
+        new InternalId(result.getObject("reservation_id", UUID.class)),
+        new InternalId(result.getObject("transfer_id", UUID.class)),
+        new ExternalReference(
+            new IssuerId("urn:ayuvahak:directory"),
+            "Facility",
+            result.getObject("facility_identifier", UUID.class).toString()),
+        result.getString("dimension_code"),
+        result.getString("unit_code"),
+        result.getBigDecimal("quantity"),
+        result.getTimestamp("interval_start").toInstant(),
+        result.getTimestamp("interval_end").toInstant(),
+        result.getTimestamp("expires_at").toInstant(),
+        LifecycleStatus.valueOf(result.getString("reservation_status")),
+        result.getLong("lifecycle_sequence"));
+  }
+
   private static CapacityReservationResult result(
       InternalId operationId, OperationRow row, boolean replayed) {
     return new CapacityReservationResult(
@@ -256,6 +483,13 @@ public class JdbcCapacityReservationStore implements CapacityReservationStore {
   private record OperationRow(
       UUID transferId, String fingerprint, String outcome, UUID reservationId, String reasonCode) {}
 
+  private record ReservationOutcomeRow(
+      String operationOutcome,
+      UUID reservationId,
+      String reservationStatus,
+      Instant expiresAt,
+      Long lifecycleSequence) {}
+
   private record ReceiptRow(
       String fingerprint,
       UUID operationId,
@@ -263,4 +497,10 @@ public class JdbcCapacityReservationStore implements CapacityReservationStore {
       String outcome,
       UUID reservationId,
       String reasonCode) {}
+
+  private record ReservationLifecycleRow(
+      UUID reservationId, String status, long sequence, Instant expiresAt) {}
+
+  private record ReservationOperationLockRow(
+      String outcome, UUID reservationId, UUID facilityIdentifier) {}
 }

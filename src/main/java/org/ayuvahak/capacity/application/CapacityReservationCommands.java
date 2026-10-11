@@ -11,9 +11,12 @@ import org.ayuvahak.capacity.domain.CapacityEvidenceFreshness;
 import org.ayuvahak.capacity.domain.CapacityEvidenceProjection;
 import org.ayuvahak.capacity.domain.CapacityEvidenceProjector;
 import org.ayuvahak.capacity.domain.CapacityObservationFact;
+import org.ayuvahak.capacity.domain.CapacityReleaseResult;
+import org.ayuvahak.capacity.domain.CapacityReservationOutcome;
 import org.ayuvahak.capacity.domain.CapacityReservationRequest;
 import org.ayuvahak.capacity.domain.CapacityReservationResult;
 import org.ayuvahak.capacity.domain.CapacityValueKind;
+import org.ayuvahak.directory.application.DirectoryCapacityLifecycleOrganizationLookup;
 import org.ayuvahak.platform.api.PlatformErrorCode;
 import org.ayuvahak.platform.api.PlatformProblemException;
 import org.ayuvahak.platform.audit.application.AuditPersistenceUnavailableException;
@@ -24,14 +27,29 @@ import org.ayuvahak.platform.audit.domain.AuditAuthorizationOutcome;
 import org.ayuvahak.platform.audit.domain.AuditEvidence;
 import org.ayuvahak.platform.audit.domain.AuditOutcome;
 import org.ayuvahak.platform.audit.domain.AuditTargetContext;
+import org.ayuvahak.platform.authentication.AuthenticationProperties;
 import org.ayuvahak.platform.authorization.application.AuthorizationService;
 import org.ayuvahak.platform.authorization.domain.AuthorizationDecision;
+import org.ayuvahak.platform.core.ActorReference;
+import org.ayuvahak.platform.core.CorrelationId;
+import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.InternalId;
+import org.ayuvahak.platform.core.IssuerId;
+import org.ayuvahak.platform.core.OccurredAt;
+import org.ayuvahak.platform.core.RecordedAt;
+import org.ayuvahak.platform.event.AggregatePosition;
+import org.ayuvahak.platform.event.EventEnvelope;
+import org.ayuvahak.platform.event.EventType;
+import org.ayuvahak.platform.eventing.application.OutboxWriter;
 import org.ayuvahak.platform.executioncontext.AuthenticationMechanism;
 import org.ayuvahak.platform.executioncontext.ExecutionContext;
+import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
 import org.ayuvahak.platform.executioncontext.ExecutionScope;
+import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
 import org.ayuvahak.platform.idempotency.CommandReceiptKey;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Lazy;
@@ -49,6 +67,8 @@ import tools.jackson.databind.ObjectMapper;
 @Lazy
 public final class CapacityReservationCommands {
 
+  private static final Logger logger = LoggerFactory.getLogger(CapacityReservationCommands.class);
+
   private static final String DIRECTORY_ISSUER = "urn:ayuvahak:directory";
   private static final String BUSY_DETAIL =
       "A matching Capacity reservation is still being processed; retry with the same key.";
@@ -61,6 +81,11 @@ public final class CapacityReservationCommands {
   private final TransactionTemplate transaction;
   private final Clock clock;
   private final ObjectMapper objectMapper;
+  private final ObjectProvider<OutboxWriter> outboxWriter;
+  private final DirectoryCapacityLifecycleOrganizationLookup directory;
+  private final ExecutionContextFactory contexts;
+  private final CapacityReservationLifecycleProperties lifecycleProperties;
+  private final ActorReference lifecycleWorker;
   private final CapacityEvidenceProjector projector = new CapacityEvidenceProjector();
 
   public CapacityReservationCommands(
@@ -71,7 +96,12 @@ public final class CapacityReservationCommands {
       ObjectProvider<AuditWriter> auditWriter,
       @Lazy PlatformTransactionManager transactionManager,
       @Qualifier("auditClock") Clock clock,
-      ObjectMapper objectMapper) {
+      ObjectMapper objectMapper,
+      ObjectProvider<OutboxWriter> outboxWriter,
+      DirectoryCapacityLifecycleOrganizationLookup directory,
+      ExecutionContextFactory contexts,
+      CapacityReservationLifecycleProperties lifecycleProperties,
+      AuthenticationProperties authentication) {
     this.reservations = Objects.requireNonNull(reservations, "reservation store");
     this.configuration = Objects.requireNonNull(configuration, "Capacity configuration");
     this.evidence = Objects.requireNonNull(evidence, "Capacity evidence");
@@ -80,6 +110,299 @@ public final class CapacityReservationCommands {
     transaction = new TransactionTemplate(Objects.requireNonNull(transactionManager));
     this.clock = Objects.requireNonNull(clock, "audit clock");
     this.objectMapper = Objects.requireNonNull(objectMapper, "object mapper");
+    this.outboxWriter = Objects.requireNonNull(outboxWriter, "outbox writer");
+    this.directory = Objects.requireNonNull(directory, "Directory scope lookup");
+    this.contexts = Objects.requireNonNull(contexts, "execution context factory");
+    this.lifecycleProperties =
+        Objects.requireNonNull(lifecycleProperties, "Capacity lifecycle properties");
+    this.lifecycleWorker =
+        ActorReference.service(
+            new IssuerId(authentication.issuer()), lifecycleProperties.getWorkerClientId());
+  }
+
+  /** Expires due holds and emits at-risk events after Capacity evidence reduces available holds. */
+  public int reconcileLifecycle() {
+    int processed = 0;
+    for (CapacityReservationStore.LifecycleCandidate candidate :
+        reservations.findLifecycleCandidates(clock.instant(), lifecycleProperties.getBatchSize())) {
+      try {
+        if (reconcileLifecycleCandidate(candidate)) {
+          processed++;
+        }
+      } catch (RuntimeException failure) {
+        logger.warn(
+            "Capacity reservation lifecycle reconciliation deferred transferId={} failureType={}",
+            candidate.transferId(),
+            failure.getClass().getSimpleName());
+      }
+    }
+    return processed;
+  }
+
+  private boolean reconcileLifecycleCandidate(
+      CapacityReservationStore.LifecycleCandidate candidate) {
+    CorrelationId correlation = CorrelationId.generate();
+    ExecutionContext directoryContext =
+        contexts.forDeploymentBoundedBackgroundWork(lifecycleWorker, correlation);
+    Optional<ExternalReference> organization =
+        directory.getCapacityLifecycleFacilityOrganization(directoryContext, candidate.facility());
+    if (organization.isEmpty()) {
+      return false;
+    }
+    ExecutionContext context =
+        contexts.forBackgroundWork(
+            lifecycleWorker,
+            RequestedExecutionScope.facility(organization.orElseThrow(), candidate.facility()),
+            correlation,
+            Optional.empty());
+    requireReservationAuthority(context, candidate.transferId());
+    return Boolean.TRUE.equals(
+        transaction.execute(
+            status -> {
+              Instant now = clock.instant();
+              Optional<CapacityReservationStore.LifecycleCandidate> locked =
+                  reservations.lockLifecycleCandidate(candidate.reservationId());
+              if (locked.isEmpty()) {
+                return false;
+              }
+              CapacityReservationStore.LifecycleCandidate current = locked.orElseThrow();
+              if (current.status() == CapacityReservationStore.LifecycleStatus.RELEASED
+                  || current.status() == CapacityReservationStore.LifecycleStatus.EXPIRED) {
+                return false;
+              }
+              if (!current.expiresAt().isAfter(now)) {
+                return reservations
+                    .changeLifecycleStatus(
+                        current.reservationId(),
+                        current.status(),
+                        CapacityReservationStore.LifecycleStatus.EXPIRED,
+                        now)
+                    .map(
+                        expired -> {
+                          auditRelease(
+                              context,
+                              expired.transferId(),
+                              "CAPACITY_RESERVATION_EXPIRE",
+                              "EXPIRED",
+                              true);
+                          recordLifecycleEvent(
+                              context,
+                              expired,
+                              EventType.parse("capacity.reservation-expired.v1"),
+                              expired.expiresAt());
+                          return true;
+                        })
+                    .orElse(false);
+              }
+              if (current.status() != CapacityReservationStore.LifecycleStatus.ACTIVE) {
+                return false;
+              }
+              if (isAtRisk(current, now)) {
+                return reservations
+                    .changeLifecycleStatus(
+                        current.reservationId(),
+                        CapacityReservationStore.LifecycleStatus.ACTIVE,
+                        CapacityReservationStore.LifecycleStatus.AT_RISK,
+                        now)
+                    .map(
+                        atRisk -> {
+                          auditRelease(
+                              context,
+                              atRisk.transferId(),
+                              "CAPACITY_RESERVATION_AT_RISK",
+                              "AT_RISK",
+                              true);
+                          recordLifecycleEvent(
+                              context,
+                              atRisk,
+                              EventType.parse("capacity.reservation-at-risk.v1"),
+                              now);
+                          return true;
+                        })
+                    .orElse(false);
+              }
+              reservations.recordLifecycleCheck(current.reservationId(), now);
+              return true;
+            }));
+  }
+
+  private boolean isAtRisk(CapacityReservationStore.LifecycleCandidate reservation, Instant at) {
+    Optional<org.ayuvahak.capacity.domain.CapacityDimension> dimension =
+        configuration.currentDimension(reservation.dimensionCode());
+    Optional<org.ayuvahak.capacity.domain.CapacityPolicy> policy =
+        configuration.currentPolicy(reservation.dimensionCode());
+    CapacityEvidenceProjection projection =
+        projector.project(
+            reservation.facility(),
+            reservation.dimensionCode(),
+            dimension,
+            policy,
+            evidence.findForProjection(reservation.facility(), reservation.dimensionCode()),
+            at);
+    if (projection.freshness() != CapacityEvidenceFreshness.CURRENT
+        || projection.valueKind().filter(kind -> kind == CapacityValueKind.QUANTITY).isEmpty()
+        || projection.unit().filter(reservation.unit()::equals).isEmpty()
+        || projection.quantity().isEmpty()) {
+      return true;
+    }
+    BigDecimal held =
+        reservations.sumActiveReservations(
+            reservation.facility().issuer().value(),
+            reservation.facility().value(),
+            reservation.dimensionCode(),
+            reservation.unit(),
+            reservation.intervalStart(),
+            reservation.intervalEnd(),
+            at);
+    return projection.quantity().orElseThrow().compareTo(held) < 0;
+  }
+
+  private void recordLifecycleEvent(
+      ExecutionContext context,
+      CapacityReservationStore.LifecycleCandidate reservation,
+      EventType eventType,
+      Instant occurredAt) {
+    var payload = objectMapper.createObjectNode();
+    payload.put("transferReference", reservation.transferId().toString());
+    payload.put("reservationReference", reservation.reservationId().toString());
+    if (eventType.equals(EventType.parse("capacity.reservation-expired.v1"))) {
+      payload.put("expiresAt", reservation.expiresAt().toString());
+    } else {
+      CapacityEvidenceProjection projection =
+          projector.project(
+              reservation.facility(),
+              reservation.dimensionCode(),
+              configuration.currentDimension(reservation.dimensionCode()),
+              configuration.currentPolicy(reservation.dimensionCode()),
+              evidence.findForProjection(reservation.facility(), reservation.dimensionCode()),
+              clock.instant());
+      String evidenceVersion =
+          projection.evidence().stream()
+              .map(fact -> fact.id().toString())
+              .sorted()
+              .collect(java.util.stream.Collectors.joining(","));
+      payload.put("evidenceVersion", evidenceVersion.isBlank() ? "UNKNOWN" : evidenceVersion);
+      payload.put("reasonCode", "CAPACITY_EVIDENCE_NO_LONGER_SUPPORTS_HOLD");
+    }
+    outboxWriter
+        .getObject()
+        .record(
+            new EventEnvelope(
+                InternalId.generate(),
+                eventType,
+                "capacity",
+                new OccurredAt(occurredAt),
+                new RecordedAt(clock.instant()),
+                context,
+                Optional.of(
+                    new AggregatePosition(
+                        "capacity-reservation/" + reservation.reservationId(),
+                        reservation.sequence())),
+                payload));
+  }
+
+  public CapacityReleaseResult release(ExecutionContext context, InternalId transferId) {
+    Objects.requireNonNull(context, "execution context");
+    Objects.requireNonNull(transferId, "Transfer id");
+    requireFacilityScope(context);
+    requireReservationAuthority(context, transferId);
+    try {
+      return Objects.requireNonNull(
+          transaction.execute(
+              status -> {
+                Instant now = clock.instant();
+                CapacityReservationStore.ReleaseResult result =
+                    reservations.release(
+                        transferId, context.scope().facility().orElseThrow().value(), now);
+                if (result.outcome() == CapacityReservationStore.ReleaseOutcome.SCOPE_MISMATCH) {
+                  throw problem(
+                      HttpStatus.FORBIDDEN,
+                      PlatformErrorCode.INVALID_EXECUTION_SCOPE,
+                      "Capacity release requires the reservation's validated Facility scope.");
+                }
+                if (result.changed()) {
+                  auditRelease(
+                      context,
+                      transferId,
+                      "CAPACITY_RESERVATION_RELEASE",
+                      result.outcome().name(),
+                      result.outcome() == CapacityReservationStore.ReleaseOutcome.RELEASED);
+                  if (result.outcome() == CapacityReservationStore.ReleaseOutcome.EXPIRED) {
+                    recordExpiryEvent(context, transferId, result, now);
+                  }
+                }
+                return new CapacityReleaseResult(
+                    CapacityReleaseResult.Outcome.valueOf(result.outcome().name()),
+                    result.reservationId(),
+                    result.sequence());
+              }),
+          "Capacity release result");
+    } catch (AuditPersistenceUnavailableException unavailable) {
+      throw problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          PlatformErrorCode.AUDIT_UNAVAILABLE,
+          "The Capacity release and required audit evidence could not be committed.");
+    } catch (DataAccessException unavailable) {
+      throw problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          PlatformErrorCode.CAPACITY_UNAVAILABLE,
+          "Capacity could not confirm reservation release safely.");
+    }
+  }
+
+  private void recordExpiryEvent(
+      ExecutionContext context,
+      InternalId transferId,
+      CapacityReservationStore.ReleaseResult result,
+      Instant recordedAt) {
+    var payload = objectMapper.createObjectNode();
+    payload.put("transferReference", transferId.toString());
+    payload.put("reservationReference", result.reservationId().orElseThrow().toString());
+    result.expiresAt().ifPresent(value -> payload.put("expiresAt", value.toString()));
+    outboxWriter
+        .getObject()
+        .record(
+            new EventEnvelope(
+                InternalId.generate(),
+                EventType.parse("capacity.reservation-expired.v1"),
+                "capacity",
+                new OccurredAt(result.expiresAt().orElse(recordedAt)),
+                new RecordedAt(recordedAt),
+                context,
+                Optional.of(
+                    new AggregatePosition(
+                        "capacity-reservation/" + result.reservationId().orElseThrow(),
+                        result.sequence())),
+                payload));
+  }
+
+  private void auditRelease(
+      ExecutionContext context,
+      InternalId transferId,
+      String action,
+      String reason,
+      boolean succeeded) {
+    auditWriter
+        .getObject()
+        .recordMutation(
+            new AuditEvidence(
+                AuditActionKind.PROTECTED_MUTATION,
+                Optional.of(context.actor()),
+                Optional.of(context.scope()),
+                action,
+                "CapacityReservation",
+                Optional.of(transferId),
+                clock.instant(),
+                succeeded ? AuditOutcome.SUCCEEDED : AuditOutcome.FAILED,
+                Optional.of(reason),
+                authenticationEvidence(context.authenticationMechanism()),
+                AuditAuthorizationOutcome.ALLOWED,
+                context.correlationId(),
+                Optional.of(
+                    new AuditTargetContext(
+                        context.scope().kind(),
+                        context.scope().organization(),
+                        context.scope().facility()))));
   }
 
   public CapacityReservationResult reserve(
@@ -113,6 +436,61 @@ public final class CapacityReservationCommands {
           PlatformErrorCode.CAPACITY_UNAVAILABLE,
           "Capacity could not evaluate or commit the reservation safely.");
     }
+  }
+
+  /** Returns the current owner lifecycle for a reservation without replaying a stale result. */
+  public CapacityReservationOutcome getReservationOutcome(
+      ExecutionContext context, InternalId operationId, InternalId transferId) {
+    Objects.requireNonNull(context, "execution context");
+    Objects.requireNonNull(operationId, "operation id");
+    Objects.requireNonNull(transferId, "Transfer id");
+    requireFacilityScope(context);
+    requireReservationAuthority(context, operationId);
+    try {
+      CapacityReservationOutcome outcome =
+          reservations.findReservationOutcome(
+              operationId,
+              transferId,
+              context.scope().facility().orElseThrow().value(),
+              clock.instant());
+      auditReservationOutcomeRead(context, operationId, outcome.status());
+      return outcome;
+    } catch (AuditPersistenceUnavailableException unavailable) {
+      throw problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          PlatformErrorCode.AUDIT_UNAVAILABLE,
+          "The Capacity reservation outcome and required read audit could not be recorded.");
+    } catch (DataAccessException unavailable) {
+      throw problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          PlatformErrorCode.CAPACITY_UNAVAILABLE,
+          "Capacity could not confirm the reservation lifecycle safely.");
+    }
+  }
+
+  private void auditReservationOutcomeRead(
+      ExecutionContext context, InternalId operationId, CapacityReservationOutcome.Status status) {
+    auditWriter
+        .getObject()
+        .recordNonMutating(
+            new AuditEvidence(
+                AuditActionKind.SENSITIVE_READ,
+                Optional.of(context.actor()),
+                Optional.of(context.scope()),
+                "CAPACITY_RESERVATION_OUTCOME_READ",
+                "CapacityReservationOperation",
+                Optional.of(operationId),
+                clock.instant(),
+                AuditOutcome.SUCCEEDED,
+                Optional.of("CURRENT_LIFECYCLE_" + status.name()),
+                authenticationEvidence(context.authenticationMechanism()),
+                AuditAuthorizationOutcome.ALLOWED,
+                context.correlationId(),
+                Optional.of(
+                    new AuditTargetContext(
+                        context.scope().kind(),
+                        context.scope().organization(),
+                        context.scope().facility()))));
   }
 
   private CapacityReservationResult reserveInTransaction(
@@ -370,6 +748,21 @@ public final class CapacityReservationCommands {
           HttpStatus.FORBIDDEN,
           PlatformErrorCode.INVALID_EXECUTION_SCOPE,
           "Capacity reservation requires the matching validated Directory Facility scope.");
+    }
+    InternalId.parse(context.scope().organization().orElseThrow().value());
+    InternalId.parse(context.scope().facility().orElseThrow().value());
+  }
+
+  private static void requireFacilityScope(ExecutionContext context) {
+    if (context.scope().kind() != ExecutionScope.Kind.FACILITY
+        || context.scope().organization().isEmpty()
+        || context.scope().facility().isEmpty()
+        || !DIRECTORY_ISSUER.equals(context.scope().organization().orElseThrow().issuer().value())
+        || !DIRECTORY_ISSUER.equals(context.scope().facility().orElseThrow().issuer().value())) {
+      throw problem(
+          HttpStatus.FORBIDDEN,
+          PlatformErrorCode.INVALID_EXECUTION_SCOPE,
+          "Capacity release requires a validated Directory Facility scope.");
     }
     InternalId.parse(context.scope().organization().orElseThrow().value());
     InternalId.parse(context.scope().facility().orElseThrow().value());

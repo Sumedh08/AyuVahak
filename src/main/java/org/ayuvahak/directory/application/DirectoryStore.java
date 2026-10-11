@@ -12,12 +12,15 @@ import org.ayuvahak.directory.domain.FacilityCapabilityAssertion;
 import org.ayuvahak.directory.domain.HealthcareService;
 import org.ayuvahak.directory.domain.Organization;
 import org.ayuvahak.directory.domain.Wgs84Coordinate;
+import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.InternalId;
 import org.ayuvahak.platform.idempotency.CommandReceiptKey;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
 
 /** Directory-owned persistence boundary for Organization and Facility projections. */
 public interface DirectoryStore extends DirectoryScopeReferenceLookup {
+
+  Optional<ExternalReference> findActiveFacilityOrganization(ExternalReference facility);
 
   void insertOrganization(Organization organization);
 

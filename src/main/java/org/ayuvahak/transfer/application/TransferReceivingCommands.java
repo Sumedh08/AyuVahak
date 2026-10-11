@@ -123,6 +123,12 @@ public final class TransferReceivingCommands {
                 return replay;
               }
               TransferRequestAttempt attempt = requiredAttempt(requestAttemptId);
+              store
+                  .lockJourney(attempt.journeyId())
+                  .orElseThrow(TransferReceivingCommands::unavailable);
+              if (store.findJourneyClosure(attempt.journeyId()).isPresent()) {
+                throw stateConflict();
+              }
               requireDestination(context, attempt);
               requirePending(attempt, expectedVersion, now);
               long resultVersion = expectedVersion + 1;
@@ -230,6 +236,12 @@ public final class TransferReceivingCommands {
                 return replay;
               }
               TransferRequestAttempt attempt = requiredAttempt(requestAttemptId);
+              store
+                  .lockJourney(attempt.journeyId())
+                  .orElseThrow(TransferReceivingCommands::unavailable);
+              if (store.findJourneyClosure(attempt.journeyId()).isPresent()) {
+                throw stateConflict();
+              }
               requireDestination(context, attempt);
               requirePending(attempt, expectedVersion, now);
               Optional<CoordinatedTransfer> transfer = Optional.empty();

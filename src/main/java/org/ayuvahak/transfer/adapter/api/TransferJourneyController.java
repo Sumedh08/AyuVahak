@@ -1,6 +1,7 @@
 package org.ayuvahak.transfer.adapter.api;
 
 import java.net.URI;
+import java.time.Instant;
 import java.util.Set;
 import org.ayuvahak.platform.api.CorrelationIdFilter;
 import org.ayuvahak.platform.api.PlatformErrorCode;
@@ -16,14 +17,18 @@ import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
 import org.ayuvahak.platform.executioncontext.ExecutionScopeDeniedException;
 import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
+import org.ayuvahak.transfer.application.TransferJourneyClosureCommandResult;
+import org.ayuvahak.transfer.application.TransferJourneyClosureCommands;
 import org.ayuvahak.transfer.application.TransferJourneyCommandResult;
 import org.ayuvahak.transfer.application.TransferJourneyCommands;
+import org.ayuvahak.transfer.application.TransferNextRequestCommands;
 import org.ayuvahak.transfer.domain.TransferRequestAttempt;
 import org.slf4j.MDC;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -44,18 +49,90 @@ public final class TransferJourneyController {
   private static final String FACILITY_SCOPE_HEADER = "X-AyuVahak-Facility-Id";
   private static final Set<String> REQUEST_FIELDS =
       Set.of("referralId", "referralRevision", "recommendationId", "candidateFacilityId");
+  private static final Set<String> NEXT_REQUEST_FIELDS =
+      Set.of("expectedVersion", "referralRevision", "recommendationId", "candidateFacilityId");
+  private static final Set<String> CLOSURE_FIELDS =
+      Set.of("expectedVersion", "reasonCode", "occurredAt");
 
   private final TransferJourneyCommands commands;
+  private final TransferNextRequestCommands nextRequestCommands;
+  private final TransferJourneyClosureCommands closureCommands;
   private final ExecutionContextFactory contextFactory;
   private final ObjectMapper objectMapper;
 
   public TransferJourneyController(
       TransferJourneyCommands commands,
+      TransferNextRequestCommands nextRequestCommands,
+      TransferJourneyClosureCommands closureCommands,
       ExecutionContextFactory contextFactory,
       ObjectMapper objectMapper) {
     this.commands = commands;
+    this.nextRequestCommands = nextRequestCommands;
+    this.closureCommands = closureCommands;
     this.contextFactory = contextFactory;
     this.objectMapper = objectMapper;
+  }
+
+  @PostMapping("/{journeyId}/closure")
+  public ResponseEntity<TransferJourneyClosureRepresentation> closeUnfulfilledJourney(
+      @PathVariable String journeyId,
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
+      @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationId,
+      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityId,
+      @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+      @RequestBody JsonNode body) {
+    ClosureContent content = closureContent(body);
+    ExecutionContext context = executionContext(actor, scope, organizationId, facilityId);
+    InternalId id = parseId(journeyId, "TransferJourney id");
+    TransferJourneyClosureCommandResult result =
+        closureCommands.closeUnfulfilled(
+            context,
+            id,
+            content.reasonCode(),
+            content.occurredAt(),
+            content.expectedVersion(),
+            idempotencyKey,
+            RequestFingerprint.from(content.normalized()));
+    HttpHeaders headers = new HttpHeaders();
+    headers.setLocation(URI.create("/api/v1/transfer-journeys/" + id));
+    headers.set(CorrelationIdFilter.HEADER_NAME, correlationId().value());
+    if (result.commandReplayed()) {
+      headers.set("Idempotency-Replayed", "true");
+    }
+    return new ResponseEntity<>(
+        TransferJourneyClosureRepresentation.from(result), headers, HttpStatus.CREATED);
+  }
+
+  @PostMapping("/{journeyId}/request-attempts")
+  public ResponseEntity<TransferJourneyRepresentation> createNextRequest(
+      @PathVariable String journeyId,
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
+      @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationId,
+      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityId,
+      @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+      @RequestBody JsonNode body) {
+    NextRequestContent content = nextRequestContent(body);
+    ExecutionContext context = executionContext(actor, scope, organizationId, facilityId);
+    TransferJourneyCommandResult result =
+        nextRequestCommands.createNextRequest(
+            context,
+            parseId(journeyId, "TransferJourney id"),
+            content.expectedVersion(),
+            content.referralRevision(),
+            content.recommendationId(),
+            content.candidateFacility(),
+            idempotencyKey,
+            RequestFingerprint.from(content.normalized()));
+    HttpHeaders headers = new HttpHeaders();
+    headers.setLocation(URI.create("/api/v1/transfer-journeys/" + result.journey().id()));
+    headers.set(CorrelationIdFilter.HEADER_NAME, correlationId().value());
+    if (result.commandReplayed()) {
+      headers.set("Idempotency-Replayed", "true");
+    }
+    return new ResponseEntity<>(
+        TransferJourneyRepresentation.from(result), headers, HttpStatus.CREATED);
   }
 
   @PostMapping
@@ -152,12 +229,105 @@ public final class TransferJourneyController {
         normalized);
   }
 
+  private NextRequestContent nextRequestContent(JsonNode body) {
+    if (body == null || !body.isObject()) {
+      throw problem(
+          HttpStatus.BAD_REQUEST,
+          PlatformErrorCode.MALFORMED_REQUEST,
+          "The next Transfer request body must be a JSON object.");
+    }
+    body.properties()
+        .forEach(
+            field -> {
+              if (!NEXT_REQUEST_FIELDS.contains(field.getKey())) {
+                throw invalid("The next Transfer request contains an unsupported field.");
+              }
+            });
+    JsonNode expectedVersion = body.get("expectedVersion");
+    JsonNode revision = body.get("referralRevision");
+    if (expectedVersion == null
+        || !expectedVersion.isIntegralNumber()
+        || !expectedVersion.canConvertToLong()
+        || expectedVersion.longValue() < 1) {
+      throw invalid("A positive expected Journey version is required.");
+    }
+    if (revision == null
+        || !revision.isIntegralNumber()
+        || !revision.canConvertToLong()
+        || revision.longValue() < 1) {
+      throw invalid("A positive Referral revision is required.");
+    }
+    InternalId recommendationId = parseId(body.get("recommendationId"), "recommendation id");
+    InternalId destinationId = parseId(body.get("candidateFacilityId"), "candidate Facility id");
+    ObjectNode normalized = objectMapper.createObjectNode();
+    normalized.put("expectedVersion", expectedVersion.longValue());
+    normalized.put("referralRevision", revision.longValue());
+    normalized.put("recommendationId", recommendationId.toString());
+    normalized.put("candidateFacilityId", destinationId.toString());
+    return new NextRequestContent(
+        expectedVersion.longValue(),
+        revision.longValue(),
+        recommendationId,
+        directoryReference("Facility", destinationId),
+        normalized);
+  }
+
+  private ClosureContent closureContent(JsonNode body) {
+    if (body == null || !body.isObject()) {
+      throw problem(
+          HttpStatus.BAD_REQUEST,
+          PlatformErrorCode.MALFORMED_REQUEST,
+          "The Journey closure body must be a JSON object.");
+    }
+    body.properties()
+        .forEach(
+            field -> {
+              if (!CLOSURE_FIELDS.contains(field.getKey())) {
+                throw invalid("The Journey closure contains an unsupported field.");
+              }
+            });
+    JsonNode expectedVersion = body.get("expectedVersion");
+    JsonNode reasonCode = body.get("reasonCode");
+    JsonNode occurredAt = body.get("occurredAt");
+    if (expectedVersion == null
+        || !expectedVersion.isIntegralNumber()
+        || !expectedVersion.canConvertToLong()
+        || expectedVersion.longValue() < 1
+        || reasonCode == null
+        || !reasonCode.isTextual()
+        || occurredAt == null
+        || !occurredAt.isTextual()) {
+      throw invalid(
+          "A positive Journey version, structured reason and occurrence time are required.");
+    }
+    Instant parsedOccurredAt;
+    try {
+      parsedOccurredAt = Instant.parse(occurredAt.stringValue());
+    } catch (java.time.format.DateTimeParseException malformed) {
+      throw invalid("A valid closure occurrence time is required.");
+    }
+    ObjectNode normalized = objectMapper.createObjectNode();
+    normalized.put("expectedVersion", expectedVersion.longValue());
+    normalized.put("reasonCode", reasonCode.stringValue());
+    normalized.put("occurredAt", parsedOccurredAt.toString());
+    return new ClosureContent(
+        expectedVersion.longValue(), reasonCode.stringValue(), parsedOccurredAt, normalized);
+  }
+
   private static InternalId parseId(JsonNode value, String label) {
     if (value == null || !value.isTextual()) {
       throw invalid("A valid " + label + " is required.");
     }
     try {
       return InternalId.parse(value.stringValue());
+    } catch (IllegalArgumentException malformed) {
+      throw invalid("A valid " + label + " is required.");
+    }
+  }
+
+  private static InternalId parseId(String value, String label) {
+    try {
+      return InternalId.parse(value);
     } catch (IllegalArgumentException malformed) {
       throw invalid("A valid " + label + " is required.");
     }
@@ -195,6 +365,37 @@ public final class TransferJourneyController {
       InternalId recommendationId,
       ExternalReference candidateFacility,
       ObjectNode normalized) {}
+
+  private record NextRequestContent(
+      long expectedVersion,
+      long referralRevision,
+      InternalId recommendationId,
+      ExternalReference candidateFacility,
+      ObjectNode normalized) {}
+
+  private record ClosureContent(
+      long expectedVersion, String reasonCode, Instant occurredAt, ObjectNode normalized) {}
+
+  public record TransferJourneyClosureRepresentation(
+      String journeyId,
+      String referralId,
+      String outcome,
+      String reasonCode,
+      String occurredAt,
+      String recordedAt,
+      long journeyVersion) {
+    static TransferJourneyClosureRepresentation from(TransferJourneyClosureCommandResult result) {
+      var closure = result.closure();
+      return new TransferJourneyClosureRepresentation(
+          closure.journeyId().toString(),
+          closure.referralId().toString(),
+          "UNFULFILLED",
+          closure.reasonCode(),
+          closure.occurredAt().toString(),
+          closure.recordedAt().toString(),
+          closure.journeyVersion());
+    }
+  }
 
   public record TransferJourneyRepresentation(
       String journeyId,

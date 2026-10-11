@@ -64,6 +64,7 @@ public final class TransferProgressCommands {
   private final Clock clock;
   private final OutboxWriter outboxWriter;
   private final ObjectMapper objectMapper;
+  private final ObjectProvider<TransferCapacityReservationRecovery> reservationRecovery;
 
   public TransferProgressCommands(
       @Lazy TransferStore store,
@@ -72,7 +73,8 @@ public final class TransferProgressCommands {
       @Lazy PlatformTransactionManager transactionManager,
       @Qualifier("auditClock") Clock clock,
       OutboxWriter outboxWriter,
-      ObjectMapper objectMapper) {
+      ObjectMapper objectMapper,
+      ObjectProvider<TransferCapacityReservationRecovery> reservationRecovery) {
     this.store = Objects.requireNonNull(store, "Transfer store");
     this.authorization = Objects.requireNonNull(authorization, "authorization service");
     this.auditWriter = Objects.requireNonNull(auditWriter, "audit writer");
@@ -80,6 +82,7 @@ public final class TransferProgressCommands {
     this.clock = Objects.requireNonNull(clock, "audit clock");
     this.outboxWriter = Objects.requireNonNull(outboxWriter, "outbox writer");
     this.objectMapper = Objects.requireNonNull(objectMapper, "object mapper");
+    this.reservationRecovery = Objects.requireNonNull(reservationRecovery, "reservation verifier");
   }
 
   public TransferProgressCommandResult record(
@@ -111,6 +114,20 @@ public final class TransferProgressCommands {
       TransferProgressCommandResult replay = replay(transferId, previous.orElseThrow());
       if (replay != null) {
         return replay;
+      }
+    }
+    if (kind == TransferProgressFact.Kind.DEPARTURE) {
+      TransferProgressTarget observedTarget =
+          store.findProgressTarget(transferId).orElseThrow(TransferProgressCommands::notFound);
+      requireParticipant(context, observedTarget, transferId, kind);
+      if (expectedVersion < 1 || observedTarget.transfer().version() != expectedVersion) {
+        throw stateConflict();
+      }
+      if (!reservationRecovery
+          .getObject()
+          .hasCurrentActiveReservation(
+              transferId, context.correlationId(), context.causationId())) {
+        throw stateConflict();
       }
     }
 
@@ -360,6 +377,42 @@ public final class TransferProgressCommands {
         }
         yield new Transition(CoordinatedTransfer.Status.COMPLETED, null);
       }
+      case CANCELLATION -> {
+        if (current != CoordinatedTransfer.Status.AWAITING_RESERVATION
+            && current != CoordinatedTransfer.Status.READY
+            && current != CoordinatedTransfer.Status.COORDINATION_EXCEPTION) {
+          throw stateConflict();
+        }
+        yield new Transition(CoordinatedTransfer.Status.CANCELLATION_PENDING_RELEASE, null);
+      }
+      case FINAL_ABANDONMENT -> {
+        if (current != CoordinatedTransfer.Status.INTERRUPTED) {
+          throw stateConflict();
+        }
+        yield new Transition(CoordinatedTransfer.Status.CANCELLATION_PENDING_RELEASE, null);
+      }
+      case CANCELLATION_RELEASE -> {
+        if (current != CoordinatedTransfer.Status.CANCELLATION_PENDING_RELEASE) {
+          throw stateConflict();
+        }
+        yield new Transition(CoordinatedTransfer.Status.CANCELLED, null);
+      }
+      case REFERRAL_CANCELLATION -> {
+        if (current != CoordinatedTransfer.Status.AWAITING_RESERVATION
+            && current != CoordinatedTransfer.Status.READY
+            && current != CoordinatedTransfer.Status.COORDINATION_EXCEPTION) {
+          throw stateConflict();
+        }
+        yield new Transition(CoordinatedTransfer.Status.CANCELLATION_PENDING_RELEASE, null);
+      }
+      case CAPACITY_EXCEPTION -> {
+        if (current != CoordinatedTransfer.Status.AWAITING_RESERVATION
+            && current != CoordinatedTransfer.Status.READY
+            && current != CoordinatedTransfer.Status.COORDINATION_EXCEPTION) {
+          throw stateConflict();
+        }
+        yield new Transition(CoordinatedTransfer.Status.COORDINATION_EXCEPTION, null);
+      }
     };
   }
 
@@ -413,9 +466,10 @@ public final class TransferProgressCommands {
         target.originOrganization().equals(organization)
             && target.originFacility().filter(facility::equals).isPresent();
     boolean permitted =
-        kind == TransferProgressFact.Kind.HANDOVER || kind == TransferProgressFact.Kind.COMPLETION
-            ? receiving
-            : receiving || origin;
+        switch (kind) {
+          case HANDOVER, COMPLETION -> receiving;
+          default -> receiving || origin;
+        };
     if (!permitted) {
       recordDenial(context, transferId, actionCode(kind), "TRANSFER_SCOPE_MISMATCH");
       throw problem(
@@ -454,13 +508,22 @@ public final class TransferProgressCommands {
       case DEPARTURE, INTERRUPTION, RESUMPTION, ARRIVAL -> TransferAuthorities.progress().code();
       case HANDOVER -> TransferAuthorities.handover().code();
       case COMPLETION -> TransferAuthorities.completion().code();
+      case CANCELLATION -> TransferAuthorities.progress().code();
+      case FINAL_ABANDONMENT -> TransferAuthorities.progress().code();
+      case CANCELLATION_RELEASE -> TransferAuthorities.reservationReconciliation().code();
+      case REFERRAL_CANCELLATION, CAPACITY_EXCEPTION ->
+          TransferAuthorities.reservationReconciliation().code();
     };
   }
 
   private static void requireProgressReason(
       TransferProgressFact.Kind kind, Optional<String> reasonCode) {
     if ((kind == TransferProgressFact.Kind.INTERRUPTION
-            || kind == TransferProgressFact.Kind.COMPLETION)
+            || kind == TransferProgressFact.Kind.COMPLETION
+            || kind == TransferProgressFact.Kind.CANCELLATION
+            || kind == TransferProgressFact.Kind.FINAL_ABANDONMENT
+            || kind == TransferProgressFact.Kind.REFERRAL_CANCELLATION
+            || kind == TransferProgressFact.Kind.CAPACITY_EXCEPTION)
         && reasonCode.isEmpty()) {
       throw problem(
           HttpStatus.UNPROCESSABLE_ENTITY,
@@ -502,7 +565,7 @@ public final class TransferProgressCommands {
     try {
       return CommandReceiptKey.from(
           context,
-          "transfer.progress." + kind.name().toLowerCase(java.util.Locale.ROOT),
+          "transfer.progress." + kind.name().toLowerCase(java.util.Locale.ROOT).replace('_', '-'),
           "transfers/" + transferId,
           idempotencyKey);
     } catch (IllegalArgumentException invalid) {
