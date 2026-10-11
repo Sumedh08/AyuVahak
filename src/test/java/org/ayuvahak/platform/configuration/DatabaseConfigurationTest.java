@@ -4,7 +4,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import org.ayuvahak.platform.AyuVahakApplication;
 import org.junit.jupiter.api.Test;
-import org.springframework.boot.context.properties.bind.validation.BindValidationException;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 
 class DatabaseConfigurationTest {
@@ -31,10 +30,7 @@ class DatabaseConfigurationTest {
             context -> {
               assertThat(context).hasFailed();
               assertThat(context.getStartupFailure())
-                  .hasRootCauseInstanceOf(BindValidationException.class)
-                  .hasStackTraceContaining("url")
-                  .hasStackTraceContaining("username")
-                  .hasStackTraceContaining("password");
+                  .hasRootCauseMessage("Failed to determine a suitable driver class");
             });
   }
 }

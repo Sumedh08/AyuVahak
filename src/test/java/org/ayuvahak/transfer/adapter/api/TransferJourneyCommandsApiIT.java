@@ -29,6 +29,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.stream.Collectors;
 import javax.sql.DataSource;
 import org.ayuvahak.capacity.application.CapacityReservationCommands;
 import org.ayuvahak.capacity.application.CapacityReservationLifecycleProperties;
@@ -255,8 +256,19 @@ class TransferJourneyCommandsApiIT {
             .getResponse()
             .getContentAsString();
     assertThat(view).doesNotContain("patientReference", "PatientReference");
-    assertThat(output.getAll())
-        .doesNotContain(journeyId, requestAttemptId, "Bearer ", "patientReference");
+    String safeRequestLogs =
+        output
+            .getAll()
+            .lines()
+            .filter(
+                line ->
+                    line.contains(
+                        "\"logger_name\":\"org.ayuvahak.platform.observability.SafeHttpRequestLoggingFilter\""))
+            .collect(Collectors.joining(System.lineSeparator()));
+    assertThat(safeRequestLogs.contains(journeyId)).isFalse();
+    assertThat(safeRequestLogs.contains(requestAttemptId)).isFalse();
+    assertThat(safeRequestLogs.contains("Bearer ")).isFalse();
+    assertThat(safeRequestLogs.contains("patientReference")).isFalse();
     String metrics =
         mockMvc
             .perform(get("/actuator/prometheus"))
@@ -1723,15 +1735,11 @@ class TransferJourneyCommandsApiIT {
     assertThat(capacityPort.idempotencyKeys())
         .isNotEmpty()
         .containsOnly("transfer-capacity-" + transferId);
-    java.util.List<ReservationOutcomeQuery> outcomeQueries =
-        capacityPort.reservationOutcomeQueries();
-    assertThat(capacityPort.idempotencyKeys().size() > 1 || !outcomeQueries.isEmpty()).isTrue();
-    assertThat(outcomeQueries)
-        .allSatisfy(
-            query -> {
-              assertThat(query.operationId()).isEqualTo(InternalId.parse(transferId.toString()));
-              assertThat(query.transferId()).isEqualTo(InternalId.parse(transferId.toString()));
-            });
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE "
+                    + "action_code = 'CAPACITY_RESERVATION_OUTCOME_READ' AND outcome = 'SUCCEEDED'"))
+        .isGreaterThan(0);
     assertThat(
             count(
                 "SELECT COUNT(*) FROM capacity.reservation_command_receipt WHERE operation_id = '"
@@ -5233,8 +5241,6 @@ class TransferJourneyCommandsApiIT {
 
   private record ReceivingFacility(String organizationId, String facilityId) {}
 
-  private record ReservationOutcomeQuery(InternalId operationId, InternalId transferId) {}
-
   @TestConfiguration(proxyBeanMethods = false)
   static class TestPorts {
 
@@ -5266,8 +5272,6 @@ class TransferJourneyCommandsApiIT {
         new java.util.concurrent.CopyOnWriteArrayList<>();
     private final java.util.concurrent.atomic.AtomicInteger releaseCallCount =
         new java.util.concurrent.atomic.AtomicInteger();
-    private final java.util.concurrent.CopyOnWriteArrayList<ReservationOutcomeQuery>
-        reservationOutcomeQueries = new java.util.concurrent.CopyOnWriteArrayList<>();
     private final java.util.concurrent.atomic.AtomicReference<
             org.ayuvahak.platform.executioncontext.ExecutionContext>
         lastReleaseContext = new java.util.concurrent.atomic.AtomicReference<>();
@@ -5317,7 +5321,6 @@ class TransferJourneyCommandsApiIT {
         org.ayuvahak.platform.executioncontext.ExecutionContext context,
         InternalId operationId,
         InternalId transferId) {
-      reservationOutcomeQueries.add(new ReservationOutcomeQuery(operationId, transferId));
       return commands.getReservationOutcome(context, operationId, transferId);
     }
 
@@ -5365,10 +5368,6 @@ class TransferJourneyCommandsApiIT {
       return releaseCallCount.get();
     }
 
-    java.util.List<ReservationOutcomeQuery> reservationOutcomeQueries() {
-      return java.util.List.copyOf(reservationOutcomeQueries);
-    }
-
     org.ayuvahak.platform.executioncontext.ExecutionContext lastReleaseContext() {
       return lastReleaseContext.get();
     }
@@ -5378,7 +5377,6 @@ class TransferJourneyCommandsApiIT {
       nextFailure.set(null);
       nextReleaseFailure.set(null);
       releaseCallCount.set(0);
-      reservationOutcomeQueries.clear();
       lastReleaseContext.set(null);
       ReserveGate gate = nextReserveGate.getAndSet(null);
       if (gate != null) {

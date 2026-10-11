@@ -7,6 +7,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
+import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
@@ -27,6 +28,7 @@ import org.ayuvahak.platform.event.EventType;
 import org.ayuvahak.platform.eventing.application.DeliveryFailureResult;
 import org.ayuvahak.platform.eventing.application.DispatchReport;
 import org.ayuvahak.platform.eventing.application.EventDeliveryOperationsStore;
+import org.ayuvahak.platform.eventing.application.EventHandlerRegistry;
 import org.ayuvahak.platform.eventing.application.InternalEvent;
 import org.ayuvahak.platform.eventing.application.InternalEventHandler;
 import org.ayuvahak.platform.eventing.application.LeasedEvent;
@@ -494,6 +496,14 @@ class OutboxTransactionPostgresIT {
     @Bean
     DeterministicHandler deterministicOutboxHandler() {
       return new DeterministicHandler();
+    }
+
+    @Bean
+    @Primary
+    EventHandlerRegistry outboxTestHandlerRegistry(DeterministicHandler handler) {
+      // This Phase 2 test models the original declared-future-consumer state before Transfer's
+      // Phase 7 handler is installed; keep its handler catalog explicit and deterministic.
+      return new EventHandlerRegistry(List.of(handler));
     }
   }
 
