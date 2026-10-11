@@ -1015,7 +1015,6 @@ class TransferJourneyCommandsApiIT {
             payload);
 
     ownerEventHandler.handle(event);
-    ownerEventHandler.handle(event);
 
     assertThat(
             jdbc.queryForObject(
@@ -1041,7 +1040,147 @@ class TransferJourneyCommandsApiIT {
                 Integer.class,
                 eventCorrelation.value()))
         .isPositive();
+    jdbc.update(
+        "DELETE FROM identity_access.authorization_grant WHERE principal_kind = 'SERVICE' "
+            + "AND principal_issuer = ? AND principal_identifier_type = 'client_id' "
+            + "AND principal_identifier = ? AND authority_code = ?",
+        ISSUER,
+        transferProperties.getOwnerEventConsumerClientId(),
+        "TransferReferralCancellation");
+    ownerEventHandler.handle(event);
+    assertThat(count("SELECT COUNT(*) FROM transfer.consumer_event_receipt")).isEqualTo(1);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = "
+                    + "'TRANSFER_OWNER_EVENT_DENIED' AND correlation_id = ?",
+                Integer.class,
+                eventCorrelation.value()))
+        .isZero();
     assertThat(journeyId).isNotBlank();
+  }
+
+  @Test
+  void referralCancellationReleasePreservesEnvelopeCorrelationAndCausation() throws Exception {
+    Scope scope = createOriginAndDestination();
+    String transferId = createReadyTransfer(scope, "referral-event-capacity-release");
+    grantOwnerEventConsumer(scope, scope.originFacilityId(), "TransferReferralCancellation");
+    grantOwnerEventConsumer(
+        scope, scope.destinationFacilityId(), "TransferReservationReconciliation");
+    CorrelationId eventCorrelation = new CorrelationId("transfer-cancel-release-correlation");
+    var payload = objectMapper.createObjectNode();
+    payload.put("referralReference", scope.referralId());
+    payload.put("revisionNumber", 4);
+    payload.put("reasonCode", "ORIGIN_NO_LONGER_REQUIRED");
+    payload.put("sourceKind", "HUMAN");
+    InternalEvent event =
+        internalEvent(
+            EventType.parse("referral.cancelled.v1"),
+            reservationContext(scope, eventCorrelation),
+            "referral/" + scope.referralId(),
+            5,
+            Instant.parse("2026-10-10T10:00:00Z"),
+            payload);
+
+    ownerEventHandler.handle(event);
+
+    assertThat(capacityPort.releaseCalls()).isEqualTo(1);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
+                String.class,
+                UUID.fromString(transferId)))
+        .isEqualTo("CANCELLED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = "
+                    + "'CAPACITY_RESERVATION_RELEASE' AND correlation_id = ?",
+                Integer.class,
+                eventCorrelation.value()))
+        .isEqualTo(1);
+    assertThat(capacityPort.lastReleaseContext().correlationId()).isEqualTo(eventCorrelation);
+    assertThat(capacityPort.lastReleaseContext().causationId())
+        .hasValue(new org.ayuvahak.platform.core.CausationId(event.eventId().toString()));
+
+    jdbc.update(
+        "DELETE FROM identity_access.authorization_grant WHERE principal_kind = 'SERVICE' "
+            + "AND principal_issuer = ? AND principal_identifier_type = 'client_id' "
+            + "AND principal_identifier = ? AND authority_code IN (?, ?)",
+        ISSUER,
+        transferProperties.getOwnerEventConsumerClientId(),
+        "TransferReferralCancellation",
+        "TransferReservationReconciliation");
+    ownerEventHandler.handle(event);
+    assertThat(capacityPort.releaseCalls()).isEqualTo(1);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = "
+                    + "'TRANSFER_OWNER_EVENT_DENIED' AND correlation_id = ?",
+                Integer.class,
+                eventCorrelation.value()))
+        .isZero();
+  }
+
+  @Test
+  void unavailableGrantStoreIsDurablyAuditedWithDistinctCodeAndCanRetry() throws Exception {
+    Scope scope = createOriginAndDestination();
+    grantSender(scope);
+    matching.returnApplicable(scope.referralId());
+    String response =
+        createRequest(scope, "referral-event-grant-store-unavailable-request")
+            .andExpect(status().isCreated())
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+    String attemptId = com.jayway.jsonpath.JsonPath.read(response, "$.requestAttemptId");
+    CorrelationId eventCorrelation =
+        new CorrelationId("transfer-grant-store-unavailable-correlation");
+    var payload = objectMapper.createObjectNode();
+    payload.put("referralReference", scope.referralId());
+    payload.put("revisionNumber", 4);
+    payload.put("reasonCode", "ORIGIN_NO_LONGER_REQUIRED");
+    payload.put("sourceKind", "HUMAN");
+    InternalEvent event =
+        internalEvent(
+            EventType.parse("referral.cancelled.v1"),
+            reservationContext(scope, eventCorrelation),
+            "referral/" + scope.referralId(),
+            5,
+            Instant.parse("2026-10-10T10:00:00Z"),
+            payload);
+
+    jdbc.execute(
+        "ALTER TABLE identity_access.authorization_grant RENAME TO authorization_grant_unavailable");
+    try {
+      assertThatThrownBy(() -> ownerEventHandler.handle(event)).isInstanceOf(Exception.class);
+    } finally {
+      jdbc.execute(
+          "ALTER TABLE identity_access.authorization_grant_unavailable RENAME TO authorization_grant");
+    }
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT request_status FROM transfer.request_attempt WHERE request_attempt_id = ?",
+                String.class,
+                UUID.fromString(attemptId)))
+        .isEqualTo("PENDING");
+    assertThat(count("SELECT COUNT(*) FROM transfer.consumer_event_receipt")).isZero();
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = "
+                    + "'TRANSFER_OWNER_EVENT_DENIED' AND result_code = "
+                    + "'AUTHORIZATION_STORE_UNAVAILABLE' AND correlation_id = ?",
+                Integer.class,
+                eventCorrelation.value()))
+        .isEqualTo(1);
+
+    grantOwnerEventConsumer(scope, scope.originFacilityId(), "TransferReferralCancellation");
+    ownerEventHandler.handle(event);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT request_status FROM transfer.request_attempt WHERE request_attempt_id = ?",
+                String.class,
+                UUID.fromString(attemptId)))
+        .isEqualTo("WITHDRAWN");
   }
 
   @Test
@@ -2787,6 +2926,46 @@ class TransferJourneyCommandsApiIT {
                 + "\"occurredAt\":\"2026-10-10T10:20:00Z\"}")
         .andExpect(status().isCreated());
 
+    String secondDestination = InternalId.generate().toString();
+    matching.returnApplicable(scope.referralId());
+    String secondResponse =
+        mockMvc
+            .perform(
+                post("/api/v1/transfer-journeys/{journeyId}/request-attempts", journeyId)
+                    .header("Authorization", "Bearer " + token(SENDER))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                    .header("X-AyuVahak-Facility-Id", scope.originFacilityId())
+                    .header("Idempotency-Key", "reroute-version-advance")
+                    .contentType("application/json")
+                    .content(
+                        "{\"expectedVersion\":1,\"referralRevision\":4,\"recommendationId\":\""
+                            + scope.recommendationId()
+                            + "\",\"candidateFacilityId\":\""
+                            + secondDestination
+                            + "\"}"))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.attemptNumber").value(2))
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+    String secondAttemptId =
+        com.jayway.jsonpath.JsonPath.read(secondResponse, "$.requestAttemptId");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT version FROM transfer.journey WHERE journey_id = ?", Long.class, journeyId))
+        .isEqualTo(2L);
+    receivingCommand(
+            scope,
+            secondAttemptId,
+            "rejection",
+            "synthetic-stale-version-receiver",
+            "reroute-stale-version-second-rejection",
+            "{\"expectedVersion\":1,\"reasonCode\":\"DESTINATION_UNAVAILABLE\","
+                + "\"occurredAt\":\"2026-10-10T10:21:00Z\"}")
+        .andExpect(status().isCreated());
+    matching.returnApplicable(scope.referralId());
+
     mockMvc
         .perform(
             post("/api/v1/transfer-journeys/{journeyId}/request-attempts", journeyId)
@@ -2797,7 +2976,7 @@ class TransferJourneyCommandsApiIT {
                 .header("Idempotency-Key", "reroute-stale-version")
                 .contentType("application/json")
                 .content(
-                    "{\"expectedVersion\":2,\"referralRevision\":4,\"recommendationId\":\""
+                    "{\"expectedVersion\":1,\"referralRevision\":4,\"recommendationId\":\""
                         + scope.recommendationId()
                         + "\",\"candidateFacilityId\":\""
                         + scope.destinationFacilityId()
@@ -2810,7 +2989,7 @@ class TransferJourneyCommandsApiIT {
                 "SELECT COUNT(*) FROM transfer.request_attempt WHERE journey_id = ?",
                 Integer.class,
                 journeyId))
-        .isEqualTo(1);
+        .isEqualTo(2);
   }
 
   @Test
@@ -3734,6 +3913,9 @@ class TransferJourneyCommandsApiIT {
         new java.util.concurrent.CopyOnWriteArrayList<>();
     private final java.util.concurrent.atomic.AtomicInteger releaseCallCount =
         new java.util.concurrent.atomic.AtomicInteger();
+    private final java.util.concurrent.atomic.AtomicReference<
+            org.ayuvahak.platform.executioncontext.ExecutionContext>
+        lastReleaseContext = new java.util.concurrent.atomic.AtomicReference<>();
 
     StubCapacityReservationPort(CapacityReservationCommands commands) {
       this.commands = commands;
@@ -3767,6 +3949,7 @@ class TransferJourneyCommandsApiIT {
     public org.ayuvahak.capacity.domain.CapacityReleaseResult release(
         org.ayuvahak.platform.executioncontext.ExecutionContext context, InternalId transferId) {
       releaseCallCount.incrementAndGet();
+      lastReleaseContext.set(context);
       RuntimeException configuredFailure = nextReleaseFailure.getAndSet(null);
       if (configuredFailure != null) {
         throw configuredFailure;
@@ -3818,11 +4001,16 @@ class TransferJourneyCommandsApiIT {
       return releaseCallCount.get();
     }
 
+    org.ayuvahak.platform.executioncontext.ExecutionContext lastReleaseContext() {
+      return lastReleaseContext.get();
+    }
+
     void reset() {
       loseResponse.set(false);
       nextFailure.set(null);
       nextReleaseFailure.set(null);
       releaseCallCount.set(0);
+      lastReleaseContext.set(null);
       ReserveGate gate = nextReserveGate.getAndSet(null);
       if (gate != null) {
         gate.resume.countDown();

@@ -13,6 +13,7 @@ import org.ayuvahak.platform.audit.domain.AuditOutcome;
 import org.ayuvahak.platform.audit.domain.AuditTargetContext;
 import org.ayuvahak.platform.authentication.AuthenticationProperties;
 import org.ayuvahak.platform.authorization.application.AuthorizationService;
+import org.ayuvahak.platform.authorization.domain.AuthorizationDecision;
 import org.ayuvahak.platform.core.ActorReference;
 import org.ayuvahak.platform.core.CausationId;
 import org.ayuvahak.platform.core.CorrelationId;
@@ -89,6 +90,9 @@ public final class ReferralTransferOutcomeEventHandler implements InternalEventH
 
   @Override
   public void handle(InternalEvent event) throws Exception {
+    if (drafts.isConsumerEventCompleted(event.eventId(), event.eventType())) {
+      return;
+    }
     JsonNode envelope = mapper.readTree(event.envelopeJson());
     JsonNode payload = object(envelope, "payload");
     InternalId referralId = InternalId.parse(text(payload, "referralReference"));
@@ -128,7 +132,7 @@ public final class ReferralTransferOutcomeEventHandler implements InternalEventH
     var decision =
         authorization.getObject().evaluate(context, ReferralAuthorities.resolve().code());
     if (!decision.isAllowed()) {
-      throw new AuthorizationRejected(context, referralId);
+      throw new AuthorizationRejected(context, referralId, decision);
     }
     if (current == null) {
       auditNoState(context, referralId, "REFERRAL_TRANSFER_OUTCOME_NO_REFERRAL");
@@ -245,7 +249,7 @@ public final class ReferralTransferOutcomeEventHandler implements InternalEventH
                 Optional.of(denied.referralId()),
                 clock.instant(),
                 AuditOutcome.DENIED,
-                Optional.of("AUTHORIZATION_DENIED"),
+                Optional.of(denialCode(denied.decision())),
                 AuditAuthenticationEvidence.CONFIGURED_SERVICE_IDENTITY,
                 AuditAuthorizationOutcome.DENIED,
                 context.correlationId(),
@@ -255,6 +259,13 @@ public final class ReferralTransferOutcomeEventHandler implements InternalEventH
   private static AuditTargetContext targetContext(ExecutionContext context) {
     return new AuditTargetContext(
         context.scope().kind(), context.scope().organization(), context.scope().facility());
+  }
+
+  private static String denialCode(AuthorizationDecision decision) {
+    return decision.denialReason().orElse(null)
+            == AuthorizationDecision.DenialReason.GRANT_STORE_UNAVAILABLE
+        ? "AUTHORIZATION_STORE_UNAVAILABLE"
+        : "AUTHORIZATION_DENIED";
   }
 
   private static ExternalReference reference(JsonNode reference) {
@@ -290,11 +301,14 @@ public final class ReferralTransferOutcomeEventHandler implements InternalEventH
 
     private final ExecutionContext context;
     private final InternalId referralId;
+    private final AuthorizationDecision decision;
 
-    private AuthorizationRejected(ExecutionContext context, InternalId referralId) {
+    private AuthorizationRejected(
+        ExecutionContext context, InternalId referralId, AuthorizationDecision decision) {
       super("Referral outcome event consumer is not authorized");
       this.context = context;
       this.referralId = referralId;
+      this.decision = decision;
     }
 
     private ExecutionContext context() {
@@ -303,6 +317,10 @@ public final class ReferralTransferOutcomeEventHandler implements InternalEventH
 
     private InternalId referralId() {
       return referralId;
+    }
+
+    private AuthorizationDecision decision() {
+      return decision;
     }
   }
 }

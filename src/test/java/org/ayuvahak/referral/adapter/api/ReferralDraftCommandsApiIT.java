@@ -542,7 +542,6 @@ class ReferralDraftCommandsApiIT {
     }
 
     transferOutcomeHandler.handle(event);
-    transferOutcomeHandler.handle(event);
 
     assertThat(
             jdbc.queryForObject(
@@ -575,6 +574,23 @@ class ReferralDraftCommandsApiIT {
                 Integer.class,
                 eventCorrelation.value()))
         .isEqualTo(1);
+
+    jdbc.update(
+        "DELETE FROM identity_access.authorization_grant WHERE principal_kind = 'SERVICE' "
+            + "AND principal_issuer = ? AND principal_identifier_type = 'client_id' "
+            + "AND principal_identifier = ? AND authority_code = 'ReferralResolve'",
+        ISSUER,
+        "ayuvahak-transfer-outcome-consumer");
+    transferOutcomeHandler.handle(event);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = "
+                    + "'REFERRAL_TRANSFER_OUTCOME_DENIED' AND correlation_id = ?",
+                Integer.class,
+                eventCorrelation.value()))
+        .isZero();
+    grantService(
+        "ayuvahak-transfer-outcome-consumer", "ReferralResolve", organizationId, facilityId);
 
     InternalId lateEventId = InternalId.generate();
     var latePayload = objectMapper.createObjectNode();
@@ -695,6 +711,91 @@ class ReferralDraftCommandsApiIT {
                 Integer.class,
                 eventId.value()))
         .isEqualTo(1);
+  }
+
+  @Test
+  void unavailableGrantStoreIsDurablyAuditedWithDistinctCodeAndCanRetry() throws Exception {
+    String referralId =
+        createDraft("transfer-outcome-grant-store-create", "opaque-synthetic-patient-grant-store");
+    performSubmission(
+            referralId,
+            ORIGINATOR,
+            "transfer-outcome-grant-store-submit",
+            "{\"expectedVersion\":1}")
+        .andExpect(status().isOk());
+
+    InternalId eventId = InternalId.generate();
+    EventType eventType = EventType.parse("transfer.unfulfilled.v1");
+    CorrelationId eventCorrelation = new CorrelationId("referral-outcome-grant-store-correlation");
+    var scope =
+        RequestedExecutionScope.facility(
+            new ExternalReference(new IssuerId(DIRECTORY_ISSUER), "Organization", organizationId),
+            new ExternalReference(new IssuerId(DIRECTORY_ISSUER), "Facility", facilityId));
+    ExecutionContext producer =
+        executionContextFactory.forBackgroundWork(
+            ActorReference.service(new IssuerId(ISSUER), "synthetic-transfer-producer"),
+            scope,
+            eventCorrelation,
+            Optional.empty());
+    var payload = objectMapper.createObjectNode();
+    payload.put("referralReference", referralId);
+    payload.put("journeyReference", InternalId.generate().toString());
+    payload.put("outcome", "UNFULFILLED");
+    AggregatePosition position =
+        new AggregatePosition("transfer-journey/" + InternalId.generate(), 1);
+    EventEnvelope envelope =
+        new EventEnvelope(
+            eventId,
+            eventType,
+            "transfer",
+            new OccurredAt(Instant.parse("2026-10-10T10:30:00Z")),
+            new RecordedAt(Instant.now()),
+            producer,
+            Optional.of(position),
+            payload);
+    InternalEvent event =
+        new InternalEvent(
+            eventId,
+            eventType,
+            "transfer",
+            Optional.of(position),
+            eventEnvelopeCodec.encode(envelope));
+
+    jdbc.execute(
+        "ALTER TABLE identity_access.authorization_grant RENAME TO authorization_grant_unavailable");
+    try {
+      assertThatThrownBy(() -> transferOutcomeHandler.handle(event)).isInstanceOf(Exception.class);
+    } finally {
+      jdbc.execute(
+          "ALTER TABLE identity_access.authorization_grant_unavailable RENAME TO authorization_grant");
+    }
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT state FROM referral.draft WHERE referral_id = ?",
+                String.class,
+                UUID.fromString(referralId)))
+        .isEqualTo("SUBMITTED");
+    assertThat(count("SELECT COUNT(*) FROM referral.resolution")).isZero();
+    assertThat(count("SELECT COUNT(*) FROM referral.consumer_event_receipt")).isZero();
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = "
+                    + "'REFERRAL_TRANSFER_OUTCOME_DENIED' AND result_code = "
+                    + "'AUTHORIZATION_STORE_UNAVAILABLE' AND correlation_id = ?",
+                Integer.class,
+                eventCorrelation.value()))
+        .isEqualTo(1);
+
+    grantService(
+        "ayuvahak-transfer-outcome-consumer", "ReferralResolve", organizationId, facilityId);
+    transferOutcomeHandler.handle(event);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT state FROM referral.draft WHERE referral_id = ?",
+                String.class,
+                UUID.fromString(referralId)))
+        .isEqualTo("RESOLVED");
   }
 
   @Test

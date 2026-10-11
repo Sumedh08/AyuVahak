@@ -104,6 +104,9 @@ public final class TransferOwnerEventHandler implements InternalEventHandler {
 
   @Override
   public void handle(InternalEvent event) throws Exception {
+    if (transfers.isConsumerEventCompleted(event.eventId(), event.eventType())) {
+      return;
+    }
     JsonNode envelope = mapper.readTree(event.envelopeJson());
     JsonNode payload = object(envelope, "payload");
     Instant occurredAt = Instant.parse(text(envelope, "occurredAt"));
@@ -115,7 +118,12 @@ public final class TransferOwnerEventHandler implements InternalEventHandler {
       denialTransaction.executeWithoutResult(status -> auditDenied(denied));
       throw denied;
     }
-    cancellationToRelease.ifPresent(reservationRecovery::reconcileCancellation);
+    cancellationToRelease.ifPresent(
+        transferId ->
+            reservationRecovery.reconcileCancellation(
+                transferId,
+                new CorrelationId(text(envelope, "correlationId")),
+                Optional.of(new CausationId(event.eventId().toString()))));
   }
 
   private Optional<InternalId> process(
@@ -487,7 +495,7 @@ public final class TransferOwnerEventHandler implements InternalEventHandler {
                 Optional.of(denied.targetId()),
                 clock.instant(),
                 AuditOutcome.DENIED,
-                Optional.of("AUTHORIZATION_DENIED"),
+                Optional.of(denialCode(denied.decision())),
                 AuditAuthenticationEvidence.CONFIGURED_SERVICE_IDENTITY,
                 AuditAuthorizationOutcome.DENIED,
                 context.correlationId(),
@@ -529,6 +537,13 @@ public final class TransferOwnerEventHandler implements InternalEventHandler {
     private AuthorizationDecision decision() {
       return decision;
     }
+  }
+
+  private static String denialCode(AuthorizationDecision decision) {
+    return decision.denialReason().orElse(null)
+            == AuthorizationDecision.DenialReason.GRANT_STORE_UNAVAILABLE
+        ? "AUTHORIZATION_STORE_UNAVAILABLE"
+        : "AUTHORIZATION_DENIED";
   }
 
   private static boolean isPreDeparture(CoordinatedTransfer.Status status) {

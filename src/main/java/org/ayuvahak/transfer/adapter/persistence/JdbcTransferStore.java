@@ -817,6 +817,17 @@ public class JdbcTransferStore implements TransferStore {
   }
 
   @Override
+  public boolean isConsumerEventCompleted(InternalId eventId, EventType eventType) {
+    return Boolean.TRUE.equals(
+        jdbc.queryForObject(
+            "SELECT EXISTS (SELECT 1 FROM transfer.consumer_event_receipt "
+                + "WHERE event_id = ? AND event_type = ? AND event_state = 'COMPLETED')",
+            Boolean.class,
+            eventId.value(),
+            eventType.toString()));
+  }
+
+  @Override
   public void completeConsumerEvent(
       InternalId eventId, Optional<InternalId> transferId, String outcome, Instant recordedAt) {
     int changed =

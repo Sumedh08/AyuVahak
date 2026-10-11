@@ -123,6 +123,8 @@ public interface TransferStore {
 
   boolean claimConsumerEvent(InternalId eventId, EventType eventType, Instant recordedAt);
 
+  boolean isConsumerEventCompleted(InternalId eventId, EventType eventType);
+
   void completeConsumerEvent(
       InternalId eventId, Optional<InternalId> transferId, String outcome, Instant recordedAt);
 

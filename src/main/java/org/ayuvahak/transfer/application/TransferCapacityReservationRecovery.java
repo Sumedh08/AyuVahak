@@ -18,6 +18,7 @@ import org.ayuvahak.platform.audit.domain.AuditOutcome;
 import org.ayuvahak.platform.audit.domain.AuditTargetContext;
 import org.ayuvahak.platform.authorization.application.AuthorizationService;
 import org.ayuvahak.platform.core.ActorReference;
+import org.ayuvahak.platform.core.CausationId;
 import org.ayuvahak.platform.core.CorrelationId;
 import org.ayuvahak.platform.core.InternalId;
 import org.ayuvahak.platform.core.IssuerId;
@@ -121,18 +122,23 @@ public final class TransferCapacityReservationRecovery {
    * Releases a Capacity-owned hold only after Transfer has durably entered pending cancellation.
    */
   public void reconcileCancellation(InternalId transferId) {
+    reconcileCancellation(transferId, CorrelationId.generate(), Optional.empty());
+  }
+
+  /** Uses the originating event context for a release triggered by event reconciliation. */
+  public void reconcileCancellation(
+      InternalId transferId, CorrelationId correlationId, Optional<CausationId> causationId) {
     try {
       CapacityReservationIntent intent = transfers.findReservationIntent(transferId).orElseThrow();
       if (!hasDefinitiveReservationOutcome(intent.outcome())) {
         return;
       }
-      CorrelationId correlation = CorrelationId.generate();
       ExecutionContext context =
           contexts.forBackgroundWork(
               worker,
               RequestedExecutionScope.facility(intent.organization(), intent.facility()),
-              correlation,
-              Optional.empty());
+              correlationId,
+              causationId);
       if (!authorizeTransfer(context, transferId)) {
         return;
       }

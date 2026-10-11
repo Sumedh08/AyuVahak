@@ -52,6 +52,8 @@ public interface ReferralDraftStore {
 
   boolean claimConsumerEvent(InternalId eventId, EventType eventType, Instant recordedAt);
 
+  boolean isConsumerEventCompleted(InternalId eventId, EventType eventType);
+
   void completeConsumerEvent(
       InternalId eventId, InternalId referralId, String outcome, Instant recordedAt);
 
