@@ -1,6 +1,6 @@
 # Phase 7 Transfer Coordination — Acceptance Record
 
-**Verification result:** PASS. **Independent final review:** PASS. **Freeze status:** pending the local freeze commit. The follow-up documentation commit will record the frozen program state and freeze hash.
+**Verification result:** PASS. **Independent final review:** PASS. **Phase 7 result:** FROZEN.
 
 ## Scope and test environment
 
@@ -49,6 +49,6 @@ With explicit user authorization, two test-only integration fixtures were correc
 
 - No remote Git operation, public healthcare test target, external publication, external mutation, real credential, or patient data was used.
 - No Volume III implementation was created.
-- Phase 7 acceptance and independent re-review **pass**. Phase 7 is **not yet frozen** until its local freeze commit. Its hash and frozen program status will be recorded by a subsequent documentation-only commit.
+- Phase 7 acceptance and independent re-review **pass**. Local Phase 7 freeze commit: `9cb5113b49e6d572fc7d3beb6aac18bc5e82dd6f`.
 
 See the local [P7-08 integrated acceptance ticket](../../.scratch/phase-7-transfer-coordination/issues/08-integrated-acceptance.md) and [Phase 7 specification](../specs/phase-7-transfer-coordination-spec.md) for the approved gate and complete test contract.

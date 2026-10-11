@@ -1,6 +1,6 @@
 # Volume II — Core Care Coordination Architecture
 
-**Status:** Approved design baseline for Phases 3–7. Phases 3–6 are frozen; Phase 7 implementation, acceptance, and independent review pass, with the local freeze commit pending.
+**Status:** Approved design baseline for Phases 3–7. Phases 3–7 are frozen; Volume II integrated acceptance and the final local freeze remain pending.
 **Scope:** Care Service Directory, Capacity & Operational Readiness, Referral, Destination Matching & Recommendation, and Transfer Coordination.
 
 ## Product capability
