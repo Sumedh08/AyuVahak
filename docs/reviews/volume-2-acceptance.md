@@ -149,5 +149,6 @@ The source, dependency, schema, and Compose audits found no Volume III interoper
 - No external account, real credential, real patient data, or PHI/PII was accessed or used.
 - All tests and Compose services were local; all test data was synthetic.
 - Volume I regression: **PASS** as part of the full clean suite, including platform startup/database/migrations, identity/grants, audit, event/outbox, idempotency, observability, and architecture enforcement.
-- Volume II integrated result: **PASS**. This record becomes final when the local freeze commit hash is filled in by the required documentation-only follow-up commit.
+- Volume II integrated result: **PASS / COMPLETE / FROZEN**.
+- Authoritative local Volume II freeze commit: `2a8c7fcaab60f7ca5d781ac81d838262da99894e` (`chore: freeze volume 2 core care coordination`).
 - Volume III: **NOT AUTHORIZED / NOT STARTED**.
