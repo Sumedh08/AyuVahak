@@ -27,7 +27,7 @@ The active business contexts for Volume II are Directory, Capacity, Referral, Ma
 - **Upstream dependencies:** Optional capacity sources through a Capacity-owned port; Directory's application boundary for Facility identity/reference validation.
 - **Downstream consumers:** Matching and Transfer through freshness-aware query/command contracts; authorized operational views.
 - **Allowed communication:** Observation intake, evidence/readiness queries, and Capacity-owned reservation command/status/release. Capacity owns source mapping and business reconciliation.
-- **Events:** No observation/readiness event is emitted in Phase 4 without a consumer. Phase 7 publishes only reservation-expired and reservation-at-risk events to Transfer.
+- **Events:** No observation/readiness event is emitted in Phase 4 without a consumer. Phase 7 publishes reservation-expired, reservation-at-risk, and reservation-recovered events to Transfer for reservation lifecycle reconciliation.
 - **Prohibited coupling:** Never turn stale/unknown into positive availability; Reservation is a coordination hold, not a bed ledger; do not own receiving Acceptance.
 
 ### Referral
@@ -60,7 +60,7 @@ The active business contexts for Volume II are Directory, Capacity, Referral, Ma
 - **Upstream dependencies:** Referral revision/state, current Matching snapshot, Directory destination facts, Capacity reservation application contract, and locally mapped receiving authorities.
 - **Downstream consumers:** Referral (only completion/unfulfilled/cancellation reactions); Transport, Notifications, and Analytics are later-volume consumers.
 - **Allowed communication:** Create one active request at a time, record authority functions separately, invoke Capacity command, reconcile outcomes, preserve reroute and late factual reports.
-- **Events:** Receives `referral.cancelled.v1`, `capacity.reservation-expired.v1`, `capacity.reservation-at-risk.v1`; publishes `transfer.completed.v1` and `transfer.unfulfilled.v1` to Referral.
+- **Events:** Receives `referral.cancelled.v1`, `capacity.reservation-expired.v1`, `capacity.reservation-at-risk.v1`, and `capacity.reservation-recovered.v1`; publishes `transfer.completed.v1` and `transfer.unfulfilled.v1` to Referral. A recovery event restores the recorded Capacity outcome; when Transfer has progressed beyond `COORDINATION_EXCEPTION`, Transfer progress is preserved.
 - **Prohibited coupling:** Acceptance is not Reservation; Reservation is not admission; no direct Capacity tables; no message delivery changes a receiving decision; no two active destination commitments.
 
 ### Transport

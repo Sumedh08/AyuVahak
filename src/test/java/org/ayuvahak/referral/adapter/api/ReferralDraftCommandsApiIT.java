@@ -32,6 +32,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import org.ayuvahak.platform.AyuVahakApplication;
+import org.ayuvahak.platform.api.PlatformErrorCode;
+import org.ayuvahak.platform.api.PlatformProblemException;
 import org.ayuvahak.platform.core.ActorReference;
 import org.ayuvahak.platform.core.CorrelationId;
 import org.ayuvahak.platform.core.ExternalReference;
@@ -51,6 +53,7 @@ import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
 import org.ayuvahak.referral.application.ReferralMatchingRequirement;
 import org.ayuvahak.referral.application.ReferralQueries;
 import org.ayuvahak.referral.application.ReferralTransferOutcomeEventHandler;
+import org.ayuvahak.transfer.application.TransferAmendmentStatusQuery;
 import org.ayuvahak.transfer.application.TransferStore;
 import org.ayuvahak.transfer.domain.TransferJourney;
 import org.ayuvahak.transfer.domain.TransferRequestAttempt;
@@ -62,6 +65,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.dao.DataAccessException;
+import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -118,6 +122,7 @@ class ReferralDraftCommandsApiIT {
   @Autowired private ReferralTransferOutcomeEventHandler transferOutcomeHandler;
   @Autowired private EventEnvelopeJsonCodec eventEnvelopeCodec;
   @Autowired private TransferStore transferStore;
+  @Autowired private TransferAmendmentStatusQuery transferAmendmentStatusQuery;
   @Autowired private ObjectMapper objectMapper;
 
   private String organizationId;
@@ -360,6 +365,35 @@ class ReferralDraftCommandsApiIT {
                     + "AND outcome = 'SUCCEEDED'",
                 Integer.class))
         .isEqualTo(1);
+
+    jdbc.update(
+        "INSERT INTO identity_access.authorization_grant (grant_id, principal_kind, "
+            + "principal_issuer, principal_identifier_type, principal_identifier, authority_code, "
+            + "scope_kind, organization_issuer, organization_identifier_type, "
+            + "organization_identifier, grant_status, created_at) VALUES (gen_random_uuid(), "
+            + "'SERVICE', ?, 'client_id', ?, 'TransferReferralAmendmentCheck', "
+            + "'ORGANIZATION', ?, 'Organization', ?, 'ACTIVE', CURRENT_TIMESTAMP)",
+        ISSUER,
+        TRANSFER_AMENDMENT_GUARD,
+        DIRECTORY_ISSUER,
+        organizationId);
+    ExecutionContext organizationScopedStatusReader =
+        executionContextFactory.forBackgroundWork(
+            ActorReference.service(new IssuerId(ISSUER), TRANSFER_AMENDMENT_GUARD),
+            RequestedExecutionScope.organization(originOrganization),
+            new CorrelationId("transfer-amendment-organization-scope-check"),
+            Optional.empty());
+    assertThatThrownBy(
+            () ->
+                transferAmendmentStatusQuery.hasActiveCoordination(
+                    organizationScopedStatusReader, referralReference))
+        .isInstanceOf(PlatformProblemException.class)
+        .satisfies(
+            failure -> {
+              PlatformProblemException problem = (PlatformProblemException) failure;
+              assertThat(problem.status()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+              assertThat(problem.code()).isEqualTo(PlatformErrorCode.TRANSFER_UNAVAILABLE);
+            });
 
     jdbc.update(
         "UPDATE identity_access.authorization_grant SET grant_status = 'REVOKED', "

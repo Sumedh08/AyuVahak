@@ -83,9 +83,7 @@ public final class TransferAmendmentStatusQuery {
       org.ayuvahak.transfer.domain.TransferJourney journey) {
     if (!journey.referralId().equals(referralId)
         || !context.scope().organization().equals(Optional.of(journey.originOrganization()))
-        || (context.scope().facility().isPresent()
-            && journey.originFacility().isPresent()
-            && !context.scope().facility().equals(journey.originFacility()))) {
+        || !context.scope().facility().equals(journey.originFacility())) {
       throw problem(
           HttpStatus.SERVICE_UNAVAILABLE,
           PlatformErrorCode.TRANSFER_UNAVAILABLE,

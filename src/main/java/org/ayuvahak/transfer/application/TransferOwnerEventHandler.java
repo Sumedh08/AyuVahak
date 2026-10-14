@@ -313,18 +313,29 @@ public final class TransferOwnerEventHandler implements InternalEventHandler {
       return;
     }
     ExecutionContext context = contextForTransfer(transferId, envelope, event.eventId());
-    if (event.eventType().equals(RESERVATION_RECOVERED)
-        && transfer.status() == CoordinatedTransfer.Status.COORDINATION_EXCEPTION) {
+    if (event.eventType().equals(RESERVATION_RECOVERED)) {
+      boolean reconfirmationRequired =
+          transfer.status() == CoordinatedTransfer.Status.COORDINATION_EXCEPTION;
       transfers.recordReservationLifecycle(
           transferId,
           sequence,
           CapacityReservationIntent.Outcome.RESERVED,
-          Optional.of("CAPACITY_RECOVERED_RECONFIRMATION_REQUIRED"));
-      auditCapacityRecovery(context, transferId);
+          Optional.of(
+              reconfirmationRequired
+                  ? "CAPACITY_RECOVERED_RECONFIRMATION_REQUIRED"
+                  : "CAPACITY_RESERVATION_RECOVERED"));
+      auditCapacityRecovery(
+          context,
+          transferId,
+          reconfirmationRequired
+              ? "RECEIVING_RECONFIRMATION_REQUIRED"
+              : "TRANSFER_PROGRESS_PRESERVED");
       transfers.completeConsumerEvent(
           event.eventId(),
           Optional.of(transferId),
-          "RECEIVING_RECONFIRMATION_REQUIRED",
+          reconfirmationRequired
+              ? "RECEIVING_RECONFIRMATION_REQUIRED"
+              : "CAPACITY_OUTCOME_RECOVERED_AFTER_PROGRESS",
           recordedAt);
       return;
     }
@@ -499,7 +510,8 @@ public final class TransferOwnerEventHandler implements InternalEventHandler {
                         context.scope().facility()))));
   }
 
-  private void auditCapacityRecovery(ExecutionContext context, InternalId target) {
+  private void auditCapacityRecovery(
+      ExecutionContext context, InternalId target, String reasonCode) {
     auditWriter
         .getObject()
         .recordMutation(
@@ -512,7 +524,7 @@ public final class TransferOwnerEventHandler implements InternalEventHandler {
                 Optional.of(target),
                 clock.instant(),
                 AuditOutcome.SUCCEEDED,
-                Optional.of("RECEIVING_RECONFIRMATION_REQUIRED"),
+                Optional.of(reasonCode),
                 AuditAuthenticationEvidence.CONFIGURED_SERVICE_IDENTITY,
                 AuditAuthorizationOutcome.ALLOWED,
                 context.correlationId(),

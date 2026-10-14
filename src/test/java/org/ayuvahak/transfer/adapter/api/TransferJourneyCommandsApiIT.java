@@ -2854,6 +2854,89 @@ class TransferJourneyCommandsApiIT {
   }
 
   @Test
+  void delayedCapacityRecoveryAfterArrivalRestoresOwnerOutcomeWithoutRewindingTransfer()
+      throws Exception {
+    Scope scope = createOriginAndDestination();
+    String transferId = createReadyTransfer(scope, "delayed-capacity-recovery-after-arrival");
+    grantCapacityLifecycleWorker(scope);
+    grantOwnerEventConsumer(
+        scope, scope.destinationFacilityId(), "TransferReservationReconciliation");
+    UUID transferUuid = UUID.fromString(transferId);
+    UUID reservationId =
+        jdbc.queryForObject(
+            "SELECT reservation_id FROM capacity.coordination_reservation WHERE transfer_id = ?",
+            UUID.class,
+            transferUuid);
+    String aggregateRef = "capacity-reservation/" + reservationId;
+
+    jdbc.update(
+        "UPDATE capacity.coordination_reservation SET lifecycle_checked_at = "
+            + "CURRENT_TIMESTAMP - INTERVAL '1 hour' WHERE reservation_id = ?",
+        reservationId);
+    recordCoordinationSlotObservation(scope, 0, "delayed-recovery-capacity-reduced");
+    assertThat(capacityReservations.reconcileLifecycle()).isGreaterThan(0);
+    ownerEventHandler.handle(
+        capacityEventFromOutbox(EventType.parse("capacity.reservation-at-risk.v1"), aggregateRef));
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
+                String.class,
+                transferUuid))
+        .isEqualTo("COORDINATION_EXCEPTION");
+
+    jdbc.update(
+        "UPDATE capacity.coordination_reservation SET lifecycle_checked_at = "
+            + "CURRENT_TIMESTAMP - INTERVAL '1 hour' WHERE reservation_id = ?",
+        reservationId);
+    recordCoordinationSlotObservation(scope, 4, "delayed-recovery-capacity-restored");
+    assertThat(capacityReservations.reconcileLifecycle()).isGreaterThan(0);
+
+    grantFacilityAuthority("synthetic-transfer-receiver", "TransferProgressAuthority", scope);
+    long exceptionVersion =
+        jdbc.queryForObject(
+            "SELECT version FROM transfer.transfer_record WHERE transfer_id = ?",
+            Long.class,
+            transferUuid);
+    progressCommand(
+            scope,
+            transferId,
+            "arrival",
+            "synthetic-transfer-receiver",
+            "arrival-before-delayed-capacity-recovery",
+            "{\"expectedVersion\":"
+                + exceptionVersion
+                + ",\"occurredAt\":\"2026-10-10T10:45:00Z\"}")
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.status").value("ARRIVED"));
+
+    ownerEventHandler.handle(
+        capacityEventFromOutbox(
+            EventType.parse("capacity.reservation-recovered.v1"), aggregateRef));
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
+                String.class,
+                transferUuid))
+        .isEqualTo("ARRIVED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT outcome FROM transfer.capacity_reservation_request WHERE transfer_id = ?",
+                String.class,
+                transferUuid))
+        .isEqualTo("RESERVED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT outcome FROM transfer.consumer_event_receipt "
+                    + "WHERE event_id = (SELECT event_id FROM platform_eventing.internal_event "
+                    + "WHERE event_type = 'capacity.reservation-recovered.v1' "
+                    + "AND aggregate_ref = ?)",
+                String.class,
+                aggregateRef))
+        .isEqualTo("CAPACITY_OUTCOME_RECOVERED_AFTER_PROGRESS");
+  }
+
+  @Test
   void failedProgressHistoryQueryIsNotAuditedAsSuccessful() throws Exception {
     Scope scope = createOriginAndDestination();
     String transferId = createReadyTransfer(scope, "progress-history-query-failure");

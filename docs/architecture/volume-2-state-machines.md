@@ -74,6 +74,8 @@ stateDiagram-v2
 
 `AT_RISK` is a risk flag on an otherwise active reservation, not a claim that a reservation was released. It is raised when a later observation makes held capacity unsupported; a later recovery observation may clear the flag only under the same versioned capacity policy and an auditable Capacity command. It never silently changes an accepted transfer into a new reservation.
 
+On recovery, Capacity emits `capacity.reservation-recovered.v1` with the next reservation aggregate sequence. Transfer records `RESERVED` as the owner-reported outcome. If the current Transfer status is `COORDINATION_EXCEPTION`, the exception remains until a receiving `AcceptanceAuthority` reconfirms; if a delayed recovery arrives after a later Transfer fact such as Arrival, the outcome is reconciled without changing that later Transfer status.
+
 - Capacity alone owns reservation creation, release, expiry, risk, and current held amount. A reservation is a coordination hold for a typed dimension/unit/time interval; it is not physical bed assignment, admission, or an external system guarantee.
 - An insufficient, stale, unknown, conflicted or unavailable capacity projection cannot create a positive hold. Repeating the same stable operation ID/fingerprint returns the same outcome. Same key/different request conflicts.
 - Capacity records reservation success atomically with any event intent required by the canonical event catalog. Phase 7 defines no event for reservation creation or reconciliation, so this command creates no event intent. A reservation-vs-capacity update is serialized in Capacity's database transaction; at most one request can consume the last available coordination quantity.
@@ -99,6 +101,7 @@ stateDiagram-v2
   ARRIVED --> HANDED_OVER: receiving handover acknowledged
   HANDED_OVER --> COMPLETED: coordination closure confirmed
   COORDINATION_EXCEPTION --> AWAITING_RESERVATION: same accepted journey retries hold under policy
+  COORDINATION_EXCEPTION --> READY: Capacity recovery plus receiving AcceptanceAuthority reconfirmation
   COORDINATION_EXCEPTION --> ARRIVED: late factual report of arrival
   COORDINATION_EXCEPTION --> CANCELLATION_PENDING_RELEASE: journey abandoned; release must reconcile
   CANCELLATION_PENDING_RELEASE --> CANCELLED: Capacity confirms released or expired
