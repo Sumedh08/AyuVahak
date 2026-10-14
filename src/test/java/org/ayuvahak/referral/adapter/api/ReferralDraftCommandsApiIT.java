@@ -20,6 +20,8 @@ import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
 import com.sun.net.httpserver.HttpServer;
 import java.net.InetSocketAddress;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -31,6 +33,8 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import javax.sql.DataSource;
 import org.ayuvahak.platform.AyuVahakApplication;
 import org.ayuvahak.platform.api.PlatformErrorCode;
 import org.ayuvahak.platform.api.PlatformProblemException;
@@ -118,6 +122,7 @@ class ReferralDraftCommandsApiIT {
 
   @Autowired private MockMvc mockMvc;
   @Autowired private JdbcTemplate jdbc;
+  @Autowired private DataSource dataSource;
   @Autowired private OutboxDispatcher outboxDispatcher;
   @Autowired private ReferralQueries referralQueries;
   @Autowired private ExecutionContextFactory executionContextFactory;
@@ -458,6 +463,80 @@ class ReferralDraftCommandsApiIT {
                 Integer.class,
                 referralId))
         .isEqualTo(2);
+  }
+
+  @Test
+  void referralAmendmentWaitsForTransferCoordinationLockBeforeReadingOrChangingReferral()
+      throws Exception {
+    String referralId = createDraft("amend-coordination-lock-create", "synthetic-patient-lock-01");
+    performSubmission(
+            referralId, ORIGINATOR, "amend-coordination-lock-submit", "{\"expectedVersion\":1}")
+        .andExpect(status().isOk());
+
+    ExecutorService executor = Executors.newSingleThreadExecutor();
+    try (Connection transferRequestTransaction = dataSource.getConnection()) {
+      transferRequestTransaction.setAutoCommit(false);
+      try (PreparedStatement lock =
+          transferRequestTransaction.prepareStatement(
+              "SELECT pg_advisory_xact_lock(hashtextextended(?, 0))")) {
+        lock.setString(1, "transfer/referral/" + referralId);
+        lock.execute();
+      }
+
+      Future<MvcResult> amendment =
+          executor.submit(
+              () ->
+                  performAmendment(
+                          referralId,
+                          ORIGINATOR,
+                          "amend-coordination-lock-attempt",
+                          amendmentBody(2, "ORIGIN_CORRECTION", "synthetic-patient-lock-02"))
+                      .andReturn());
+
+      long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+      boolean amendmentWaitingForTransferLock = false;
+      while (System.nanoTime() < deadline) {
+        Integer waitingLocks =
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted",
+                Integer.class);
+        if (waitingLocks != null && waitingLocks > 0) {
+          amendmentWaitingForTransferLock = true;
+          break;
+        }
+        Thread.sleep(10);
+      }
+
+      assertThat(amendmentWaitingForTransferLock)
+          .as("Referral amendment must acquire Transfer's per-Referral coordination guard")
+          .isTrue();
+      assertThat(amendment.isDone()).isFalse();
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT version FROM referral.draft WHERE referral_id = ?::uuid",
+                  Integer.class,
+                  referralId))
+          .isEqualTo(2);
+
+      transferRequestTransaction.commit();
+      MvcResult amended = amendment.get(10, TimeUnit.SECONDS);
+      assertThat(amended.getResponse().getStatus()).isEqualTo(200);
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT version FROM referral.draft WHERE referral_id = ?::uuid",
+                  Integer.class,
+                  referralId))
+          .isEqualTo(3);
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = "
+                      + "'TRANSFER_REFERRAL_AMENDMENT_GUARD_ACQUIRED' AND target_id = ?::uuid",
+                  Integer.class,
+                  referralId))
+          .isEqualTo(1);
+    } finally {
+      executor.shutdownNow();
+    }
   }
 
   @Test

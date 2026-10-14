@@ -51,6 +51,8 @@ import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.ObjectMapper;
 
@@ -293,6 +295,17 @@ public class ReferralDraftCommands {
           if (replay != null) {
             return replay;
           }
+          TransferAmendmentStatusPort.CoordinationGuard coordinationGuard;
+          try {
+            coordinationGuard =
+                transferAmendmentStatus.acquireCoordinationGuard(context, referralId);
+          } catch (TransferAmendmentStatusUnavailableException unavailable) {
+            throw problem(
+                HttpStatus.SERVICE_UNAVAILABLE,
+                PlatformErrorCode.REFERRAL_UNAVAILABLE,
+                "Transfer coordination could not serialize the Referral amendment safely.");
+          }
+          registerGuardReleaseAfterTransaction(coordinationGuard);
           ReferralDraft current =
               drafts.lockDraft(referralId).orElseThrow(ReferralDraftCommands::notFound);
           if (!originMatches(context.scope(), current)) {
@@ -745,6 +758,27 @@ public class ReferralDraftCommands {
           HttpStatus.SERVICE_UNAVAILABLE,
           PlatformErrorCode.AUDIT_UNAVAILABLE,
           "The Referral draft and its required audit evidence could not be committed.");
+    }
+  }
+
+  private static void registerGuardReleaseAfterTransaction(
+      TransferAmendmentStatusPort.CoordinationGuard guard) {
+    if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+      guard.close();
+      throw new IllegalStateException(
+          "Transfer coordination guard requires an active Referral transaction");
+    }
+    try {
+      TransactionSynchronizationManager.registerSynchronization(
+          new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(int status) {
+              guard.close();
+            }
+          });
+    } catch (RuntimeException failure) {
+      guard.close();
+      throw failure;
     }
   }
 

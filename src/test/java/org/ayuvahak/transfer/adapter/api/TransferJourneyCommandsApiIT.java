@@ -1301,6 +1301,16 @@ class TransferJourneyCommandsApiIT {
     progressCommand(
             scope,
             transferId,
+            "cancellation",
+            "synthetic-transfer-mover",
+            "cancel-after-departure",
+            "{\"expectedVersion\":3,\"occurredAt\":\"2026-10-10T10:01:00Z\","
+                + "\"reasonCode\":\"ROUTE_CANCELLED\"}")
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("TRANSFER_STATE_CONFLICT"));
+    progressCommand(
+            scope,
+            transferId,
             "arrival",
             "synthetic-transfer-mover",
             "progress-arrival",
@@ -1308,6 +1318,16 @@ class TransferJourneyCommandsApiIT {
                 + "\"sourceReference\":\"synthetic:arrival-1\"}")
         .andExpect(status().isCreated())
         .andExpect(jsonPath("$.status").value("ARRIVED"));
+    progressCommand(
+            scope,
+            transferId,
+            "cancellation",
+            "synthetic-transfer-mover",
+            "cancel-after-arrival",
+            "{\"expectedVersion\":4,\"occurredAt\":\"2026-10-10T10:46:00Z\","
+                + "\"reasonCode\":\"ROUTE_CANCELLED\"}")
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("TRANSFER_STATE_CONFLICT"));
     progressCommand(
             scope,
             transferId,
@@ -1343,6 +1363,17 @@ class TransferJourneyCommandsApiIT {
                 + "\"reasonCode\":\"COORDINATION_CLOSED\"}")
         .andExpect(status().isCreated())
         .andExpect(header().string("Idempotency-Replayed", "true"));
+
+    progressCommand(
+            scope,
+            transferId,
+            "cancellation",
+            "synthetic-transfer-receiver",
+            "cancel-after-completion",
+            "{\"expectedVersion\":6,\"occurredAt\":\"2026-10-10T10:56:00Z\","
+                + "\"reasonCode\":\"ROUTE_CANCELLED\"}")
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("TRANSFER_STATE_CONFLICT"));
 
     mockMvc
         .perform(
@@ -2011,19 +2042,28 @@ class TransferJourneyCommandsApiIT {
                 return null;
               });
 
-      boolean cancellationCompletedBeforeCreationCouldCommit;
-      try {
-        cancellation.get(2, TimeUnit.SECONDS);
-        cancellationCompletedBeforeCreationCouldCommit = true;
-      } catch (TimeoutException serializedBehindCreation) {
-        cancellationCompletedBeforeCreationCouldCommit = false;
+      long lockWaitDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+      boolean cancellationWaitingForTransferLock = false;
+      while (System.nanoTime() < lockWaitDeadline) {
+        Integer waitingLocks =
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted",
+                Integer.class);
+        if (waitingLocks != null && waitingLocks > 0) {
+          cancellationWaitingForTransferLock = true;
+          break;
+        }
+        Thread.sleep(10);
       }
+      assertThat(cancellationWaitingForTransferLock)
+          .as("Referral cancellation must wait on Transfer's per-Referral coordination lock")
+          .isTrue();
       gate.resume.countDown();
 
       MvcResult created = creation.get(15, TimeUnit.SECONDS);
       cancellation.get(15, TimeUnit.SECONDS);
       assertThat(created.getResponse().getStatus()).isEqualTo(201);
-      assertThat(cancellationCompletedBeforeCreationCouldCommit).isFalse();
+      assertThat(cancellationWaitingForTransferLock).isTrue();
       assertThat(count("SELECT COUNT(*) FROM transfer.request_attempt")).isEqualTo(1);
       assertThat(
               jdbc.queryForObject(

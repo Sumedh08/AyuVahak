@@ -14,6 +14,7 @@ import org.ayuvahak.referral.adapter.configuration.ReferralProperties;
 import org.ayuvahak.referral.application.TransferAmendmentStatusPort;
 import org.ayuvahak.referral.application.TransferAmendmentStatusUnavailableException;
 import org.ayuvahak.transfer.application.TransferAmendmentStatusQuery;
+import org.ayuvahak.transfer.application.TransferStore;
 import org.springframework.stereotype.Component;
 
 /** Transfer-owned adapter implementing Referral's narrow owner-status port. */
@@ -35,6 +36,21 @@ public final class TransferAmendmentStatusAdapter implements TransferAmendmentSt
             referralProperties.getTransferAmendmentCheckClientId());
     this.contexts = Objects.requireNonNull(contexts, "execution context factory");
     this.transfer = Objects.requireNonNull(transfer, "Transfer amendment-status owner query");
+  }
+
+  @Override
+  public CoordinationGuard acquireCoordinationGuard(
+      ExecutionContext referralRequest, InternalId referralId) {
+    Objects.requireNonNull(referralRequest, "Referral request context");
+    Objects.requireNonNull(referralId, "Referral id");
+    try {
+      ExecutionContext ownerContext = contextFor(referralRequest);
+      TransferStore.ReferralCoordinationGuard guard =
+          transfer.acquireReferralCoordinationGuard(ownerContext, referralId);
+      return guard::close;
+    } catch (RuntimeException unavailable) {
+      throw new TransferAmendmentStatusUnavailableException(unavailable);
+    }
   }
 
   @Override

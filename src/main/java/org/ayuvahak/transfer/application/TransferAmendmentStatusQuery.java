@@ -67,6 +67,27 @@ public final class TransferAmendmentStatusQuery {
     }
   }
 
+  /** Acquires Transfer's serialization guard without joining the Referral owner's transaction. */
+  public TransferStore.ReferralCoordinationGuard acquireReferralCoordinationGuard(
+      ExecutionContext context, InternalId referralId) {
+    requireOriginScope(context);
+    Objects.requireNonNull(referralId, "Referral id");
+    requireAuthority(context, referralId);
+    TransferStore.ReferralCoordinationGuard guard;
+    try {
+      guard = transfers.acquireReferralCoordinationGuard(referralId);
+    } catch (DataAccessException unavailable) {
+      throw unavailable();
+    }
+    try {
+      auditCoordinationGuardAcquired(context, referralId);
+      return guard;
+    } catch (RuntimeException failure) {
+      guard.close();
+      throw failure;
+    }
+  }
+
   private boolean read(ExecutionContext context, InternalId referralId) {
     requireAuthority(context, referralId);
     Optional<org.ayuvahak.transfer.domain.TransferJourney> journeyResult =
@@ -203,6 +224,31 @@ public final class TransferAmendmentStatusQuery {
           HttpStatus.SERVICE_UNAVAILABLE,
           PlatformErrorCode.AUDIT_UNAVAILABLE,
           "Transfer withheld amendment status because its read audit is unavailable.");
+    }
+  }
+
+  private void auditCoordinationGuardAcquired(ExecutionContext context, InternalId referralId) {
+    try {
+      auditWriter.recordNonMutating(
+          new AuditEvidence(
+              AuditActionKind.SECURITY_OUTCOME,
+              Optional.of(context.actor()),
+              Optional.of(context.scope()),
+              "TRANSFER_REFERRAL_AMENDMENT_GUARD_ACQUIRED",
+              "Referral",
+              Optional.of(referralId),
+              clock.instant(),
+              AuditOutcome.SUCCEEDED,
+              Optional.empty(),
+              AuditAuthenticationEvidence.CONFIGURED_SERVICE_IDENTITY,
+              AuditAuthorizationOutcome.ALLOWED,
+              context.correlationId(),
+              Optional.of(targetContext(context.scope()))));
+    } catch (AuditPersistenceUnavailableException unavailable) {
+      throw new PlatformProblemException(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          PlatformErrorCode.AUDIT_UNAVAILABLE,
+          "Transfer could not record the Referral amendment guard safely.");
     }
   }
 

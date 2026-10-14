@@ -5,6 +5,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.List;
 import java.util.Optional;
 import org.ayuvahak.capacity.application.CapacityReadinessBatchEvaluation;
@@ -27,6 +29,11 @@ import org.ayuvahak.platform.idempotency.CommandReceiptKey;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
 import org.ayuvahak.referral.application.ReferralMatchingRequirement;
 import org.junit.jupiter.api.Test;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.TransactionStatus;
+import org.springframework.transaction.support.DefaultTransactionDefinition;
+import org.springframework.transaction.support.SimpleTransactionStatus;
 
 class MatchingRecommendationQueriesReferralBindingTest {
 
@@ -42,7 +49,8 @@ class MatchingRecommendationQueriesReferralBindingTest {
     InternalId requestedReferralId = InternalId.generate();
     InternalId snapshotId = InternalId.generate();
     RecommendationSnapshot snapshot = snapshot(snapshotId, storedReferralId);
-    CountingStore store = new CountingStore(snapshot);
+    TrackingTransactionManager transactionManager = new TrackingTransactionManager();
+    CountingStore store = new CountingStore(snapshot, transactionManager);
     int[] ownerReadCalls = {0};
     MatchingApplicabilityEvidencePort ownerEvidence =
         new MatchingApplicabilityEvidencePort() {
@@ -106,6 +114,7 @@ class MatchingRecommendationQueriesReferralBindingTest {
                   }
                 },
                 Clock.fixed(NOW, ZoneOffset.UTC)),
+            transactionManager,
             Clock.fixed(NOW, ZoneOffset.UTC));
 
     RecommendationApplicabilityResult result =
@@ -118,6 +127,82 @@ class MatchingRecommendationQueriesReferralBindingTest {
     assertThat(ownerReadCalls[0]).isZero();
     assertThat(policyLookups[0]).isZero();
     assertThat(durableAuditWrites[0]).isEqualTo(1);
+  }
+
+  @Test
+  void recommendationSnapshotReadUsesItsOwnTransactionInsideTransferTransaction() {
+    InternalId storedReferralId = InternalId.generate();
+    InternalId requestedReferralId = InternalId.generate();
+    InternalId snapshotId = InternalId.generate();
+    TrackingTransactionManager transactionManager = new TrackingTransactionManager();
+    CountingStore store =
+        new CountingStore(snapshot(snapshotId, storedReferralId), transactionManager);
+    MatchingRecommendationQueries queries =
+        new MatchingRecommendationQueries(
+            store,
+            emptyOwnerEvidence(),
+            () -> Optional.empty(),
+            new AuthorizationService(
+                (actor, authority, scope) -> false, PhaseTwoAuthorities.catalog()),
+            new AuditWriter(
+                new AuditRecordAppender() {
+                  @Override
+                  public void appendInOwnerTransaction(
+                      InternalId id, AuditEvidence evidence, Instant recordedAt) {}
+
+                  @Override
+                  public void appendDurably(
+                      InternalId id, AuditEvidence evidence, Instant recordedAt) {}
+                },
+                Clock.fixed(NOW, ZoneOffset.UTC)),
+            transactionManager,
+            Clock.fixed(NOW, ZoneOffset.UTC));
+
+    TransactionStatus transferTransaction =
+        transactionManager.getTransaction(new DefaultTransactionDefinition());
+    RecommendationApplicabilityResult result =
+        queries.revalidateRecommendationApplicability(
+            matchingCaller(), snapshotId, requestedReferralId, reference("Facility"), 1);
+
+    assertThat(result.status()).isEqualTo(RecommendationApplicabilityResult.Status.NOT_APPLICABLE);
+    assertThat(store.snapshotReadTransactionDepth).isEqualTo(2);
+    assertThat(transactionManager.depth()).isEqualTo(1);
+    transactionManager.commit(transferTransaction);
+    assertThat(transactionManager.depth()).isZero();
+  }
+
+  private static MatchingApplicabilityEvidencePort emptyOwnerEvidence() {
+    return new MatchingApplicabilityEvidencePort() {
+      @Override
+      public ReferralMatchingRequirement readSubmittedRequirement(
+          CorrelationId correlationId,
+          ExternalReference organization,
+          Optional<ExternalReference> facility,
+          InternalId referralId,
+          long revisionNumber) {
+        throw new AssertionError("Owner evidence must not be read for a mismatched snapshot");
+      }
+
+      @Override
+      public Optional<DirectoryMatchingCandidatePage.Candidate> readCandidate(
+          CorrelationId correlationId,
+          ExternalReference organization,
+          ExternalReference facility,
+          List<String> requiredCapabilityCodes,
+          Instant evaluationTime) {
+        throw new AssertionError("Owner evidence must not be read for a mismatched snapshot");
+      }
+
+      @Override
+      public CapacityReadinessBatchEvaluation evaluateCandidateCapacityReadiness(
+          CorrelationId correlationId,
+          ExternalReference organization,
+          ExternalReference facility,
+          List<String> requiredDimensionCodes,
+          Instant evaluationTime) {
+        throw new AssertionError("Owner evidence must not be read for a mismatched snapshot");
+      }
+    };
   }
 
   private static ExecutionContext matchingCaller() {
@@ -158,10 +243,14 @@ class MatchingRecommendationQueriesReferralBindingTest {
   private static final class CountingStore implements MatchingStore {
 
     private final RecommendationSnapshot snapshot;
+    private final TrackingTransactionManager transactionManager;
     private int snapshotReads;
+    private int snapshotReadTransactionDepth;
 
-    private CountingStore(RecommendationSnapshot snapshot) {
+    private CountingStore(
+        RecommendationSnapshot snapshot, TrackingTransactionManager transactionManager) {
       this.snapshot = snapshot;
+      this.transactionManager = transactionManager;
     }
 
     @Override
@@ -172,6 +261,7 @@ class MatchingRecommendationQueriesReferralBindingTest {
     @Override
     public Optional<RecommendationSnapshot> findSnapshot(InternalId recommendationId) {
       snapshotReads++;
+      snapshotReadTransactionDepth = transactionManager.depth();
       return recommendationId.equals(snapshot.id()) ? Optional.of(snapshot) : Optional.empty();
     }
 
@@ -205,6 +295,46 @@ class MatchingRecommendationQueriesReferralBindingTest {
     public void completeReceipt(
         CommandReceiptKey key, int responseStatus, InternalId resultReference, Instant recordedAt) {
       throw new UnsupportedOperationException("not used by applicability query");
+    }
+  }
+
+  private static final class TrackingTransactionManager implements PlatformTransactionManager {
+
+    private final Deque<Integer> previousDepths = new ArrayDeque<>();
+    private int depth;
+
+    @Override
+    public TransactionStatus getTransaction(TransactionDefinition definition) {
+      boolean startsTransaction =
+          depth == 0
+              || definition.getPropagationBehavior()
+                  == TransactionDefinition.PROPAGATION_REQUIRES_NEW;
+      if (!startsTransaction) {
+        return new SimpleTransactionStatus(false);
+      }
+      previousDepths.push(depth);
+      depth++;
+      return new SimpleTransactionStatus(true);
+    }
+
+    @Override
+    public void commit(TransactionStatus status) {
+      complete(status);
+    }
+
+    @Override
+    public void rollback(TransactionStatus status) {
+      complete(status);
+    }
+
+    int depth() {
+      return depth;
+    }
+
+    private void complete(TransactionStatus status) {
+      if (status.isNewTransaction()) {
+        depth = previousDepths.pop();
+      }
     }
   }
 }

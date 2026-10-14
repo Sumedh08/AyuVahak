@@ -1,12 +1,17 @@
 package org.ayuvahak.transfer.adapter.persistence;
 
+import com.zaxxer.hikari.HikariDataSource;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Statement;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.ayuvahak.platform.core.ActorKind;
 import org.ayuvahak.platform.core.ActorReference;
 import org.ayuvahak.platform.core.ExternalReference;
@@ -28,6 +33,7 @@ import org.ayuvahak.transfer.domain.TransferProgressCorrection;
 import org.ayuvahak.transfer.domain.TransferProgressFact;
 import org.ayuvahak.transfer.domain.TransferRequestAttempt;
 import org.springframework.context.annotation.Lazy;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
@@ -37,12 +43,19 @@ import org.springframework.stereotype.Repository;
 public class JdbcTransferStore implements TransferStore {
 
   private static final String DIRECTORY_ISSUER = "urn:ayuvahak:directory";
+  private static final String REFERRAL_COORDINATION_GUARD_TIMEOUT = "5s";
   private final JdbcTemplate jdbc;
+  private final HikariDataSource dataSource;
   private final CommandIdempotencyProperties idempotencyProperties;
 
-  public JdbcTransferStore(JdbcTemplate jdbc, CommandIdempotencyProperties idempotencyProperties) {
-    this.jdbc = jdbc;
-    this.idempotencyProperties = idempotencyProperties;
+  public JdbcTransferStore(
+      JdbcTemplate jdbc,
+      HikariDataSource dataSource,
+      CommandIdempotencyProperties idempotencyProperties) {
+    this.jdbc = java.util.Objects.requireNonNull(jdbc, "JDBC template");
+    this.dataSource = java.util.Objects.requireNonNull(dataSource, "data source");
+    this.idempotencyProperties =
+        java.util.Objects.requireNonNull(idempotencyProperties, "idempotency properties");
   }
 
   @Override
@@ -98,7 +111,104 @@ public class JdbcTransferStore implements TransferStore {
             // Consume the transaction-scoped lock result.
           }
         },
-        "transfer/referral/" + referralId);
+        referralCoordinationLockKey(referralId));
+  }
+
+  @Override
+  public ReferralCoordinationGuard acquireReferralCoordinationGuard(InternalId referralId) {
+    String lockKey = referralCoordinationLockKey(referralId);
+    Connection connection = null;
+    boolean lockRequestMayHaveReachedServer = false;
+    try {
+      connection = dataSource.getConnection();
+      try (Statement timeout = connection.createStatement()) {
+        timeout.execute("SET lock_timeout = '" + REFERRAL_COORDINATION_GUARD_TIMEOUT + "'");
+      }
+      try (PreparedStatement lock =
+          connection.prepareStatement("SELECT pg_advisory_lock(hashtextextended(?, 0))")) {
+        lock.setString(1, lockKey);
+        lockRequestMayHaveReachedServer = true;
+        try (ResultSet result = lock.executeQuery()) {
+          if (!result.next()) {
+            throw new SQLException("Transfer coordination lock returned no result");
+          }
+        }
+      }
+      try (Statement reset = connection.createStatement()) {
+        reset.execute("RESET lock_timeout");
+      }
+      Connection guardedConnection = connection;
+      AtomicBoolean released = new AtomicBoolean();
+      return () -> {
+        if (released.compareAndSet(false, true)) {
+          releaseReferralCoordinationGuard(guardedConnection, lockKey);
+        }
+      };
+    } catch (SQLException failure) {
+      if (connection != null) {
+        if (lockRequestMayHaveReachedServer) {
+          // A failed response does not prove that PostgreSQL failed to acquire the session lock.
+          // Retire the session rather than returning a possibly locked connection to Hikari.
+          abortConnection(connection);
+        } else {
+          resetAndCloseUnheldConnection(connection);
+        }
+      }
+      throw new DataAccessResourceFailureException(
+          "Could not acquire the bounded Transfer Referral coordination guard", failure);
+    }
+  }
+
+  private void releaseReferralCoordinationGuard(Connection connection, String lockKey) {
+    boolean released = false;
+    try (PreparedStatement unlock =
+        connection.prepareStatement("SELECT pg_advisory_unlock(hashtextextended(?, 0))")) {
+      unlock.setString(1, lockKey);
+      try (ResultSet result = unlock.executeQuery()) {
+        released = result.next() && result.getBoolean(1);
+      }
+    } catch (SQLException ignored) {
+      // Evicting the session below releases any remaining session lock.
+    }
+    if (released) {
+      closeQuietly(connection);
+    } else {
+      abortConnection(connection);
+    }
+  }
+
+  private void resetAndCloseUnheldConnection(Connection connection) {
+    try (Statement reset = connection.createStatement()) {
+      reset.execute("RESET lock_timeout");
+      closeQuietly(connection);
+    } catch (SQLException ignored) {
+      abortConnection(connection);
+    }
+  }
+
+  private void abortConnection(Connection connection) {
+    try {
+      connection.abort(Runnable::run);
+    } catch (SQLException | RuntimeException abortFailure) {
+      // A pooled close may return a session-scoped PostgreSQL advisory lock to the pool.
+      // Retire the physical session instead so a failed unlock cannot strand the Referral.
+    } finally {
+      // JDBC abort does not return Hikari's proxy to the pool. Evict it after either abort
+      // outcome so the checked-out handle is not leaked and the physical session is retired.
+      dataSource.evictConnection(connection);
+    }
+  }
+
+  private static void closeQuietly(Connection connection) {
+    try {
+      connection.close();
+    } catch (SQLException ignored) {
+      // Closing is best-effort after explicit unlock or abort.
+    }
+  }
+
+  private static String referralCoordinationLockKey(InternalId referralId) {
+    return "transfer/referral/" + java.util.Objects.requireNonNull(referralId, "Referral id");
   }
 
   @Override

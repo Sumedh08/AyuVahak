@@ -40,6 +40,9 @@ import org.springframework.context.annotation.Lazy;
 import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /** Authorized reads over Matching-owned immutable Recommendation snapshots. */
 @Service
@@ -51,6 +54,7 @@ public final class MatchingRecommendationQueries {
   private final MatchingPolicyCatalog policies;
   private final AuthorizationService authorization;
   private final AuditWriter auditWriter;
+  private final TransactionTemplate ownerRead;
   private final Clock clock;
 
   public MatchingRecommendationQueries(
@@ -59,12 +63,18 @@ public final class MatchingRecommendationQueries {
       MatchingPolicyCatalog policies,
       AuthorizationService authorization,
       AuditWriter auditWriter,
+      PlatformTransactionManager transactionManager,
       @Qualifier("auditClock") Clock clock) {
     this.store = Objects.requireNonNull(store, "Matching store");
     this.ownerEvidence = Objects.requireNonNull(ownerEvidence, "Matching owner evidence reader");
     this.policies = Objects.requireNonNull(policies, "Matching policy catalog");
     this.authorization = Objects.requireNonNull(authorization, "authorization service");
     this.auditWriter = Objects.requireNonNull(auditWriter, "audit writer");
+    this.ownerRead = new TransactionTemplate(Objects.requireNonNull(transactionManager));
+    this.ownerRead.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+    this.ownerRead.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
+    this.ownerRead.setReadOnly(true);
+    this.ownerRead.setTimeout(5);
     this.clock = Objects.requireNonNull(clock, "audit clock");
   }
 
@@ -72,7 +82,7 @@ public final class MatchingRecommendationQueries {
     requireReadAuthority(requester);
     Optional<RecommendationSnapshot> result;
     try {
-      result = store.findSnapshot(Objects.requireNonNull(snapshotId, "snapshot id"));
+      result = findSnapshotInOwnerTransaction(Objects.requireNonNull(snapshotId, "snapshot id"));
     } catch (DataAccessException unavailable) {
       throw unavailable();
     }
@@ -127,7 +137,9 @@ public final class MatchingRecommendationQueries {
             : Optional.empty();
     List<RecommendationSnapshot> items;
     try {
-      items = store.findHistory(referralId, organizationId, facilityId, limit);
+      items =
+          ownerRead.execute(
+              status -> store.findHistory(referralId, organizationId, facilityId, limit));
     } catch (DataAccessException unavailable) {
       throw unavailable();
     }
@@ -191,8 +203,7 @@ public final class MatchingRecommendationQueries {
     RecommendationSnapshot snapshot;
     try {
       snapshot =
-          store
-              .findSnapshot(Objects.requireNonNull(snapshotId, "snapshot id"))
+          findSnapshotInOwnerTransaction(Objects.requireNonNull(snapshotId, "snapshot id"))
               .orElseThrow(MatchingRecommendationQueries::notFound);
     } catch (DataAccessException unavailable) {
       throw unavailable();
@@ -223,6 +234,10 @@ public final class MatchingRecommendationQueries {
         AuditOutcome.SUCCEEDED,
         result.reasonCodes().stream().findFirst());
     return result;
+  }
+
+  private Optional<RecommendationSnapshot> findSnapshotInOwnerTransaction(InternalId snapshotId) {
+    return ownerRead.execute(status -> store.findSnapshot(snapshotId));
   }
 
   private RecommendationApplicabilityResult revalidate(

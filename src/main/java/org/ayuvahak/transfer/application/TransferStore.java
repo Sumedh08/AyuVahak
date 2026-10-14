@@ -29,6 +29,12 @@ public interface TransferStore {
   /** Serializes Transfer request creation and Referral-cancellation reconciliation per Referral. */
   void lockReferralCoordination(InternalId referralId);
 
+  /**
+   * Holds the same per-Referral lock across an owner-authorized Referral amendment without sharing
+   * the Referral transaction with Transfer persistence.
+   */
+  ReferralCoordinationGuard acquireReferralCoordinationGuard(InternalId referralId);
+
   void insertFirstRequest(TransferJourney journey, TransferRequestAttempt attempt);
 
   void completeReceipt(
@@ -191,6 +197,12 @@ public interface TransferStore {
   record DecisionResult(
       org.ayuvahak.transfer.domain.TransferDecision decision,
       Optional<CoordinatedTransfer> transfer) {}
+
+  @FunctionalInterface
+  interface ReferralCoordinationGuard extends AutoCloseable {
+    @Override
+    void close();
+  }
 
   record TransferAttemptState(
       Optional<CoordinatedTransfer.Status> transferStatus,

@@ -4,6 +4,8 @@
 
 ## Scope and test environment
 
+The counts below are the historical Phase 7 freeze-time run (139 Surefire / 222 Failsafe). The later cross-volume closeout run is recorded separately in [Volume II acceptance](volume-2-acceptance.md); it reran the full suite after closeout remediation and must not be conflated with the original Phase 7 gate evidence.
+
 Phase 7 implements coordination state for a Transfer Journey and its destination attempts, receiving assessments and acceptance, Capacity-owned reservation coordination, movement/progress facts, Arrival, Handover, Completion, cancellation/release reconciliation, rerouting, and participant-scoped views. It does not implement Transport dispatch, patient-record storage, clinical judgment, or external healthcare connectors.
 
 Verification used Java 25.0.4.1+1, the repository Maven Wrapper, synthetic fixtures, and disposable local Testcontainers. PostgreSQL 18.6 with PostGIS 3.6.4 applied all 37 Flyway migrations. No public healthcare, identity, routing, or external service was a test target.
