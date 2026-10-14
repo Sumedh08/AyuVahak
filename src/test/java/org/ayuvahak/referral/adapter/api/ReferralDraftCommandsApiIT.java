@@ -394,6 +394,41 @@ class ReferralDraftCommandsApiIT {
               assertThat(problem.status()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
               assertThat(problem.code()).isEqualTo(PlatformErrorCode.TRANSFER_UNAVAILABLE);
             });
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM audit.audit_record "
+                    + "WHERE action_code = 'TRANSFER_REFERRAL_AMENDMENT_SCOPE_MISMATCH' "
+                    + "AND outcome = 'DENIED' AND reason_code = 'ORIGIN_SCOPE_MISMATCH' "
+                    + "AND authorization_outcome = 'DENIED'",
+                Integer.class))
+        .isEqualTo(1);
+
+    jdbc.execute(
+        "CREATE OR REPLACE FUNCTION transfer.reject_test_amendment_scope_audit() "
+            + "RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
+            + "IF NEW.action_code = 'TRANSFER_REFERRAL_AMENDMENT_SCOPE_MISMATCH' THEN "
+            + "RAISE EXCEPTION 'synthetic scope mismatch audit failure'; END IF; "
+            + "RETURN NEW; END $$");
+    jdbc.execute(
+        "CREATE TRIGGER reject_test_amendment_scope_audit BEFORE INSERT ON audit.audit_record "
+            + "FOR EACH ROW EXECUTE FUNCTION transfer.reject_test_amendment_scope_audit()");
+    try {
+      assertThatThrownBy(
+              () ->
+                  transferAmendmentStatusQuery.hasActiveCoordination(
+                      organizationScopedStatusReader, referralReference))
+          .isInstanceOf(PlatformProblemException.class)
+          .satisfies(
+              failure -> {
+                PlatformProblemException problem = (PlatformProblemException) failure;
+                assertThat(problem.status()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+                assertThat(problem.code()).isEqualTo(PlatformErrorCode.AUDIT_UNAVAILABLE);
+              });
+    } finally {
+      jdbc.execute(
+          "DROP TRIGGER IF EXISTS reject_test_amendment_scope_audit ON audit.audit_record");
+      jdbc.execute("DROP FUNCTION IF EXISTS transfer.reject_test_amendment_scope_audit()");
+    }
 
     jdbc.update(
         "UPDATE identity_access.authorization_grant SET grant_status = 'REVOKED', "

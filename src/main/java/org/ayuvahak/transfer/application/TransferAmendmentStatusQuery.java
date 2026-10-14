@@ -84,6 +84,7 @@ public final class TransferAmendmentStatusQuery {
     if (!journey.referralId().equals(referralId)
         || !context.scope().organization().equals(Optional.of(journey.originOrganization()))
         || !context.scope().facility().equals(journey.originFacility())) {
+      auditScopeMismatch(context, referralId);
       throw problem(
           HttpStatus.SERVICE_UNAVAILABLE,
           PlatformErrorCode.TRANSFER_UNAVAILABLE,
@@ -153,6 +154,31 @@ public final class TransferAmendmentStatusQuery {
         HttpStatus.SERVICE_UNAVAILABLE,
         PlatformErrorCode.AUTHORIZATION_UNAVAILABLE,
         "Transfer could not authorize the Referral amendment-status read.");
+  }
+
+  private void auditScopeMismatch(ExecutionContext context, InternalId referralId) {
+    try {
+      auditWriter.recordNonMutating(
+          new AuditEvidence(
+              AuditActionKind.SECURITY_OUTCOME,
+              Optional.of(context.actor()),
+              Optional.of(context.scope()),
+              "TRANSFER_REFERRAL_AMENDMENT_SCOPE_MISMATCH",
+              "Referral",
+              Optional.of(referralId),
+              clock.instant(),
+              AuditOutcome.DENIED,
+              Optional.of("ORIGIN_SCOPE_MISMATCH"),
+              AuditAuthenticationEvidence.CONFIGURED_SERVICE_IDENTITY,
+              AuditAuthorizationOutcome.DENIED,
+              context.correlationId(),
+              Optional.of(targetContext(context.scope()))));
+    } catch (AuditPersistenceUnavailableException unavailable) {
+      throw new PlatformProblemException(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          PlatformErrorCode.AUDIT_UNAVAILABLE,
+          "Transfer could not record the denied amendment-status read safely.");
+    }
   }
 
   private void auditRead(ExecutionContext context, InternalId referralId, boolean active) {
