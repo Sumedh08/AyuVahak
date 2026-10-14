@@ -83,6 +83,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
@@ -113,6 +114,7 @@ import tools.jackson.databind.ObjectMapper;
     })
 @AutoConfigureMockMvc
 @Testcontainers
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 @Import(TransferJourneyCommandsApiIT.TestPorts.class)
 @ExtendWith(OutputCaptureExtension.class)
 class TransferJourneyCommandsApiIT {
@@ -1728,7 +1730,7 @@ class TransferJourneyCommandsApiIT {
 
     jdbc.update(
         "UPDATE transfer.capacity_reservation_request SET next_attempt_at = CURRENT_TIMESTAMP - "
-            + "INTERVAL '1 second' WHERE transfer_id = ? AND outcome = 'UNAVAILABLE'",
+            + "INTERVAL '1 hour' WHERE transfer_id = ? AND outcome = 'UNAVAILABLE'",
         transferId);
     TransferCapacityReservationRecovery restarted =
         beanFactory.createBean(TransferCapacityReservationRecovery.class);
@@ -1737,10 +1739,17 @@ class TransferJourneyCommandsApiIT {
     assertThat(capacityPort.idempotencyKeys())
         .isNotEmpty()
         .containsOnly("transfer-capacity-" + transferId);
+    assertThat(capacityPort.reservationOutcomeReadCalls())
+        .as("recovery must read the Capacity-owned current reservation outcome")
+        .isGreaterThan(0);
     assertThat(
             count(
                 "SELECT COUNT(*) FROM audit.audit_record WHERE "
                     + "action_code = 'CAPACITY_RESERVATION_OUTCOME_READ' AND outcome = 'SUCCEEDED'"))
+        .as(
+            "audit rows after reservation reconciliation: %s",
+            jdbc.queryForList(
+                "SELECT action_code, outcome, reason_code, target_id FROM audit.audit_record"))
         .isGreaterThan(0);
     assertThat(
             count(
@@ -1960,6 +1969,77 @@ class TransferJourneyCommandsApiIT {
                 eventCorrelation.value()))
         .isZero();
     assertThat(journeyId).isNotBlank();
+  }
+
+  @Test
+  void referralCancellationRacingFirstRequestCannotBeLost() throws Exception {
+    Scope scope = createOriginAndDestination();
+    grantSender(scope);
+    grantOwnerEventConsumer(scope, scope.originFacilityId(), "TransferReferralCancellation");
+    matching.returnApplicable(scope.referralId());
+    ApplicabilityGate gate = matching.pauseNextRevalidation();
+    CorrelationId eventCorrelation = new CorrelationId("transfer-referral-cancel-race");
+    var payload = objectMapper.createObjectNode();
+    payload.put("referralReference", scope.referralId());
+    payload.put("revisionNumber", 4);
+    payload.put("reasonCode", "ORIGIN_NO_LONGER_REQUIRED");
+    payload.put("sourceKind", "HUMAN");
+    InternalEvent event =
+        internalEvent(
+            EventType.parse("referral.cancelled.v1"),
+            executionContexts.forBackgroundWork(
+                ActorReference.service(new IssuerId(ISSUER), "synthetic-referral-event-source"),
+                RequestedExecutionScope.facility(
+                    directoryReference("Organization", scope.originOrganizationId()),
+                    directoryReference("Facility", scope.originFacilityId())),
+                eventCorrelation,
+                java.util.Optional.empty()),
+            "referral/" + scope.referralId(),
+            5,
+            Instant.now(),
+            payload);
+
+    ExecutorService executor = Executors.newFixedThreadPool(2);
+    try {
+      Future<MvcResult> creation =
+          executor.submit(() -> createRequest(scope, "referral-cancel-create-race").andReturn());
+      assertThat(gate.entered.await(10, TimeUnit.SECONDS)).isTrue();
+      Future<Void> cancellation =
+          executor.submit(
+              () -> {
+                ownerEventHandler.handle(event);
+                return null;
+              });
+
+      boolean cancellationCompletedBeforeCreationCouldCommit;
+      try {
+        cancellation.get(2, TimeUnit.SECONDS);
+        cancellationCompletedBeforeCreationCouldCommit = true;
+      } catch (TimeoutException serializedBehindCreation) {
+        cancellationCompletedBeforeCreationCouldCommit = false;
+      }
+      gate.resume.countDown();
+
+      MvcResult created = creation.get(15, TimeUnit.SECONDS);
+      cancellation.get(15, TimeUnit.SECONDS);
+      assertThat(created.getResponse().getStatus()).isEqualTo(201);
+      assertThat(cancellationCompletedBeforeCreationCouldCommit).isFalse();
+      assertThat(count("SELECT COUNT(*) FROM transfer.request_attempt")).isEqualTo(1);
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT request_status FROM transfer.request_attempt", String.class))
+          .isEqualTo("WITHDRAWN");
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT outcome FROM transfer.consumer_event_receipt WHERE event_id = ?",
+                  String.class,
+                  event.eventId().value()))
+          .isEqualTo("PENDING_REQUEST_WITHDRAWN");
+    } finally {
+      gate.resume.countDown();
+      executor.shutdownNow();
+      matching.clearApplicabilityGate(gate);
+    }
   }
 
   @Test
@@ -5511,6 +5591,8 @@ class TransferJourneyCommandsApiIT {
         new java.util.concurrent.CopyOnWriteArrayList<>();
     private final java.util.concurrent.atomic.AtomicInteger releaseCallCount =
         new java.util.concurrent.atomic.AtomicInteger();
+    private final java.util.concurrent.atomic.AtomicInteger reservationOutcomeReadCallCount =
+        new java.util.concurrent.atomic.AtomicInteger();
     private final java.util.concurrent.atomic.AtomicReference<
             org.ayuvahak.platform.executioncontext.ExecutionContext>
         lastReleaseContext = new java.util.concurrent.atomic.AtomicReference<>();
@@ -5560,6 +5642,7 @@ class TransferJourneyCommandsApiIT {
         org.ayuvahak.platform.executioncontext.ExecutionContext context,
         InternalId operationId,
         InternalId transferId) {
+      reservationOutcomeReadCallCount.incrementAndGet();
       return commands.getReservationOutcome(context, operationId, transferId);
     }
 
@@ -5607,6 +5690,10 @@ class TransferJourneyCommandsApiIT {
       return releaseCallCount.get();
     }
 
+    int reservationOutcomeReadCalls() {
+      return reservationOutcomeReadCallCount.get();
+    }
+
     org.ayuvahak.platform.executioncontext.ExecutionContext lastReleaseContext() {
       return lastReleaseContext.get();
     }
@@ -5616,6 +5703,7 @@ class TransferJourneyCommandsApiIT {
       nextFailure.set(null);
       nextReleaseFailure.set(null);
       releaseCallCount.set(0);
+      reservationOutcomeReadCallCount.set(0);
       lastReleaseContext.set(null);
       ReserveGate gate = nextReserveGate.getAndSet(null);
       if (gate != null) {
@@ -5645,6 +5733,7 @@ class TransferJourneyCommandsApiIT {
     private volatile ExternalReference lastCandidateFacility;
     private volatile InternalId lastExpectedReferralId;
     private volatile long lastReferralRevision;
+    private volatile ApplicabilityGate nextGate;
 
     @Override
     public RecommendationApplicabilityResult revalidate(
@@ -5666,8 +5755,35 @@ class TransferJourneyCommandsApiIT {
         effectiveStatus = RecommendationApplicabilityResult.Status.NOT_APPLICABLE;
         reasons = java.util.List.of("REFERRAL_ID_MISMATCH");
       }
-      return new RecommendationApplicabilityResult(
-          recommendationId, candidateFacility, effectiveStatus, reasons, Instant.now());
+      RecommendationApplicabilityResult result =
+          new RecommendationApplicabilityResult(
+              recommendationId, candidateFacility, effectiveStatus, reasons, Instant.now());
+      ApplicabilityGate gate = nextGate;
+      if (gate != null && nextGate == gate) {
+        nextGate = null;
+        gate.entered.countDown();
+        try {
+          if (!gate.resume.await(10, TimeUnit.SECONDS)) {
+            throw new IllegalStateException("Timed out waiting to resume Matching applicability.");
+          }
+        } catch (InterruptedException interrupted) {
+          Thread.currentThread().interrupt();
+          throw new IllegalStateException("Matching applicability was interrupted.", interrupted);
+        }
+      }
+      return result;
+    }
+
+    ApplicabilityGate pauseNextRevalidation() {
+      ApplicabilityGate gate = new ApplicabilityGate();
+      nextGate = gate;
+      return gate;
+    }
+
+    void clearApplicabilityGate(ApplicabilityGate gate) {
+      if (nextGate == gate) {
+        nextGate = null;
+      }
     }
 
     void returnApplicable(String expectedReferralId) {
@@ -5715,5 +5831,10 @@ class TransferJourneyCommandsApiIT {
     InternalId lastExpectedReferralId() {
       return lastExpectedReferralId;
     }
+  }
+
+  static final class ApplicabilityGate {
+    final CountDownLatch entered = new CountDownLatch(1);
+    final CountDownLatch resume = new CountDownLatch(1);
   }
 }

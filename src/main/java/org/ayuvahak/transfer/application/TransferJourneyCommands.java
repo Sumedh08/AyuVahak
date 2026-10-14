@@ -116,29 +116,6 @@ public final class TransferJourneyCommands {
       }
     }
 
-    RecommendationApplicabilityResult applicability;
-    try {
-      applicability =
-          matching.revalidate(
-              context, referralId, recommendationId, candidateFacility, referralRevision);
-    } catch (DataAccessException unavailable) {
-      throw matchingUnavailable();
-    }
-    if (applicability == null
-        || !recommendationId.equals(applicability.recommendationId())
-        || !candidateFacility.equals(applicability.candidateFacility())) {
-      throw matchingUnavailable();
-    }
-    switch (applicability.status()) {
-      case APPLICABLE -> {}
-      case NOT_APPLICABLE ->
-          throw problem(
-              HttpStatus.CONFLICT,
-              PlatformErrorCode.TRANSFER_RECOMMENDATION_STALE,
-              "The recommendation no longer applies to this Referral revision and destination.");
-      case INDETERMINATE -> throw matchingUnavailable();
-    }
-
     return execute(
         () -> {
           Instant now = clock.instant();
@@ -148,6 +125,9 @@ public final class TransferJourneyCommands {
           if (replay != null) {
             return replay;
           }
+          store.lockReferralCoordination(referralId);
+          requireRecommendationApplicable(
+              context, referralId, recommendationId, candidateFacility, referralRevision);
           if (store.findJourneyByReferral(referralId).isPresent()) {
             throw problem(
                 HttpStatus.CONFLICT,
@@ -186,6 +166,36 @@ public final class TransferJourneyCommands {
               receiptKey, HttpStatus.CREATED.value(), journey.id(), journey.version(), now);
           return new TransferJourneyCommandResult(journey, attempt, false);
         });
+  }
+
+  private void requireRecommendationApplicable(
+      ExecutionContext context,
+      InternalId referralId,
+      InternalId recommendationId,
+      ExternalReference candidateFacility,
+      long referralRevision) {
+    RecommendationApplicabilityResult applicability;
+    try {
+      applicability =
+          matching.revalidate(
+              context, referralId, recommendationId, candidateFacility, referralRevision);
+    } catch (RuntimeException unavailable) {
+      throw matchingUnavailable();
+    }
+    if (applicability == null
+        || !recommendationId.equals(applicability.recommendationId())
+        || !candidateFacility.equals(applicability.candidateFacility())) {
+      throw matchingUnavailable();
+    }
+    switch (applicability.status()) {
+      case APPLICABLE -> {}
+      case NOT_APPLICABLE ->
+          throw problem(
+              HttpStatus.CONFLICT,
+              PlatformErrorCode.TRANSFER_RECOMMENDATION_STALE,
+              "The recommendation no longer applies to this Referral revision and destination.");
+      case INDETERMINATE -> throw matchingUnavailable();
+    }
   }
 
   private TransferJourneyCommandResult replay(TransferStore.ReceiptClaim claim) {

@@ -21,17 +21,21 @@ import com.sun.net.httpserver.HttpServer;
 import com.zaxxer.hikari.HikariDataSource;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Proxy;
+import java.math.BigDecimal;
 import java.net.InetSocketAddress;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import org.ayuvahak.capacity.application.CapacityEvidenceStore;
+import org.ayuvahak.capacity.application.CapacityReservationCommands;
 import org.ayuvahak.capacity.domain.CapacityObservationFact;
 import org.ayuvahak.capacity.domain.CapacityReadinessOutcome;
+import org.ayuvahak.capacity.domain.CapacityReservationRequest;
 import org.ayuvahak.directory.application.DirectoryStore;
 import org.ayuvahak.matching.application.MatchingEligibilityApplicationService;
 import org.ayuvahak.matching.application.MatchingOwnerEvidenceReader;
@@ -51,11 +55,13 @@ import org.ayuvahak.platform.core.CorrelationId;
 import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.InternalId;
 import org.ayuvahak.platform.core.IssuerId;
+import org.ayuvahak.platform.eventing.application.OutboxDispatcher;
 import org.ayuvahak.platform.executioncontext.ExecutionContext;
 import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
 import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -66,6 +72,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
@@ -84,10 +91,19 @@ import org.testcontainers.utility.DockerImageName;
       "management.tracing.sampling.probability=0.0",
       "ayuvahak.authentication.audience=ayuvahak-api",
       "ayuvahak.authentication.service-client-ids=synthetic-integration-service",
-      "ayuvahak.authentication.allow-http=true"
+      "ayuvahak.authentication.allow-http=true",
+      "ayuvahak.transfer.request-deadline=PT1H",
+      "ayuvahak.transfer.reservation-dimension=SYN_TRANSFER_SLOT",
+      "ayuvahak.transfer.reservation-unit=slot",
+      "ayuvahak.transfer.reservation-quantity=1",
+      "ayuvahak.transfer.reservation-duration=PT2H",
+      "ayuvahak.transfer.expiry-polling-enabled=false",
+      "ayuvahak.transfer.reservation-polling-enabled=false",
+      "ayuvahak.capacity.reservation-lifecycle.enabled=false"
     })
 @AutoConfigureMockMvc
 @Testcontainers
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 @Import(DirectoryCapacityReferralScenarioIT.MatchingTestConfiguration.class)
 class DirectoryCapacityReferralScenarioIT {
 
@@ -116,6 +132,7 @@ class DirectoryCapacityReferralScenarioIT {
 
   @Autowired private MockMvc mockMvc;
   @Autowired private JdbcTemplate jdbc;
+  @Autowired private CapacityReservationCommands capacityReservationCommands;
   @Autowired private ExecutionContextFactory executionContextFactory;
   @Autowired private MatchingOwnerEvidenceReader matchingOwnerEvidenceReader;
   @Autowired private MatchingEligibilityApplicationService matchingEligibility;
@@ -123,6 +140,7 @@ class DirectoryCapacityReferralScenarioIT {
   @Autowired private CapacityIsolationProbe capacityIsolationProbe;
   @Autowired private DirectoryIsolationProbe directoryIsolationProbe;
   @Autowired private MutableTravelTimePort testTravelTimePort;
+  @Autowired private OutboxDispatcher outboxDispatcher;
 
   @DynamicPropertySource
   static void localInfrastructure(DynamicPropertyRegistry registry) {
@@ -159,6 +177,14 @@ class DirectoryCapacityReferralScenarioIT {
     if (jwksServer != null) {
       jwksServer.stop(0);
     }
+  }
+
+  @BeforeEach
+  void resetMutableMatchingFixtures() {
+    testPolicies.set(null);
+    testTravelTimePort.setEstimates(List.of());
+    capacityIsolationProbe.clear();
+    directoryIsolationProbe.clear();
   }
 
   @Test
@@ -655,9 +681,17 @@ class DirectoryCapacityReferralScenarioIT {
     }
     assertThat(
             jdbc.queryForObject(
-                "SELECT COUNT(*) FROM matching.recommendation_snapshot", Integer.class))
+                "SELECT COUNT(*) FROM matching.recommendation_snapshot WHERE referral_id = ?",
+                Integer.class,
+                UUID.fromString(referralId)))
         .isEqualTo(1);
-    assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM matching.command_receipt", Integer.class))
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM matching.command_receipt WHERE result_reference IN "
+                    + "(SELECT recommendation_id FROM matching.recommendation_snapshot "
+                    + "WHERE referral_id = ?)",
+                Integer.class,
+                UUID.fromString(referralId)))
         .isEqualTo(1);
     mockMvc
         .perform(
@@ -699,9 +733,17 @@ class DirectoryCapacityReferralScenarioIT {
     }
     assertThat(
             jdbc.queryForObject(
-                "SELECT COUNT(*) FROM matching.recommendation_snapshot", Integer.class))
+                "SELECT COUNT(*) FROM matching.recommendation_snapshot WHERE referral_id = ?",
+                Integer.class,
+                UUID.fromString(referralId)))
         .isEqualTo(1);
-    assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM matching.command_receipt", Integer.class))
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM matching.command_receipt WHERE result_reference IN "
+                    + "(SELECT recommendation_id FROM matching.recommendation_snapshot "
+                    + "WHERE referral_id = ?)",
+                Integer.class,
+                UUID.fromString(referralId)))
         .isEqualTo(1);
 
     jdbc.update(
@@ -1464,6 +1506,1215 @@ class DirectoryCapacityReferralScenarioIT {
         .isZero();
   }
 
+  @Test
+  void volumeTwoHappyPathRunsThroughDirectoryCapacityReferralMatchingAndTransfer()
+      throws Exception {
+    String prefix = "synthetic-volume2-e2e-" + UUID.randomUUID();
+    String curator = prefix + "-curator";
+    String capacityAdmin = prefix + "-capacity-admin";
+    String reporter = prefix + "-reporter";
+    String originator = prefix + "-originator";
+    String matchingOwner = "ayuvahak-matching-owner-read";
+    String referralOutcomeConsumer = "ayuvahak-transfer-outcome-consumer";
+    String reservationWorker = "ayuvahak-transfer-reservation-worker";
+    grantPlatform(curator, "DirectoryCuration");
+    grantPlatform(curator, "DirectoryVocabularyAdministration");
+    grantPlatform(capacityAdmin, "CapacityPolicyAdministration");
+    String originOrganizationId = createOrganization(prefix + "-origin-org", curator);
+    String destinationOrganizationId = createOrganization(prefix + "-destination-org", curator);
+    String originFacilityId =
+        createFacility(
+            prefix + "-origin-facility", originOrganizationId, "Synthetic origin", curator);
+    String facilityA =
+        createFacility(
+            prefix + "-facility-a", destinationOrganizationId, "Synthetic destination A", curator);
+    String facilityB =
+        createFacility(
+            prefix + "-facility-b", destinationOrganizationId, "Synthetic destination B", curator);
+    String facilityC =
+        createFacility(
+            prefix + "-facility-c", destinationOrganizationId, "Synthetic destination C", curator);
+    String facilityD =
+        createFacility(
+            prefix + "-facility-d", destinationOrganizationId, "Synthetic destination D", curator);
+
+    createLocation(originFacilityId, prefix + "-origin-location", 72.800, 19.100, curator);
+    createLocation(facilityA, prefix + "-location-a", 72.810, 19.100, curator);
+    createLocation(facilityB, prefix + "-location-b", 72.820, 19.100, curator);
+    createLocation(facilityC, prefix + "-location-c", 72.830, 19.100, curator);
+    createLocation(facilityD, prefix + "-location-d", 72.850, 19.100, curator);
+
+    String icu = "SYN-ICU-" + prefix.substring(prefix.length() - 8).toUpperCase();
+    String ct = "SYN-CT-" + prefix.substring(prefix.length() - 8).toUpperCase();
+    String neuro = "SYN-NEURO-" + prefix.substring(prefix.length() - 8).toUpperCase();
+    createCareCapability(icu, prefix + "-cap-icu", curator);
+    createCareCapability(ct, prefix + "-cap-ct", curator);
+    createCareCapability(neuro, prefix + "-cap-neuro", curator);
+    createCapabilityAssertion(facilityA, icu, prefix + "-a-icu", curator);
+    createCapabilityAssertion(facilityA, ct, prefix + "-a-ct", curator);
+    for (String capability : List.of(icu, ct, neuro)) {
+      createCapabilityAssertion(facilityB, capability, prefix + "-b-" + capability, curator);
+      createCapabilityAssertion(facilityC, capability, prefix + "-c-" + capability, curator);
+      createCapabilityAssertion(facilityD, capability, prefix + "-d-" + capability, curator);
+    }
+
+    String dimIcu = "SYN_ICU_CAPACITY_" + prefix.substring(prefix.length() - 8).toUpperCase();
+    String dimCt = "SYN_CT_CAPACITY_" + prefix.substring(prefix.length() - 8).toUpperCase();
+    String dimNeuro = "SYN_NEURO_CAPACITY_" + prefix.substring(prefix.length() - 8).toUpperCase();
+    String reservationDimension = "SYN_TRANSFER_SLOT";
+    for (String dimension : List.of(dimIcu, dimCt, dimNeuro)) {
+      defineCapacityDimension(
+          dimension, prefix + "-dimension-" + dimension, capacityAdmin, false, "unit");
+      configureCapacityPolicy(dimension, prefix + "-policy-" + dimension, capacityAdmin, 600);
+    }
+    defineCapacityDimension(
+        reservationDimension, prefix + "-reservation-dimension", capacityAdmin, true, "slot");
+    configureCapacityPolicy(
+        reservationDimension, prefix + "-reservation-policy", capacityAdmin, 600);
+
+    List<String> candidateFacilities = List.of(facilityA, facilityB, facilityC, facilityD);
+    for (String facility : candidateFacilities) {
+      grantFacility(reporter, "CapacityReporting", destinationOrganizationId, facility);
+      grantFacility(reporter, "CapacityEvidenceReview", destinationOrganizationId, facility);
+    }
+    Instant currentObservation = Instant.now().minusSeconds(2);
+    for (String dimension : List.of(dimIcu, dimCt, dimNeuro)) {
+      recordCapacityObservation(
+          reporter,
+          destinationOrganizationId,
+          facilityA,
+          dimension,
+          prefix + "-a-" + dimension,
+          2,
+          currentObservation);
+      recordCapacityObservation(
+          reporter,
+          destinationOrganizationId,
+          facilityB,
+          dimension,
+          prefix + "-b-" + dimension,
+          2,
+          currentObservation);
+      recordCapacityObservation(
+          reporter,
+          destinationOrganizationId,
+          facilityC,
+          dimension,
+          prefix + "-c-" + dimension,
+          2,
+          Instant.now().minus(Duration.ofHours(2)));
+      recordCapacityObservation(
+          reporter,
+          destinationOrganizationId,
+          facilityD,
+          dimension,
+          prefix + "-d-" + dimension,
+          2,
+          currentObservation);
+    }
+    recordCapacityObservation(
+        reporter,
+        destinationOrganizationId,
+        facilityB,
+        reservationDimension,
+        prefix + "-b-reservation",
+        1,
+        currentObservation);
+    recordCapacityObservation(
+        reporter,
+        destinationOrganizationId,
+        facilityD,
+        reservationDimension,
+        prefix + "-d-reservation",
+        1,
+        currentObservation);
+
+    grantFacility(originator, "ReferralCreate", originOrganizationId, originFacilityId);
+    grantFacility(originator, "ReferralSubmit", originOrganizationId, originFacilityId);
+    grantFacility(originator, "ReferralRead", originOrganizationId, originFacilityId);
+    grantFacility(originator, "RecommendationRequest", originOrganizationId, originFacilityId);
+    grantFacility(originator, "RecommendationRead", originOrganizationId, originFacilityId);
+    grantService(
+        referralOutcomeConsumer,
+        "ReferralResolve",
+        "FACILITY",
+        originOrganizationId,
+        originFacilityId);
+    String patientReference = prefix + "-opaque-patient-reference";
+    String referralId =
+        createVolumeTwoReferral(
+            originator,
+            originOrganizationId,
+            originFacilityId,
+            destinationOrganizationId,
+            List.of(icu, ct, neuro),
+            patientReference,
+            prefix);
+    mockMvc
+        .perform(
+            post("/api/v1/referrals/{referralId}/submission", referralId)
+                .header("Authorization", bearer(token(originator)))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", originOrganizationId)
+                .header("X-AyuVahak-Facility-Id", originFacilityId)
+                .header("Idempotency-Key", prefix + "-submit")
+                .contentType("application/json")
+                .content("{\"expectedVersion\":1}"))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.submittedRevision.revisionNumber").value(1));
+
+    grantService(matchingOwner, "ReferralRead", "FACILITY", originOrganizationId, originFacilityId);
+    grantService(matchingOwner, "DirectoryRead", "ORGANIZATION", destinationOrganizationId, null);
+    grantService(
+        matchingOwner, "DirectoryRead", "FACILITY", originOrganizationId, originFacilityId);
+    for (String facility : candidateFacilities) {
+      grantService(
+          matchingOwner, "CapacityEvidenceReview", "FACILITY", destinationOrganizationId, facility);
+    }
+    Map<String, Set<String>> requirementMapping =
+        Map.of(icu, Set.of(dimIcu), ct, Set.of(dimCt), neuro, Set.of(dimNeuro));
+    testPolicies.set(volumeTwoPolicy(destinationOrganizationId, requirementMapping));
+
+    String recommendationBody =
+        mockMvc
+            .perform(
+                post("/api/v1/recommendations")
+                    .header("Authorization", bearer(token(originator)))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", originOrganizationId)
+                    .header("X-AyuVahak-Facility-Id", originFacilityId)
+                    .header("Idempotency-Key", prefix + "-recommendation")
+                    .contentType("application/json")
+                    .content("{\"referralId\":\"" + referralId + "\",\"revisionNumber\":1}"))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.outcome").value("COMPLETE"))
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+    assertThat(recommendationBody).doesNotContain(patientReference).contains("\"receivedAt\"");
+    assertCandidateOutcome(recommendationBody, facilityA, "INELIGIBLE");
+    assertCandidateOutcome(recommendationBody, facilityB, "RANKED_ELIGIBLE");
+    assertCandidateOutcome(recommendationBody, facilityC, "INDETERMINATE");
+    assertCandidateReason(recommendationBody, facilityA, "CAPABILITY_NOT_ASSERTED");
+    assertCandidateReason(recommendationBody, facilityC, "CAPACITY_EVIDENCE_STALE");
+    assertThat(readCapacityOutcomeCodes(recommendationBody, facilityB)).contains("READY_CURRENT");
+    assertThat(readCapacityOutcomeCodes(recommendationBody, facilityC)).contains("STALE_EXPIRED");
+    assertThat(readCandidateRank(recommendationBody, facilityB)).isEqualTo(1);
+    String recommendationId = com.jayway.jsonpath.JsonPath.read(recommendationBody, "$.id");
+    String matchingSnapshot =
+        jdbc.queryForObject(
+            "SELECT snapshot_document::text FROM matching.recommendation_snapshot "
+                + "WHERE recommendation_id = ?",
+            String.class,
+            UUID.fromString(recommendationId));
+    assertThat(matchingSnapshot).doesNotContain(patientReference, "PatientReference");
+
+    grantFacility(originator, "TransferRequest", originOrganizationId, originFacilityId);
+    String transferJourneyBody =
+        mockMvc
+            .perform(
+                post("/api/v1/transfer-journeys")
+                    .header("Authorization", bearer(token(originator)))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", originOrganizationId)
+                    .header("X-AyuVahak-Facility-Id", originFacilityId)
+                    .header("Idempotency-Key", prefix + "-transfer-request")
+                    .contentType("application/json")
+                    .content(
+                        "{\"referralId\":\""
+                            + referralId
+                            + "\",\"referralRevision\":1,\"recommendationId\":\""
+                            + recommendationId
+                            + "\",\"candidateFacilityId\":\""
+                            + facilityB
+                            + "\"}"))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.status").value("PENDING"))
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+    String requestAttemptId =
+        com.jayway.jsonpath.JsonPath.read(transferJourneyBody, "$.requestAttemptId");
+
+    grantFacility(
+        prefix + "-clinical-authority",
+        "ClinicalSuitabilityAuthority",
+        destinationOrganizationId,
+        facilityB);
+    grantFacility(
+        prefix + "-readiness-authority",
+        "OperationalReadinessAuthority",
+        destinationOrganizationId,
+        facilityB);
+    grantFacility(
+        prefix + "-acceptance-authority",
+        "AcceptanceAuthority",
+        destinationOrganizationId,
+        facilityB);
+    mockMvc
+        .perform(
+            post(
+                    "/api/v1/transfer-request-attempts/{attemptId}/clinical-suitability-assessments",
+                    requestAttemptId)
+                .header("Authorization", bearer(token(prefix + "-clinical-authority")))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", destinationOrganizationId)
+                .header("X-AyuVahak-Facility-Id", facilityB)
+                .header("Idempotency-Key", prefix + "-clinical-assessment")
+                .contentType("application/json")
+                .content(
+                    "{\"expectedVersion\":1,\"outcome\":\"SUPPORTS\","
+                        + "\"reasonCode\":\"SYNTHETIC_REVIEW_COMPLETE\",\"occurredAt\":\""
+                        + Instant.now()
+                        + "\"}"))
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.assessmentKind").value("CLINICAL_SUITABILITY"));
+    mockMvc
+        .perform(
+            post(
+                    "/api/v1/transfer-request-attempts/{attemptId}/operational-readiness-assessments",
+                    requestAttemptId)
+                .header("Authorization", bearer(token(prefix + "-readiness-authority")))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", destinationOrganizationId)
+                .header("X-AyuVahak-Facility-Id", facilityB)
+                .header("Idempotency-Key", prefix + "-readiness-assessment")
+                .contentType("application/json")
+                .content(
+                    "{\"expectedVersion\":2,\"outcome\":\"SUPPORTS\","
+                        + "\"reasonCode\":\"SYNTHETIC_READINESS_CONFIRMED\",\"occurredAt\":\""
+                        + Instant.now()
+                        + "\"}"))
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.assessmentKind").value("OPERATIONAL_READINESS"));
+
+    grantService(
+        reservationWorker, "CapacityReservation", "FACILITY", destinationOrganizationId, facilityB);
+    grantService(
+        reservationWorker,
+        "TransferReservationReconciliation",
+        "FACILITY",
+        destinationOrganizationId,
+        facilityB);
+    MvcResult acceptance =
+        mockMvc
+            .perform(
+                post("/api/v1/transfer-request-attempts/{attemptId}/acceptance", requestAttemptId)
+                    .header("Authorization", bearer(token(prefix + "-acceptance-authority")))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", destinationOrganizationId)
+                    .header("X-AyuVahak-Facility-Id", facilityB)
+                    .header("Idempotency-Key", prefix + "-acceptance")
+                    .contentType("application/json")
+                    .content("{\"expectedVersion\":3,\"occurredAt\":\"" + Instant.now() + "\"}"))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.status").value("READY"))
+            .andReturn();
+    String transferId =
+        com.jayway.jsonpath.JsonPath.read(
+            acceptance.getResponse().getContentAsString(), "$.transferId");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT reservation_status FROM capacity.coordination_reservation "
+                    + "WHERE transfer_id = ?",
+                String.class,
+                UUID.fromString(transferId)))
+        .isEqualTo("ACTIVE");
+
+    grantFacility(
+        prefix + "-mover", "TransferProgressAuthority", destinationOrganizationId, facilityB);
+    grantFacility(
+        prefix + "-receiver", "TransferProgressAuthority", destinationOrganizationId, facilityB);
+    grantFacility(
+        prefix + "-receiver", "TransferHandoverAuthority", destinationOrganizationId, facilityB);
+    grantFacility(
+        prefix + "-receiver", "TransferCompletionAuthority", destinationOrganizationId, facilityB);
+    recordTransferProgress(
+        transferId,
+        "departure",
+        prefix + "-mover",
+        destinationOrganizationId,
+        facilityB,
+        prefix + "-departure",
+        2,
+        "\"sourceReference\":\"synthetic-departure\"");
+    recordTransferProgress(
+        transferId,
+        "arrival",
+        prefix + "-mover",
+        destinationOrganizationId,
+        facilityB,
+        prefix + "-arrival",
+        3,
+        "");
+    recordTransferProgress(
+        transferId,
+        "handover",
+        prefix + "-receiver",
+        destinationOrganizationId,
+        facilityB,
+        prefix + "-handover",
+        4,
+        "");
+    String completion =
+        recordTransferProgress(
+            transferId,
+            "completion",
+            prefix + "-receiver",
+            destinationOrganizationId,
+            facilityB,
+            prefix + "-completion",
+            5,
+            "\"reasonCode\":\"SYNTHETIC_COORDINATION_COMPLETE\"");
+    assertThat(completion).contains("\"status\":\"COMPLETED\"");
+
+    for (int attempt = 0; attempt < 5; attempt++) {
+      outboxDispatcher.dispatchAvailable(Instant.now().plusSeconds(1));
+    }
+    List<Map<String, Object>> completionDelivery =
+        jdbc.queryForList(
+            "SELECT d.state, d.last_failure_category, d.attempt_count "
+                + "FROM platform_eventing.internal_event e "
+                + "JOIN platform_eventing.outbox_delivery d USING (event_id) "
+                + "WHERE e.event_type = 'transfer.completed.v1' "
+                + "AND e.envelope -> 'payload' ->> 'referralReference' = ?",
+            referralId);
+    assertThat(completionDelivery)
+        .as(
+            "Transfer completion must reach the Referral consumer; delivery evidence: %s",
+            completionDelivery)
+        .singleElement()
+        .satisfies(delivery -> assertThat(delivery).containsEntry("state", "DELIVERED"));
+    mockMvc
+        .perform(
+            get("/api/v1/referrals/{referralId}", referralId)
+                .header("Authorization", bearer(token(originator)))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", originOrganizationId)
+                .header("X-AyuVahak-Facility-Id", originFacilityId))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.status").value("RESOLVED"));
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT outcome FROM referral.resolution WHERE referral_id = ?",
+                String.class,
+                UUID.fromString(referralId)))
+        .isEqualTo("FULFILLED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM referral.consumer_event_receipt WHERE event_id = "
+                    + "(SELECT event_id FROM platform_eventing.internal_event WHERE "
+                    + "event_type = 'transfer.completed.v1' AND envelope -> 'payload' ->> "
+                    + "'referralReference' = ?)",
+                Integer.class,
+                referralId))
+        .isEqualTo(1);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM platform_eventing.internal_event WHERE "
+                    + "event_type = 'transfer.completed.v1' AND envelope::text LIKE ?",
+                Integer.class,
+                "%" + patientReference + "%"))
+        .isZero();
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM transfer.transfer_record t JOIN transfer.journey j "
+                    + "ON j.journey_id = t.journey_id WHERE t.transfer_id = ? "
+                    + "AND t.transfer_status = 'COMPLETED' AND j.referral_id = ?",
+                Integer.class,
+                UUID.fromString(transferId),
+                UUID.fromString(referralId)))
+        .isEqualTo(1);
+
+    // A second, independent Referral exercises rejection, a real competing Capacity hold,
+    // cancellation reconciliation, ordered rerouting, and final completion through the same
+    // owner APIs. The blocking reservation is synthetic and exists only in this disposable DB.
+    String reroutePatientReference = prefix + "-reroute-opaque-patient-reference";
+    String rerouteReferralId =
+        createVolumeTwoReferral(
+            originator,
+            originOrganizationId,
+            originFacilityId,
+            destinationOrganizationId,
+            List.of(icu, ct, neuro),
+            reroutePatientReference,
+            prefix + "-reroute-referral");
+    mockMvc
+        .perform(
+            post("/api/v1/referrals/{referralId}/submission", rerouteReferralId)
+                .header("Authorization", bearer(token(originator)))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", originOrganizationId)
+                .header("X-AyuVahak-Facility-Id", originFacilityId)
+                .header("Idempotency-Key", prefix + "-reroute-submit")
+                .contentType("application/json")
+                .content("{\"expectedVersion\":1}"))
+        .andExpect(status().isOk());
+
+    // Refresh C's previously stale readiness evidence. Its capacity slot will be fully held by
+    // another synthetic Transfer before this Referral's receiving authority accepts.
+    Instant rerouteObservation = Instant.now().minusSeconds(1);
+    for (String dimension : List.of(dimIcu, dimCt, dimNeuro)) {
+      recordCapacityObservation(
+          reporter,
+          destinationOrganizationId,
+          facilityC,
+          dimension,
+          prefix + "-reroute-c-" + dimension,
+          2,
+          rerouteObservation);
+    }
+    recordCapacityObservation(
+        reporter,
+        destinationOrganizationId,
+        facilityC,
+        reservationDimension,
+        prefix + "-reroute-c-reservation",
+        1,
+        rerouteObservation);
+    grantService(
+        reservationWorker, "CapacityReservation", "FACILITY", destinationOrganizationId, facilityC);
+    grantService(
+        reservationWorker,
+        "TransferReservationReconciliation",
+        "FACILITY",
+        destinationOrganizationId,
+        facilityC);
+    grantService(
+        reservationWorker, "CapacityReservation", "FACILITY", destinationOrganizationId, facilityD);
+    grantService(
+        reservationWorker,
+        "TransferReservationReconciliation",
+        "FACILITY",
+        destinationOrganizationId,
+        facilityD);
+
+    Instant competingStart = Instant.now().plus(Duration.ofMinutes(5));
+    Instant competingEnd = competingStart.plus(Duration.ofHours(2));
+    InternalId competingTransferId = InternalId.generate();
+    var competingFacility =
+        new ExternalReference(new IssuerId(DIRECTORY_ISSUER), "Facility", facilityC);
+    var competingContext =
+        executionContextFactory.forBackgroundWork(
+            ActorReference.service(new IssuerId(ISSUER), reservationWorker),
+            RequestedExecutionScope.facility(
+                new ExternalReference(
+                    new IssuerId(DIRECTORY_ISSUER), "Organization", destinationOrganizationId),
+                competingFacility),
+            CorrelationId.generate(),
+            Optional.empty());
+    var competingReservation =
+        capacityReservationCommands.reserve(
+            competingContext,
+            new CapacityReservationRequest(
+                competingTransferId,
+                competingTransferId,
+                competingFacility,
+                reservationDimension,
+                "slot",
+                BigDecimal.ONE,
+                competingStart,
+                competingEnd,
+                competingEnd),
+            prefix + "-c-competing-reservation");
+    assertThat(competingReservation.outcome().name()).isEqualTo("RESERVED");
+
+    String firstRerouteRecommendation =
+        mockMvc
+            .perform(
+                post("/api/v1/recommendations")
+                    .header("Authorization", bearer(token(originator)))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", originOrganizationId)
+                    .header("X-AyuVahak-Facility-Id", originFacilityId)
+                    .header("Idempotency-Key", prefix + "-reroute-recommendation-b")
+                    .contentType("application/json")
+                    .content("{\"referralId\":\"" + rerouteReferralId + "\",\"revisionNumber\":1}"))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.outcome").value("COMPLETE"))
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+    assertCandidateOutcome(firstRerouteRecommendation, facilityB, "RANKED_ELIGIBLE");
+    assertCandidateOutcome(firstRerouteRecommendation, facilityC, "RANKED_ELIGIBLE");
+    assertCandidateOutcome(firstRerouteRecommendation, facilityD, "RANKED_ELIGIBLE");
+    String firstRerouteRecommendationId =
+        com.jayway.jsonpath.JsonPath.read(firstRerouteRecommendation, "$.id");
+
+    grantFacility(
+        prefix + "-reroute-b-acceptance-authority",
+        "AcceptanceAuthority",
+        destinationOrganizationId,
+        facilityB);
+    String firstRerouteJourneyBody =
+        mockMvc
+            .perform(
+                post("/api/v1/transfer-journeys")
+                    .header("Authorization", bearer(token(originator)))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", originOrganizationId)
+                    .header("X-AyuVahak-Facility-Id", originFacilityId)
+                    .header("Idempotency-Key", prefix + "-reroute-first-request")
+                    .contentType("application/json")
+                    .content(
+                        "{\"referralId\":\""
+                            + rerouteReferralId
+                            + "\",\"referralRevision\":1,\"recommendationId\":\""
+                            + firstRerouteRecommendationId
+                            + "\",\"candidateFacilityId\":\""
+                            + facilityB
+                            + "\"}"))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.status").value("PENDING"))
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+    String rerouteJourneyId =
+        com.jayway.jsonpath.JsonPath.read(firstRerouteJourneyBody, "$.journeyId");
+    String bAttemptId =
+        com.jayway.jsonpath.JsonPath.read(firstRerouteJourneyBody, "$.requestAttemptId");
+    mockMvc
+        .perform(
+            post("/api/v1/transfer-request-attempts/{attemptId}/rejection", bAttemptId)
+                .header("Authorization", bearer(token(prefix + "-reroute-b-acceptance-authority")))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", destinationOrganizationId)
+                .header("X-AyuVahak-Facility-Id", facilityB)
+                .header("Idempotency-Key", prefix + "-reroute-b-rejection")
+                .contentType("application/json")
+                .content(
+                    "{\"expectedVersion\":1,\"reasonCode\":\"SYNTHETIC_DESTINATION_REJECTED\","
+                        + "\"occurredAt\":\""
+                        + Instant.now()
+                        + "\"}"))
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.status").value("REJECTED"));
+
+    String secondRerouteRecommendation =
+        mockMvc
+            .perform(
+                post("/api/v1/recommendations")
+                    .header("Authorization", bearer(token(originator)))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", originOrganizationId)
+                    .header("X-AyuVahak-Facility-Id", originFacilityId)
+                    .header("Idempotency-Key", prefix + "-reroute-recommendation-c")
+                    .contentType("application/json")
+                    .content("{\"referralId\":\"" + rerouteReferralId + "\",\"revisionNumber\":1}"))
+            .andExpect(status().isCreated())
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+    String secondRerouteRecommendationId =
+        com.jayway.jsonpath.JsonPath.read(secondRerouteRecommendation, "$.id");
+    String cJourneyBody =
+        mockMvc
+            .perform(
+                post("/api/v1/transfer-journeys/{journeyId}/request-attempts", rerouteJourneyId)
+                    .header("Authorization", bearer(token(originator)))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", originOrganizationId)
+                    .header("X-AyuVahak-Facility-Id", originFacilityId)
+                    .header("Idempotency-Key", prefix + "-reroute-c-request")
+                    .contentType("application/json")
+                    .content(
+                        "{\"expectedVersion\":1,\"referralRevision\":1,\"recommendationId\":\""
+                            + secondRerouteRecommendationId
+                            + "\",\"candidateFacilityId\":\""
+                            + facilityC
+                            + "\"}"))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.attemptNumber").value(2))
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+    String cAttemptId = com.jayway.jsonpath.JsonPath.read(cJourneyBody, "$.requestAttemptId");
+    String cClinicalActor = prefix + "-c-clinical-authority";
+    String cReadinessActor = prefix + "-c-readiness-authority";
+    String cAcceptanceActor = prefix + "-c-acceptance-authority";
+    grantFacility(
+        cClinicalActor, "ClinicalSuitabilityAuthority", destinationOrganizationId, facilityC);
+    grantFacility(
+        cReadinessActor, "OperationalReadinessAuthority", destinationOrganizationId, facilityC);
+    grantFacility(cAcceptanceActor, "AcceptanceAuthority", destinationOrganizationId, facilityC);
+    mockMvc
+        .perform(
+            post(
+                    "/api/v1/transfer-request-attempts/{attemptId}/clinical-suitability-assessments",
+                    cAttemptId)
+                .header("Authorization", bearer(token(cClinicalActor)))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", destinationOrganizationId)
+                .header("X-AyuVahak-Facility-Id", facilityC)
+                .header("Idempotency-Key", prefix + "-c-clinical")
+                .contentType("application/json")
+                .content(
+                    "{\"expectedVersion\":1,\"outcome\":\"SUPPORTS\","
+                        + "\"reasonCode\":\"SYNTHETIC_REVIEW_COMPLETE\",\"occurredAt\":\""
+                        + Instant.now()
+                        + "\"}"))
+        .andExpect(status().isCreated());
+    mockMvc
+        .perform(
+            post(
+                    "/api/v1/transfer-request-attempts/{attemptId}/operational-readiness-assessments",
+                    cAttemptId)
+                .header("Authorization", bearer(token(cReadinessActor)))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", destinationOrganizationId)
+                .header("X-AyuVahak-Facility-Id", facilityC)
+                .header("Idempotency-Key", prefix + "-c-readiness")
+                .contentType("application/json")
+                .content(
+                    "{\"expectedVersion\":2,\"outcome\":\"SUPPORTS\","
+                        + "\"reasonCode\":\"SYNTHETIC_READINESS_CONFIRMED\",\"occurredAt\":\""
+                        + Instant.now()
+                        + "\"}"))
+        .andExpect(status().isCreated());
+    String cAcceptance =
+        mockMvc
+            .perform(
+                post("/api/v1/transfer-request-attempts/{attemptId}/acceptance", cAttemptId)
+                    .header("Authorization", bearer(token(cAcceptanceActor)))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", destinationOrganizationId)
+                    .header("X-AyuVahak-Facility-Id", facilityC)
+                    .header("Idempotency-Key", prefix + "-c-acceptance")
+                    .contentType("application/json")
+                    .content("{\"expectedVersion\":3,\"occurredAt\":\"" + Instant.now() + "\"}"))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.status").value("AWAITING_RESERVATION"))
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+    String cTransferId = com.jayway.jsonpath.JsonPath.read(cAcceptance, "$.transferId");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT outcome FROM transfer.capacity_reservation_request WHERE transfer_id = ?",
+                String.class,
+                UUID.fromString(cTransferId)))
+        .isEqualTo("CONFLICT");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
+                String.class,
+                UUID.fromString(cTransferId)))
+        .isEqualTo("AWAITING_RESERVATION");
+
+    String cProgressActor = prefix + "-c-progress-authority";
+    grantFacility(
+        cProgressActor, "TransferProgressAuthority", destinationOrganizationId, facilityC);
+    long cTransferVersion =
+        jdbc.queryForObject(
+            "SELECT version FROM transfer.transfer_record WHERE transfer_id = ?",
+            Long.class,
+            UUID.fromString(cTransferId));
+    mockMvc
+        .perform(
+            post("/api/v1/transfers/{transferId}/cancellation", cTransferId)
+                .header("Authorization", bearer(token(cProgressActor)))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", destinationOrganizationId)
+                .header("X-AyuVahak-Facility-Id", facilityC)
+                .header("Idempotency-Key", prefix + "-c-cancel-unreserved")
+                .contentType("application/json")
+                .content(
+                    "{\"expectedVersion\":"
+                        + cTransferVersion
+                        + ",\"occurredAt\":\""
+                        + Instant.now()
+                        + "\",\"reasonCode\":\"RESERVATION_CONFLICT_REROUTE\"}"))
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.status").value("CANCELLED"));
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT reservation_status FROM capacity.coordination_reservation WHERE transfer_id = ?",
+                String.class,
+                competingTransferId.value()))
+        .isEqualTo("ACTIVE");
+
+    long journeyVersion =
+        jdbc.queryForObject(
+            "SELECT version FROM transfer.journey WHERE journey_id = ?",
+            Long.class,
+            UUID.fromString(rerouteJourneyId));
+    String thirdRerouteRecommendation =
+        mockMvc
+            .perform(
+                post("/api/v1/recommendations")
+                    .header("Authorization", bearer(token(originator)))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", originOrganizationId)
+                    .header("X-AyuVahak-Facility-Id", originFacilityId)
+                    .header("Idempotency-Key", prefix + "-reroute-recommendation-d")
+                    .contentType("application/json")
+                    .content("{\"referralId\":\"" + rerouteReferralId + "\",\"revisionNumber\":1}"))
+            .andExpect(status().isCreated())
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+    String thirdRerouteRecommendationId =
+        com.jayway.jsonpath.JsonPath.read(thirdRerouteRecommendation, "$.id");
+    String dJourneyBody =
+        mockMvc
+            .perform(
+                post("/api/v1/transfer-journeys/{journeyId}/request-attempts", rerouteJourneyId)
+                    .header("Authorization", bearer(token(originator)))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", originOrganizationId)
+                    .header("X-AyuVahak-Facility-Id", originFacilityId)
+                    .header("Idempotency-Key", prefix + "-reroute-d-request")
+                    .contentType("application/json")
+                    .content(
+                        "{\"expectedVersion\":"
+                            + journeyVersion
+                            + ",\"referralRevision\":1,\"recommendationId\":\""
+                            + thirdRerouteRecommendationId
+                            + "\",\"candidateFacilityId\":\""
+                            + facilityD
+                            + "\"}"))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.attemptNumber").value(3))
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+    String dAttemptId = com.jayway.jsonpath.JsonPath.read(dJourneyBody, "$.requestAttemptId");
+    String dClinicalActor = prefix + "-d-clinical-authority";
+    String dReadinessActor = prefix + "-d-readiness-authority";
+    String dAcceptanceActor = prefix + "-d-acceptance-authority";
+    grantFacility(
+        dClinicalActor, "ClinicalSuitabilityAuthority", destinationOrganizationId, facilityD);
+    grantFacility(
+        dReadinessActor, "OperationalReadinessAuthority", destinationOrganizationId, facilityD);
+    grantFacility(dAcceptanceActor, "AcceptanceAuthority", destinationOrganizationId, facilityD);
+    mockMvc
+        .perform(
+            post(
+                    "/api/v1/transfer-request-attempts/{attemptId}/clinical-suitability-assessments",
+                    dAttemptId)
+                .header("Authorization", bearer(token(dClinicalActor)))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", destinationOrganizationId)
+                .header("X-AyuVahak-Facility-Id", facilityD)
+                .header("Idempotency-Key", prefix + "-d-clinical")
+                .contentType("application/json")
+                .content(
+                    "{\"expectedVersion\":1,\"outcome\":\"SUPPORTS\","
+                        + "\"reasonCode\":\"SYNTHETIC_REVIEW_COMPLETE\",\"occurredAt\":\""
+                        + Instant.now()
+                        + "\"}"))
+        .andExpect(status().isCreated());
+    mockMvc
+        .perform(
+            post(
+                    "/api/v1/transfer-request-attempts/{attemptId}/operational-readiness-assessments",
+                    dAttemptId)
+                .header("Authorization", bearer(token(dReadinessActor)))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", destinationOrganizationId)
+                .header("X-AyuVahak-Facility-Id", facilityD)
+                .header("Idempotency-Key", prefix + "-d-readiness")
+                .contentType("application/json")
+                .content(
+                    "{\"expectedVersion\":2,\"outcome\":\"SUPPORTS\","
+                        + "\"reasonCode\":\"SYNTHETIC_READINESS_CONFIRMED\",\"occurredAt\":\""
+                        + Instant.now()
+                        + "\"}"))
+        .andExpect(status().isCreated());
+    String dAcceptance =
+        mockMvc
+            .perform(
+                post("/api/v1/transfer-request-attempts/{attemptId}/acceptance", dAttemptId)
+                    .header("Authorization", bearer(token(dAcceptanceActor)))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", destinationOrganizationId)
+                    .header("X-AyuVahak-Facility-Id", facilityD)
+                    .header("Idempotency-Key", prefix + "-d-acceptance")
+                    .contentType("application/json")
+                    .content("{\"expectedVersion\":3,\"occurredAt\":\"" + Instant.now() + "\"}"))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.status").value("READY"))
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+    String dTransferId = com.jayway.jsonpath.JsonPath.read(dAcceptance, "$.transferId");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT reservation_status FROM capacity.coordination_reservation WHERE transfer_id = ?",
+                String.class,
+                UUID.fromString(dTransferId)))
+        .isEqualTo("ACTIVE");
+
+    String dProgressActor = prefix + "-d-progress-authority";
+    String dReceiver = prefix + "-d-receiver-authority";
+    grantFacility(
+        dProgressActor, "TransferProgressAuthority", destinationOrganizationId, facilityD);
+    grantFacility(dReceiver, "TransferProgressAuthority", destinationOrganizationId, facilityD);
+    grantFacility(dReceiver, "TransferHandoverAuthority", destinationOrganizationId, facilityD);
+    grantFacility(dReceiver, "TransferCompletionAuthority", destinationOrganizationId, facilityD);
+    recordTransferProgress(
+        dTransferId,
+        "departure",
+        dProgressActor,
+        destinationOrganizationId,
+        facilityD,
+        prefix + "-d-departure",
+        2,
+        "\"sourceReference\":\"synthetic-reroute-departure\"");
+    recordTransferProgress(
+        dTransferId,
+        "arrival",
+        dProgressActor,
+        destinationOrganizationId,
+        facilityD,
+        prefix + "-d-arrival",
+        3,
+        "");
+    recordTransferProgress(
+        dTransferId,
+        "handover",
+        dReceiver,
+        destinationOrganizationId,
+        facilityD,
+        prefix + "-d-handover",
+        4,
+        "");
+    assertThat(
+            recordTransferProgress(
+                    dTransferId,
+                    "completion",
+                    dReceiver,
+                    destinationOrganizationId,
+                    facilityD,
+                    prefix + "-d-completion",
+                    5,
+                    "\"reasonCode\":\"SYNTHETIC_REROUTED_COORDINATION_COMPLETE\"")
+                .contains("\"status\":\"COMPLETED\""))
+        .isTrue();
+    for (int attempt = 0; attempt < 5; attempt++) {
+      outboxDispatcher.dispatchAvailable(Instant.now().plusSeconds(1));
+    }
+    assertThat(
+            jdbc.queryForList(
+                "SELECT attempt_number, request_status FROM transfer.request_attempt "
+                    + "WHERE journey_id = ? ORDER BY attempt_number",
+                UUID.fromString(rerouteJourneyId)))
+        .extracting(row -> row.get("request_status"))
+        .containsExactly("REJECTED", "ACCEPTED", "ACCEPTED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
+                String.class,
+                UUID.fromString(cTransferId)))
+        .isEqualTo("CANCELLED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
+                String.class,
+                UUID.fromString(dTransferId)))
+        .isEqualTo("COMPLETED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT outcome FROM referral.resolution WHERE referral_id = ?",
+                String.class,
+                UUID.fromString(rerouteReferralId)))
+        .isEqualTo("FULFILLED");
+    assertThat(secondRerouteRecommendation).doesNotContain(reroutePatientReference);
+    assertThat(thirdRerouteRecommendation).doesNotContain(reroutePatientReference);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM platform_eventing.internal_event WHERE "
+                    + "event_type = 'transfer.completed.v1' AND envelope::text LIKE ?",
+                Integer.class,
+                "%" + reroutePatientReference + "%"))
+        .isZero();
+  }
+
+  private String createCareCapability(String code, String key, String actor) throws Exception {
+    MvcResult response =
+        mockMvc
+            .perform(
+                post("/api/v1/directory/capabilities")
+                    .header("Authorization", bearer(token(actor)))
+                    .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                    .header("Idempotency-Key", key)
+                    .contentType("application/json")
+                    .content(
+                        "{\"code\":\""
+                            + code
+                            + "\",\"displayName\":\"Synthetic "
+                            + code
+                            + "\",\"parentCapabilityId\":null,\"source\":{"
+                            + "\"issuer\":\"urn:synthetic:directory\","
+                            + "\"resourceType\":\"CareCapability\",\"reference\":\""
+                            + key
+                            + "\"},\"provenance\":{\"method\":\"MANUAL_REVIEW\","
+                            + "\"observedAt\":\""
+                            + Instant.now()
+                            + "\",\"reasonCode\":\"SYNTHETIC_SETUP\"}}"))
+            .andExpect(status().isCreated())
+            .andReturn();
+    return com.jayway.jsonpath.JsonPath.read(response.getResponse().getContentAsString(), "$.id");
+  }
+
+  private String createCapabilityAssertion(
+      String facilityId, String capabilityCode, String key, String actor) throws Exception {
+    MvcResult response =
+        mockMvc
+            .perform(
+                post("/api/v1/directory/facilities/{facilityId}/capability-assertions", facilityId)
+                    .header("Authorization", bearer(token(actor)))
+                    .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                    .header("Idempotency-Key", key)
+                    .contentType("application/json")
+                    .content(
+                        "{\"capabilityCode\":\""
+                            + capabilityCode
+                            + "\",\"healthcareServiceId\":null,"
+                            + "\"verificationStatus\":\"VERIFIED\",\"source\":{"
+                            + "\"issuer\":\"urn:synthetic:directory\","
+                            + "\"resourceType\":\"FacilityCapabilityAssertion\","
+                            + "\"reference\":\""
+                            + key
+                            + "\"},\"provenance\":{\"method\":\"MANUAL_REVIEW\","
+                            + "\"observedAt\":\""
+                            + Instant.now()
+                            + "\",\"reasonCode\":\"SYNTHETIC_SETUP\"},"
+                            + "\"effectiveFrom\":\"2026-01-01T00:00:00Z\","
+                            + "\"effectiveUntil\":null}"))
+            .andExpect(status().isCreated())
+            .andReturn();
+    return com.jayway.jsonpath.JsonPath.read(response.getResponse().getContentAsString(), "$.id");
+  }
+
+  private void defineCapacityDimension(
+      String dimension, String key, String actor, boolean reservable, String unit)
+      throws Exception {
+    mockMvc
+        .perform(
+            post("/api/v1/capacity/policies/dimensions")
+                .header("Authorization", bearer(token(actor)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", key)
+                .contentType("application/json")
+                .content(
+                    "{\"code\":\""
+                        + dimension
+                        + "\",\"expectedVersion\":0,\"displayName\":\"Synthetic "
+                        + dimension
+                        + "\",\"meaning\":\"Synthetic coordination evidence\","
+                        + "\"valueKind\":\"QUANTITY\",\"unit\":\""
+                        + unit
+                        + "\",\"minimumValue\":0,\"maximumValue\":500,"
+                        + "\"allowedStates\":[],\"usedForReadiness\":true,"
+                        + "\"reservable\":"
+                        + reservable
+                        + ",\"reasonCode\":\"SYNTHETIC_SETUP\"}"))
+        .andExpect(status().isCreated());
+  }
+
+  private void configureCapacityPolicy(String dimension, String key, String actor, int maximumAge)
+      throws Exception {
+    mockMvc
+        .perform(
+            post("/api/v1/capacity/policies/dimensions/{dimension}/policy", dimension)
+                .header("Authorization", bearer(token(actor)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", key)
+                .contentType("application/json")
+                .content(
+                    "{\"expectedVersion\":0,\"dimensionVersion\":1,\"sources\":["
+                        + "{\"sourceCode\":\"manual\",\"priority\":0,"
+                        + "\"fallbackWhenHigherPriorityAbsent\":false,"
+                        + "\"fallbackWhenHigherPriorityStale\":false}],"
+                        + "\"maximumObservationAgeSeconds\":"
+                        + maximumAge
+                        + ",\"defaultValiditySeconds\":300,"
+                        + "\"futureSkewToleranceSeconds\":30,"
+                        + "\"minimumPassingQuantity\":1,\"passingStates\":[],"
+                        + "\"reasonCode\":\"SYNTHETIC_SETUP\"}"))
+        .andExpect(status().isCreated());
+  }
+
+  private void recordCapacityObservation(
+      String actor,
+      String organizationId,
+      String facilityId,
+      String dimension,
+      String key,
+      int quantity,
+      Instant observedAt)
+      throws Exception {
+    mockMvc
+        .perform(
+            post("/api/v1/capacity/observations")
+                .header("Authorization", bearer(token(actor)))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", organizationId)
+                .header("X-AyuVahak-Facility-Id", facilityId)
+                .header("Idempotency-Key", key)
+                .contentType("application/json")
+                .content(
+                    "{\"dimensionCode\":\""
+                        + dimension
+                        + "\",\"sourceCode\":\"manual\","
+                        + "\"sourceIssuer\":\"urn:synthetic:capacity\","
+                        + "\"sourceObservationId\":\""
+                        + key
+                        + "\",\"observationKind\":\"VALUE\","
+                        + "\"valueKind\":\"QUANTITY\",\"quantity\":"
+                        + quantity
+                        + ",\"state\":null,\"unit\":\""
+                        + (dimension.equals("SYN_TRANSFER_SLOT") ? "slot" : "unit")
+                        + "\",\"observedAt\":\""
+                        + observedAt
+                        + "\",\"validUntil\":null,\"reportingMethod\":\"MANUAL_ENTRY\","
+                        + "\"reasonCode\":\"CAPACITY_REPORT\"}"))
+        .andExpect(status().isCreated());
+  }
+
+  private String createVolumeTwoReferral(
+      String actor,
+      String organizationId,
+      String facilityId,
+      String destinationOrganizationId,
+      List<String> requiredCapabilities,
+      String patientReference,
+      String key)
+      throws Exception {
+    Instant requestedStart = Instant.now().plus(Duration.ofHours(1));
+    Instant requestedEnd = requestedStart.plus(Duration.ofHours(2));
+    String capabilities =
+        requiredCapabilities.stream()
+            .map(code -> "\"" + code + "\"")
+            .collect(java.util.stream.Collectors.joining(","));
+    MvcResult response =
+        mockMvc
+            .perform(
+                post("/api/v1/referrals")
+                    .header("Authorization", bearer(token(actor)))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", organizationId)
+                    .header("X-AyuVahak-Facility-Id", facilityId)
+                    .header("Idempotency-Key", key)
+                    .contentType("application/json")
+                    .content(
+                        "{\"patientReference\":{\"issuer\":\"urn:synthetic:source-ehr\","
+                            + "\"resourceType\":\"Patient\",\"identifier\":\""
+                            + patientReference
+                            + "\",\"encounterReference\":null},\"careRequirement\":{"
+                            + "\"requiredCareCapabilityCodes\":["
+                            + capabilities
+                            + "],\"requestedStart\":\""
+                            + requestedStart
+                            + "\",\"requestedEnd\":\""
+                            + requestedEnd
+                            + "\",\"permittedGeographyCodes\":[],"
+                            + "\"selectedDestinationOrganizationId\":\""
+                            + destinationOrganizationId
+                            + "\",\"priorityCode\":\"EMERGENCY\"}}"))
+            .andExpect(status().isCreated())
+            .andReturn();
+    return com.jayway.jsonpath.JsonPath.read(response.getResponse().getContentAsString(), "$.id");
+  }
+
+  private static MatchingRecommendationPolicy volumeTwoPolicy(
+      String organizationId, Map<String, Set<String>> mappings) {
+    IssuerId issuer = new IssuerId("urn:ayuvahak:matching");
+    String code = "SYNTHETIC_VOLUME_TWO_E2E";
+    CapabilityOperationalMapping mapping = new CapabilityOperationalMapping(code, 1, mappings);
+    ExternalReference organization =
+        new ExternalReference(new IssuerId(DIRECTORY_ISSUER), "Organization", organizationId);
+    return new MatchingRecommendationPolicy(
+        new PolicyVersion(new ExternalReference(issuer, "MatchingPolicy", code), 1),
+        new PolicyVersion(
+            new ExternalReference(issuer, "CapabilityOperationalRequirementPolicy", code), 1),
+        mapping,
+        Set.of(organization),
+        new Policy(MetricKind.STRAIGHT_LINE_DISTANCE, true, Map.of()),
+        Duration.ofHours(1),
+        100,
+        true);
+  }
+
+  private static void assertCandidateOutcome(String body, String facilityId, String expected) {
+    List<String> outcomes =
+        com.jayway.jsonpath.JsonPath.read(
+            body, "$.candidates[?(@.facility.identifier == '" + facilityId + "')].status");
+    assertThat(outcomes).containsExactly(expected);
+  }
+
+  private static int readCandidateRank(String body, String facilityId) {
+    List<Integer> ranks =
+        com.jayway.jsonpath.JsonPath.read(
+            body, "$.candidates[?(@.facility.identifier == '" + facilityId + "')].rank");
+    assertThat(ranks).hasSize(1);
+    return ranks.getFirst();
+  }
+
+  private static void assertCandidateReason(String body, String facilityId, String expectedReason) {
+    List<?> reasons = (List<?>) candidateRepresentation(body, facilityId).get("reasons");
+    List<String> codes =
+        reasons.stream().map(reason -> (String) ((Map<?, ?>) reason).get("code")).toList();
+    assertThat(codes).contains(expectedReason);
+  }
+
+  private static List<String> readCapacityOutcomeCodes(String body, String facilityId) {
+    List<?> evidence = (List<?>) candidateRepresentation(body, facilityId).get("evidence");
+    return evidence.stream()
+        .map(Map.class::cast)
+        .filter(fact -> "CAPACITY_READINESS".equals(fact.get("factCode")))
+        .map(fact -> (String) fact.get("outcomeCode"))
+        .toList();
+  }
+
+  @SuppressWarnings("unchecked")
+  private static Map<String, Object> candidateRepresentation(String body, String facilityId) {
+    List<?> candidates = com.jayway.jsonpath.JsonPath.read(body, "$.candidates");
+    for (Object value : candidates) {
+      if (value instanceof Map<?, ?> candidate
+          && candidate.get("facility") instanceof Map<?, ?> facility
+          && facilityId.equals(facility.get("identifier"))) {
+        return (Map<String, Object>) candidate;
+      }
+    }
+    throw new AssertionError("Recommendation omitted candidate Facility " + facilityId);
+  }
+
+  private String recordTransferProgress(
+      String transferId,
+      String command,
+      String actor,
+      String organizationId,
+      String facilityId,
+      String key,
+      long expectedVersion,
+      String extraFields)
+      throws Exception {
+    String additions = extraFields == null || extraFields.isBlank() ? "" : "," + extraFields;
+    MvcResult response =
+        mockMvc
+            .perform(
+                post("/api/v1/transfers/{transferId}/{command}", transferId, command)
+                    .header("Authorization", bearer(token(actor)))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", organizationId)
+                    .header("X-AyuVahak-Facility-Id", facilityId)
+                    .header("Idempotency-Key", key)
+                    .contentType("application/json")
+                    .content(
+                        "{\"expectedVersion\":"
+                            + expectedVersion
+                            + ",\"occurredAt\":\""
+                            + Instant.now()
+                            + "\""
+                            + additions
+                            + "}"))
+            .andExpect(status().isCreated())
+            .andReturn();
+    return response.getResponse().getContentAsString();
+  }
+
   private static MatchingRecommendationPolicy activePolicy(String organizationId) {
     return activePolicy(organizationId, 1);
   }
@@ -1744,11 +2995,15 @@ class DirectoryCapacityReferralScenarioIT {
   }
 
   private String createOrganization(String key) throws Exception {
+    return createOrganization(key, CURATOR);
+  }
+
+  private String createOrganization(String key, String actor) throws Exception {
     MvcResult result =
         mockMvc
             .perform(
                 post("/api/v1/directory/organizations")
-                    .header("Authorization", bearer(token(CURATOR)))
+                    .header("Authorization", bearer(token(actor)))
                     .header("X-AyuVahak-Execution-Scope", "PLATFORM")
                     .header("Idempotency-Key", key)
                     .contentType("application/json")
@@ -1766,11 +3021,16 @@ class DirectoryCapacityReferralScenarioIT {
   }
 
   private String createFacility(String key, String organizationId, String name) throws Exception {
+    return createFacility(key, organizationId, name, CURATOR);
+  }
+
+  private String createFacility(String key, String organizationId, String name, String actor)
+      throws Exception {
     MvcResult result =
         mockMvc
             .perform(
                 post("/api/v1/directory/facilities")
-                    .header("Authorization", bearer(token(CURATOR)))
+                    .header("Authorization", bearer(token(actor)))
                     .header("X-AyuVahak-Execution-Scope", "PLATFORM")
                     .header("Idempotency-Key", key)
                     .contentType("application/json")
@@ -1801,10 +3061,16 @@ class DirectoryCapacityReferralScenarioIT {
   private void createLocation(
       String facilityId, String idempotencyKey, double longitude, double latitude)
       throws Exception {
+    createLocation(facilityId, idempotencyKey, longitude, latitude, CURATOR);
+  }
+
+  private void createLocation(
+      String facilityId, String idempotencyKey, double longitude, double latitude, String actor)
+      throws Exception {
     mockMvc
         .perform(
             post("/api/v1/directory/locations")
-                .header("Authorization", bearer(token(CURATOR)))
+                .header("Authorization", bearer(token(actor)))
                 .header("X-AyuVahak-Execution-Scope", "PLATFORM")
                 .header("Idempotency-Key", idempotencyKey)
                 .contentType("application/json")

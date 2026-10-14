@@ -201,6 +201,7 @@ public final class TransferOwnerEventHandler implements InternalEventHandler {
       Instant occurredAt,
       Instant recordedAt) {
     InternalId referralId = InternalId.parse(text(payload, "referralReference"));
+    transfers.lockReferralCoordination(referralId);
     Optional<TransferJourney> found = transfers.findJourneyByReferral(referralId);
     if (found.isEmpty()) {
       ExecutionContext context = contextFromEnvelope(envelope, event.eventId());

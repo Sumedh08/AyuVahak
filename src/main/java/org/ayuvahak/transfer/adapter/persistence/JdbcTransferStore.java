@@ -90,6 +90,18 @@ public class JdbcTransferStore implements TransferStore {
   }
 
   @Override
+  public void lockReferralCoordination(InternalId referralId) {
+    jdbc.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended(?, 0))",
+        result -> {
+          while (result.next()) {
+            // Consume the transaction-scoped lock result.
+          }
+        },
+        "transfer/referral/" + referralId);
+  }
+
+  @Override
   public void insertFirstRequest(TransferJourney journey, TransferRequestAttempt attempt) {
     jdbc.update(
         "INSERT INTO transfer.journey (journey_id, referral_id, origin_organization_id, "

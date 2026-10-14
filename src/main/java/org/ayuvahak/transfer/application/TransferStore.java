@@ -26,6 +26,9 @@ public interface TransferStore {
 
   void configureBoundedReceiptWait();
 
+  /** Serializes Transfer request creation and Referral-cancellation reconciliation per Referral. */
+  void lockReferralCoordination(InternalId referralId);
+
   void insertFirstRequest(TransferJourney journey, TransferRequestAttempt attempt);
 
   void completeReceipt(

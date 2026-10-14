@@ -19,6 +19,7 @@ import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.ApplicationContext;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
@@ -41,6 +42,7 @@ import org.testcontainers.utility.DockerImageName;
 @AutoConfigureMockMvc
 @ExtendWith(OutputCaptureExtension.class)
 @Testcontainers
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class PostgresPostgisFoundationIT {
 
   private static final String LOCAL_TEST_PASSWORD = "local-test-only";
