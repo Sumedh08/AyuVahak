@@ -238,6 +238,26 @@ public final class TransferProgressController {
         TransferProgressFact.Kind.COMPLETION);
   }
 
+  @PostMapping("/capacity-reconfirmation")
+  public ResponseEntity<ProgressRepresentation> capacityReconfirmation(
+      @PathVariable String transferId,
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
+      @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationId,
+      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityId,
+      @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+      @RequestBody JsonNode body) {
+    return record(
+        transferId,
+        actor,
+        scope,
+        organizationId,
+        facilityId,
+        idempotencyKey,
+        body,
+        TransferProgressFact.Kind.CAPACITY_RECONFIRMATION);
+  }
+
   @GetMapping("/progress")
   public TransferHistoryRepresentation progress(
       @PathVariable String transferId,

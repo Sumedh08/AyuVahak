@@ -65,6 +65,8 @@ ayuvahak:
     owner-read-client-id: ${AYUVAHAK_MATCHING_OWNER_READ_CLIENT_ID:ayuvahak-matching-owner-read}
     policy:
       active: ${AYUVAHAK_MATCHING_POLICY_ACTIVE:false}
+  referral:
+    transfer-amendment-check-client-id: ${AYUVAHAK_REFERRAL_TRANSFER_AMENDMENT_CHECK_CLIENT_ID:ayuvahak-transfer-amendment-guard}
   transfer:
     expiry-worker-client-id: ${AYUVAHAK_TRANSFER_EXPIRY_CLIENT_ID:ayuvahak-transfer-expiry-worker}
     expiry-polling-enabled: ${AYUVAHAK_TRANSFER_EXPIRY_POLLING_ENABLED:true}

@@ -58,6 +58,7 @@ import org.ayuvahak.platform.event.EventEnvelope;
 import org.ayuvahak.platform.event.EventEnvelopeJsonCodec;
 import org.ayuvahak.platform.event.EventType;
 import org.ayuvahak.platform.eventing.application.InternalEvent;
+import org.ayuvahak.platform.eventing.application.OutboxDispatcher;
 import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
 import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
 import org.ayuvahak.transfer.adapter.configuration.TransferProperties;
@@ -149,6 +150,7 @@ class TransferJourneyCommandsApiIT {
   @Autowired private StubCapacityReservationPort capacityPort;
   @Autowired private TransferOwnerEventHandler ownerEventHandler;
   @Autowired private EventEnvelopeJsonCodec eventCodec;
+  @Autowired private OutboxDispatcher outboxDispatcher;
   @Autowired private ObjectMapper objectMapper;
 
   @DynamicPropertySource
@@ -2176,6 +2178,25 @@ class TransferJourneyCommandsApiIT {
                 String.class,
                 transferUuid))
         .isEqualTo("COORDINATION_EXCEPTION");
+
+    grantReceivingAuthority(scope, "synthetic-receiver", "AcceptanceAuthority");
+    long atRiskVersion =
+        jdbc.queryForObject(
+            "SELECT version FROM transfer.transfer_record WHERE transfer_id = ?",
+            Long.class,
+            transferUuid);
+    progressCommand(
+            scope,
+            transferId,
+            "capacity-reconfirmation",
+            "synthetic-receiver",
+            "capacity-reconfirmation-before-recovery",
+            "{\"expectedVersion\":"
+                + atRiskVersion
+                + ",\"occurredAt\":\""
+                + Instant.now()
+                + "\",\"reasonCode\":\"RECEIVING_AUTHORITY_RECONFIRMED\"}")
+        .andExpect(status().isConflict());
     assertThat(
             jdbc.queryForObject(
                 "SELECT outcome FROM transfer.capacity_reservation_request WHERE transfer_id = ?",
@@ -2720,6 +2741,95 @@ class TransferJourneyCommandsApiIT {
     assertThat(event.get("envelope").toString())
         .contains("evidenceVersion", "CAPACITY_EVIDENCE_NO_LONGER_SUPPORTS_HOLD");
 
+    grantOwnerEventConsumer(
+        scope, scope.destinationFacilityId(), "TransferReservationReconciliation");
+    outboxDispatcher.dispatchAvailable(Instant.now().plusSeconds(1));
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
+                String.class,
+                transferUuid))
+        .isEqualTo("COORDINATION_EXCEPTION");
+
+    jdbc.update(
+        "UPDATE capacity.coordination_reservation SET lifecycle_checked_at = "
+            + "CURRENT_TIMESTAMP - INTERVAL '1 hour' WHERE reservation_id = ?",
+        reservationId);
+    recordCoordinationSlotObservation(scope, 4, "capacity-restored-after-reservation");
+    assertThat(capacityReservations.reconcileLifecycle()).isGreaterThan(0);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT reservation_status FROM capacity.coordination_reservation "
+                    + "WHERE reservation_id = ?",
+                String.class,
+                reservationId))
+        .isEqualTo("ACTIVE");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT aggregate_sequence FROM platform_eventing.internal_event "
+                    + "WHERE event_type = 'capacity.reservation-recovered.v1' "
+                    + "AND aggregate_ref = ?",
+                Long.class,
+                "capacity-reservation/" + reservationId))
+        .isEqualTo(3L);
+    outboxDispatcher.dispatchAvailable(Instant.now().plusSeconds(1));
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
+                String.class,
+                transferUuid))
+        .isEqualTo("COORDINATION_EXCEPTION");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT outcome FROM transfer.capacity_reservation_request WHERE transfer_id = ?",
+                String.class,
+                transferUuid))
+        .isEqualTo("RESERVED");
+
+    long exceptionVersion =
+        jdbc.queryForObject(
+            "SELECT version FROM transfer.transfer_record WHERE transfer_id = ?",
+            Long.class,
+            transferUuid);
+    grantOriginAuthority("synthetic-origin-receiver", "AcceptanceAuthority", scope);
+    mockMvc
+        .perform(
+            post("/api/v1/transfers/{transferId}/capacity-reconfirmation", transferId)
+                .header("Authorization", "Bearer " + token("synthetic-origin-receiver"))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                .header("X-AyuVahak-Facility-Id", scope.originFacilityId())
+                .header("Idempotency-Key", "origin-cannot-reconfirm-capacity")
+                .contentType("application/json")
+                .content(
+                    "{\"expectedVersion\":"
+                        + exceptionVersion
+                        + ",\"occurredAt\":\""
+                        + Instant.now()
+                        + "\",\"reasonCode\":\"RECEIVING_AUTHORITY_RECONFIRMED\"}"))
+        .andExpect(status().isForbidden());
+    progressCommand(
+            scope,
+            transferId,
+            "capacity-reconfirmation",
+            "synthetic-receiver",
+            "capacity-reconfirmation-after-recovery",
+            "{\"expectedVersion\":"
+                + exceptionVersion
+                + ",\"occurredAt\":\""
+                + Instant.now()
+                + "\",\"reasonCode\":\"RECEIVING_AUTHORITY_RECONFIRMED\"}")
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.kind").value("CAPACITY_RECONFIRMATION"))
+        .andExpect(jsonPath("$.status").value("READY"));
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
+                String.class,
+                transferUuid))
+        .isEqualTo("READY");
+
     jdbc.update(
         "UPDATE capacity.coordination_reservation SET interval_start = CURRENT_TIMESTAMP "
             + "- INTERVAL '2 hours', interval_end = CURRENT_TIMESTAMP - INTERVAL '1 hour', "
@@ -2740,7 +2850,7 @@ class TransferJourneyCommandsApiIT {
                     + "AND aggregate_ref = ?",
                 Long.class,
                 "capacity-reservation/" + reservationId))
-        .isEqualTo(3L);
+        .isEqualTo(4L);
   }
 
   @Test

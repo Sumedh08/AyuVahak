@@ -65,6 +65,7 @@ public class ReferralDraftCommands {
 
   private final ReferralDraftStore drafts;
   private final DirectoryReferralReferenceLookup directoryReferences;
+  private final TransferAmendmentStatusPort transferAmendmentStatus;
   private final ObjectProvider<AuthorizationService> authorization;
   private final ObjectProvider<AuditWriter> auditWriter;
   private final TransactionTemplate transaction;
@@ -75,6 +76,7 @@ public class ReferralDraftCommands {
   public ReferralDraftCommands(
       @Lazy ReferralDraftStore drafts,
       DirectoryReferralReferenceLookup directoryReferences,
+      TransferAmendmentStatusPort transferAmendmentStatus,
       ObjectProvider<AuthorizationService> authorization,
       ObjectProvider<AuditWriter> auditWriter,
       @Lazy PlatformTransactionManager transactionManager,
@@ -84,6 +86,8 @@ public class ReferralDraftCommands {
     this.drafts = Objects.requireNonNull(drafts, "Referral draft store");
     this.directoryReferences =
         Objects.requireNonNull(directoryReferences, "Directory reference contract");
+    this.transferAmendmentStatus =
+        Objects.requireNonNull(transferAmendmentStatus, "Transfer amendment-status contract");
     this.authorization = Objects.requireNonNull(authorization, "authorization");
     this.auditWriter = Objects.requireNonNull(auditWriter, "audit writer");
     this.transaction = new TransactionTemplate(Objects.requireNonNull(transactionManager));
@@ -302,6 +306,19 @@ public class ReferralDraftCommands {
           }
           if (current.version() != expectedVersion) {
             throw versionConflict("The Referral changed; reload it before amending.");
+          }
+          try {
+            if (transferAmendmentStatus.hasActiveCoordination(context, referralId)) {
+              throw problem(
+                  HttpStatus.CONFLICT,
+                  PlatformErrorCode.REFERRAL_AMENDMENT_BLOCKED,
+                  "The submitted Referral cannot be amended while Transfer coordination is active.");
+            }
+          } catch (TransferAmendmentStatusUnavailableException unavailable) {
+            throw problem(
+                HttpStatus.SERVICE_UNAVAILABLE,
+                PlatformErrorCode.REFERRAL_UNAVAILABLE,
+                "Transfer coordination status could not be verified; the Referral was not amended.");
           }
           requireValidDirectoryReferences(context.scope(), careRequirement);
           SubmittedReferralRevision previous =

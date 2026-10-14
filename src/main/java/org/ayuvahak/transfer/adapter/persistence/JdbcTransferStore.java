@@ -910,12 +910,9 @@ public class JdbcTransferStore implements TransferStore {
       throw new IllegalArgumentException("Capacity reservation sequence cannot be negative");
     }
     return jdbc.update(
-            "UPDATE transfer.capacity_reservation_request SET outcome = ?, "
-                + "reservation_id = CASE WHEN ? IN ('RELEASED', 'EXPIRED', 'AT_RISK') "
-                + "THEN reservation_id ELSE NULL END, reason_code = ?, "
+            "UPDATE transfer.capacity_reservation_request SET outcome = ?, reason_code = ?, "
                 + "last_capacity_event_sequence = GREATEST(last_capacity_event_sequence, ?) "
                 + "WHERE transfer_id = ? AND last_capacity_event_sequence <= ?",
-            outcome.name(),
             outcome.name(),
             reasonCode.orElse(null),
             sequence,

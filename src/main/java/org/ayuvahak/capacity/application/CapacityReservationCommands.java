@@ -194,6 +194,34 @@ public final class CapacityReservationCommands {
                     .orElse(false);
               }
               if (current.status() != CapacityReservationStore.LifecycleStatus.ACTIVE) {
+                if (current.status() == CapacityReservationStore.LifecycleStatus.AT_RISK) {
+                  if (isAtRisk(current, now)) {
+                    reservations.recordLifecycleCheck(current.reservationId(), now);
+                    return true;
+                  }
+                  return reservations
+                      .changeLifecycleStatus(
+                          current.reservationId(),
+                          CapacityReservationStore.LifecycleStatus.AT_RISK,
+                          CapacityReservationStore.LifecycleStatus.ACTIVE,
+                          now)
+                      .map(
+                          recovered -> {
+                            auditRelease(
+                                context,
+                                recovered.transferId(),
+                                "CAPACITY_RESERVATION_RECOVER",
+                                "CAPACITY_EVIDENCE_SUPPORTS_HOLD",
+                                true);
+                            recordLifecycleEvent(
+                                context,
+                                recovered,
+                                EventType.parse("capacity.reservation-recovered.v1"),
+                                now);
+                            return true;
+                          })
+                      .orElse(false);
+                }
                 return false;
               }
               if (isAtRisk(current, now)) {
@@ -281,7 +309,11 @@ public final class CapacityReservationCommands {
               .sorted()
               .collect(java.util.stream.Collectors.joining(","));
       payload.put("evidenceVersion", evidenceVersion.isBlank() ? "UNKNOWN" : evidenceVersion);
-      payload.put("reasonCode", "CAPACITY_EVIDENCE_NO_LONGER_SUPPORTS_HOLD");
+      payload.put(
+          "reasonCode",
+          eventType.equals(EventType.parse("capacity.reservation-recovered.v1"))
+              ? "CAPACITY_EVIDENCE_SUPPORTS_HOLD"
+              : "CAPACITY_EVIDENCE_NO_LONGER_SUPPORTS_HOLD");
     }
     outboxWriter
         .getObject()

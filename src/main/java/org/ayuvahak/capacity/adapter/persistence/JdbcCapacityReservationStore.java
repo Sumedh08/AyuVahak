@@ -396,7 +396,8 @@ public class JdbcCapacityReservationStore implements CapacityReservationStore {
             + "quantity, interval_start, interval_end, expires_at, reservation_status, "
             + "lifecycle_sequence FROM capacity.coordination_reservation "
             + "WHERE reservation_status IN ('ACTIVE', 'AT_RISK') "
-            + "AND (expires_at <= ? OR (reservation_status = 'ACTIVE' AND lifecycle_checked_at < ?)) "
+            + "AND (expires_at <= ? OR (reservation_status IN ('ACTIVE', 'AT_RISK') "
+            + "AND lifecycle_checked_at < ?)) "
             + "ORDER BY lifecycle_checked_at, expires_at, reservation_id LIMIT ?",
         JdbcCapacityReservationStore::lifecycleCandidate,
         Timestamp.from(at),
@@ -446,7 +447,7 @@ public class JdbcCapacityReservationStore implements CapacityReservationStore {
   public void recordLifecycleCheck(InternalId reservationId, Instant checkedAt) {
     jdbc.update(
         "UPDATE capacity.coordination_reservation SET lifecycle_checked_at = ? "
-            + "WHERE reservation_id = ? AND reservation_status = 'ACTIVE'",
+            + "WHERE reservation_id = ? AND reservation_status IN ('ACTIVE', 'AT_RISK')",
         Timestamp.from(checkedAt),
         reservationId.value());
   }

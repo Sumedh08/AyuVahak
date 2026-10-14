@@ -31,6 +31,7 @@ import org.ayuvahak.platform.executioncontext.ExecutionContext;
 import org.ayuvahak.platform.executioncontext.ExecutionScope;
 import org.ayuvahak.platform.idempotency.CommandReceiptKey;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
+import org.ayuvahak.transfer.domain.CapacityReservationIntent;
 import org.ayuvahak.transfer.domain.CoordinatedTransfer;
 import org.ayuvahak.transfer.domain.TransferAuthorities;
 import org.ayuvahak.transfer.domain.TransferJourney;
@@ -130,6 +131,23 @@ public final class TransferProgressCommands {
         throw stateConflict();
       }
     }
+    if (kind == TransferProgressFact.Kind.CAPACITY_RECONFIRMATION) {
+      TransferProgressTarget observedTarget =
+          store.findProgressTarget(transferId).orElseThrow(TransferProgressCommands::notFound);
+      requireParticipant(context, observedTarget, transferId, kind);
+      if (expectedVersion < 1
+          || observedTarget.transfer().version() != expectedVersion
+          || observedTarget.transfer().status() != CoordinatedTransfer.Status.COORDINATION_EXCEPTION
+          || !hasReservedIntent(transferId)) {
+        throw stateConflict();
+      }
+      if (!reservationRecovery
+          .getObject()
+          .hasCurrentActiveReservation(
+              transferId, context.correlationId(), context.causationId())) {
+        throw stateConflict();
+      }
+    }
 
     Optional<String> normalizedReason = reasonCode;
     Optional<String> normalizedSourceReference = sourceReference;
@@ -150,6 +168,10 @@ public final class TransferProgressCommands {
             throw stateConflict();
           }
           CoordinatedTransfer.Status current = target.transfer().status();
+          if (kind == TransferProgressFact.Kind.CAPACITY_RECONFIRMATION
+              && !hasReservedIntent(transferId)) {
+            throw stateConflict();
+          }
           Transition transition = transition(kind, current);
           TransferProgressFact fact =
               new TransferProgressFact(
@@ -414,6 +436,12 @@ public final class TransferProgressCommands {
         }
         yield new Transition(CoordinatedTransfer.Status.COORDINATION_EXCEPTION, null);
       }
+      case CAPACITY_RECONFIRMATION -> {
+        if (current != CoordinatedTransfer.Status.COORDINATION_EXCEPTION) {
+          throw stateConflict();
+        }
+        yield new Transition(CoordinatedTransfer.Status.READY, null);
+      }
     };
   }
 
@@ -468,7 +496,7 @@ public final class TransferProgressCommands {
             && target.originFacility().filter(facility::equals).isPresent();
     boolean permitted =
         switch (kind) {
-          case HANDOVER, COMPLETION -> receiving;
+          case HANDOVER, COMPLETION, CAPACITY_RECONFIRMATION -> receiving;
           default -> receiving || origin;
         };
     if (!permitted) {
@@ -514,6 +542,7 @@ public final class TransferProgressCommands {
       case CANCELLATION_RELEASE -> TransferAuthorities.reservationReconciliation().code();
       case REFERRAL_CANCELLATION, CAPACITY_EXCEPTION ->
           TransferAuthorities.reservationReconciliation().code();
+      case CAPACITY_RECONFIRMATION -> TransferAuthorities.acceptance().code();
     };
   }
 
@@ -524,7 +553,8 @@ public final class TransferProgressCommands {
             || kind == TransferProgressFact.Kind.CANCELLATION
             || kind == TransferProgressFact.Kind.FINAL_ABANDONMENT
             || kind == TransferProgressFact.Kind.REFERRAL_CANCELLATION
-            || kind == TransferProgressFact.Kind.CAPACITY_EXCEPTION)
+            || kind == TransferProgressFact.Kind.CAPACITY_EXCEPTION
+            || kind == TransferProgressFact.Kind.CAPACITY_RECONFIRMATION)
         && reasonCode.isEmpty()) {
       throw problem(
           HttpStatus.UNPROCESSABLE_ENTITY,
@@ -556,6 +586,14 @@ public final class TransferProgressCommands {
 
   private String actionCode(TransferProgressFact.Kind kind) {
     return "TRANSFER_" + kind.name();
+  }
+
+  private boolean hasReservedIntent(InternalId transferId) {
+    return store
+        .findReservationIntent(transferId)
+        .filter(intent -> intent.outcome() == CapacityReservationIntent.Outcome.RESERVED)
+        .filter(intent -> intent.reservationId().isPresent())
+        .isPresent();
   }
 
   private CommandReceiptKey commandKey(

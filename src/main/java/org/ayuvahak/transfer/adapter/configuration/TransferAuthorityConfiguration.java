@@ -69,4 +69,9 @@ class TransferAuthorityConfiguration {
   FunctionalAuthority transferViewAuthority() {
     return TransferAuthorities.view();
   }
+
+  @Bean
+  FunctionalAuthority transferReferralAmendmentCheckAuthority() {
+    return TransferAuthorities.referralAmendmentCheck();
+  }
 }

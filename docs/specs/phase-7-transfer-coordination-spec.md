@@ -31,6 +31,8 @@ One TransferJourney permits at most one pending request attempt and at most one 
 
 TransferRequestAttempt stores the Referral reference/revision and minimal coordination facts, not a copied PatientReference. If a deployment has a defined need for an authorized receiving participant to locate source records, the opaque PatientReference may be disclosed through Referral's purpose-bound `GetTransferBasis` contract after Transfer verifies the actual request, selected recipient and recipient case participation. The Phase 7 participant-view API does not activate or expose that conditional query; it returns coordination references only. Transfer does not retain the identifier; no receiver gets a name, demographics, summary, note or attachment from the Volume II request.
 
+Before Referral changes a submitted revision, it queries Transfer's owner-produced `GetReferralAmendmentStatus` contract using a dedicated origin-scoped service identity. A pending request or nonterminal accepted Transfer blocks amendment with `REFERRAL_AMENDMENT_BLOCKED`; no active coordination permits the Referral-owned revision command to continue. Missing/inconsistent Transfer state, denied service grant, unavailable audit, or query timeout fails closed and leaves the Referral unchanged. The query returns only active/no-active status, is audited by Transfer under the shared correlation, and does not expose Transfer details or grant Referral access to Transfer persistence.
+
 Initial policy requires a current eligible recommendation candidate before issuing a request. An ineligible/indeterminate destination cannot be selected through a hidden override. A later explicit, audited override policy is a separate decision; urgent out-of-band care must not be blocked by software, but it cannot be misrepresented as a normal AyuVahak-confirmed route.
 
 ## Request, assessment, acceptance and expiry
@@ -176,6 +178,7 @@ Use local disposable PostgreSQL/PostGIS, synthetic IDs and test-scoped IdP token
 10. Arrival does not imply handover/completion; only receiving acknowledgement moves to HANDED_OVER, explicit completion closes.
 11. Grant revocation, cross-org scope, audit failure, idempotent command retry, event duplicate/recovery and safe error/log behavior.
 12. Architecture rules prove Transfer has no Capacity persistence access, no Referral/Matching internals, and no FHIR/EMS dependencies; no integration relies on Directory/Capacity invalidation events.
+13. A submitted Referral cannot be amended while Transfer reports active coordination; an unavailable or unauthorized Transfer owner query fails closed and leaves the Referral revision unchanged. The owner read is separately authorized, purpose-audited, and does not expose Transfer state.
 
 ## Implementation order and Phase 7 acceptance gate
 

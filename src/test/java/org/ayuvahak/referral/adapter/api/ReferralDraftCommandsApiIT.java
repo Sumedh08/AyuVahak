@@ -51,6 +51,9 @@ import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
 import org.ayuvahak.referral.application.ReferralMatchingRequirement;
 import org.ayuvahak.referral.application.ReferralQueries;
 import org.ayuvahak.referral.application.ReferralTransferOutcomeEventHandler;
+import org.ayuvahak.transfer.application.TransferStore;
+import org.ayuvahak.transfer.domain.TransferJourney;
+import org.ayuvahak.transfer.domain.TransferRequestAttempt;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -92,6 +95,7 @@ class ReferralDraftCommandsApiIT {
   private static final String CURATOR = "synthetic-referral-curator";
   private static final String ORIGINATOR = "synthetic-referral-originator";
   private static final String UNAUTHORIZED = "synthetic-referral-unprivileged";
+  private static final String TRANSFER_AMENDMENT_GUARD = "ayuvahak-transfer-amendment-guard";
   private static final String CAPABILITY = "SYNTHETIC_EMERGENCY_SUPPORT";
   private static final RSAKey SIGNING_KEY = newSigningKey("referral-draft-fixture");
   private static final PostgreSQLContainer POSTGRES =
@@ -113,6 +117,7 @@ class ReferralDraftCommandsApiIT {
   @Autowired private ExecutionContextFactory executionContextFactory;
   @Autowired private ReferralTransferOutcomeEventHandler transferOutcomeHandler;
   @Autowired private EventEnvelopeJsonCodec eventEnvelopeCodec;
+  @Autowired private TransferStore transferStore;
   @Autowired private ObjectMapper objectMapper;
 
   private String organizationId;
@@ -196,6 +201,8 @@ class ReferralDraftCommandsApiIT {
     grant(ORIGINATOR, "ReferralResolve", "FACILITY", organizationId, facilityId);
     grant(ORIGINATOR, "ReferralCancel", "FACILITY", organizationId, facilityId);
     grant(ORIGINATOR, "ReferralRead", "FACILITY", organizationId, facilityId);
+    grantService(
+        TRANSFER_AMENDMENT_GUARD, "TransferReferralAmendmentCheck", organizationId, facilityId);
   }
 
   @Test
@@ -280,6 +287,106 @@ class ReferralDraftCommandsApiIT {
                         + "WHERE referral_id = ?::uuid AND revision_number = 1",
                     referralId))
         .isInstanceOf(DataAccessException.class);
+  }
+
+  @Test
+  void activeTransferRequestBlocksReferralAmendment() throws Exception {
+    String referralId = createDraft("active-transfer-amend-create", "synthetic-patient-ref-01");
+    performSubmission(
+            referralId, ORIGINATOR, "active-transfer-amend-submit", "{\"expectedVersion\":1}")
+        .andExpect(status().isOk());
+
+    InternalId referralReference = InternalId.parse(referralId);
+    ExternalReference originOrganization =
+        new ExternalReference(new IssuerId(DIRECTORY_ISSUER), "Organization", organizationId);
+    ExternalReference originFacility =
+        new ExternalReference(new IssuerId(DIRECTORY_ISSUER), "Facility", facilityId);
+    Instant requestedAt = Instant.now();
+    InternalId journeyId = InternalId.generate();
+    transferStore.insertFirstRequest(
+        new TransferJourney(
+            journeyId,
+            referralReference,
+            originOrganization,
+            Optional.of(originFacility),
+            ActorReference.human(new IssuerId(ISSUER), ORIGINATOR),
+            requestedAt,
+            1),
+        new TransferRequestAttempt(
+            InternalId.generate(),
+            journeyId,
+            1,
+            referralReference,
+            1,
+            InternalId.generate(),
+            originFacility,
+            TransferRequestAttempt.Status.PENDING,
+            ActorReference.human(new IssuerId(ISSUER), ORIGINATOR),
+            requestedAt,
+            requestedAt.plus(Duration.ofHours(1)),
+            Optional.empty(),
+            Optional.empty(),
+            1));
+
+    performAmendment(
+            referralId,
+            ORIGINATOR,
+            "active-transfer-amend-attempt",
+            amendmentBody(2, "ORIGIN_CORRECTION", "synthetic-patient-ref-02"))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("REFERRAL_AMENDMENT_BLOCKED"));
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT version FROM referral.draft WHERE referral_id = ?::uuid",
+                Integer.class,
+                referralId))
+        .isEqualTo(2);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM referral.submitted_revision WHERE referral_id = ?::uuid",
+                Integer.class,
+                referralId))
+        .isEqualTo(1);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = 'REFERRAL_AMEND'",
+                Integer.class))
+        .isZero();
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM audit.audit_record "
+                    + "WHERE action_code = 'TRANSFER_REFERRAL_AMENDMENT_STATUS_READ' "
+                    + "AND outcome = 'SUCCEEDED'",
+                Integer.class))
+        .isEqualTo(1);
+
+    jdbc.update(
+        "UPDATE identity_access.authorization_grant SET grant_status = 'REVOKED', "
+            + "revoked_at = CURRENT_TIMESTAMP, aggregate_sequence = aggregate_sequence + 1 "
+            + "WHERE principal_kind = 'SERVICE' AND principal_identifier = ? "
+            + "AND authority_code = 'TransferReferralAmendmentCheck'",
+        TRANSFER_AMENDMENT_GUARD);
+    performAmendment(
+            referralId,
+            ORIGINATOR,
+            "active-transfer-amend-status-unavailable",
+            amendmentBody(2, "ORIGIN_CORRECTION", "synthetic-patient-ref-03"))
+        .andExpect(status().isServiceUnavailable())
+        .andExpect(jsonPath("$.code").value("REFERRAL_UNAVAILABLE"));
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM audit.audit_record "
+                    + "WHERE action_code = 'TRANSFER_REFERRAL_AMENDMENT_CHECK_DENIED' "
+                    + "AND outcome = 'DENIED'",
+                Integer.class))
+        .isEqualTo(1);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT version FROM referral.draft WHERE referral_id = ?::uuid",
+                Integer.class,
+                referralId))
+        .isEqualTo(2);
   }
 
   @Test

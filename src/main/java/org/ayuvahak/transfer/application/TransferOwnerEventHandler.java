@@ -54,6 +54,8 @@ public final class TransferOwnerEventHandler implements InternalEventHandler {
       EventType.parse("capacity.reservation-expired.v1");
   private static final EventType RESERVATION_AT_RISK =
       EventType.parse("capacity.reservation-at-risk.v1");
+  private static final EventType RESERVATION_RECOVERED =
+      EventType.parse("capacity.reservation-recovered.v1");
 
   private final TransferStore transfers;
   private final ObjectProvider<TransferProgressCommands> progress;
@@ -99,7 +101,8 @@ public final class TransferOwnerEventHandler implements InternalEventHandler {
 
   @Override
   public Set<EventType> supportedEventTypes() {
-    return Set.of(REFERRAL_CANCELLED, RESERVATION_EXPIRED, RESERVATION_AT_RISK);
+    return Set.of(
+        REFERRAL_CANCELLED, RESERVATION_EXPIRED, RESERVATION_AT_RISK, RESERVATION_RECOVERED);
   }
 
   @Override
@@ -310,6 +313,21 @@ public final class TransferOwnerEventHandler implements InternalEventHandler {
       return;
     }
     ExecutionContext context = contextForTransfer(transferId, envelope, event.eventId());
+    if (event.eventType().equals(RESERVATION_RECOVERED)
+        && transfer.status() == CoordinatedTransfer.Status.COORDINATION_EXCEPTION) {
+      transfers.recordReservationLifecycle(
+          transferId,
+          sequence,
+          CapacityReservationIntent.Outcome.RESERVED,
+          Optional.of("CAPACITY_RECOVERED_RECONFIRMATION_REQUIRED"));
+      auditCapacityRecovery(context, transferId);
+      transfers.completeConsumerEvent(
+          event.eventId(),
+          Optional.of(transferId),
+          "RECEIVING_RECONFIRMATION_REQUIRED",
+          recordedAt);
+      return;
+    }
     if (event.eventType().equals(RESERVATION_EXPIRED)
         && transfer.status() == CoordinatedTransfer.Status.CANCELLATION_PENDING_RELEASE) {
       transfers.recordReservationLifecycle(
@@ -471,6 +489,30 @@ public final class TransferOwnerEventHandler implements InternalEventHandler {
                 clock.instant(),
                 AuditOutcome.SUCCEEDED,
                 Optional.of("NO_STATE_CHANGE"),
+                AuditAuthenticationEvidence.CONFIGURED_SERVICE_IDENTITY,
+                AuditAuthorizationOutcome.ALLOWED,
+                context.correlationId(),
+                Optional.of(
+                    new AuditTargetContext(
+                        context.scope().kind(),
+                        context.scope().organization(),
+                        context.scope().facility()))));
+  }
+
+  private void auditCapacityRecovery(ExecutionContext context, InternalId target) {
+    auditWriter
+        .getObject()
+        .recordMutation(
+            new AuditEvidence(
+                AuditActionKind.PROTECTED_MUTATION,
+                Optional.of(context.actor()),
+                Optional.of(context.scope()),
+                "TRANSFER_CAPACITY_RECOVERED",
+                "CapacityReservationIntent",
+                Optional.of(target),
+                clock.instant(),
+                AuditOutcome.SUCCEEDED,
+                Optional.of("RECEIVING_RECONFIRMATION_REQUIRED"),
                 AuditAuthenticationEvidence.CONFIGURED_SERVICE_IDENTITY,
                 AuditAuthorizationOutcome.ALLOWED,
                 context.correlationId(),
