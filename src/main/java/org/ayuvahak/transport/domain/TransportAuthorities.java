@@ -11,10 +11,22 @@ public final class TransportAuthorities {
       Set.of(ExecutionScope.Kind.FACILITY);
   private static final FunctionalAuthority REQUEST =
       new FunctionalAuthority("TransportRequest", FACILITY_SCOPE);
+  private static final FunctionalAuthority DISPATCH_COORDINATION =
+      new FunctionalAuthority("TransportDispatchCoordinationAuthority", FACILITY_SCOPE);
+  private static final FunctionalAuthority STATUS =
+      new FunctionalAuthority("TransportStatusAuthority", FACILITY_SCOPE);
 
   private TransportAuthorities() {}
 
   public static FunctionalAuthority request() {
     return REQUEST;
+  }
+
+  public static FunctionalAuthority dispatchCoordination() {
+    return DISPATCH_COORDINATION;
+  }
+
+  public static FunctionalAuthority status() {
+    return STATUS;
   }
 }

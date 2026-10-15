@@ -25,6 +25,8 @@ public interface TransportRequestStore {
 
   Optional<TransportRequest> find(InternalId requestId);
 
+  Optional<TransportRequest> lock(InternalId requestId);
+
   enum ClaimState {
     OWNER,
     REPLAY,

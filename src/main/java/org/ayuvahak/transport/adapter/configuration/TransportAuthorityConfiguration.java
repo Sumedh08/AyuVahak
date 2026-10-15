@@ -14,4 +14,14 @@ class TransportAuthorityConfiguration {
   FunctionalAuthority transportRequestAuthority() {
     return TransportAuthorities.request();
   }
+
+  @Bean
+  FunctionalAuthority transportDispatchCoordinationAuthority() {
+    return TransportAuthorities.dispatchCoordination();
+  }
+
+  @Bean
+  FunctionalAuthority transportStatusAuthority() {
+    return TransportAuthorities.status();
+  }
 }

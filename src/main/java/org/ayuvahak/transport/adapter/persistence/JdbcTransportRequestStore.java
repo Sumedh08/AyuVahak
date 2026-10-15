@@ -116,9 +116,19 @@ public class JdbcTransportRequestStore implements TransportRequestStore {
 
   @Override
   public Optional<TransportRequest> find(InternalId requestId) {
+    return find(requestId, false);
+  }
+
+  @Override
+  public Optional<TransportRequest> lock(InternalId requestId) {
+    return find(requestId, true);
+  }
+
+  private Optional<TransportRequest> find(InternalId requestId, boolean lock) {
     List<TransportRequest> found =
         jdbc.query(
-            "SELECT * FROM transport.transport_request WHERE transport_request_id = ?",
+            "SELECT * FROM transport.transport_request WHERE transport_request_id = ?"
+                + (lock ? " FOR UPDATE" : ""),
             (result, row) -> {
               ActorReference initiated =
                   actor(

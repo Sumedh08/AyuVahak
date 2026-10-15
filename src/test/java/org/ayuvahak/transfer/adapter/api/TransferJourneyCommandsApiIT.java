@@ -214,6 +214,9 @@ class TransferJourneyCommandsApiIT {
     jdbc.update("DELETE FROM transfer.journey_closure");
     jdbc.update("DELETE FROM transfer.request_attempt");
     jdbc.update("DELETE FROM transfer.journey");
+    jdbc.update("DELETE FROM transport.eta_observation");
+    jdbc.update("DELETE FROM transport.assignment_observation");
+    jdbc.update("DELETE FROM transport.status_observation");
     jdbc.update("DELETE FROM transport.command_receipt");
     jdbc.update("DELETE FROM transport.transport_request");
     jdbc.update("DELETE FROM audit.audit_record");
@@ -451,6 +454,202 @@ class TransferJourneyCommandsApiIT {
         .isZero();
     assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM transport.command_receipt", Integer.class))
         .isZero();
+  }
+
+  @Test
+  void transportOperatorCanRecordManualAssignmentStatusAndEtaAsAttributedEvidence()
+      throws Exception {
+    Scope scope = createOriginAndDestination();
+    String transferId = createReadyTransfer(scope, "transport-evidence-happy", true);
+    grantTransportWorker(scope);
+    requestTransport(scope, transferId, "transport-evidence-request", SENDER)
+        .andExpect(status().isCreated());
+    UUID requestId =
+        jdbc.queryForObject(
+            "SELECT transport_request_id FROM transport.transport_request WHERE transfer_id = ?",
+            UUID.class,
+            UUID.fromString(transferId));
+    String operator = "synthetic-transport-operator";
+    grantTransportAuthority(scope, operator, "TransportStatusAuthority");
+    grantTransportAuthority(scope, operator, "TransportDispatchCoordinationAuthority");
+    Instant statusAt = Instant.now().minusSeconds(10);
+    Instant assignmentAt = statusAt.plusSeconds(1);
+    Instant etaObservedAt = assignmentAt.plusSeconds(1);
+
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "status-observations",
+            "transport-status-awaiting-assignment",
+            operator,
+            "{\"observationId\":\"SYN-STATUS-001\",\"sourceNamespace\":\"urn:ayuvahak:manual\","
+                + "\"status\":\"AWAITING_ASSIGNMENT\",\"occurredAt\":\""
+                + statusAt
+                + "\","
+                + "\"reasonCode\":\"DISPATCH_COORDINATION_STARTED\"}")
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.requestStatus").value("AWAITING_ASSIGNMENT"));
+
+    String assignmentBody =
+        "{\"sourceNamespace\":\"urn:ayuvahak:manual\","
+            + "\"sourceObservationId\":\"SYN-ASSIGNMENT-001\","
+            + "\"assignmentReference\":\"SYN-ASSIGNMENT-001\",\"occurredAt\":\""
+            + assignmentAt
+            + "\"}";
+    transportEvidenceCommand(
+            scope, requestId, "assignments", "transport-assignment-001", operator, assignmentBody)
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.requestStatus").value("ASSIGNED"));
+    transportEvidenceCommand(
+            scope, requestId, "assignments", "transport-assignment-001", operator, assignmentBody)
+        .andExpect(status().isCreated())
+        .andExpect(header().string("Idempotency-Replayed", "true"));
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "assignments",
+            "transport-assignment-source-replay",
+            operator,
+            assignmentBody)
+        .andExpect(status().isCreated())
+        .andExpect(header().string("Source-Observation-Replayed", "true"));
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "assignments",
+            "transport-assignment-changed-fingerprint",
+            operator,
+            assignmentBody.replace(
+                "SYN-ASSIGNMENT-001\",\"occurredAt", "SYN-ASSIGNMENT-OTHER\",\"occurredAt"))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("TRANSPORT_EVIDENCE_CONFLICT"));
+
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "eta-observations",
+            "transport-eta-001",
+            operator,
+            "{\"observationId\":\"SYN-ETA-001\",\"sourceNamespace\":\"urn:ayuvahak:manual\","
+                + "\"estimatedArrivalAt\":\""
+                + etaObservedAt.plusSeconds(3600)
+                + "\",\"observedAt\":\""
+                + etaObservedAt
+                + "\"}")
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.requestStatus").value("ASSIGNED"));
+
+    assertThat(count("SELECT COUNT(*) FROM transport.status_observation")).isEqualTo(1);
+    assertThat(count("SELECT COUNT(*) FROM transport.assignment_observation")).isEqualTo(1);
+    assertThat(count("SELECT COUNT(*) FROM transport.eta_observation")).isEqualTo(1);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT request_status FROM transport.transport_request WHERE transport_request_id = ?",
+                String.class,
+                requestId))
+        .isEqualTo("ASSIGNED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code LIKE 'TRANSPORT_%'",
+                Integer.class))
+        .isEqualTo(4);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
+                String.class,
+                UUID.fromString(transferId)))
+        .isEqualTo("READY");
+  }
+
+  @Test
+  void outOfOrderTransportStatusIsRetainedForReconciliationWithoutRegressingState()
+      throws Exception {
+    Scope scope = createOriginAndDestination();
+    String transferId = createReadyTransfer(scope, "transport-evidence-order", true);
+    grantTransportWorker(scope);
+    requestTransport(scope, transferId, "transport-evidence-order-request", SENDER)
+        .andExpect(status().isCreated());
+    UUID requestId =
+        jdbc.queryForObject(
+            "SELECT transport_request_id FROM transport.transport_request WHERE transfer_id = ?",
+            UUID.class,
+            UUID.fromString(transferId));
+    String operator = "synthetic-transport-operator";
+    grantTransportAuthority(scope, operator, "TransportStatusAuthority");
+    grantTransportAuthority(scope, operator, "TransportDispatchCoordinationAuthority");
+    Instant statusAt = Instant.now().minusSeconds(10);
+    Instant assignmentAt = statusAt.plusSeconds(1);
+
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "status-observations",
+            "transport-order-awaiting-assignment",
+            operator,
+            "{\"observationId\":\"SYN-ORDER-001\",\"sourceNamespace\":\"urn:ayuvahak:manual\","
+                + "\"status\":\"AWAITING_ASSIGNMENT\",\"occurredAt\":\""
+                + statusAt
+                + "\","
+                + "\"reasonCode\":\"DISPATCH_COORDINATION_STARTED\"}")
+        .andExpect(status().isCreated());
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "assignments",
+            "transport-order-assignment",
+            operator,
+            "{\"sourceNamespace\":\"urn:ayuvahak:manual\","
+                + "\"sourceObservationId\":\"SYN-ASSIGNMENT-ORDER\","
+                + "\"assignmentReference\":\"SYN-ASSIGNMENT-ORDER\",\"occurredAt\":\""
+                + assignmentAt
+                + "\"}")
+        .andExpect(status().isCreated());
+
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "status-observations",
+            "transport-order-stale-status",
+            operator,
+            "{\"observationId\":\"SYN-ORDER-002\",\"sourceNamespace\":\"urn:ayuvahak:manual\","
+                + "\"status\":\"AWAITING_ASSIGNMENT\",\"occurredAt\":\""
+                + assignmentAt.plusSeconds(1)
+                + "\","
+                + "\"reasonCode\":\"STALE_SOURCE_STATUS\"}")
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("TRANSPORT_STATE_CONFLICT"));
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT request_status FROM transport.transport_request WHERE transport_request_id = ?",
+                String.class,
+                requestId))
+        .isEqualTo("ASSIGNED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT observation_outcome FROM transport.status_observation "
+                    + "WHERE source_observation_id = 'SYN-ORDER-002'",
+                String.class))
+        .isEqualTo("RECONCILIATION_REQUIRED");
+  }
+
+  private org.springframework.test.web.servlet.ResultActions transportEvidenceCommand(
+      Scope scope,
+      UUID requestId,
+      String operation,
+      String idempotencyKey,
+      String subject,
+      String body)
+      throws Exception {
+    return mockMvc.perform(
+        post("/api/v1/transport-requests/{transportRequestId}/{operation}", requestId, operation)
+            .header("Authorization", "Bearer " + token(subject))
+            .header("X-AyuVahak-Execution-Scope", "FACILITY")
+            .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+            .header("X-AyuVahak-Facility-Id", scope.originFacilityId())
+            .header("Idempotency-Key", idempotencyKey)
+            .contentType("application/json")
+            .content(body));
   }
 
   private org.springframework.test.web.servlet.ResultActions requestTransport(
@@ -5798,6 +5997,24 @@ class TransferJourneyCommandsApiIT {
           DIRECTORY_ISSUER,
           scope.originFacilityId());
     }
+  }
+
+  private void grantTransportAuthority(Scope scope, String subject, String authority) {
+    jdbc.update(
+        "INSERT INTO identity_access.authorization_grant (grant_id, principal_kind, "
+            + "principal_issuer, principal_identifier_type, principal_identifier, authority_code, "
+            + "scope_kind, organization_issuer, organization_identifier_type, "
+            + "organization_identifier, facility_issuer, facility_identifier_type, "
+            + "facility_identifier, grant_status, created_at) VALUES (gen_random_uuid(), "
+            + "'HUMAN', ?, 'subject', ?, ?, 'FACILITY', ?, 'Organization', ?, "
+            + "?, 'Facility', ?, 'ACTIVE', CURRENT_TIMESTAMP)",
+        ISSUER,
+        subject,
+        authority,
+        DIRECTORY_ISSUER,
+        scope.originOrganizationId(),
+        DIRECTORY_ISSUER,
+        scope.originFacilityId());
   }
 
   private void grantExpiryWorker(Scope scope) {

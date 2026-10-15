@@ -30,8 +30,8 @@ public record TransportRequest(
     Objects.requireNonNull(status, "status");
     Objects.requireNonNull(requestedAt, "request time");
     Objects.requireNonNull(correlationId, "correlation id");
-    if (version != 1) {
-      throw new IllegalArgumentException("a new Transport request must start at version one");
+    if (version < 1) {
+      throw new IllegalArgumentException("Transport request version must be positive");
     }
   }
 
