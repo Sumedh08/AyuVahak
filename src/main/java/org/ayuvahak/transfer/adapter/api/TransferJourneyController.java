@@ -48,7 +48,12 @@ public final class TransferJourneyController {
   private static final String ORGANIZATION_SCOPE_HEADER = "X-AyuVahak-Organization-Id";
   private static final String FACILITY_SCOPE_HEADER = "X-AyuVahak-Facility-Id";
   private static final Set<String> REQUEST_FIELDS =
-      Set.of("referralId", "referralRevision", "recommendationId", "candidateFacilityId");
+      Set.of(
+          "referralId",
+          "referralRevision",
+          "recommendationId",
+          "candidateFacilityId",
+          "transportRequired");
   private static final Set<String> NEXT_REQUEST_FIELDS =
       Set.of("expectedVersion", "referralRevision", "recommendationId", "candidateFacilityId");
   private static final Set<String> CLOSURE_FIELDS =
@@ -152,6 +157,7 @@ public final class TransferJourneyController {
             content.referralRevision(),
             content.recommendationId(),
             content.candidateFacility(),
+            content.transportRequired(),
             idempotencyKey,
             RequestFingerprint.from(content.normalized()));
 
@@ -216,16 +222,24 @@ public final class TransferJourneyController {
     InternalId referralId = parseId(body.get("referralId"), "Referral id");
     InternalId recommendationId = parseId(body.get("recommendationId"), "recommendation id");
     InternalId destinationId = parseId(body.get("candidateFacilityId"), "candidate Facility id");
+    JsonNode transportRequiredNode = body.get("transportRequired");
+    if (transportRequiredNode != null && !transportRequiredNode.isBoolean()) {
+      throw invalid("transportRequired must be a boolean when supplied.");
+    }
+    boolean transportRequired =
+        transportRequiredNode != null && transportRequiredNode.booleanValue();
     ObjectNode normalized = objectMapper.createObjectNode();
     normalized.put("referralId", referralId.toString());
     normalized.put("referralRevision", revision.longValue());
     normalized.put("recommendationId", recommendationId.toString());
     normalized.put("candidateFacilityId", destinationId.toString());
+    normalized.put("transportRequired", transportRequired);
     return new RequestContent(
         referralId,
         revision.longValue(),
         recommendationId,
         directoryReference("Facility", destinationId),
+        transportRequired,
         normalized);
   }
 
@@ -364,6 +378,7 @@ public final class TransferJourneyController {
       long referralRevision,
       InternalId recommendationId,
       ExternalReference candidateFacility,
+      boolean transportRequired,
       ObjectNode normalized) {}
 
   private record NextRequestContent(
@@ -406,6 +421,7 @@ public final class TransferJourneyController {
       long referralRevision,
       String recommendationId,
       String destinationFacilityId,
+      boolean transportRequired,
       String requestedAt,
       String expiresAt) {
     static TransferJourneyRepresentation from(TransferJourneyCommandResult result) {
@@ -419,6 +435,7 @@ public final class TransferJourneyController {
           attempt.referralRevision(),
           attempt.recommendationId().toString(),
           attempt.destinationFacility().value(),
+          result.journey().transportRequired(),
           attempt.requestedAt().toString(),
           attempt.expiresAt().toString());
     }

@@ -80,6 +80,7 @@ public final class TransferJourneyCommands {
       long referralRevision,
       InternalId recommendationId,
       ExternalReference candidateFacility,
+      boolean transportRequired,
       String idempotencyKey,
       RequestFingerprint fingerprint) {
     Objects.requireNonNull(context, "execution context");
@@ -143,6 +144,7 @@ public final class TransferJourneyCommands {
                   context.scope().facility(),
                   context.actor(),
                   now,
+                  transportRequired,
                   1);
           TransferRequestAttempt attempt =
               new TransferRequestAttempt(

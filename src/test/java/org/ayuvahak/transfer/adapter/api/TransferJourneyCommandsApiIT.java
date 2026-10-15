@@ -22,6 +22,7 @@ import java.net.InetSocketAddress;
 import java.sql.Connection;
 import java.time.Instant;
 import java.util.Date;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -123,6 +124,7 @@ class TransferJourneyCommandsApiIT {
   private static final String AUDIENCE = "ayuvahak-api";
   private static final String DIRECTORY_ISSUER = "urn:ayuvahak:directory";
   private static final String SENDER = "synthetic-transfer-sender";
+  private static final String TRANSPORT_WORKER = "ayuvahak-transport-worker";
   private static final String TEST_PASSWORD = "local-test-only";
   private static final RSAKey SIGNING_KEY = newSigningKey("transfer-first-request-fixture");
   private static final PostgreSQLContainer POSTGRES =
@@ -212,6 +214,8 @@ class TransferJourneyCommandsApiIT {
     jdbc.update("DELETE FROM transfer.journey_closure");
     jdbc.update("DELETE FROM transfer.request_attempt");
     jdbc.update("DELETE FROM transfer.journey");
+    jdbc.update("DELETE FROM transport.command_receipt");
+    jdbc.update("DELETE FROM transport.transport_request");
     jdbc.update("DELETE FROM audit.audit_record");
     jdbc.update("DELETE FROM identity_access.grant_command_receipt");
     jdbc.update("DELETE FROM identity_access.bootstrap_marker");
@@ -220,6 +224,246 @@ class TransferJourneyCommandsApiIT {
     transferProperties.setReservationPollInterval(java.time.Duration.ofSeconds(15));
     matching.reset();
     capacityPort.reset();
+  }
+
+  @Test
+  void originCanDeclareWhetherTransportIsRequiredForTheJourney() throws Exception {
+    Scope scope = createOriginAndDestination();
+    grantSender(scope);
+    matching.returnApplicable(scope.referralId());
+
+    String response =
+        mockMvc
+            .perform(
+                post("/api/v1/transfer-journeys")
+                    .header("Authorization", "Bearer " + token(SENDER))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                    .header("X-AyuVahak-Facility-Id", scope.originFacilityId())
+                    .header("Idempotency-Key", "transport-required-journey")
+                    .contentType("application/json")
+                    .content(
+                        "{\"referralId\":\""
+                            + scope.referralId()
+                            + "\",\"referralRevision\":4,\"recommendationId\":\""
+                            + scope.recommendationId()
+                            + "\",\"candidateFacilityId\":\""
+                            + scope.destinationFacilityId()
+                            + "\",\"transportRequired\":true}"))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.transportRequired").value(true))
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+
+    UUID journeyId = UUID.fromString(com.jayway.jsonpath.JsonPath.read(response, "$.journeyId"));
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT transport_required FROM transfer.journey WHERE journey_id = ?",
+                Boolean.class,
+                journeyId))
+        .isTrue();
+  }
+
+  @Test
+  void omittedTransportRequirementDefaultsToFalse() throws Exception {
+    Scope scope = createOriginAndDestination();
+    grantSender(scope);
+    matching.returnApplicable(scope.referralId());
+
+    String response =
+        mockMvc
+            .perform(
+                post("/api/v1/transfer-journeys")
+                    .header("Authorization", "Bearer " + token(SENDER))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                    .header("X-AyuVahak-Facility-Id", scope.originFacilityId())
+                    .header("Idempotency-Key", "transport-default-false-journey")
+                    .contentType("application/json")
+                    .content(
+                        "{\"referralId\":\""
+                            + scope.referralId()
+                            + "\",\"referralRevision\":4,\"recommendationId\":\""
+                            + scope.recommendationId()
+                            + "\",\"candidateFacilityId\":\""
+                            + scope.destinationFacilityId()
+                            + "\"}"))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.transportRequired").value(false))
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+
+    UUID journeyId = UUID.fromString(com.jayway.jsonpath.JsonPath.read(response, "$.journeyId"));
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT transport_required FROM transfer.journey WHERE journey_id = ?",
+                Boolean.class,
+                journeyId))
+        .isFalse();
+  }
+
+  @Test
+  void eligibleTransportRequiredTransferCreatesAuditedManualRequestIdempotently() throws Exception {
+    Scope scope = createOriginAndDestination();
+    String transferId = createReadyTransfer(scope, "transport-request", true);
+    grantTransportWorker(scope);
+
+    String response =
+        mockMvc
+            .perform(
+                post("/api/v1/transfers/{transferId}/transport-request", transferId)
+                    .header("Authorization", "Bearer " + token(SENDER))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                    .header("X-AyuVahak-Facility-Id", scope.originFacilityId())
+                    .header("Idempotency-Key", "manual-transport-request")
+                    .contentType("application/json")
+                    .content("{}"))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.status").value("REQUESTED"))
+            .andExpect(jsonPath("$.coordinationOutcome").value("MANUAL_COORDINATION_REQUIRED"))
+            .andExpect(jsonPath("$.transferId").value(transferId))
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+
+    UUID transportRequestId =
+        UUID.fromString(com.jayway.jsonpath.JsonPath.read(response, "$.transportRequestId"));
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM transport.transport_request WHERE transfer_id = ? "
+                    + "AND request_status = 'REQUESTED'",
+                Integer.class,
+                UUID.fromString(transferId)))
+        .isEqualTo(1);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT initiated_by_identifier FROM transport.transport_request "
+                    + "WHERE transport_request_id = ?",
+                String.class,
+                transportRequestId))
+        .isEqualTo(SENDER);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = 'TRANSPORT_REQUEST_CREATE' "
+                    + "AND target_id = ?",
+                Integer.class,
+                transportRequestId))
+        .isEqualTo(1);
+
+    mockMvc
+        .perform(
+            post("/api/v1/transfers/{transferId}/transport-request", transferId)
+                .header("Authorization", "Bearer " + token(SENDER))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                .header("X-AyuVahak-Facility-Id", scope.originFacilityId())
+                .header("Idempotency-Key", "manual-transport-request")
+                .contentType("application/json")
+                .content("{}"))
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.transportRequestId").value(transportRequestId.toString()))
+        .andExpect(header().string("Idempotency-Replayed", "true"));
+  }
+
+  @Test
+  void transportRequestFailsClosedWhenTransferDidNotRequireTransport() throws Exception {
+    Scope scope = createOriginAndDestination();
+    String transferId = createReadyTransfer(scope, "transport-not-required", false);
+    grantTransportWorker(scope);
+
+    requestTransport(scope, transferId, "transport-not-required", SENDER)
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("TRANSPORT_NOT_ELIGIBLE"));
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM transport.transport_request WHERE transfer_id = ?",
+                Integer.class,
+                UUID.fromString(transferId)))
+        .isZero();
+  }
+
+  @Test
+  void transferInitiatorWithoutTransferGrantCannotCreateTransportRequest() throws Exception {
+    Scope scope = createOriginAndDestination();
+    String transferId = createReadyTransfer(scope, "transport-unauthorized", true);
+    grantTransportWorker(scope);
+
+    requestTransport(scope, transferId, "transport-unauthorized", "synthetic-unprivileged")
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.code").value("AUTHORIZATION_DENIED"));
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM transport.transport_request WHERE transfer_id = ?",
+                Integer.class,
+                UUID.fromString(transferId)))
+        .isZero();
+  }
+
+  @Test
+  void activeTransportRequestCannotBeDuplicatedWithAnotherKey() throws Exception {
+    Scope scope = createOriginAndDestination();
+    String transferId = createReadyTransfer(scope, "transport-active-unique", true);
+    grantTransportWorker(scope);
+
+    requestTransport(scope, transferId, "transport-active-first", SENDER)
+        .andExpect(status().isCreated());
+    requestTransport(scope, transferId, "transport-active-second", SENDER)
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("TRANSPORT_ACTIVE_REQUEST_EXISTS"));
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM transport.transport_request WHERE transfer_id = ? "
+                    + "AND request_status = 'REQUESTED'",
+                Integer.class,
+                UUID.fromString(transferId)))
+        .isEqualTo(1);
+  }
+
+  @Test
+  void auditFailureRollsBackTransportRequestAndIdempotencyReceipt() throws Exception {
+    Scope scope = createOriginAndDestination();
+    String transferId = createReadyTransfer(scope, "transport-audit-failure", true);
+    grantTransportWorker(scope);
+    jdbc.execute(
+        "CREATE FUNCTION public.fail_transport_request_audit() RETURNS trigger AS $$ "
+            + "BEGIN IF NEW.action_code = 'TRANSPORT_REQUEST_CREATE' THEN "
+            + "RAISE EXCEPTION 'synthetic transport audit failure'; END IF; RETURN NEW; END; $$ LANGUAGE plpgsql");
+    jdbc.execute(
+        "CREATE TRIGGER fail_transport_request_audit BEFORE INSERT ON audit.audit_record "
+            + "FOR EACH ROW EXECUTE FUNCTION public.fail_transport_request_audit()");
+    try {
+      requestTransport(scope, transferId, "transport-audit-failure", SENDER)
+          .andExpect(status().isServiceUnavailable())
+          .andExpect(jsonPath("$.code").value("AUDIT_UNAVAILABLE"));
+    } finally {
+      jdbc.execute("DROP TRIGGER IF EXISTS fail_transport_request_audit ON audit.audit_record");
+      jdbc.execute("DROP FUNCTION IF EXISTS public.fail_transport_request_audit()");
+    }
+
+    assertThat(
+            jdbc.queryForObject("SELECT COUNT(*) FROM transport.transport_request", Integer.class))
+        .isZero();
+    assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM transport.command_receipt", Integer.class))
+        .isZero();
+  }
+
+  private org.springframework.test.web.servlet.ResultActions requestTransport(
+      Scope scope, String transferId, String idempotencyKey, String subject) throws Exception {
+    return mockMvc.perform(
+        post("/api/v1/transfers/{transferId}/transport-request", transferId)
+            .header("Authorization", "Bearer " + token(subject))
+            .header("X-AyuVahak-Execution-Scope", "FACILITY")
+            .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+            .header("X-AyuVahak-Facility-Id", scope.originFacilityId())
+            .header("Idempotency-Key", idempotencyKey)
+            .contentType("application/json")
+            .content("{}"));
   }
 
   @Test
@@ -4130,13 +4374,19 @@ class TransferJourneyCommandsApiIT {
   }
 
   private String createReadyTransfer(Scope scope, String fixtureName) throws Exception {
+    return createReadyTransfer(scope, fixtureName, false);
+  }
+
+  private String createReadyTransfer(Scope scope, String fixtureName, boolean transportRequired)
+      throws Exception {
     grantSender(scope);
     matching.returnApplicable(scope.referralId());
     ensureReservableCapacityCatalog();
     grantCapacityReporter(scope);
     recordCoordinationSlotObservation(scope, 1, fixtureName + "-capacity");
     grantReservationWorker(scope);
-    String requestAttempt = createRequestAttempt(scope, fixtureName + "-request");
+    String requestAttempt =
+        createRequestAttempt(scope, fixtureName + "-request", transportRequired);
     preparePositiveAcceptance(scope, requestAttempt);
     String accepted = acceptRequest(scope, requestAttempt, fixtureName + "-acceptance");
     assertThat(com.jayway.jsonpath.JsonPath.read(accepted, "$.status").toString())
@@ -5283,8 +5533,13 @@ class TransferJourneyCommandsApiIT {
   private record AuditTimes(Instant occurredAt, Instant recordedAt, String actorReference) {}
 
   private String createRequestAttempt(Scope scope, String idempotencyKey) throws Exception {
+    return createRequestAttempt(scope, idempotencyKey, false);
+  }
+
+  private String createRequestAttempt(Scope scope, String idempotencyKey, boolean transportRequired)
+      throws Exception {
     return com.jayway.jsonpath.JsonPath.read(
-        createRequest(scope, idempotencyKey)
+        createRequest(scope, idempotencyKey, SENDER, transportRequired)
             .andExpect(status().isCreated())
             .andReturn()
             .getResponse()
@@ -5359,11 +5614,17 @@ class TransferJourneyCommandsApiIT {
 
   private org.springframework.test.web.servlet.ResultActions createRequest(
       Scope scope, String idempotencyKey) throws Exception {
-    return createRequest(scope, idempotencyKey, SENDER);
+    return createRequest(scope, idempotencyKey, SENDER, false);
   }
 
   private org.springframework.test.web.servlet.ResultActions createRequest(
       Scope scope, String idempotencyKey, String subject) throws Exception {
+    return createRequest(scope, idempotencyKey, subject, false);
+  }
+
+  private org.springframework.test.web.servlet.ResultActions createRequest(
+      Scope scope, String idempotencyKey, String subject, boolean transportRequired)
+      throws Exception {
     return mockMvc.perform(
         post("/api/v1/transfer-journeys")
             .header("Authorization", "Bearer " + token(subject))
@@ -5379,7 +5640,9 @@ class TransferJourneyCommandsApiIT {
                     + scope.recommendationId()
                     + "\",\"candidateFacilityId\":\""
                     + scope.destinationFacilityId()
-                    + "\"}"));
+                    + "\",\"transportRequired\":"
+                    + transportRequired
+                    + "}"));
   }
 
   private Scope createOriginAndDestination() {
@@ -5515,6 +5778,26 @@ class TransferJourneyCommandsApiIT {
         scope.originOrganizationId(),
         DIRECTORY_ISSUER,
         scope.destinationFacilityId());
+  }
+
+  private void grantTransportWorker(Scope scope) {
+    for (String authority : List.of("TransportRequest", "TransferTransportRequestEligibility")) {
+      jdbc.update(
+          "INSERT INTO identity_access.authorization_grant (grant_id, principal_kind, "
+              + "principal_issuer, principal_identifier_type, principal_identifier, authority_code, "
+              + "scope_kind, organization_issuer, organization_identifier_type, "
+              + "organization_identifier, facility_issuer, facility_identifier_type, "
+              + "facility_identifier, grant_status, created_at) VALUES (gen_random_uuid(), "
+              + "'SERVICE', ?, 'client_id', ?, ?, 'FACILITY', ?, 'Organization', ?, "
+              + "?, 'Facility', ?, 'ACTIVE', CURRENT_TIMESTAMP)",
+          ISSUER,
+          TRANSPORT_WORKER,
+          authority,
+          DIRECTORY_ISSUER,
+          scope.originOrganizationId(),
+          DIRECTORY_ISSUER,
+          scope.originFacilityId());
+    }
   }
 
   private void grantExpiryWorker(Scope scope) {

@@ -79,4 +79,9 @@ class TransferAuthorityConfiguration {
   FunctionalAuthority transferReferralAmendmentCheckAuthority() {
     return TransferAuthorities.referralAmendmentCheck();
   }
+
+  @Bean
+  FunctionalAuthority transferTransportRequestEligibilityAuthority() {
+    return TransferAuthorities.transportRequestEligibility();
+  }
 }

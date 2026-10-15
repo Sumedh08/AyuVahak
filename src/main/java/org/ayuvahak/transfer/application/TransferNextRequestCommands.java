@@ -184,6 +184,7 @@ public final class TransferNextRequestCommands {
                     journey.originFacility(),
                     journey.createdBy(),
                     journey.createdAt(),
+                    journey.transportRequired(),
                     Math.addExact(journey.version(), 1));
             return new TransferJourneyCommandResult(advancedJourney, attempt, false);
           });

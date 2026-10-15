@@ -15,7 +15,8 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
       "org.ayuvahak.capacity",
       "org.ayuvahak.referral",
       "org.ayuvahak.matching",
-      "org.ayuvahak.transfer"
+      "org.ayuvahak.transfer",
+      "org.ayuvahak.transport"
     })
 @EnableConfigurationProperties({
   PlatformProperties.class,

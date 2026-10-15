@@ -15,6 +15,7 @@ public record TransferJourney(
     Optional<ExternalReference> originFacility,
     ActorReference createdBy,
     Instant createdAt,
+    boolean transportRequired,
     long version) {
 
   private static final String DIRECTORY_ISSUER = "urn:ayuvahak:directory";
@@ -30,6 +31,18 @@ public record TransferJourney(
     if (version < 1) {
       throw new IllegalArgumentException("journey version must be positive");
     }
+  }
+
+  /** Compatibility constructor for existing Transfer fixtures and callers. */
+  public TransferJourney(
+      InternalId id,
+      InternalId referralId,
+      ExternalReference originOrganization,
+      Optional<ExternalReference> originFacility,
+      ActorReference createdBy,
+      Instant createdAt,
+      long version) {
+    this(id, referralId, originOrganization, originFacility, createdBy, createdAt, false, version);
   }
 
   private static void requireDirectoryReference(ExternalReference reference, String type) {

@@ -216,7 +216,8 @@ public class JdbcTransferStore implements TransferStore {
     jdbc.update(
         "INSERT INTO transfer.journey (journey_id, referral_id, origin_organization_id, "
             + "origin_facility_id, created_by_kind, created_by_issuer, created_by_identifier_type, "
-            + "created_by_identifier, created_at, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            + "created_by_identifier, created_at, transport_required, version) "
+            + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         journey.id().value(),
         journey.referralId().value(),
         directoryId(journey.originOrganization()),
@@ -226,6 +227,7 @@ public class JdbcTransferStore implements TransferStore {
         journey.createdBy().identity().resourceType(),
         journey.createdBy().identity().value(),
         Timestamp.from(journey.createdAt()),
+        journey.transportRequired(),
         journey.version());
     jdbc.update(
         "INSERT INTO transfer.request_attempt (request_attempt_id, journey_id, attempt_number, "
@@ -284,7 +286,7 @@ public class JdbcTransferStore implements TransferStore {
         .query(
             "SELECT journey_id, referral_id, origin_organization_id, origin_facility_id, "
                 + "created_by_kind, created_by_issuer, created_by_identifier_type, created_by_identifier, "
-                + "created_at, version FROM transfer.journey WHERE journey_id = ? FOR UPDATE",
+                + "created_at, transport_required, version FROM transfer.journey WHERE journey_id = ? FOR UPDATE",
             JdbcTransferStore::journey,
             journeyId.value())
         .stream()
@@ -367,7 +369,7 @@ public class JdbcTransferStore implements TransferStore {
         jdbc.query(
             "SELECT journey_id, referral_id, origin_organization_id, origin_facility_id, "
                 + "created_by_kind, created_by_issuer, created_by_identifier_type, created_by_identifier, "
-                + "created_at, version FROM transfer.journey WHERE "
+                + "created_at, transport_required, version FROM transfer.journey WHERE "
                 + column
                 + " = ?",
             JdbcTransferStore::journey,
@@ -1380,6 +1382,7 @@ public class JdbcTransferStore implements TransferStore {
         Optional.ofNullable(facility).map(id -> directoryReference("Facility", id)),
         actor(result, "created_by"),
         result.getTimestamp("created_at").toInstant(),
+        result.getBoolean("transport_required"),
         result.getLong("version"));
   }
 

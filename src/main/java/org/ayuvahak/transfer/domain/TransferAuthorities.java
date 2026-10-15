@@ -40,6 +40,9 @@ public final class TransferAuthorities {
           "TransferPatientContextParticipation", Set.of(ExecutionScope.Kind.FACILITY));
   private static final FunctionalAuthority REFERRAL_AMENDMENT_CHECK =
       new FunctionalAuthority("TransferReferralAmendmentCheck", ORIGIN_SCOPES);
+  private static final FunctionalAuthority TRANSPORT_REQUEST_ELIGIBILITY =
+      new FunctionalAuthority(
+          "TransferTransportRequestEligibility", Set.of(ExecutionScope.Kind.FACILITY));
 
   private TransferAuthorities() {}
 
@@ -97,5 +100,9 @@ public final class TransferAuthorities {
 
   public static FunctionalAuthority referralAmendmentCheck() {
     return REFERRAL_AMENDMENT_CHECK;
+  }
+
+  public static FunctionalAuthority transportRequestEligibility() {
+    return TRANSPORT_REQUEST_ELIGIBILITY;
   }
 }

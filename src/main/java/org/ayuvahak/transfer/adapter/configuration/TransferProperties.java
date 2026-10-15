@@ -17,6 +17,7 @@ public class TransferProperties {
   private boolean expiryPollingEnabled = true;
   private String reservationWorkerClientId = "ayuvahak-transfer-reservation-worker";
   private String ownerEventConsumerClientId = "ayuvahak-transfer-owner-event-consumer";
+  private String transportWorkerClientId = "ayuvahak-transport-worker";
   private String reservationDimension;
   private String reservationUnit;
   private BigDecimal reservationQuantity;
@@ -72,6 +73,14 @@ public class TransferProperties {
 
   public String getOwnerEventConsumerClientId() {
     return ownerEventConsumerClientId;
+  }
+
+  public String getTransportWorkerClientId() {
+    return transportWorkerClientId;
+  }
+
+  public void setTransportWorkerClientId(String clientId) {
+    this.transportWorkerClientId = clientId;
   }
 
   public void setOwnerEventConsumerClientId(String clientId) {
@@ -176,6 +185,10 @@ public class TransferProperties {
     if (ownerEventConsumerClientId == null
         || !ownerEventConsumerClientId.matches("[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")) {
       throw new IllegalArgumentException("Transfer owner-event consumer client id is invalid");
+    }
+    if (transportWorkerClientId == null
+        || !transportWorkerClientId.matches("[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")) {
+      throw new IllegalArgumentException("Transfer Transport worker client id is invalid");
     }
     boolean anyReservationValue =
         reservationDimension != null
