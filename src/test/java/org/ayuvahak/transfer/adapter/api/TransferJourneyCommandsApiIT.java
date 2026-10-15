@@ -20,6 +20,7 @@ import com.nimbusds.jwt.SignedJWT;
 import com.sun.net.httpserver.HttpServer;
 import java.net.InetSocketAddress;
 import java.sql.Connection;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Date;
 import java.util.List;
@@ -67,6 +68,7 @@ import org.ayuvahak.transfer.application.MatchingApplicabilityPort;
 import org.ayuvahak.transfer.application.TransferCapacityReservationRecovery;
 import org.ayuvahak.transfer.application.TransferOwnerEventHandler;
 import org.ayuvahak.transfer.application.TransferRequestExpirySweep;
+import org.ayuvahak.transfer.application.TransferTransportMovementEventHandler;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -134,7 +136,8 @@ class TransferJourneyCommandsApiIT {
                   .asCompatibleSubstituteFor("postgres"))
           .withDatabaseName("ayuvahak")
           .withUsername("ayuvahak")
-          .withPassword(TEST_PASSWORD);
+          .withPassword(TEST_PASSWORD)
+          .withStartupTimeout(Duration.ofMinutes(2));
 
   @Container private static final PostgreSQLContainer CONTAINER = POSTGRES;
   private static HttpServer jwksServer;
@@ -146,6 +149,7 @@ class TransferJourneyCommandsApiIT {
   @Autowired private StubMatchingApplicability matching;
   @Autowired private TransferRequestExpirySweep expirySweep;
   @Autowired private TransferCapacityReservationRecovery reservationRecovery;
+  @Autowired private TransferTransportMovementEventHandler transportMovementEventHandler;
   @Autowired private DataSource dataSource;
   @Autowired private CapacityReservationCommands capacityReservations;
   @Autowired private CapacityReservationLifecycleProperties capacityLifecycleProperties;
@@ -209,6 +213,7 @@ class TransferJourneyCommandsApiIT {
     jdbc.update("DELETE FROM transfer.command_receipt");
     jdbc.update("DELETE FROM transfer.capacity_reservation_request");
     jdbc.update("DELETE FROM transfer.request_decision");
+    jdbc.update("DELETE FROM transfer.transport_request_link");
     jdbc.update("DELETE FROM transfer.transfer_record");
     jdbc.update("DELETE FROM transfer.receiving_assessment");
     jdbc.update("DELETE FROM transfer.journey_closure");
@@ -454,6 +459,460 @@ class TransferJourneyCommandsApiIT {
         .isZero();
     assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM transport.command_receipt", Integer.class))
         .isZero();
+  }
+
+  @Test
+  void transportMovementEventsUpdateOnlyTransferOwnedDepartureAndArrivalFacts() throws Exception {
+    Scope scope = createOriginAndDestination();
+    String transferId = createReadyTransfer(scope, "transport-movement-events", true);
+    grantTransportWorker(scope);
+    requestTransport(scope, transferId, "transport-movement-request", SENDER)
+        .andExpect(status().isCreated());
+    UUID requestId =
+        jdbc.queryForObject(
+            "SELECT transport_request_id FROM transport.transport_request WHERE transfer_id = ?",
+            UUID.class,
+            UUID.fromString(transferId));
+    grantTransportAuthority(scope, "synthetic-transport-operator", "TransportStatusAuthority");
+    grantTransportAuthority(
+        scope, "synthetic-transport-operator", "TransportDispatchCoordinationAuthority");
+    grantOwnerEventConsumer(scope, scope.originFacilityId(), "TransferProgressAuthority");
+
+    Instant base = Instant.now().minusSeconds(30);
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "status-observations",
+            "movement-awaiting-assignment",
+            "synthetic-transport-operator",
+            statusBody("SYN-MOVE-001", "AWAITING_ASSIGNMENT", base))
+        .andExpect(status().isCreated());
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "assignments",
+            "movement-assignment",
+            "synthetic-transport-operator",
+            "{\"sourceNamespace\":\"urn:ayuvahak:manual\","
+                + "\"sourceObservationId\":\"SYN-MOVE-ASSIGNMENT\","
+                + "\"assignmentReference\":\"SYN-ASSIGNMENT-10\",\"occurredAt\":\""
+                + base.plusSeconds(1)
+                + "\"}")
+        .andExpect(status().isCreated());
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "status-observations",
+            "movement-en-route-origin",
+            "synthetic-transport-operator",
+            statusBody("SYN-MOVE-002", "EN_ROUTE_TO_ORIGIN", base.plusSeconds(2)))
+        .andExpect(status().isCreated());
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "status-observations",
+            "movement-at-origin",
+            "synthetic-transport-operator",
+            statusBody("SYN-MOVE-003", "AT_ORIGIN", base.plusSeconds(3)))
+        .andExpect(status().isCreated());
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "status-observations",
+            "movement-patient-onboard",
+            "synthetic-transport-operator",
+            statusBody("SYN-MOVE-004", "PATIENT_ONBOARD", base.plusSeconds(4)))
+        .andExpect(status().isCreated());
+
+    assertThat(countTransportEvents(requestId)).isZero();
+    assertThat(transferStatus(transferId)).isEqualTo("READY");
+
+    String departureBody =
+        statusBody("SYN-MOVE-005", "EN_ROUTE_TO_DESTINATION", base.plusSeconds(5));
+    jdbc.execute(
+        "CREATE FUNCTION public.fail_transport_movement_outbox() RETURNS trigger AS $$ "
+            + "BEGIN IF NEW.event_type = 'transport.departure-confirmed.v1' THEN "
+            + "RAISE EXCEPTION 'synthetic movement outbox failure'; END IF; RETURN NEW; END; "
+            + "$$ LANGUAGE plpgsql");
+    jdbc.execute(
+        "CREATE TRIGGER fail_transport_movement_outbox BEFORE INSERT "
+            + "ON platform_eventing.internal_event FOR EACH ROW "
+            + "EXECUTE FUNCTION public.fail_transport_movement_outbox()");
+    try {
+      transportEvidenceCommand(
+              scope,
+              requestId,
+              "status-observations",
+              "movement-departure",
+              "synthetic-transport-operator",
+              departureBody)
+          .andExpect(status().isServiceUnavailable());
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT request_status FROM transport.transport_request "
+                      + "WHERE transport_request_id = ?",
+                  String.class,
+                  requestId))
+          .isEqualTo("PATIENT_ONBOARD");
+      assertThat(countTransportEvents(requestId)).isZero();
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT COUNT(*) FROM transport.status_observation WHERE transport_request_id = ? "
+                      + "AND source_observation_id = 'SYN-MOVE-005'",
+                  Integer.class,
+                  requestId))
+          .isZero();
+    } finally {
+      jdbc.execute(
+          "DROP TRIGGER IF EXISTS fail_transport_movement_outbox "
+              + "ON platform_eventing.internal_event");
+      jdbc.execute("DROP FUNCTION IF EXISTS public.fail_transport_movement_outbox()");
+    }
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "status-observations",
+            "movement-departure",
+            "synthetic-transport-operator",
+            departureBody)
+        .andExpect(status().isCreated());
+    assertThat(eventTypes(requestId)).containsExactly("transport.departure-confirmed.v1");
+    assertThat(transferStatus(transferId)).isEqualTo("READY");
+    outboxDispatcher.dispatchAvailable(Instant.now().plusSeconds(1));
+    assertThat(transferStatus(transferId)).isEqualTo("IN_TRANSIT");
+
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "status-observations",
+            "movement-arrival",
+            "synthetic-transport-operator",
+            statusBody("SYN-MOVE-006", "ARRIVED_DESTINATION", base.plusSeconds(6)))
+        .andExpect(status().isCreated());
+    assertThat(eventTypes(requestId))
+        .containsExactly("transport.departure-confirmed.v1", "transport.arrival-reported.v1");
+    outboxDispatcher.dispatchAvailable(Instant.now().plusSeconds(1));
+    assertThat(transferStatus(transferId)).isEqualTo("ARRIVED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM transfer.progress_fact WHERE transfer_id = ? "
+                    + "AND fact_kind IN ('DEPARTURE', 'ARRIVAL')",
+                Integer.class,
+                UUID.fromString(transferId)))
+        .isEqualTo(2);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM transfer.progress_fact WHERE transfer_id = ? "
+                    + "AND fact_kind IN ('HANDOVER', 'COMPLETION')",
+                Integer.class,
+                UUID.fromString(transferId)))
+        .isZero();
+  }
+
+  @Test
+  void transportArrivalCanReconcileBeforeTransferDepartureDelivery() throws Exception {
+    Scope scope = createOriginAndDestination();
+    String transferId = createReadyTransfer(scope, "transport-arrival-before-departure", true);
+    grantTransportWorker(scope);
+    requestTransport(scope, transferId, "transport-arrival-request", SENDER)
+        .andExpect(status().isCreated());
+    UUID requestId =
+        jdbc.queryForObject(
+            "SELECT transport_request_id FROM transport.transport_request WHERE transfer_id = ?",
+            UUID.class,
+            UUID.fromString(transferId));
+    String operator = "synthetic-transport-arrival-operator";
+    grantTransportAuthority(scope, operator, "TransportStatusAuthority");
+    grantTransportAuthority(scope, operator, "TransportDispatchCoordinationAuthority");
+    grantOwnerEventConsumer(scope, scope.originFacilityId(), "TransferProgressAuthority");
+
+    Instant base = Instant.now().minusSeconds(30);
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "status-observations",
+            "arrival-awaiting-assignment",
+            operator,
+            statusBody("SYN-ARRIVAL-001", "AWAITING_ASSIGNMENT", base))
+        .andExpect(status().isCreated());
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "assignments",
+            "arrival-assignment",
+            operator,
+            "{\"sourceNamespace\":\"urn:ayuvahak:manual\","
+                + "\"sourceObservationId\":\"SYN-ARRIVAL-ASSIGNMENT\","
+                + "\"assignmentReference\":\"SYN-ASSIGNMENT-ARRIVAL\",\"occurredAt\":\""
+                + base.plusSeconds(1)
+                + "\"}")
+        .andExpect(status().isCreated());
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "status-observations",
+            "arrival-en-route-origin",
+            operator,
+            statusBody("SYN-ARRIVAL-002", "EN_ROUTE_TO_ORIGIN", base.plusSeconds(2)))
+        .andExpect(status().isCreated());
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "status-observations",
+            "arrival-at-origin",
+            operator,
+            statusBody("SYN-ARRIVAL-003", "AT_ORIGIN", base.plusSeconds(3)))
+        .andExpect(status().isCreated());
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "status-observations",
+            "arrival-patient-onboard",
+            operator,
+            statusBody("SYN-ARRIVAL-004", "PATIENT_ONBOARD", base.plusSeconds(4)))
+        .andExpect(status().isCreated());
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "status-observations",
+            "arrival-en-route-destination",
+            operator,
+            statusBody("SYN-ARRIVAL-005", "EN_ROUTE_TO_DESTINATION", base.plusSeconds(5)))
+        .andExpect(status().isCreated());
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "status-observations",
+            "arrival-reported",
+            operator,
+            statusBody("SYN-ARRIVAL-006", "ARRIVED_DESTINATION", base.plusSeconds(6)))
+        .andExpect(status().isCreated());
+
+    assertThat(transferStatus(transferId)).isEqualTo("READY");
+    InternalEvent arrival =
+        transportEventFromOutbox(
+            EventType.parse("transport.arrival-reported.v1"), "transport-request/" + requestId);
+    transportMovementEventHandler.handle(arrival);
+
+    assertThat(transferStatus(transferId)).isEqualTo("ARRIVED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM transfer.progress_fact WHERE transfer_id = ? "
+                    + "AND fact_kind = 'DEPARTURE'",
+                Integer.class,
+                UUID.fromString(transferId)))
+        .isZero();
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT exception_code FROM transfer.progress_fact WHERE transfer_id = ? "
+                    + "AND fact_kind = 'ARRIVAL'",
+                String.class,
+                UUID.fromString(transferId)))
+        .isEqualTo("ARRIVAL_BEFORE_DEPARTURE_RECORDED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM transfer.progress_fact WHERE transfer_id = ? "
+                    + "AND fact_kind IN ('HANDOVER', 'COMPLETION')",
+                Integer.class,
+                UUID.fromString(transferId)))
+        .isZero();
+
+    outboxDispatcher.dispatchAvailable(Instant.now().plusSeconds(1));
+    assertThat(transferStatus(transferId)).isEqualTo("ARRIVED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM transfer.progress_fact WHERE transfer_id = ? "
+                    + "AND fact_kind = 'DEPARTURE'",
+                Integer.class,
+                UUID.fromString(transferId)))
+        .isZero();
+  }
+
+  @Test
+  void transportInterruptionUpdatesTransferAndUnfulfilledRemainsAnExplicitException()
+      throws Exception {
+    Scope scope = createOriginAndDestination();
+    String transferId = createReadyTransfer(scope, "transport-interruption-events", true);
+    grantTransportWorker(scope);
+    requestTransport(scope, transferId, "transport-interruption-request", SENDER)
+        .andExpect(status().isCreated());
+    UUID requestId =
+        jdbc.queryForObject(
+            "SELECT transport_request_id FROM transport.transport_request WHERE transfer_id = ?",
+            UUID.class,
+            UUID.fromString(transferId));
+    String operator = "synthetic-transport-operator";
+    grantTransportAuthority(scope, operator, "TransportStatusAuthority");
+    grantTransportAuthority(scope, operator, "TransportDispatchCoordinationAuthority");
+    grantOwnerEventConsumer(scope, scope.originFacilityId(), "TransferProgressAuthority");
+
+    Instant base = Instant.now().minusSeconds(30);
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "status-observations",
+            "interruption-awaiting-assignment",
+            operator,
+            statusBody("SYN-INTERRUPT-001", "AWAITING_ASSIGNMENT", base))
+        .andExpect(status().isCreated());
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "assignments",
+            "interruption-assignment",
+            operator,
+            "{\"sourceNamespace\":\"urn:ayuvahak:manual\","
+                + "\"sourceObservationId\":\"SYN-INTERRUPT-ASSIGNMENT\","
+                + "\"assignmentReference\":\"SYN-ASSIGNMENT-INTERRUPT\",\"occurredAt\":\""
+                + base.plusSeconds(1)
+                + "\"}")
+        .andExpect(status().isCreated());
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "status-observations",
+            "interruption-en-route-origin",
+            operator,
+            statusBody("SYN-INTERRUPT-002", "EN_ROUTE_TO_ORIGIN", base.plusSeconds(2)))
+        .andExpect(status().isCreated());
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "status-observations",
+            "interruption-at-origin",
+            operator,
+            statusBody("SYN-INTERRUPT-003", "AT_ORIGIN", base.plusSeconds(3)))
+        .andExpect(status().isCreated());
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "status-observations",
+            "interruption-patient-onboard",
+            operator,
+            statusBody("SYN-INTERRUPT-004", "PATIENT_ONBOARD", base.plusSeconds(4)))
+        .andExpect(status().isCreated());
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "status-observations",
+            "interruption-departure",
+            operator,
+            statusBody("SYN-INTERRUPT-005", "EN_ROUTE_TO_DESTINATION", base.plusSeconds(5)))
+        .andExpect(status().isCreated());
+    outboxDispatcher.dispatchAvailable(Instant.now().plusSeconds(1));
+    assertThat(transferStatus(transferId)).isEqualTo("IN_TRANSIT");
+
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "status-observations",
+            "interruption-status",
+            operator,
+            statusBodyWithReason(
+                "SYN-INTERRUPT-006", "INTERRUPTED", base.plusSeconds(6), "ROUTE_INTERRUPTED"))
+        .andExpect(status().isCreated());
+    assertThat(eventTypes(requestId))
+        .containsExactly("transport.departure-confirmed.v1", "transport.interrupted.v1");
+    outboxDispatcher.dispatchAvailable(Instant.now().plusSeconds(1));
+    assertThat(transferStatus(transferId)).isEqualTo("INTERRUPTED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT reason_code FROM transfer.progress_fact WHERE transfer_id = ? "
+                    + "AND fact_kind = 'INTERRUPTION'",
+                String.class,
+                UUID.fromString(transferId)))
+        .isEqualTo("ROUTE_INTERRUPTED");
+
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "unfulfilled",
+            "interruption-unfulfilled",
+            operator,
+            unfulfilledBody("SYN-INTERRUPT-007", base.plusSeconds(7), "NO_SAFE_CONTINUATION"))
+        .andExpect(status().isCreated());
+    assertThat(eventTypes(requestId))
+        .containsExactly(
+            "transport.departure-confirmed.v1",
+            "transport.interrupted.v1",
+            "transport.unfulfilled.v1");
+    outboxDispatcher.dispatchAvailable(Instant.now().plusSeconds(1));
+    assertThat(transferStatus(transferId)).isEqualTo("INTERRUPTED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT outcome FROM transfer.consumer_event_receipt "
+                    + "WHERE event_type = 'transport.unfulfilled.v1'",
+                String.class))
+        .isEqualTo("TRANSPORT_UNFULFILLED_REQUIRES_RECONCILIATION");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM transfer.progress_fact WHERE transfer_id = ? "
+                    + "AND fact_kind IN ('HANDOVER', 'COMPLETION')",
+                Integer.class,
+                UUID.fromString(transferId)))
+        .isZero();
+  }
+
+  private static String statusBody(String observationId, String status, Instant occurredAt) {
+    return "{\"observationId\":\""
+        + observationId
+        + "\","
+        + "\"sourceNamespace\":\"urn:ayuvahak:manual\",\"status\":\""
+        + status
+        + "\","
+        + "\"occurredAt\":\""
+        + occurredAt
+        + "\"}";
+  }
+
+  private static String statusBodyWithReason(
+      String observationId, String status, Instant occurredAt, String reasonCode) {
+    return "{\"observationId\":\""
+        + observationId
+        + "\","
+        + "\"sourceNamespace\":\"urn:ayuvahak:manual\",\"status\":\""
+        + status
+        + "\","
+        + "\"occurredAt\":\""
+        + occurredAt
+        + "\",\"reasonCode\":\""
+        + reasonCode
+        + "\"}";
+  }
+
+  private static String unfulfilledBody(
+      String observationId, Instant occurredAt, String reasonCode) {
+    return "{\"sourceNamespace\":\"urn:ayuvahak:manual\","
+        + "\"sourceObservationId\":\""
+        + observationId
+        + "\","
+        + "\"occurredAt\":\""
+        + occurredAt
+        + "\",\"reasonCode\":\""
+        + reasonCode
+        + "\"}";
+  }
+
+  private int countTransportEvents(UUID requestId) {
+    return jdbc.queryForObject(
+        "SELECT COUNT(*) FROM platform_eventing.internal_event WHERE aggregate_ref = ?",
+        Integer.class,
+        "transport-request/" + requestId);
+  }
+
+  private List<String> eventTypes(UUID requestId) {
+    return jdbc.queryForList(
+        "SELECT event_type FROM platform_eventing.internal_event WHERE aggregate_ref = ? "
+            + "ORDER BY aggregate_sequence",
+        String.class,
+        "transport-request/" + requestId);
+  }
+
+  private String transferStatus(String transferId) {
+    return jdbc.queryForObject(
+        "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
+        String.class,
+        UUID.fromString(transferId));
   }
 
   @Test
@@ -4681,6 +5140,28 @@ class TransferJourneyCommandsApiIT {
     var envelope = objectMapper.readTree(json);
     return new InternalEvent(
         InternalId.parse(envelope.get("eventId").stringValue()),
+        EventType.parse((String) row.get("event_type")),
+        (String) row.get("producer_context"),
+        java.util.Optional.of(
+            new AggregatePosition(
+                (String) row.get("aggregate_ref"),
+                ((Number) row.get("aggregate_sequence")).longValue())),
+        json.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+  }
+
+  private InternalEvent transportEventFromOutbox(EventType eventType, String aggregateRef)
+      throws Exception {
+    var row =
+        jdbc.queryForMap(
+            "SELECT e.event_id, e.event_type, e.producer_context, e.aggregate_ref, "
+                + "e.aggregate_sequence, e.envelope::text AS envelope "
+                + "FROM platform_eventing.internal_event e WHERE e.event_type = ? "
+                + "AND e.aggregate_ref = ? ORDER BY e.aggregate_sequence DESC LIMIT 1",
+            eventType.toString(),
+            aggregateRef);
+    String json = (String) row.get("envelope");
+    return new InternalEvent(
+        InternalId.parse(row.get("event_id").toString()),
         EventType.parse((String) row.get("event_type")),
         (String) row.get("producer_context"),
         java.util.Optional.of(

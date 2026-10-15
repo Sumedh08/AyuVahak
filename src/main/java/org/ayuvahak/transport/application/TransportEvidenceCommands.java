@@ -19,6 +19,12 @@ import org.ayuvahak.platform.audit.domain.AuditTargetContext;
 import org.ayuvahak.platform.authorization.application.AuthorizationService;
 import org.ayuvahak.platform.authorization.domain.AuthorizationDecision;
 import org.ayuvahak.platform.core.InternalId;
+import org.ayuvahak.platform.core.OccurredAt;
+import org.ayuvahak.platform.core.RecordedAt;
+import org.ayuvahak.platform.event.AggregatePosition;
+import org.ayuvahak.platform.event.EventEnvelope;
+import org.ayuvahak.platform.event.EventType;
+import org.ayuvahak.platform.eventing.application.OutboxWriter;
 import org.ayuvahak.platform.executioncontext.ExecutionContext;
 import org.ayuvahak.platform.executioncontext.ExecutionScope;
 import org.ayuvahak.platform.idempotency.CommandReceiptKey;
@@ -36,6 +42,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
+import tools.jackson.databind.ObjectMapper;
 
 /** Audited owner commands for manual assignment, status, and ETA evidence. */
 @Service
@@ -53,6 +60,8 @@ public final class TransportEvidenceCommands {
   private final AuditWriter audit;
   private final TransactionTemplate transaction;
   private final Clock clock;
+  private final OutboxWriter outbox;
+  private final ObjectMapper mapper;
 
   public TransportEvidenceCommands(
       TransportRequestStore requests,
@@ -60,12 +69,16 @@ public final class TransportEvidenceCommands {
       AuthorizationService authorization,
       AuditWriter audit,
       PlatformTransactionManager transactionManager,
+      OutboxWriter outbox,
+      ObjectMapper mapper,
       @org.springframework.beans.factory.annotation.Qualifier("auditClock") Clock clock) {
     this.requests = Objects.requireNonNull(requests, "Transport request store");
     this.evidence = Objects.requireNonNull(evidence, "Transport evidence store");
     this.authorization = Objects.requireNonNull(authorization, "authorization");
     this.audit = Objects.requireNonNull(audit, "audit writer");
     this.transaction = new TransactionTemplate(Objects.requireNonNull(transactionManager));
+    this.outbox = Objects.requireNonNull(outbox, "outbox writer");
+    this.mapper = Objects.requireNonNull(mapper, "object mapper");
     this.clock = Objects.requireNonNull(clock, "audit clock");
   }
 
@@ -97,6 +110,29 @@ public final class TransportEvidenceCommands {
           "Transport retained the status evidence for reconciliation without changing request state.");
     }
     return result;
+  }
+
+  public TransportEvidenceCommandResult recordUnfulfilled(
+      ExecutionContext context,
+      InternalId requestId,
+      StatusInput input,
+      String idempotencyKey,
+      RequestFingerprint fingerprint) {
+    requireContext(context, requestId);
+    if (input.status() != TransportRequest.Status.UNFULFILLED) {
+      throw invalid("The unfulfilled operation must record an UNFULFILLED outcome.");
+    }
+    requireAuthority(context, requestId, TransportAuthorities.dispatchCoordination().code());
+    return execute(
+        context,
+        requestId,
+        input.sourceNamespace(),
+        input.sourceObservationId(),
+        "transport.unfulfilled.record",
+        "unfulfilled-outcomes",
+        idempotencyKey,
+        fingerprint,
+        (key, at) -> persistStatus(context, requestId, input, fingerprint, key, at));
   }
 
   public TransportEvidenceCommandResult recordAssignment(
@@ -254,9 +290,18 @@ public final class TransportEvidenceCommands {
             .reasonCode()
             .orElseGet(
                 () ->
-                    outcome == TransportStatusObservation.Outcome.APPLIED
-                        ? "STATUS_ACCEPTED"
-                        : outcome.name());
+                    switch (input.status()) {
+                      case INTERRUPTED -> "TRANSPORT_INTERRUPTED";
+                      case UNFULFILLED -> "TRANSPORT_UNFULFILLED";
+                      default ->
+                          outcome == TransportStatusObservation.Outcome.APPLIED
+                              ? "STATUS_ACCEPTED"
+                              : outcome.name();
+                    });
+    String authorityCode =
+        input.status() == TransportRequest.Status.UNFULFILLED
+            ? TransportAuthorities.dispatchCoordination().code()
+            : TransportAuthorities.status().code();
     TransportStatusObservation observation =
         new TransportStatusObservation(
             InternalId.generate(),
@@ -268,7 +313,7 @@ public final class TransportEvidenceCommands {
             input.occurredAt(),
             now,
             context.actor(),
-            TransportAuthorities.status().code(),
+            authorityCode,
             context.scope().organization().orElseThrow(),
             context.scope().facility().orElseThrow(),
             context.correlationId(),
@@ -280,12 +325,9 @@ public final class TransportEvidenceCommands {
       throw unavailable();
     }
     auditMutation(
-        context,
-        "TRANSPORT_STATUS_OBSERVATION",
-        requestId,
-        outcome.name(),
-        TransportAuthorities.status().code(),
-        now);
+        context, "TRANSPORT_STATUS_OBSERVATION", requestId, outcome.name(), authorityCode, now);
+    movementEventType(input.status())
+        .ifPresent(type -> recordMovementEvent(context, request, observation, type));
     requests.completeReceipt(receiptKey, requestId, now);
     return new TransportEvidenceCommandResult(
         observation.id(),
@@ -594,6 +636,46 @@ public final class TransportEvidenceCommands {
           PlatformErrorCode.AUDIT_UNAVAILABLE,
           "Transport evidence and its required audit could not be committed.");
     }
+  }
+
+  private void recordMovementEvent(
+      ExecutionContext context,
+      TransportRequest request,
+      TransportStatusObservation observation,
+      EventType eventType) {
+    var payload = mapper.createObjectNode();
+    payload.put("transferReference", request.transferId().toString());
+    payload.put("transportRequestReference", request.id().toString());
+    payload.put("originFacilityReference", request.originFacility().value());
+    payload.put("destinationFacilityReference", request.destinationFacility().value());
+    payload.put("evidenceReference", observation.id().toString());
+    payload.put("evidenceKind", observation.status().name());
+    payload.put("sourceNamespace", observation.sourceNamespace());
+    observation.sourceSequence().ifPresent(value -> payload.put("sourceSequence", value));
+    observation.reasonCode().ifPresent(value -> payload.put("reasonCode", value));
+    outbox.record(
+        new EventEnvelope(
+            InternalId.generate(),
+            eventType,
+            "transport",
+            new OccurredAt(observation.occurredAt()),
+            new RecordedAt(observation.recordedAt()),
+            context,
+            Optional.of(
+                new AggregatePosition(
+                    "transport-request/" + request.id(), observation.resultingRequestVersion())),
+            payload));
+  }
+
+  private static Optional<EventType> movementEventType(TransportRequest.Status status) {
+    return switch (status) {
+      case EN_ROUTE_TO_DESTINATION ->
+          Optional.of(EventType.parse("transport.departure-confirmed.v1"));
+      case ARRIVED_DESTINATION -> Optional.of(EventType.parse("transport.arrival-reported.v1"));
+      case INTERRUPTED -> Optional.of(EventType.parse("transport.interrupted.v1"));
+      case UNFULFILLED -> Optional.of(EventType.parse("transport.unfulfilled.v1"));
+      default -> Optional.empty();
+    };
   }
 
   private static AuditAuthenticationEvidence authenticationEvidence(ExecutionContext context) {

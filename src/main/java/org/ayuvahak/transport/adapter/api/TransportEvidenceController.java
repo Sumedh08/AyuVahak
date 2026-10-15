@@ -53,6 +53,9 @@ public final class TransportEvidenceController {
           "reasonCode");
   private static final Set<String> ASSIGNMENT_FIELDS =
       Set.of("sourceNamespace", "sourceObservationId", "assignmentReference", "occurredAt");
+  private static final Set<String> UNFULFILLED_FIELDS =
+      Set.of(
+          "sourceNamespace", "sourceObservationId", "sourceSequence", "occurredAt", "reasonCode");
   private static final Set<String> ETA_FIELDS =
       Set.of("observationId", "sourceNamespace", "estimatedArrivalAt", "observedAt");
 
@@ -83,6 +86,42 @@ public final class TransportEvidenceController {
     var normalized = mapper.valueToTree(request);
     var result =
         commands.recordStatus(
+            context, requestId, input, idempotencyKey, RequestFingerprint.from(normalized));
+    return response(requestId, result);
+  }
+
+  @PostMapping("/unfulfilled")
+  public ResponseEntity<EvidenceRepresentation> recordUnfulfilled(
+      @PathVariable String transportRequestId,
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = "X-AyuVahak-Execution-Scope", required = false) String scope,
+      @RequestHeader(value = "X-AyuVahak-Organization-Id", required = false) String organizationId,
+      @RequestHeader(value = "X-AyuVahak-Facility-Id", required = false) String facilityId,
+      @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+      @RequestBody JsonNode body) {
+    UnfulfilledRequest request = read(body, UNFULFILLED_FIELDS, UnfulfilledRequest.class);
+    InternalId requestId = parseId(transportRequestId);
+    validateSource(request.sourceNamespace(), request.sourceObservationId());
+    if (request.occurredAt() == null
+        || request.reasonCode() == null
+        || !request.reasonCode().matches("[A-Z][A-Z0-9_]{1,63}")
+        || (request.sourceSequence() != null && request.sourceSequence() < 0)) {
+      throw invalid("A valid source time, sequence, and coded unfulfilled reason are required.");
+    }
+    ExecutionContext context = context(actor, scope, organizationId, facilityId);
+    var normalized = mapper.valueToTree(request);
+    var input =
+        new TransportEvidenceCommands.StatusInput(
+            request.sourceNamespace(),
+            request.sourceObservationId(),
+            request.sourceSequence() == null
+                ? OptionalLong.empty()
+                : OptionalLong.of(request.sourceSequence()),
+            TransportRequest.Status.UNFULFILLED,
+            request.occurredAt(),
+            Optional.of(request.reasonCode()));
+    var result =
+        commands.recordUnfulfilled(
             context, requestId, input, idempotencyKey, RequestFingerprint.from(normalized));
     return response(requestId, result);
   }
@@ -171,7 +210,7 @@ public final class TransportEvidenceController {
     if (request.sourceSequence() != null && request.sourceSequence() < 0) {
       throw invalid("The source sequence must not be negative.");
     }
-    if (request.reasonCode() != null && !request.reasonCode().matches("[A-Z][A-Z0-9_]{0,79}")) {
+    if (request.reasonCode() != null && !request.reasonCode().matches("[A-Z][A-Z0-9_]{1,63}")) {
       throw invalid("The reason code is invalid.");
     }
     TransportRequest.Status status;
@@ -314,6 +353,13 @@ public final class TransportEvidenceController {
       String sourceObservationId,
       String assignmentReference,
       Instant occurredAt) {}
+
+  public record UnfulfilledRequest(
+      String sourceNamespace,
+      String sourceObservationId,
+      Long sourceSequence,
+      Instant occurredAt,
+      String reasonCode) {}
 
   public record EtaRequest(
       String observationId,

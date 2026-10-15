@@ -87,6 +87,12 @@ public interface TransferStore {
 
   Optional<TransferProgressTarget> findProgressTarget(InternalId transferId);
 
+  /** Records the selected Transport reference without taking ownership of Transport persistence. */
+  boolean recordTransportRequestLink(
+      InternalId transferId, InternalId transportRequestId, boolean select, Instant linkedAt);
+
+  boolean isSelectedTransportRequest(InternalId transferId, InternalId transportRequestId);
+
   List<TransferProgressFact> findProgressFacts(InternalId transferId);
 
   List<TransferProgressCorrection> findProgressCorrections(InternalId transferId);

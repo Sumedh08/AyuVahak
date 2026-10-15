@@ -603,6 +603,61 @@ public class JdbcTransferStore implements TransferStore {
     return progressTarget(transferId, false);
   }
 
+  @Override
+  public boolean recordTransportRequestLink(
+      InternalId transferId, InternalId transportRequestId, boolean select, Instant linkedAt) {
+    Optional<Boolean> existing =
+        jdbc
+            .query(
+                "SELECT selected FROM transfer.transport_request_link "
+                    + "WHERE transport_request_id = ? AND transfer_id = ?",
+                (result, row) -> result.getBoolean("selected"),
+                transportRequestId.value(),
+                transferId.value())
+            .stream()
+            .findFirst();
+    if (existing.isPresent()) {
+      if (select && !existing.orElseThrow()) {
+        jdbc.update(
+            "UPDATE transfer.transport_request_link SET selected = false "
+                + "WHERE transfer_id = ? AND selected",
+            transferId.value());
+        return jdbc.update(
+                "UPDATE transfer.transport_request_link SET selected = true "
+                    + "WHERE transfer_id = ? AND transport_request_id = ?",
+                transferId.value(),
+                transportRequestId.value())
+            == 1;
+      }
+      return true;
+    }
+    if (select) {
+      jdbc.update(
+          "UPDATE transfer.transport_request_link SET selected = false "
+              + "WHERE transfer_id = ? AND selected",
+          transferId.value());
+    }
+    return jdbc.update(
+            "INSERT INTO transfer.transport_request_link "
+                + "(transport_request_id, transfer_id, selected, linked_at) VALUES (?, ?, ?, ?)",
+            transportRequestId.value(),
+            transferId.value(),
+            select,
+            Timestamp.from(linkedAt))
+        == 1;
+  }
+
+  @Override
+  public boolean isSelectedTransportRequest(InternalId transferId, InternalId transportRequestId) {
+    return Boolean.TRUE.equals(
+        jdbc.queryForObject(
+            "SELECT EXISTS (SELECT 1 FROM transfer.transport_request_link "
+                + "WHERE transfer_id = ? AND transport_request_id = ? AND selected)",
+            Boolean.class,
+            transferId.value(),
+            transportRequestId.value()));
+  }
+
   private Optional<TransferProgressTarget> progressTarget(InternalId transferId, boolean lock) {
     String sql =
         "SELECT t.transfer_id, t.journey_id, t.request_attempt_id, t.transfer_status, "

@@ -12,6 +12,7 @@ import org.ayuvahak.platform.audit.domain.AuditAuthenticationEvidence;
 import org.ayuvahak.platform.audit.domain.AuditAuthorizationOutcome;
 import org.ayuvahak.platform.audit.domain.AuditEvidence;
 import org.ayuvahak.platform.audit.domain.AuditOutcome;
+import org.ayuvahak.platform.audit.domain.AuditTargetContext;
 import org.ayuvahak.platform.authentication.AuthenticationProperties;
 import org.ayuvahak.platform.authorization.application.AuthorizationService;
 import org.ayuvahak.platform.authorization.domain.AuthorizationDecision;
@@ -26,8 +27,11 @@ import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
 import org.ayuvahak.transfer.adapter.configuration.TransferProperties;
 import org.ayuvahak.transfer.domain.TransferAuthorities;
+import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /** Transfer authorizes a human initiation and delegates creation to the Transport owner. */
 @Service
@@ -36,26 +40,32 @@ public final class TransferTransportRequestCommands {
   private final AuthorizationService authorization;
   private final AuditWriter audit;
   private final TransportRequestCreationPort transport;
+  private final TransferStore store;
   private final ExecutionContextFactory contexts;
   private final AuthenticationProperties authentication;
   private final TransferProperties properties;
   private final Clock clock;
+  private final TransactionTemplate transaction;
 
   public TransferTransportRequestCommands(
       AuthorizationService authorization,
       AuditWriter audit,
       TransportRequestCreationPort transport,
+      TransferStore store,
       ExecutionContextFactory contexts,
       AuthenticationProperties authentication,
       TransferProperties properties,
+      PlatformTransactionManager transactionManager,
       @org.springframework.beans.factory.annotation.Qualifier("auditClock") Clock clock) {
     this.authorization = Objects.requireNonNull(authorization, "authorization");
     this.audit = Objects.requireNonNull(audit, "audit writer");
     this.transport = Objects.requireNonNull(transport, "Transport request port");
+    this.store = Objects.requireNonNull(store, "Transfer store");
     this.contexts = Objects.requireNonNull(contexts, "execution context factory");
     this.authentication = Objects.requireNonNull(authentication, "authentication properties");
     this.properties = Objects.requireNonNull(properties, "Transfer properties");
     this.clock = Objects.requireNonNull(clock, "audit clock");
+    this.transaction = new TransactionTemplate(Objects.requireNonNull(transactionManager));
   }
 
   public TransportRequestCreationPort.Result request(
@@ -101,8 +111,62 @@ public final class TransferTransportRequestCommands {
             RequestedExecutionScope.facility(organization, facility),
             initiatingContext.correlationId(),
             initiatingContext.causationId());
-    return transport.create(
-        serviceContext, transferId, initiatingContext.actor(), idempotencyKey, fingerprint);
+    try {
+      return transaction.execute(
+          ignored -> {
+            TransportRequestCreationPort.Result result =
+                transport.create(
+                    serviceContext,
+                    transferId,
+                    initiatingContext.actor(),
+                    idempotencyKey,
+                    fingerprint);
+            if (!store.recordTransportRequestLink(
+                transferId,
+                result.transportRequestId(),
+                !result.commandReplayed(),
+                clock.instant())) {
+              throw problem(
+                  HttpStatus.SERVICE_UNAVAILABLE,
+                  PlatformErrorCode.TRANSFER_UNAVAILABLE,
+                  "The Transfer could not record its selected Transport request safely.");
+            }
+            if (!result.commandReplayed()) {
+              try {
+                audit.recordMutation(
+                    new AuditEvidence(
+                        AuditActionKind.PROTECTED_MUTATION,
+                        Optional.of(initiatingContext.actor()),
+                        Optional.of(initiatingContext.scope()),
+                        "TRANSFER_TRANSPORT_REQUEST_LINKED",
+                        "TransportRequestLink",
+                        Optional.of(result.transportRequestId()),
+                        clock.instant(),
+                        AuditOutcome.SUCCEEDED,
+                        Optional.of("TRANSFER_SELECTED_TRANSPORT_REQUEST"),
+                        AuditAuthenticationEvidence.HUMAN_ACCESS_TOKEN,
+                        AuditAuthorizationOutcome.ALLOWED,
+                        initiatingContext.correlationId(),
+                        Optional.of(
+                            new AuditTargetContext(
+                                initiatingContext.scope().kind(),
+                                initiatingContext.scope().organization(),
+                                initiatingContext.scope().facility()))));
+              } catch (AuditPersistenceUnavailableException unavailable) {
+                throw problem(
+                    HttpStatus.SERVICE_UNAVAILABLE,
+                    PlatformErrorCode.AUDIT_UNAVAILABLE,
+                    "The Transport request link and its required audit could not be committed.");
+              }
+            }
+            return result;
+          });
+    } catch (DataAccessException unavailable) {
+      throw problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          PlatformErrorCode.TRANSFER_UNAVAILABLE,
+          "The Transfer and Transport request linkage could not be committed safely.");
+    }
   }
 
   private void recordDenial(ExecutionContext context, InternalId transferId, boolean unavailable) {
