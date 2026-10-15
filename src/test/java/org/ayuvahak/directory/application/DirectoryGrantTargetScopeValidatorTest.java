@@ -39,6 +39,12 @@ class DirectoryGrantTargetScopeValidatorTest {
             validator.isValid(
                 DirectoryAuthorities.read(), RequestedExecutionScope.organization(ORGANIZATION)))
         .isTrue();
+    assertThat(validator.supports(DirectoryAuthorities.mcsdSourceFeedImport())).isTrue();
+    assertThat(
+            validator.isValid(
+                DirectoryAuthorities.mcsdSourceFeedImport(),
+                RequestedExecutionScope.organization(ORGANIZATION)))
+        .isTrue();
     assertThat(
             validator.isValid(
                 DirectoryAuthorities.curation(),

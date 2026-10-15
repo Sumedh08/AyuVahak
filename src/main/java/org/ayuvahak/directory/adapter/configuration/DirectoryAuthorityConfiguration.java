@@ -28,4 +28,9 @@ public class DirectoryAuthorityConfiguration {
   FunctionalAuthority directoryCapacityLifecycleOrganizationReadAuthority() {
     return DirectoryAuthorities.capacityLifecycleOrganizationRead();
   }
+
+  @Bean
+  FunctionalAuthority directoryMcsdSourceFeedImportAuthority() {
+    return DirectoryAuthorities.mcsdSourceFeedImport();
+  }
 }

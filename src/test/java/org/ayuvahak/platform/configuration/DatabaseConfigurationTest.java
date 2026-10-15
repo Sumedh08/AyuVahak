@@ -23,6 +23,7 @@ class DatabaseConfigurationTest {
             "ayuvahak.authentication.allow-http=true",
             "ayuvahak.matching.owner-read-client-id=ayuvahak-matching-owner-read",
             "ayuvahak.eventing.outbox.delivered-event-retention=PT24H",
+            "ayuvahak.exchange.egress.allowed-ports[0]=443",
             "ayuvahak.database.url=",
             "ayuvahak.database.username=",
             "ayuvahak.database.password=")

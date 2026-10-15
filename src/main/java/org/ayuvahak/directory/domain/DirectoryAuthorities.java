@@ -23,6 +23,9 @@ public final class DirectoryAuthorities {
   private static final FunctionalAuthority CAPACITY_LIFECYCLE_ORGANIZATION_READ =
       new FunctionalAuthority(
           "DirectoryCapacityLifecycleOrganizationRead", Set.of(ExecutionScope.Kind.PLATFORM));
+  private static final FunctionalAuthority MCSD_SOURCE_FEED_IMPORT =
+      new FunctionalAuthority(
+          "DirectoryMcsdSourceFeedImport", Set.of(ExecutionScope.Kind.ORGANIZATION));
 
   private DirectoryAuthorities() {}
 
@@ -40,5 +43,9 @@ public final class DirectoryAuthorities {
 
   public static FunctionalAuthority capacityLifecycleOrganizationRead() {
     return CAPACITY_LIFECYCLE_ORGANIZATION_READ;
+  }
+
+  public static FunctionalAuthority mcsdSourceFeedImport() {
+    return MCSD_SOURCE_FEED_IMPORT;
   }
 }

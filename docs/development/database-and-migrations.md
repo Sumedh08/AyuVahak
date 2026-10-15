@@ -1,6 +1,6 @@
 # Database and migrations
 
-The platform uses PostgreSQL with PostGIS, Spring JDBC, and Flyway Community. The current repository contains the Phase 2 platform schemas and the implemented Volume II schemas for Directory, Capacity, Referral, Matching, and Transfer. A business schema is introduced only when its owning context is implemented; no empty future schemas are pre-created. Transport has no schema. See the [Phase 1 engineering decisions](../architecture/phase-1-engineering-decisions.md) for the database ownership policy and the [Volume II architecture](../architecture/volume-2-core-care-coordination.md) for context boundaries.
+The platform uses PostgreSQL with PostGIS, Spring JDBC, and Flyway Community. The current repository contains the Phase 2 platform schemas, the Phase 9 technical `platform_exchange` schema, and the implemented Volume II schemas for Directory, Capacity, Referral, Matching, and Transfer. Directory owns the inbound mCSD feed receipt in its own schema. A business schema is introduced only when its owning context is implemented; no empty future schemas are pre-created. Transport has no schema. See the [Phase 1 engineering decisions](../architecture/phase-1-engineering-decisions.md) for the database ownership policy, the [Volume II architecture](../architecture/volume-2-core-care-coordination.md), and the [Volume III architecture](../architecture/volume-3-interoperability-security-transport.md) for context boundaries.
 
 ## Runtime configuration
 
@@ -24,6 +24,8 @@ Versioned SQL migrations live in `src/main/resources/db/migration/` and use Flyw
 The initial `V1__enable_postgis.sql` migration enables the PostGIS extension already installed in the database image. Platform migrations then establish Phase 2-owned identity/access, audit, and eventing state. Phase 3 migrations `V8` through `V11` create Directory-owned Organization, Facility, Location, service, capability, assertion, identifier, and correction-history state. Later owner migrations establish Capacity, Referral, Matching, and Transfer state. Each schema is created only when its owner context is implemented. The database must have the PostGIS extension files installed before the application starts; an operator or provisioning step may preinstall the extension. If it is absent and the migration role cannot create it, startup fails visibly.
 
 Transfer migrations V20 through V35 create Transfer-owned coordination state; Capacity retains sole ownership of reservations. Only the owning platform or business context may add migrations for its objects. Do not edit an already-applied migration to change its meaning. Add a forward migration for corrections. For a failed or destructive change, use a verified backup and restore procedure appropriate to the deployment rather than relying on automatic rollback. No regulatory retention or production backup interval is implied here.
+
+Phase 9 migrations V40–V41 create versioned partner trust configuration under `platform_exchange`; they store secret/key references, never secret bytes. V42 creates `directory.mcsd_feed_receipt`, which stores bounded replay identity and owner outcomes atomically with Directory feed imports. Directory owns that receipt and its retention/reconciliation policy. The receipt does not store FHIR payloads or create a generic external-operation ledger.
 
 ## Verification
 

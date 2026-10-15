@@ -1,7 +1,10 @@
 package org.ayuvahak.referral.adapter.configuration;
 
+import org.ayuvahak.directory.application.DirectoryScopeReferenceLookup;
 import org.ayuvahak.platform.authorization.domain.FunctionalAuthority;
+import org.ayuvahak.referral.application.ReferralGrantTargetScopeValidator;
 import org.ayuvahak.referral.domain.ReferralAuthorities;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -49,5 +52,12 @@ public class ReferralAuthorityConfiguration {
   @Bean
   FunctionalAuthority referralPatientContextDisclosureAuthority() {
     return ReferralAuthorities.patientContextDisclosure();
+  }
+
+  @Bean
+  @ConditionalOnBean(DirectoryScopeReferenceLookup.class)
+  ReferralGrantTargetScopeValidator referralGrantTargetScopeValidator(
+      DirectoryScopeReferenceLookup directoryScopeReferenceLookup) {
+    return new ReferralGrantTargetScopeValidator(directoryScopeReferenceLookup);
   }
 }

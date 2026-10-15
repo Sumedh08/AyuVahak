@@ -10,10 +10,13 @@ import org.ayuvahak.platform.executioncontext.ExecutionContext;
  * Directory-owned read boundary for mCSD ITI-90 discovery and optional ITI-91 history reads.
  * Implementations return already mapped Directory facts; secure network transport is supplied by
  * Phase 9 and must not be implemented by this contract. A source namespace is a logical selector,
- * never a URL or proof that a remote destination is trusted. A future adapter resolves it only
+ * never a URL or proof that a remote destination is trusted. The Phase 9 adapter resolves it only
  * through administrator-controlled partner configuration.
  */
 public interface DirectoryMcsdSourceQueryPort {
+
+  /** Verifies deployment binding and current partner trust without making a network request. */
+  void requireSourceAvailable(IssuerId sourceNamespace, DirectoryMcsdSourceQueryPurpose purpose);
 
   DirectoryMcsdSourcePage search(SearchRequest request);
 

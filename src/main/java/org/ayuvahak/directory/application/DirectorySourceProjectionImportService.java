@@ -48,7 +48,9 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Service
 @Lazy
 public class DirectorySourceProjectionImportService
-    implements DirectorySourceProjectionImportPort, DirectoryMcsdSourceQueryAuthorizationPort {
+    implements DirectorySourceProjectionImportPort,
+        DirectoryMcsdFeedProjectionImportPort,
+        DirectoryMcsdSourceQueryAuthorizationPort {
 
   private static final String ACTION_CODE = "DIRECTORY_MCSD_SOURCE_IMPORT";
 
@@ -82,6 +84,262 @@ public class DirectorySourceProjectionImportService
     requireServiceContext(context);
     requireCurationAuthority(context, ACTION_CODE);
 
+    return importAuthorizedProjection(context, projection);
+  }
+
+  @Override
+  public DirectorySourceProjectionImportResult importSourceProjectionFromFeed(
+      ExecutionContext context, IssuerId sourceNamespace, DirectorySourceProjection projection) {
+    Objects.requireNonNull(context, "execution context");
+    Objects.requireNonNull(sourceNamespace, "source namespace");
+    Objects.requireNonNull(projection, "source projection");
+    authorizeSourceProjectionFeed(context, sourceNamespace);
+    if (!sourceNamespace.equals(projection.metadata().sourceIdentity().issuer())) {
+      recordFeedDenial(context, "SOURCE_NAMESPACE_MISMATCH");
+      throw new PlatformProblemException(
+          HttpStatus.FORBIDDEN,
+          PlatformErrorCode.AUTHORIZATION_DENIED,
+          "The source projection does not belong to the authenticated Directory feed.");
+    }
+
+    if (!isWithinFeedOrganizationScope(context, projection)) {
+      recordFeedDenial(context, "TARGET_SCOPE_MISMATCH");
+      throw new PlatformProblemException(
+          HttpStatus.FORBIDDEN,
+          PlatformErrorCode.AUTHORIZATION_DENIED,
+          "The source projection is outside the authenticated Directory feed scope.");
+    }
+
+    return importAuthorizedProjection(context, projection);
+  }
+
+  @Override
+  public DirectorySourceProjectionImportResult importSourceDeletionFromFeed(
+      ExecutionContext context, IssuerId sourceNamespace, DirectoryMcsdSourceDeletion deletion) {
+    Objects.requireNonNull(context, "execution context");
+    Objects.requireNonNull(sourceNamespace, "source namespace");
+    Objects.requireNonNull(deletion, "source deletion");
+    authorizeSourceProjectionFeed(context, sourceNamespace);
+    if (!sourceNamespace.equals(deletion.sourceIdentity().issuer())) {
+      recordFeedDenial(context, "SOURCE_NAMESPACE_MISMATCH");
+      throw feedDenied();
+    }
+
+    FeedDeletionAttempt attempt;
+    try {
+      attempt =
+          transaction.execute(
+              status -> {
+                store.lockMcsdSourceIdentity(deletion.sourceIdentity());
+                Optional<DirectorySourceProjectionState> current =
+                    store.lockMcsdSourceProjection(deletion.sourceIdentity());
+                InternalId organizationId =
+                    context
+                        .scope()
+                        .organization()
+                        .flatMap(this::internalOrganizationId)
+                        .orElse(null);
+                Optional<DirectoryConceptOwner> feedOrganization =
+                    organizationId == null
+                        ? Optional.empty()
+                        : store.lockConceptOwner(DirectoryConceptType.ORGANIZATION, organizationId);
+                if (current.isEmpty()
+                    || current.orElseThrow().conceptId().isEmpty()
+                    || !supportsSourceDeletion(current.orElseThrow())
+                    || feedOrganization.filter(DirectoryConceptOwner::active).isEmpty()
+                    || !belongsToOrganization(current.orElseThrow(), organizationId)) {
+                  return FeedDeletionAttempt.deniedAttempt();
+                }
+
+                DirectorySourceProjectionState accepted = current.orElseThrow();
+                InternalId conceptId = accepted.conceptId().orElseThrow();
+                if (accepted.opaqueVersionId().isEmpty()
+                    || !accepted
+                        .opaqueVersionId()
+                        .orElseThrow()
+                        .equals(deletion.expectedVersionId())) {
+                  return FeedDeletionAttempt.completed(
+                      result(
+                          DirectorySourceProjectionReconciliation.Outcome.CONFLICT,
+                          accepted.conceptType(),
+                          conceptId));
+                }
+                if (!accepted.sourceActive()) {
+                  return FeedDeletionAttempt.completed(
+                      result(
+                          DirectorySourceProjectionReconciliation.Outcome.UNCHANGED,
+                          accepted.conceptType(),
+                          conceptId));
+                }
+
+                Instant now = clock.instant();
+                DirectorySourceProjectionState observedStatus =
+                    new DirectorySourceProjectionState(
+                        accepted.projectionId(),
+                        accepted.sourceIdentity(),
+                        accepted.conceptType(),
+                        accepted.conceptId(),
+                        accepted.profileUri(),
+                        accepted.opaqueVersionId(),
+                        accepted.sourceUpdatedAt(),
+                        accepted.sourceUpdatedAtIsOrderedRevision(),
+                        deletion.fingerprint(),
+                        false,
+                        DirectorySourceProjectionReconciliation.Outcome.RECONCILIATION_REQUIRED,
+                        accepted.version() + 1,
+                        now);
+                if (!store.updateMcsdSourceProjection(observedStatus, accepted.version())) {
+                  throw versionConflict();
+                }
+                recordMutation(
+                    context,
+                    sourceResourceType(accepted.conceptType()),
+                    conceptId,
+                    AuditOutcome.SUCCEEDED,
+                    "SOURCE_STATUS_OBSERVED");
+                return FeedDeletionAttempt.completed(
+                    result(
+                        DirectorySourceProjectionReconciliation.Outcome.RECONCILIATION_REQUIRED,
+                        accepted.conceptType(),
+                        conceptId));
+              });
+    } catch (AuditPersistenceUnavailableException failure) {
+      throw new PlatformProblemException(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          PlatformErrorCode.AUDIT_UNAVAILABLE,
+          "The source status could not be committed with its required audit evidence.");
+    } catch (DataAccessException failure) {
+      throw new PlatformProblemException(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          PlatformErrorCode.DIRECTORY_UNAVAILABLE,
+          "The source status could not be reconciled safely.");
+    }
+
+    if (attempt.denied()) {
+      recordFeedDenial(context, "TARGET_SCOPE_MISMATCH");
+      throw feedDenied();
+    }
+    return attempt.value().orElseThrow();
+  }
+
+  @Override
+  public void authorizeSourceProjectionFeed(ExecutionContext context, IssuerId sourceNamespace) {
+    Objects.requireNonNull(context, "execution context");
+    Objects.requireNonNull(sourceNamespace, "source namespace");
+    requirePartnerFeedContext(context);
+    AuthorizationDecision decision =
+        authorization
+            .getObject()
+            .evaluate(context, DirectoryAuthorities.mcsdSourceFeedImport().code());
+    if (!decision.isAllowed()) {
+      recordFeedDenial(context, "AUTHORIZATION_DENIED");
+      PlatformErrorCode code =
+          decision.denialReason().orElse(null)
+                  == AuthorizationDecision.DenialReason.GRANT_STORE_UNAVAILABLE
+              ? PlatformErrorCode.AUTHORIZATION_UNAVAILABLE
+              : PlatformErrorCode.AUTHORIZATION_DENIED;
+      throw new PlatformProblemException(
+          code == PlatformErrorCode.AUTHORIZATION_UNAVAILABLE
+              ? HttpStatus.SERVICE_UNAVAILABLE
+              : HttpStatus.FORBIDDEN,
+          code,
+          "The service is not authorized to import this Directory feed.");
+    }
+  }
+
+  private boolean isWithinFeedOrganizationScope(
+      ExecutionContext context, DirectorySourceProjection projection) {
+    ExternalReference organizationReference = context.scope().organization().orElseThrow();
+    InternalId organizationId = internalOrganizationId(organizationReference).orElse(null);
+    if (organizationId == null
+        || store
+            .findOrganization(organizationId)
+            .filter(value -> value.status() == DirectoryLifecycleStatus.ACTIVE)
+            .isEmpty()) {
+      return false;
+    }
+    return switch (projection) {
+      case DirectorySourceProjection.OrganizationFact organization ->
+          referencesOrganization(organization.metadata().sourceIdentity(), organizationId)
+              || organization
+                  .parentOrganization()
+                  .filter(parent -> referencesOrganization(parent, organizationId))
+                  .isPresent();
+      case DirectorySourceProjection.FacilityFact facility ->
+          referencesOrganization(facility.managingOrganization(), organizationId);
+      case DirectorySourceProjection.LocationFact location ->
+          resolveSourceLocation(location.facilityReference())
+              .map(parent -> parent.facility().managingOrganizationId().equals(organizationId))
+              .orElse(false);
+      case DirectorySourceProjection.HealthcareServiceFact service ->
+          referencesOrganization(service.organizationReference(), organizationId)
+              && resolveSourceLocation(service.facilityReference())
+                  .map(parent -> parent.facility().managingOrganizationId().equals(organizationId))
+                  .orElse(false);
+      case DirectorySourceProjection.EndpointMetadata endpoint ->
+          endpoint
+              .managingOrganization()
+              .filter(reference -> referencesOrganization(reference, organizationId))
+              .isPresent();
+    };
+  }
+
+  private boolean belongsToOrganization(
+      DirectorySourceProjectionState projection, InternalId organizationId) {
+    if (organizationId == null) {
+      return false;
+    }
+    InternalId conceptId = projection.conceptId().orElseThrow();
+    return store
+        .lockConceptOwner(projection.conceptType(), conceptId)
+        .flatMap(DirectoryConceptOwner::organizationId)
+        .filter(organizationId::equals)
+        .isPresent();
+  }
+
+  private static boolean supportsSourceDeletion(DirectorySourceProjectionState projection) {
+    return switch (projection.conceptType()) {
+      case ORGANIZATION -> "Organization".equals(projection.sourceIdentity().resourceType());
+      case LOCATION -> "Location".equals(projection.sourceIdentity().resourceType());
+      case HEALTHCARE_SERVICE ->
+          "HealthcareService".equals(projection.sourceIdentity().resourceType());
+      default -> false;
+    };
+  }
+
+  private static String sourceResourceType(DirectoryConceptType conceptType) {
+    return switch (conceptType) {
+      case ORGANIZATION -> "Organization";
+      case LOCATION -> "Location";
+      case HEALTHCARE_SERVICE -> "HealthcareService";
+      default -> throw new IllegalArgumentException("unsupported source status resource type");
+    };
+  }
+
+  private Optional<InternalId> internalOrganizationId(ExternalReference organizationReference) {
+    if (!"urn:ayuvahak:directory".equals(organizationReference.issuer().value())
+        || !"Organization".equals(organizationReference.resourceType())) {
+      return Optional.empty();
+    }
+    try {
+      return Optional.of(InternalId.parse(organizationReference.value()));
+    } catch (IllegalArgumentException invalidReference) {
+      return Optional.empty();
+    }
+  }
+
+  private boolean referencesOrganization(
+      ExternalReference sourceReference, InternalId organizationId) {
+    return store
+        .findActiveExternalIdentifier(sourceReference)
+        .filter(identifier -> identifier.conceptType() == DirectoryConceptType.ORGANIZATION)
+        .filter(identifier -> identifier.conceptId().equals(organizationId))
+        .isPresent();
+  }
+
+  private DirectorySourceProjectionImportResult importAuthorizedProjection(
+      ExecutionContext context, DirectorySourceProjection projection) {
+
     if (projection instanceof DirectorySourceProjection.EndpointMetadata) {
       // An Endpoint is only untrusted discovery metadata. It is deliberately not persisted or
       // resolved here; Phase 9 owns the separate administrator-approved network trust profile.
@@ -99,6 +357,42 @@ public class DirectorySourceProjectionImportService
           HttpStatus.SERVICE_UNAVAILABLE,
           PlatformErrorCode.DIRECTORY_UNAVAILABLE,
           "The Directory source fact could not be reconciled safely.");
+    }
+  }
+
+  private static void requirePartnerFeedContext(ExecutionContext context) {
+    if (context.actor().kind() != ActorKind.SERVICE
+        || context.scope().kind() != ExecutionScope.Kind.ORGANIZATION) {
+      throw new PlatformProblemException(
+          HttpStatus.FORBIDDEN,
+          PlatformErrorCode.INVALID_EXECUTION_SCOPE,
+          "A Directory partner feed requires an organization-scoped service actor.");
+    }
+  }
+
+  private void recordFeedDenial(ExecutionContext context, String reasonCode) {
+    try {
+      auditWriter
+          .getObject()
+          .recordNonMutating(
+              new AuditEvidence(
+                  AuditActionKind.SECURITY_OUTCOME,
+                  Optional.of(context.actor()),
+                  Optional.of(context.scope()),
+                  "DIRECTORY_MCSD_INBOUND_FEED",
+                  "DirectoryMcsdFeed",
+                  Optional.empty(),
+                  clock.instant(),
+                  AuditOutcome.DENIED,
+                  Optional.of(reasonCode),
+                  authenticationEvidence(context.authenticationMechanism()),
+                  AuditAuthorizationOutcome.DENIED,
+                  context.correlationId()));
+    } catch (AuditPersistenceUnavailableException failure) {
+      throw new PlatformProblemException(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          PlatformErrorCode.AUDIT_UNAVAILABLE,
+          "The feed remains denied because its security audit record is unavailable.");
     }
   }
 
@@ -1179,6 +1473,13 @@ public class DirectorySourceProjectionImportService
         Optional.ofNullable(conceptId));
   }
 
+  private static PlatformProblemException feedDenied() {
+    return new PlatformProblemException(
+        HttpStatus.FORBIDDEN,
+        PlatformErrorCode.AUTHORIZATION_DENIED,
+        "The source deletion is outside the authenticated Directory feed scope.");
+  }
+
   private static PlatformProblemException ownerFactMissing() {
     return new PlatformProblemException(
         HttpStatus.CONFLICT,
@@ -1191,6 +1492,24 @@ public class DirectorySourceProjectionImportService
         HttpStatus.CONFLICT,
         PlatformErrorCode.DIRECTORY_VERSION_CONFLICT,
         "The Directory source projection changed concurrently; reconciliation must be retried.");
+  }
+
+  private record FeedDeletionAttempt(
+      boolean denied, Optional<DirectorySourceProjectionImportResult> value) {
+    private FeedDeletionAttempt {
+      value = Objects.requireNonNull(value, "value");
+      if (denied == value.isPresent()) {
+        throw new IllegalArgumentException("feed deletion attempt must be denied or completed");
+      }
+    }
+
+    static FeedDeletionAttempt deniedAttempt() {
+      return new FeedDeletionAttempt(true, Optional.empty());
+    }
+
+    static FeedDeletionAttempt completed(DirectorySourceProjectionImportResult result) {
+      return new FeedDeletionAttempt(false, Optional.of(result));
+    }
   }
 
   private record ResolvedLocation(Facility facility, DirectoryLocation location) {}

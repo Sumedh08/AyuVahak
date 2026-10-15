@@ -45,6 +45,10 @@ class DirectoryMcsdSynchronizationServiceTest {
     DirectoryMcsdSourceQueryPort source =
         new DirectoryMcsdSourceQueryPort() {
           @Override
+          public void requireSourceAvailable(
+              IssuerId sourceNamespace, DirectoryMcsdSourceQueryPurpose purpose) {}
+
+          @Override
           public DirectoryMcsdSourcePage search(SearchRequest request) {
             searchRequests.add(request);
             return searchPages.removeFirst();
@@ -120,6 +124,10 @@ class DirectoryMcsdSynchronizationServiceTest {
     DirectoryMcsdSourceQueryPort source =
         new DirectoryMcsdSourceQueryPort() {
           @Override
+          public void requireSourceAvailable(
+              IssuerId sourceNamespace, DirectoryMcsdSourceQueryPurpose purpose) {}
+
+          @Override
           public DirectoryMcsdSourcePage search(SearchRequest request) {
             return new DirectoryMcsdSourcePage(
                 List.of(organization("org-partial")), Optional.empty(), Optional.empty(), false);
@@ -161,6 +169,10 @@ class DirectoryMcsdSynchronizationServiceTest {
     DirectoryMcsdSourceQueryPort source =
         new DirectoryMcsdSourceQueryPort() {
           @Override
+          public void requireSourceAvailable(
+              IssuerId sourceNamespace, DirectoryMcsdSourceQueryPurpose purpose) {}
+
+          @Override
           public DirectoryMcsdSourcePage search(SearchRequest request) {
             return new DirectoryMcsdSourcePage(
                 List.of(organization("org-foreign", "urn:synthetic:mcsd:other")),
@@ -198,6 +210,10 @@ class DirectoryMcsdSynchronizationServiceTest {
     List<String> sourceCalls = new ArrayList<>();
     DirectoryMcsdSourceQueryPort source =
         new DirectoryMcsdSourceQueryPort() {
+          @Override
+          public void requireSourceAvailable(
+              IssuerId sourceNamespace, DirectoryMcsdSourceQueryPurpose purpose) {}
+
           @Override
           public DirectoryMcsdSourcePage search(SearchRequest request) {
             sourceCalls.add("search");
@@ -238,6 +254,10 @@ class DirectoryMcsdSynchronizationServiceTest {
     AtomicInteger checkpointReads = new AtomicInteger();
     DirectoryMcsdSourceQueryPort source =
         new DirectoryMcsdSourceQueryPort() {
+          @Override
+          public void requireSourceAvailable(
+              IssuerId sourceNamespace, DirectoryMcsdSourceQueryPurpose purpose) {}
+
           @Override
           public DirectoryMcsdSourcePage search(SearchRequest request) {
             sourceCalls.incrementAndGet();
@@ -281,6 +301,111 @@ class DirectoryMcsdSynchronizationServiceTest {
     assertThatThrownBy(() -> service.refresh(context, SOURCE, 1)).isSameAs(denied);
     assertThat(checkpointReads).hasValue(0);
     assertThat(sourceCalls).hasValue(0);
+  }
+
+  @Test
+  void validatesConfiguredPartnerBeforeReadingHistoryCheckpoint() {
+    List<String> events = new ArrayList<>();
+    DirectoryMcsdSourceQueryPort source =
+        new DirectoryMcsdSourceQueryPort() {
+          @Override
+          public void requireSourceAvailable(
+              IssuerId sourceNamespace, DirectoryMcsdSourceQueryPurpose purpose) {
+            assertThat(sourceNamespace).isEqualTo(SOURCE);
+            assertThat(purpose).isEqualTo(DirectoryMcsdSourceQueryPurpose.INCREMENTAL_HISTORY);
+            events.add("partner-trust");
+          }
+
+          @Override
+          public DirectoryMcsdSourcePage search(SearchRequest request) {
+            throw new AssertionError("history refresh does not discover current resources");
+          }
+
+          @Override
+          public DirectoryMcsdSourcePage history(HistoryRequest request) {
+            events.add("history-read");
+            return new DirectoryMcsdSourcePage(List.of(), Optional.empty(), Optional.empty(), true);
+          }
+        };
+    DirectoryMcsdSourceQueryAuthorizationPort authorization =
+        (executionContext, sourceNamespace, purpose) -> events.add("owner-authorization");
+    DirectoryMcsdSynchronizationCheckpointPort checkpoints =
+        new DirectoryMcsdSynchronizationCheckpointPort() {
+          @Override
+          public Optional<String> findMcsdSourceCursor(IssuerId sourceNamespace) {
+            events.add("checkpoint-read");
+            return Optional.of("opaque:v1");
+          }
+
+          @Override
+          public void saveMcsdSourceCursor(
+              IssuerId sourceNamespace, String cursor, Instant recordedAt) {
+            throw new AssertionError("empty history response does not advance the cursor");
+          }
+        };
+    DirectoryMcsdSynchronizationService service =
+        new DirectoryMcsdSynchronizationService(
+            source,
+            authorization,
+            importer(List.of()),
+            checkpoints,
+            Clock.fixed(NOW, ZoneOffset.UTC));
+
+    DirectoryMcsdSynchronizationResult result = service.refresh(context, SOURCE, 1);
+
+    assertThat(result.status()).isEqualTo(DirectoryMcsdSynchronizationResult.Status.COMPLETE);
+    assertThat(events)
+        .containsExactly("owner-authorization", "partner-trust", "checkpoint-read", "history-read");
+  }
+
+  @Test
+  void unavailablePartnerStopsHistoryBeforeCheckpointAccess() {
+    AtomicInteger checkpointReads = new AtomicInteger();
+    DirectoryMcsdSourceQueryPort source =
+        new DirectoryMcsdSourceQueryPort() {
+          @Override
+          public void requireSourceAvailable(
+              IssuerId sourceNamespace, DirectoryMcsdSourceQueryPurpose purpose) {
+            throw new DirectoryMcsdSourceUnavailableException("synthetic unavailable source");
+          }
+
+          @Override
+          public DirectoryMcsdSourcePage search(SearchRequest request) {
+            throw new AssertionError("unavailable partner must stop before discovery");
+          }
+
+          @Override
+          public DirectoryMcsdSourcePage history(HistoryRequest request) {
+            throw new AssertionError("unavailable partner must stop before history");
+          }
+        };
+    DirectoryMcsdSynchronizationCheckpointPort checkpoints =
+        new DirectoryMcsdSynchronizationCheckpointPort() {
+          @Override
+          public Optional<String> findMcsdSourceCursor(IssuerId sourceNamespace) {
+            checkpointReads.incrementAndGet();
+            throw new AssertionError("partner must be checked before cursor access");
+          }
+
+          @Override
+          public void saveMcsdSourceCursor(
+              IssuerId sourceNamespace, String cursor, Instant recordedAt) {
+            throw new AssertionError("unavailable partner cannot advance a cursor");
+          }
+        };
+    DirectoryMcsdSynchronizationService service =
+        new DirectoryMcsdSynchronizationService(
+            source,
+            (executionContext, sourceNamespace, purpose) -> {},
+            importer(List.of()),
+            checkpoints,
+            Clock.fixed(NOW, ZoneOffset.UTC));
+
+    DirectoryMcsdSynchronizationResult result = service.refresh(context, SOURCE, 1);
+
+    assertThat(result.status())
+        .isEqualTo(DirectoryMcsdSynchronizationResult.Status.SOURCE_UNAVAILABLE);
+    assertThat(checkpointReads).hasValue(0);
   }
 
   private static DirectorySourceProjectionImportPort importer(

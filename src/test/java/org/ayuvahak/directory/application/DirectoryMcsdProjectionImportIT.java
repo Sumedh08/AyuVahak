@@ -171,6 +171,10 @@ class DirectoryMcsdProjectionImportIT {
     DirectoryMcsdSourceQueryPort source =
         new DirectoryMcsdSourceQueryPort() {
           @Override
+          public void requireSourceAvailable(
+              IssuerId sourceNamespace, DirectoryMcsdSourceQueryPurpose purpose) {}
+
+          @Override
           public DirectoryMcsdSourcePage search(SearchRequest request) {
             sourceReads.incrementAndGet();
             return new DirectoryMcsdSourcePage(List.of(), Optional.empty(), Optional.empty(), true);

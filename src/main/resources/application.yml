@@ -55,6 +55,16 @@ ayuvahak:
     password: ${AYUVAHAK_DATABASE_PASSWORD:}
   platform:
     service-name: AyuVahak
+  exchange:
+    egress:
+      allowed-ports:
+        - 443
+      allowed-private-networks-by-partner: {}
+  directory:
+    mcsd:
+      source-bindings: []
+      facility-location-types: []
+      ordered-last-updated-profiles: []
   authentication:
     issuer: ${AYUVAHAK_OIDC_ISSUER:}
     jwk-set-uri: ${AYUVAHAK_OIDC_JWK_SET_URI:}
@@ -66,6 +76,8 @@ ayuvahak:
     policy:
       active: ${AYUVAHAK_MATCHING_POLICY_ACTIVE:false}
   referral:
+    ips:
+      source-bindings: []
     transfer-amendment-check-client-id: ${AYUVAHAK_REFERRAL_TRANSFER_AMENDMENT_CHECK_CLIENT_ID:ayuvahak-transfer-amendment-guard}
   transfer:
     expiry-worker-client-id: ${AYUVAHAK_TRANSFER_EXPIRY_CLIENT_ID:ayuvahak-transfer-expiry-worker}

@@ -7,11 +7,14 @@ import java.util.Objects;
 import java.util.Optional;
 import org.ayuvahak.platform.core.IssuerId;
 import org.ayuvahak.platform.executioncontext.ExecutionContext;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.stereotype.Service;
 
 /**
  * Bounded owner-side orchestration for mCSD discovery and source-history reads. This class has no
  * HTTP implementation; Phase 9 supplies a configured Directory adapter through the source port.
  */
+@Service
 public final class DirectoryMcsdSynchronizationService {
 
   private static final int PAGE_SIZE = 200;
@@ -30,7 +33,7 @@ public final class DirectoryMcsdSynchronizationService {
       DirectoryMcsdSourceQueryAuthorizationPort queryAuthorization,
       DirectorySourceProjectionImportPort importer,
       DirectoryMcsdSynchronizationCheckpointPort checkpoints,
-      Clock clock) {
+      @Qualifier("auditClock") Clock clock) {
     this.sourceQuery = Objects.requireNonNull(sourceQuery, "sourceQuery");
     this.queryAuthorization = Objects.requireNonNull(queryAuthorization, "queryAuthorization");
     this.importer = Objects.requireNonNull(importer, "importer");
@@ -44,6 +47,10 @@ public final class DirectoryMcsdSynchronizationService {
     requireRequest(context, sourceNamespace, maxPages);
     queryAuthorization.authorize(
         context, sourceNamespace, DirectoryMcsdSourceQueryPurpose.INITIAL_DISCOVERY);
+    if (!sourceAvailable(sourceNamespace, DirectoryMcsdSourceQueryPurpose.INITIAL_DISCOVERY)) {
+      return result(
+          DirectoryMcsdSynchronizationResult.Status.SOURCE_UNAVAILABLE, 0, 0, Optional.empty());
+    }
     return synchronize(context, sourceNamespace, Optional.empty(), maxPages, false);
   }
 
@@ -53,6 +60,10 @@ public final class DirectoryMcsdSynchronizationService {
     requireRequest(context, sourceNamespace, maxPages);
     queryAuthorization.authorize(
         context, sourceNamespace, DirectoryMcsdSourceQueryPurpose.INCREMENTAL_HISTORY);
+    if (!sourceAvailable(sourceNamespace, DirectoryMcsdSourceQueryPurpose.INCREMENTAL_HISTORY)) {
+      return result(
+          DirectoryMcsdSynchronizationResult.Status.SOURCE_UNAVAILABLE, 0, 0, Optional.empty());
+    }
     Optional<String> cursor = checkpoints.findMcsdSourceCursor(sourceNamespace);
     if (cursor.isEmpty()) {
       return new DirectoryMcsdSynchronizationResult(
@@ -128,6 +139,16 @@ public final class DirectoryMcsdSynchronizationService {
     Objects.requireNonNull(sourceNamespace, "sourceNamespace");
     if (maxPages < 1 || maxPages > MAX_PAGES) {
       throw new IllegalArgumentException("mCSD synchronization page bound must be from 1 to 25");
+    }
+  }
+
+  private boolean sourceAvailable(
+      IssuerId sourceNamespace, DirectoryMcsdSourceQueryPurpose purpose) {
+    try {
+      sourceQuery.requireSourceAvailable(sourceNamespace, purpose);
+      return true;
+    } catch (DirectoryMcsdSourceUnavailableException unavailable) {
+      return false;
     }
   }
 

@@ -19,7 +19,7 @@ public final class DirectoryGrantTargetScopeValidator
   @Override
   public boolean supports(FunctionalAuthority authority) {
     return switch (authority.code()) {
-      case "DirectoryRead", "DirectoryCuration" -> true;
+      case "DirectoryRead", "DirectoryCuration", "DirectoryMcsdSourceFeedImport" -> true;
       default -> false;
     };
   }
