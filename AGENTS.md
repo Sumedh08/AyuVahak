@@ -43,7 +43,7 @@ Do not request, generate, store, expose, commit, or transmit real production cre
 - Volume III: DESIGN FROZEN / IMPLEMENTATION INCOMPLETE
 - Phase 8 — Healthcare Standards & Interoperability: IMPLEMENTATION COMPLETE + FROZEN
 - Phase 9 — Secure External Health-System Exchange: IMPLEMENTATION COMPLETE + FROZEN
-- Phase 10 — Emergency Transport / EMS Coordination: SPECIFICATION FROZEN / IMPLEMENTATION NOT AUTHORIZED
+- Phase 10 — Emergency Transport / EMS Coordination: SPECIFICATION FROZEN / IMPLEMENTATION AUTHORIZED BY ACTIVE MASTER PROMPT
 
 #### Phase-aware execution rules
 
@@ -53,7 +53,7 @@ Do not request, generate, store, expose, commit, or transmit real production cre
 - Use `/to-spec`, `/to-tickets`, `/implement-spec`, and related implementation workflows only when the active prompt authorizes them for the current phase. Planning artifacts and tickets default to local Markdown under `.scratch/`; external issue tracking remains subject to the external-mutation policy above.
 - Local Git branches, worktrees, commits, and merges are allowed when required by an authorized phase workflow. Remote Git operations remain prohibited unless the human explicitly authorizes that exact operation under the external-mutation policy.
 - Volume I and Volume II are complete and frozen. Volume III design and Phase 8–10 specifications are frozen; implementation authorization is phase-specific and does not authorize later phases early.
-- Phases 8 and 9 have passed their acceptance gates and are locally frozen. Volume III remains incomplete until Phase 10 is separately authorized and completed. Phase 10 implementation remains unauthorized.
+- Phases 8 and 9 have passed their acceptance gates and are locally frozen. Volume III remains incomplete until Phase 10 passes and freezes. Phase 10 implementation is authorized by the active master prompt only; Volume IV remains not authorized.
 - When no phase is explicitly authorized by the active master prompt, do not advance implementation, generate phase tickets, or start a later phase. Stop and request direction if the authorized scope cannot be determined.
 - Keep planning trackers local. Never create external issues without explicit authorization for that exact operation.
 
