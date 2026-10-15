@@ -136,5 +136,4 @@ synthetic fixtures, local Testcontainers, local Compose, and local Keycloak.
 No public healthcare system, partner endpoint, real patient data, production
 credential, or remote Git write was used.
 
-**Phase 8 freeze commit:** recorded in the subsequent documentation-only
-follow-up commit.
+**Phase 8 freeze commit:** `8daa691` (`chore: freeze phase 8 standards interoperability`).
