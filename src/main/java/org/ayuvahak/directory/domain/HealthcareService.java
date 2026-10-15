@@ -1,5 +1,6 @@
 package org.ayuvahak.directory.domain;
 
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import org.ayuvahak.platform.core.InternalId;
@@ -11,6 +12,7 @@ public record HealthcareService(
     InternalId facilityId,
     Optional<InternalId> locationId,
     String name,
+    List<DirectoryServiceType> serviceTypes,
     DirectorySource source,
     DirectoryProvenance provenance,
     DirectoryLifecycleStatus status,
@@ -22,6 +24,10 @@ public record HealthcareService(
     Objects.requireNonNull(facilityId, "facilityId");
     locationId = Objects.requireNonNull(locationId, "locationId");
     requireName(name);
+    serviceTypes = List.copyOf(Objects.requireNonNull(serviceTypes, "serviceTypes"));
+    if (serviceTypes.size() > 16) {
+      throw new IllegalArgumentException("HealthcareService service type count must not exceed 16");
+    }
     Objects.requireNonNull(source, "source");
     Objects.requireNonNull(provenance, "provenance");
     Objects.requireNonNull(status, "status");
@@ -30,9 +36,40 @@ public record HealthcareService(
     }
   }
 
+  public HealthcareService(
+      InternalId id,
+      InternalId organizationId,
+      InternalId facilityId,
+      Optional<InternalId> locationId,
+      String name,
+      DirectorySource source,
+      DirectoryProvenance provenance,
+      DirectoryLifecycleStatus status,
+      long version) {
+    this(
+        id,
+        organizationId,
+        facilityId,
+        locationId,
+        name,
+        List.of(),
+        source,
+        provenance,
+        status,
+        version);
+  }
+
   public HealthcareService correct(
       String correctedName,
       Optional<InternalId> correctedLocation,
+      DirectoryProvenance correction) {
+    return correct(correctedName, correctedLocation, serviceTypes, correction);
+  }
+
+  public HealthcareService correct(
+      String correctedName,
+      Optional<InternalId> correctedLocation,
+      List<DirectoryServiceType> correctedServiceTypes,
       DirectoryProvenance correction) {
     if (status != DirectoryLifecycleStatus.ACTIVE) {
       throw new IllegalStateException("inactive HealthcareService cannot be corrected");
@@ -43,6 +80,7 @@ public record HealthcareService(
         facilityId,
         correctedLocation,
         correctedName,
+        correctedServiceTypes,
         source,
         correction,
         status,
@@ -59,6 +97,7 @@ public record HealthcareService(
         facilityId,
         locationId,
         name,
+        serviceTypes,
         source,
         reason,
         DirectoryLifecycleStatus.INACTIVE,

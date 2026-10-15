@@ -105,7 +105,9 @@ final class ReferralIpsPatientContextMapper {
       if (!declaresProfile(composition, COMPOSITION_PROFILE)
           || !declaresProfile(patient, PATIENT_PROFILE)
           || !hasExactPatientIdentifier(patient, expectedPatient)
-          || !patientFullUrl.equals(composition.getSubject().getReference())) {
+          || !patientFullUrl.equals(composition.getSubject().getReference())
+          || !allEntriesStayWithinSupportedSections(
+              bundle, composition, resourcesByFullUrl, patientFullUrl)) {
         return invalid(expectedPatient, evidence);
       }
       validateNestedProfile(composition, COMPOSITION_PROFILE);
@@ -134,7 +136,7 @@ final class ReferralIpsPatientContextMapper {
     for (Bundle.BundleEntryComponent entry : bundle.getEntry()) {
       Resource resource = entry.getResource();
       if (resource == null) {
-        continue;
+        throw new IllegalArgumentException("IPS document contains an empty entry");
       }
       String fullUrl = entry.getFullUrl();
       if (fullUrl == null || fullUrl.isBlank() || result.putIfAbsent(fullUrl, resource) != null) {
@@ -142,6 +144,59 @@ final class ReferralIpsPatientContextMapper {
       }
     }
     return Map.copyOf(result);
+  }
+
+  private static boolean allEntriesStayWithinSupportedSections(
+      Bundle bundle,
+      Composition composition,
+      Map<String, Resource> resourcesByFullUrl,
+      String patientFullUrl) {
+    if (bundle.hasLink()) {
+      return false;
+    }
+    Set<String> referencedResources = new java.util.HashSet<>();
+    for (Composition.SectionComponent section : composition.getSection()) {
+      PatientContextCategory category = category(section.getCode());
+      if (category == null) {
+        if (section.hasEntry()) {
+          return false;
+        }
+        continue;
+      }
+      for (org.hl7.fhir.r4.model.Reference reference : section.getEntry()) {
+        if (reference.getReference() == null) {
+          return false;
+        }
+        Resource resource = resourcesByFullUrl.get(reference.getReference());
+        if (resource == null
+            || !isExpectedResource(category, resource)
+            || !hasExpectedPatientSubject(resource, patientFullUrl)) {
+          return false;
+        }
+        referencedResources.add(reference.getReference());
+      }
+    }
+    for (Map.Entry<String, Resource> entry : resourcesByFullUrl.entrySet()) {
+      Resource resource = entry.getValue();
+      if (resource instanceof Composition || resource instanceof Patient) {
+        continue;
+      }
+      if (!referencedResources.contains(entry.getKey())) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private static boolean isExpectedResource(PatientContextCategory category, Resource resource) {
+    return switch (category) {
+      case PROBLEMS -> resource instanceof Condition;
+      case ALLERGIES -> resource instanceof AllergyIntolerance;
+      case MEDICATIONS ->
+          resource instanceof MedicationRequest
+              || resource instanceof MedicationAdministration
+              || resource instanceof MedicationStatement;
+    };
   }
 
   private static String fullUrlOf(Map<String, Resource> resourcesByFullUrl, Resource target) {

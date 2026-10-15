@@ -11,6 +11,7 @@ import org.ayuvahak.directory.domain.DirectoryExternalIdentifier;
 import org.ayuvahak.directory.domain.DirectoryLifecycleStatus;
 import org.ayuvahak.directory.domain.DirectoryLocation;
 import org.ayuvahak.directory.domain.DirectoryProvenance;
+import org.ayuvahak.directory.domain.DirectoryServiceType;
 import org.ayuvahak.directory.domain.DirectorySource;
 import org.ayuvahak.directory.domain.ExternalIdentifierStatus;
 import org.ayuvahak.directory.domain.Facility;
@@ -30,6 +31,7 @@ import org.ayuvahak.platform.authorization.domain.AuthorizationDecision;
 import org.ayuvahak.platform.core.ActorKind;
 import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.InternalId;
+import org.ayuvahak.platform.core.IssuerId;
 import org.ayuvahak.platform.executioncontext.AuthenticationMechanism;
 import org.ayuvahak.platform.executioncontext.ExecutionContext;
 import org.ayuvahak.platform.executioncontext.ExecutionScope;
@@ -45,7 +47,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 /** Applies a mapped external fact through Directory-owned persistence and audit boundaries. */
 @Service
 @Lazy
-public class DirectorySourceProjectionImportService implements DirectorySourceProjectionImportPort {
+public class DirectorySourceProjectionImportService
+    implements DirectorySourceProjectionImportPort, DirectoryMcsdSourceQueryAuthorizationPort {
 
   private static final String ACTION_CODE = "DIRECTORY_MCSD_SOURCE_IMPORT";
 
@@ -77,7 +80,7 @@ public class DirectorySourceProjectionImportService implements DirectorySourcePr
     Objects.requireNonNull(context, "execution context");
     Objects.requireNonNull(projection, "source projection");
     requireServiceContext(context);
-    requireCurationAuthority(context);
+    requireCurationAuthority(context, ACTION_CODE);
 
     if (projection instanceof DirectorySourceProjection.EndpointMetadata) {
       // An Endpoint is only untrusted discovery metadata. It is deliberately not persisted or
@@ -97,6 +100,16 @@ public class DirectorySourceProjectionImportService implements DirectorySourcePr
           PlatformErrorCode.DIRECTORY_UNAVAILABLE,
           "The Directory source fact could not be reconciled safely.");
     }
+  }
+
+  @Override
+  public void authorize(
+      ExecutionContext context, IssuerId sourceNamespace, DirectoryMcsdSourceQueryPurpose purpose) {
+    Objects.requireNonNull(context, "execution context");
+    Objects.requireNonNull(sourceNamespace, "source namespace");
+    Objects.requireNonNull(purpose, "purpose");
+    requireServiceContext(context);
+    requireCurationAuthority(context, purpose.actionCode());
   }
 
   private DirectorySourceProjectionImportResult importProjection(
@@ -524,6 +537,7 @@ public class DirectorySourceProjectionImportService implements DirectorySourcePr
             resolved.facility().id(),
             Optional.of(resolved.location().id()),
             incoming.name(),
+            serviceTypes(incoming),
             new DirectorySource(incoming.metadata().sourceIdentity()),
             provenance,
             DirectoryLifecycleStatus.ACTIVE,
@@ -596,7 +610,11 @@ public class DirectorySourceProjectionImportService implements DirectorySourcePr
     DirectoryProvenance provenance =
         provenance(context, incoming.metadata().sourceUpdatedAt(), now);
     HealthcareService corrected =
-        current.correct(incoming.name(), Optional.of(resolved.location().id()), provenance);
+        current.correct(
+            incoming.name(),
+            Optional.of(resolved.location().id()),
+            serviceTypes(incoming),
+            provenance);
     store.appendHealthcareServiceRevision(current, provenance.reasonCode());
     if (!store.updateHealthcareService(corrected, current.version(), now)) {
       throw versionConflict();
@@ -959,6 +977,13 @@ public class DirectorySourceProjectionImportService implements DirectorySourcePr
         .map(Organization::id);
   }
 
+  private static List<DirectoryServiceType> serviceTypes(
+      DirectorySourceProjection.HealthcareServiceFact projection) {
+    return projection.serviceTypes().stream()
+        .map(coding -> new DirectoryServiceType(coding.system(), coding.code(), coding.version()))
+        .toList();
+  }
+
   private void recordProjectionOutcome(
       DirectorySourceProjectionState accepted,
       DirectorySourceProjectionReconciliation.Outcome outcome) {
@@ -1088,11 +1113,11 @@ public class DirectorySourceProjectionImportService implements DirectorySourcePr
       throw new PlatformProblemException(
           HttpStatus.FORBIDDEN,
           PlatformErrorCode.AUTHORIZATION_DENIED,
-          "A Directory source import requires a platform-scoped service actor.");
+          "A Directory source operation requires a platform-scoped service actor.");
     }
   }
 
-  private void requireCurationAuthority(ExecutionContext context) {
+  private void requireCurationAuthority(ExecutionContext context, String actionCode) {
     AuthorizationDecision decision =
         authorization.getObject().evaluate(context, DirectoryAuthorities.curation().code());
     if (decision.isAllowed()) {
@@ -1106,8 +1131,8 @@ public class DirectorySourceProjectionImportService implements DirectorySourcePr
                   AuditActionKind.SECURITY_OUTCOME,
                   Optional.of(context.actor()),
                   Optional.of(context.scope()),
-                  ACTION_CODE,
-                  "DirectorySourceProjection",
+                  actionCode,
+                  "DirectorySource",
                   Optional.empty(),
                   clock.instant(),
                   AuditOutcome.DENIED,
@@ -1131,7 +1156,7 @@ public class DirectorySourceProjectionImportService implements DirectorySourcePr
             ? HttpStatus.SERVICE_UNAVAILABLE
             : HttpStatus.FORBIDDEN;
     throw new PlatformProblemException(
-        status, code, "The service is not authorized to curate Directory source facts.");
+        status, code, "The service is not authorized to access Directory source facts.");
   }
 
   private static AuditAuthenticationEvidence authenticationEvidence(

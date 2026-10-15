@@ -1,15 +1,20 @@
 package org.ayuvahak.directory.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Clock;
 import java.time.Instant;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.ayuvahak.directory.domain.DirectoryConceptType;
 import org.ayuvahak.directory.domain.DirectoryLifecycleStatus;
+import org.ayuvahak.directory.domain.HealthcareService;
 import org.ayuvahak.directory.domain.Wgs84Coordinate;
 import org.ayuvahak.platform.AyuVahakApplication;
 import org.ayuvahak.platform.core.ActorReference;
@@ -62,6 +67,9 @@ class DirectoryMcsdProjectionImportIT {
   @Container private static final PostgreSQLContainer CONTAINER = POSTGRES;
 
   @Autowired private DirectorySourceProjectionImportPort importer;
+  @Autowired private DirectoryMcsdSourceQueryAuthorizationPort sourceQueryAuthorization;
+  @Autowired private DirectoryMcsdSynchronizationCheckpointPort synchronizationCheckpoints;
+  @Autowired private DirectoryStore directoryStore;
   @Autowired private ExecutionContextFactory executionContextFactory;
   @Autowired private JdbcTemplate jdbc;
 
@@ -80,6 +88,7 @@ class DirectoryMcsdProjectionImportIT {
     jdbc.execute("DROP TRIGGER IF EXISTS test_fail_mcsd_location_insert ON directory.location");
     jdbc.execute("DROP FUNCTION IF EXISTS directory.test_fail_mcsd_location_insert()");
     jdbc.update("DELETE FROM directory.mcsd_source_projection");
+    jdbc.update("DELETE FROM directory.mcsd_source_checkpoint");
     jdbc.update("DELETE FROM directory.external_identifier_revision");
     jdbc.update("DELETE FROM directory.external_identifier");
     jdbc.update("DELETE FROM directory.healthcare_service_revision");
@@ -151,6 +160,66 @@ class DirectoryMcsdProjectionImportIT {
                     + " = 'SUCCEEDED'",
                 Integer.class))
         .isEqualTo(1);
+  }
+
+  @Test
+  void unauthorizedSourceDiscoveryIsAuditedAndDeniedBeforeAnEmptyExternalRead() {
+    jdbc.update(
+        "DELETE FROM identity_access.authorization_grant WHERE principal_identifier = ?",
+        SERVICE_CLIENT);
+    AtomicInteger sourceReads = new AtomicInteger();
+    DirectoryMcsdSourceQueryPort source =
+        new DirectoryMcsdSourceQueryPort() {
+          @Override
+          public DirectoryMcsdSourcePage search(SearchRequest request) {
+            sourceReads.incrementAndGet();
+            return new DirectoryMcsdSourcePage(List.of(), Optional.empty(), Optional.empty(), true);
+          }
+
+          @Override
+          public DirectoryMcsdSourcePage history(HistoryRequest request) {
+            throw new AssertionError("history is not used for discovery");
+          }
+        };
+    DirectoryMcsdSynchronizationService synchronization =
+        new DirectoryMcsdSynchronizationService(
+            source,
+            sourceQueryAuthorization,
+            importer,
+            synchronizationCheckpoints,
+            Clock.systemUTC());
+
+    assertThatThrownBy(
+            () ->
+                synchronization.discover(
+                    context("mcsd-unauthorized-discovery"), new IssuerId(SOURCE_NAMESPACE), 1))
+        .isInstanceOf(org.ayuvahak.platform.api.PlatformProblemException.class);
+
+    assertThat(sourceReads).hasValue(0);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = "
+                    + "'DIRECTORY_MCSD_DISCOVERY_READ' AND authorization_outcome = 'DENIED' "
+                    + "AND correlation_id = 'mcsd-unauthorized-discovery'",
+                Integer.class))
+        .isEqualTo(1);
+  }
+
+  @Test
+  void sourceCursorPersistsOpaqueValueForRestartWithoutInterpretingIt() {
+    IssuerId sourceNamespace = new IssuerId(SOURCE_NAMESPACE);
+    String opaqueCursor = "opaque:source-cursor:007-vA";
+
+    synchronizationCheckpoints.saveMcsdSourceCursor(sourceNamespace, opaqueCursor, at(1));
+
+    assertThat(synchronizationCheckpoints.findMcsdSourceCursor(sourceNamespace))
+        .contains(opaqueCursor);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT change_cursor FROM directory.mcsd_source_checkpoint WHERE source_issuer = ?",
+                String.class,
+                SOURCE_NAMESPACE))
+        .isEqualTo(opaqueCursor);
   }
 
   @Test
@@ -294,6 +363,17 @@ class DirectoryMcsdProjectionImportIT {
     assertThat(
             jdbc.queryForObject("SELECT COUNT(*) FROM directory.healthcare_service", Integer.class))
         .isEqualTo(1);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT service_types::text FROM directory.healthcare_service", String.class))
+        .contains("urn:synthetic:service", "ct");
+    assertThat(directoryStore.findHealthcareService(first.conceptId().orElseThrow()))
+        .get()
+        .extracting(HealthcareService::serviceTypes)
+        .asList()
+        .containsExactly(
+            new org.ayuvahak.directory.domain.DirectoryServiceType(
+                "urn:synthetic:service", "ct", Optional.of("SYN-1")));
     assertThat(
             jdbc.queryForObject(
                 "SELECT COUNT(*) FROM directory.facility_capability_assertion", Integer.class))
@@ -495,6 +575,9 @@ class DirectoryMcsdProjectionImportIT {
         name,
         new ExternalReference(new IssuerId(SOURCE_NAMESPACE), "Organization", "org-a"),
         new ExternalReference(new IssuerId(SOURCE_NAMESPACE), "Location", "facility-a"),
+        java.util.List.of(
+            new DirectorySourceProjection.Coding(
+                "urn:synthetic:service", "ct", Optional.of("SYN-1"))),
         active);
   }
 

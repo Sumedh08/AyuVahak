@@ -1370,6 +1370,7 @@ public class DirectoryOrganizationFacilityController {
       String facilityId,
       Optional<String> locationId,
       String name,
+      List<HealthcareServiceTypeRepresentation> serviceTypes,
       String status,
       long version,
       SourceRepresentation source,
@@ -1381,12 +1382,21 @@ public class DirectoryOrganizationFacilityController {
           service.facilityId().toString(),
           service.locationId().map(InternalId::toString),
           service.name(),
+          service.serviceTypes().stream()
+              .map(
+                  type ->
+                      new HealthcareServiceTypeRepresentation(
+                          type.system(), type.code(), type.version()))
+              .toList(),
           service.status().name(),
           service.version(),
           SourceRepresentation.from(service.source()),
           ProvenanceRepresentation.from(service.provenance()));
     }
   }
+
+  public record HealthcareServiceTypeRepresentation(
+      String system, String code, Optional<String> version) {}
 
   public record CareCapabilityRepresentation(
       String id,

@@ -170,6 +170,7 @@ public final class DirectoryMcsdMapper {
     String name = requiredName(source.getName());
     ExternalReference organization = localReference(source.getProvidedBy(), "Organization", issuer);
     ExternalReference facility = localReference(source.getLocationFirstRep(), "Location", issuer);
+    List<DirectorySourceProjection.Coding> serviceTypes = serviceTypes(source);
     boolean active = source.getActive();
     return new DirectorySourceProjection.HealthcareServiceFact(
         metadata(
@@ -180,11 +181,51 @@ public final class DirectoryMcsdMapper {
             name,
             organization,
             facility,
+            serviceTypes,
             active),
         name,
         organization,
         facility,
+        serviceTypes,
         active);
+  }
+
+  private static List<DirectorySourceProjection.Coding> serviceTypes(HealthcareService source) {
+    List<DirectorySourceProjection.Coding> result =
+        source.getType().stream()
+            .flatMap(
+                concept -> {
+                  if (!concept.hasCoding()) {
+                    throw new DirectoryMcsdMappingException(
+                        "A source HealthcareService type has no coded value.");
+                  }
+                  return concept.getCoding().stream();
+                })
+            .map(
+                coding -> {
+                  if (coding.getSystem() == null
+                      || coding.getSystem().isBlank()
+                      || coding.getCode() == null
+                      || coding.getCode().isBlank()) {
+                    throw new DirectoryMcsdMappingException(
+                        "A source HealthcareService type is missing its system or code.");
+                  }
+                  return new DirectorySourceProjection.Coding(
+                      coding.getSystem(),
+                      coding.getCode(),
+                      Optional.ofNullable(coding.getVersion()).filter(value -> !value.isBlank()));
+                })
+            .distinct()
+            .sorted(
+                java.util.Comparator.comparing(DirectorySourceProjection.Coding::system)
+                    .thenComparing(DirectorySourceProjection.Coding::code)
+                    .thenComparing(value -> value.version().orElse("")))
+            .toList();
+    if (result.size() > 16) {
+      throw new DirectoryMcsdMappingException(
+          "The source HealthcareService exceeds the supported type-code bound.");
+    }
+    return result;
   }
 
   private DirectorySourceProjection.EndpointMetadata mapEndpoint(

@@ -11,6 +11,7 @@ import org.ayuvahak.directory.application.ActiveExternalIdentifierConflictExcept
 import org.ayuvahak.directory.application.DirectoryConceptOwner;
 import org.ayuvahak.directory.application.DirectoryExternalIdentifierHistoryEntry;
 import org.ayuvahak.directory.application.DirectoryFacilitySearchEntry;
+import org.ayuvahak.directory.application.DirectoryMcsdSynchronizationCheckpointPort;
 import org.ayuvahak.directory.application.DirectoryScopeLookupUnavailableException;
 import org.ayuvahak.directory.application.DirectorySourceProjectionReconciliation;
 import org.ayuvahak.directory.application.DirectorySourceProjectionState;
@@ -24,6 +25,7 @@ import org.ayuvahak.directory.domain.DirectoryExternalIdentifier;
 import org.ayuvahak.directory.domain.DirectoryLifecycleStatus;
 import org.ayuvahak.directory.domain.DirectoryLocation;
 import org.ayuvahak.directory.domain.DirectoryProvenance;
+import org.ayuvahak.directory.domain.DirectoryServiceType;
 import org.ayuvahak.directory.domain.DirectorySource;
 import org.ayuvahak.directory.domain.ExternalIdentifierStatus;
 import org.ayuvahak.directory.domain.Facility;
@@ -46,13 +48,16 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
 import tools.jackson.core.JacksonException;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
 /** JDBC adapter for Directory-owned Organization and Facility facts and command receipts. */
 @Repository
 @Lazy
-public class JdbcDirectoryStore implements DirectoryStore {
+public class JdbcDirectoryStore
+    implements DirectoryStore, DirectoryMcsdSynchronizationCheckpointPort {
 
   private static final double DISTANCE_PREFILTER_BUFFER_METERS = 0.01;
 
@@ -74,7 +79,7 @@ public class JdbcDirectoryStore implements DirectoryStore {
           + "l.provenance_actor_issuer, l.provenance_actor_identifier_type, "
           + "l.provenance_actor_identifier, l.provenance_reason_code, l.version";
   private static final String HEALTHCARE_SERVICE_COLUMNS =
-      "healthcare_service_id, organization_id, facility_id, location_id, name, source_issuer, "
+      "healthcare_service_id, organization_id, facility_id, location_id, name, service_types, source_issuer, "
           + "source_resource_type, source_reference, provenance_method, provenance_observed_at, "
           + "provenance_recorded_at, provenance_actor_kind, provenance_actor_issuer, "
           + "provenance_actor_identifier_type, provenance_actor_identifier, provenance_reason_code, "
@@ -140,18 +145,6 @@ public class JdbcDirectoryStore implements DirectoryStore {
               result.getLong("version"));
   private static final RowMapper<DirectoryLocation> LOCATION_MAPPER =
       (result, rowNumber) -> locationFrom(result);
-  private static final RowMapper<HealthcareService> HEALTHCARE_SERVICE_MAPPER =
-      (result, rowNumber) ->
-          new HealthcareService(
-              new InternalId(result.getObject("healthcare_service_id", UUID.class)),
-              new InternalId(result.getObject("organization_id", UUID.class)),
-              new InternalId(result.getObject("facility_id", UUID.class)),
-              Optional.ofNullable(result.getObject("location_id", UUID.class)).map(InternalId::new),
-              result.getString("name"),
-              source(result),
-              provenance(result),
-              DirectoryLifecycleStatus.valueOf(result.getString("lifecycle_status")),
-              result.getLong("version"));
   private static final RowMapper<CareCapability> CARE_CAPABILITY_MAPPER =
       (result, rowNumber) ->
           new CareCapability(
@@ -425,20 +418,21 @@ public class JdbcDirectoryStore implements DirectoryStore {
   public void insertHealthcareService(HealthcareService service) {
     Object[] sourceParameters =
         sourceAndProvenanceParameters(service.source(), service.provenance());
-    Object[] parameters = new Object[5 + sourceParameters.length + 2];
+    Object[] parameters = new Object[6 + sourceParameters.length + 2];
     parameters[0] = service.id().value();
     parameters[1] = service.organizationId().value();
     parameters[2] = service.facilityId().value();
     parameters[3] = service.locationId().map(InternalId::value).orElse(null);
     parameters[4] = service.name();
-    System.arraycopy(sourceParameters, 0, parameters, 5, sourceParameters.length);
-    parameters[5 + sourceParameters.length] = Timestamp.from(service.provenance().recordedAt());
+    parameters[5] = serviceTypesJson(service.serviceTypes());
+    System.arraycopy(sourceParameters, 0, parameters, 6, sourceParameters.length);
     parameters[6 + sourceParameters.length] = Timestamp.from(service.provenance().recordedAt());
+    parameters[7 + sourceParameters.length] = Timestamp.from(service.provenance().recordedAt());
     jdbc.update(
         "INSERT INTO directory.healthcare_service (healthcare_service_id, organization_id, "
-            + "facility_id, location_id, name, "
+            + "facility_id, location_id, name, service_types, "
             + sourceColumns()
-            + ", lifecycle_status, version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, "
+            + ", lifecycle_status, version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?::jsonb, "
             + "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', 1, ?, ?)",
         parameters);
   }
@@ -471,7 +465,7 @@ public class JdbcDirectoryStore implements DirectoryStore {
       HealthcareService corrected, long expectedVersion, Instant updatedAt) {
     Object[] provenanceParameters = provenanceParameters(corrected.provenance());
     return jdbc.update(
-            "UPDATE directory.healthcare_service SET name = ?, location_id = ?, "
+            "UPDATE directory.healthcare_service SET name = ?, location_id = ?, service_types = ?::jsonb, "
                 + "provenance_method = ?, provenance_observed_at = ?, provenance_recorded_at = ?, "
                 + "provenance_actor_kind = ?, provenance_actor_issuer = ?, "
                 + "provenance_actor_identifier_type = ?, provenance_actor_identifier = ?, "
@@ -479,6 +473,7 @@ public class JdbcDirectoryStore implements DirectoryStore {
                 + "WHERE healthcare_service_id = ? AND version = ?",
             corrected.name(),
             corrected.locationId().map(InternalId::value).orElse(null),
+            serviceTypesJson(corrected.serviceTypes()),
             provenanceParameters[0],
             provenanceParameters[1],
             provenanceParameters[2],
@@ -914,6 +909,28 @@ public class JdbcDirectoryStore implements DirectoryStore {
             identity.value())
         .stream()
         .findFirst();
+  }
+
+  @Override
+  public Optional<String> findMcsdSourceCursor(IssuerId sourceNamespace) {
+    return jdbc
+        .query(
+            "SELECT change_cursor FROM directory.mcsd_source_checkpoint WHERE source_issuer = ?",
+            (result, rowNumber) -> result.getString("change_cursor"),
+            sourceNamespace.value())
+        .stream()
+        .findFirst();
+  }
+
+  @Override
+  public void saveMcsdSourceCursor(IssuerId sourceNamespace, String cursor, Instant recordedAt) {
+    jdbc.update(
+        "INSERT INTO directory.mcsd_source_checkpoint (source_issuer, change_cursor, updated_at) "
+            + "VALUES (?, ?, ?) ON CONFLICT (source_issuer) DO UPDATE SET "
+            + "change_cursor = EXCLUDED.change_cursor, updated_at = EXCLUDED.updated_at",
+        sourceNamespace.value(),
+        cursor,
+        Timestamp.from(recordedAt));
   }
 
   @Override
@@ -1367,10 +1384,50 @@ public class JdbcDirectoryStore implements DirectoryStore {
                 + HEALTHCARE_SERVICE_COLUMNS
                 + " FROM directory.healthcare_service WHERE healthcare_service_id = ?"
                 + lock,
-            HEALTHCARE_SERVICE_MAPPER,
+            this::healthcareService,
             id.value())
         .stream()
         .findFirst();
+  }
+
+  private HealthcareService healthcareService(java.sql.ResultSet result, int rowNumber)
+      throws java.sql.SQLException {
+    return new HealthcareService(
+        new InternalId(result.getObject("healthcare_service_id", UUID.class)),
+        new InternalId(result.getObject("organization_id", UUID.class)),
+        new InternalId(result.getObject("facility_id", UUID.class)),
+        Optional.ofNullable(result.getObject("location_id", UUID.class)).map(InternalId::new),
+        result.getString("name"),
+        parseServiceTypes(result.getString("service_types")),
+        source(result),
+        provenance(result),
+        DirectoryLifecycleStatus.valueOf(result.getString("lifecycle_status")),
+        result.getLong("version"));
+  }
+
+  private List<DirectoryServiceType> parseServiceTypes(String json) throws java.sql.SQLException {
+    try {
+      JsonNode node = objectMapper.readTree(json);
+      if (!node.isArray() || node.size() > 16) {
+        throw new java.sql.SQLException("Stored Directory service types are invalid");
+      }
+      List<DirectoryServiceType> result = new ArrayList<>();
+      for (JsonNode value : node) {
+        if (!value.isObject()) {
+          throw new java.sql.SQLException("Stored Directory service type is invalid");
+        }
+        result.add(
+            new DirectoryServiceType(
+                value.path("system").asText(),
+                value.path("code").asText(),
+                value.hasNonNull("version")
+                    ? Optional.of(value.path("version").asText())
+                    : Optional.empty()));
+      }
+      return List.copyOf(result);
+    } catch (JacksonException | IllegalArgumentException invalid) {
+      throw new java.sql.SQLException("Stored Directory service types are invalid", invalid);
+    }
   }
 
   private Optional<CareCapability> findCareCapability(InternalId id, boolean forUpdate) {
@@ -1686,6 +1743,7 @@ public class JdbcDirectoryStore implements DirectoryStore {
     snapshot.put("facilityId", service.facilityId().toString());
     service.locationId().ifPresent(id -> snapshot.put("locationId", id.toString()));
     snapshot.put("name", service.name());
+    snapshot.set("serviceTypes", serviceTypesNode(service.serviceTypes()));
     snapshot.put("sourceIssuer", service.source().reference().issuer().value());
     snapshot.put("sourceResourceType", service.source().reference().resourceType());
     snapshot.put("sourceReference", service.source().reference().value());
@@ -1793,7 +1851,23 @@ public class JdbcDirectoryStore implements DirectoryStore {
     return json(snapshot);
   }
 
-  private String json(ObjectNode snapshot) {
+  private ArrayNode serviceTypesNode(List<DirectoryServiceType> serviceTypes) {
+    ArrayNode result = objectMapper.createArrayNode();
+    for (DirectoryServiceType serviceType : serviceTypes) {
+      ObjectNode value = objectMapper.createObjectNode();
+      value.put("system", serviceType.system());
+      value.put("code", serviceType.code());
+      serviceType.version().ifPresent(version -> value.put("version", version));
+      result.add(value);
+    }
+    return result;
+  }
+
+  private String serviceTypesJson(List<DirectoryServiceType> serviceTypes) {
+    return json(serviceTypesNode(serviceTypes));
+  }
+
+  private String json(JsonNode snapshot) {
     try {
       return objectMapper.writeValueAsString(snapshot);
     } catch (JacksonException failure) {

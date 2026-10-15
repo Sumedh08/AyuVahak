@@ -199,6 +199,37 @@ class ReferralIpsPatientContextMapperTest {
   }
 
   @Test
+  void rejectsUnreferencedClinicalResourcesInTheIpsBundle() {
+    PatientReference expected = patientReference(PATIENT_IDENTIFIER_SYSTEM, PATIENT_IDENTIFIER);
+    Bundle bundle =
+        FhirContext.forR4Cached()
+            .newJsonParser()
+            .parseResource(Bundle.class, ipsBundle(PATIENT_IDENTIFIER_SYSTEM, PATIENT_IDENTIFIER));
+    Condition unreferenced = new Condition();
+    unreferenced.setId("00000000-0000-4000-8000-000000000004");
+    unreferenced.getMeta().addProfile(IPS_CONDITION_PROFILE);
+    unreferenced.setSubject(new Reference(PATIENT_URL));
+    unreferenced.setCode(
+        new CodeableConcept()
+            .addCoding(new Coding("urn:synthetic:clinical", "SYN-ORPHAN-CODE", "orphan")));
+    bundle
+        .addEntry()
+        .setFullUrl("urn:uuid:00000000-0000-4000-8000-000000000004")
+        .setResource(unreferenced);
+
+    PatientContextSourceDocument result =
+        mapper.map(
+            bytes(FhirContext.forR4Cached().newJsonParser().encodeResourceToString(bundle)),
+            "application/fhir+json",
+            expected,
+            Set.of(PatientContextCategory.PROBLEMS),
+            sourceEvidence());
+
+    assertThat(result.status()).isEqualTo(PatientContextSourceDocument.Status.INVALID);
+    assertThat(result.sections()).isEmpty();
+  }
+
+  @Test
   void doesNotProjectCategoriesThatDisclosurePolicyDidNotAllow() {
     PatientReference expected = patientReference(PATIENT_IDENTIFIER_SYSTEM, PATIENT_IDENTIFIER);
 

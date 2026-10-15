@@ -137,6 +137,10 @@ class DirectoryMcsdMapperTest {
     assertThat(service.organizationReference().value()).isEqualTo("org-a");
     assertThat(service.facilityReference().value()).isEqualTo("facility-a");
     assertThat(service.name()).isEqualTo("Synthetic imaging service");
+    assertThat(service.serviceTypes())
+        .containsExactly(
+            new DirectorySourceProjection.Coding(
+                "urn:synthetic:service", "ct", java.util.Optional.empty()));
     assertThat(service.active()).isTrue();
     assertThat(service.metadata().sourceIdentity().resourceType()).isEqualTo("HealthcareService");
   }

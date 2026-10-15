@@ -90,6 +90,7 @@ public sealed interface DirectorySourceProjection
       String name,
       ExternalReference organizationReference,
       ExternalReference facilityReference,
+      java.util.List<Coding> serviceTypes,
       boolean active)
       implements DirectorySourceProjection {
 
@@ -98,6 +99,19 @@ public sealed interface DirectorySourceProjection
       requireName(name);
       Objects.requireNonNull(organizationReference, "organizationReference");
       Objects.requireNonNull(facilityReference, "facilityReference");
+      serviceTypes = java.util.List.copyOf(Objects.requireNonNull(serviceTypes, "serviceTypes"));
+      if (serviceTypes.size() > 16) {
+        throw new IllegalArgumentException("source service type count must not exceed 16");
+      }
+    }
+
+    public HealthcareServiceFact(
+        Metadata metadata,
+        String name,
+        ExternalReference organizationReference,
+        ExternalReference facilityReference,
+        boolean active) {
+      this(metadata, name, organizationReference, facilityReference, java.util.List.of(), active);
     }
   }
 
