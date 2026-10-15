@@ -45,4 +45,9 @@ public class ReferralAuthorityConfiguration {
   FunctionalAuthority referralReadAuthority() {
     return ReferralAuthorities.read();
   }
+
+  @Bean
+  FunctionalAuthority referralPatientContextDisclosureAuthority() {
+    return ReferralAuthorities.patientContextDisclosure();
+  }
 }

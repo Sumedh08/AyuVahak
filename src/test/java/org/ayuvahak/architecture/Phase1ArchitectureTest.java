@@ -23,6 +23,7 @@ class Phase1ArchitectureTest {
 
     assertThat(productionClasses).isNotEmpty();
     Phase1ArchitectureRules.productionPackagesArePlatformOnly().check(productionClasses);
+    Phase1ArchitectureRules.fhirTypesMustRemainInApprovedAdapterPackages().check(productionClasses);
     Phase1ArchitectureRules.domainCodeMustNotDependOnFrameworks().check(productionClasses);
     Phase1ArchitectureRules.directoryMustNotDependOnOtherBusinessContexts()
         .check(productionClasses);
@@ -202,5 +203,23 @@ class Phase1ArchitectureTest {
         .contains("Matching domain decisions must use Matching-owned evidence types")
         .contains("org.springframework.context.ApplicationContext")
         .contains("java.sql.Connection");
+  }
+
+  @Test
+  void fhirBoundaryRuleDetectsAResourceTypeInADomainFixture() {
+    JavaClasses fixtureClasses =
+        new ClassFileImporter()
+            .withImportOption(ImportOption.Predefined.DO_NOT_INCLUDE_JARS)
+            .importClasses(
+                org.ayuvahak.architecture.fixtures.domain.FhirDependentDomainFixture.class);
+
+    EvaluationResult result =
+        Phase1ArchitectureRules.fhirTypesMustRemainInApprovedAdapterPackages()
+            .evaluate(fixtureClasses);
+
+    assertThat(result.hasViolation()).isTrue();
+    assertThat(result.getFailureReport().toString())
+        .contains("FHIR API/model types may appear only in the platform boundary")
+        .contains("org.ayuvahak.architecture.fixtures.domain.FhirDependentDomainFixture");
   }
 }

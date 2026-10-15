@@ -71,6 +71,11 @@ class TransferAuthorityConfiguration {
   }
 
   @Bean
+  FunctionalAuthority transferPatientContextParticipationAuthority() {
+    return TransferAuthorities.patientContextParticipation();
+  }
+
+  @Bean
   FunctionalAuthority transferReferralAmendmentCheckAuthority() {
     return TransferAuthorities.referralAmendmentCheck();
   }

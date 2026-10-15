@@ -37,6 +37,9 @@ import org.ayuvahak.platform.core.IssuerId;
 import org.ayuvahak.platform.executioncontext.ExecutionContext;
 import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
 import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
+import org.ayuvahak.platform.fhir.FhirPayloadLimits;
+import org.ayuvahak.platform.fhir.FhirProfileContext;
+import org.ayuvahak.platform.fhir.FhirR4PayloadParser;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -242,6 +245,85 @@ class CapacityObservationCommandsApiIT {
         .andExpect(status().isConflict())
         .andExpect(jsonPath("$.code").value("CAPACITY_OBSERVATION_CONFLICT"));
     assertThat(count("SELECT COUNT(*) FROM capacity.capacity_observation")).isEqualTo(1);
+  }
+
+  @Test
+  void freeFhirSlotCannotCreateCapacityEvidenceOrReadyStatus() throws Exception {
+    String freeSlot =
+        """
+        {
+          "resourceType": "Slot",
+          "id": "SYN-SLOT-001",
+          "schedule": {"reference": "Schedule/SYN-SCHEDULE-001"},
+          "status": "free",
+          "start": "2026-10-15T10:00:00Z",
+          "end": "2026-10-15T10:30:00Z"
+        }
+        """;
+    var parsedSlot =
+        FhirR4PayloadParser.withCoreProfiles(FhirPayloadLimits.conservativeDefaults())
+            .parse(
+                freeSlot.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                "application/fhir+json",
+                new FhirProfileContext("4.0.1", "http://hl7.org/fhir/StructureDefinition/Slot"));
+    assertThat(parsedSlot.resource()).isInstanceOf(org.hl7.fhir.r4.model.Slot.class);
+    assertThat(((org.hl7.fhir.r4.model.Slot) parsedSlot.resource()).getStatus())
+        .isEqualTo(org.hl7.fhir.r4.model.Slot.SlotStatus.FREE);
+
+    String schedule =
+        """
+        {
+          "resourceType": "Schedule",
+          "id": "SYN-SCHEDULE-001",
+          "active": true,
+          "actor": [{"reference": "Location/SYN-FACILITY-A"}]
+        }
+        """;
+    var parsedSchedule =
+        FhirR4PayloadParser.withCoreProfiles(FhirPayloadLimits.conservativeDefaults())
+            .parse(
+                schedule.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                "application/fhir+json",
+                new FhirProfileContext(
+                    "4.0.1", "http://hl7.org/fhir/StructureDefinition/Schedule"));
+    assertThat(parsedSchedule.resource()).isInstanceOf(org.hl7.fhir.r4.model.Schedule.class);
+
+    mockMvc
+        .perform(
+            post("/api/v1/capacity/observations")
+                .header("Authorization", bearer(token(REPORTER)))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", organizationId)
+                .header("X-AyuVahak-Facility-Id", facilityId)
+                .header("Idempotency-Key", "free-fhir-slot-must-not-be-capacity")
+                .contentType("application/fhir+json")
+                .content(freeSlot))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("CAPACITY_VALUE_INVALID"));
+
+    mockMvc
+        .perform(
+            post("/api/v1/capacity/observations")
+                .header("Authorization", bearer(token(REPORTER)))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", organizationId)
+                .header("X-AyuVahak-Facility-Id", facilityId)
+                .header("Idempotency-Key", "fhir-schedule-must-not-be-capacity")
+                .contentType("application/fhir+json")
+                .content(schedule))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("CAPACITY_VALUE_INVALID"));
+
+    assertThat(count("SELECT COUNT(*) FROM capacity.capacity_observation")).isZero();
+
+    queryCurrent("COORDINATION_BEDS")
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.dimensions[0].freshness").value("UNKNOWN"))
+        .andExpect(jsonPath("$.dimensions[0].evidence").isEmpty());
+    evaluateReadiness("[\"COORDINATION_BEDS\"]")
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.outcome").value("UNKNOWN"))
+        .andExpect(jsonPath("$.dimensions[0].outcome").value("UNKNOWN"));
   }
 
   @Test

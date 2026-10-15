@@ -12,6 +12,8 @@ import org.ayuvahak.directory.application.DirectoryConceptOwner;
 import org.ayuvahak.directory.application.DirectoryExternalIdentifierHistoryEntry;
 import org.ayuvahak.directory.application.DirectoryFacilitySearchEntry;
 import org.ayuvahak.directory.application.DirectoryScopeLookupUnavailableException;
+import org.ayuvahak.directory.application.DirectorySourceProjectionReconciliation;
+import org.ayuvahak.directory.application.DirectorySourceProjectionState;
 import org.ayuvahak.directory.application.DirectoryStore;
 import org.ayuvahak.directory.application.LocatedFacilitySearchResult;
 import org.ayuvahak.directory.application.UnlocatedFacilitySearchResult;
@@ -885,6 +887,104 @@ public class JdbcDirectoryStore implements DirectoryStore {
   }
 
   @Override
+  public void lockMcsdSourceIdentity(ExternalReference identity) {
+    String lockKey =
+        identity.issuer().value() + "\n" + identity.resourceType() + "\n" + identity.value();
+    jdbc.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended(?, 0))",
+        result -> {
+          while (result.next()) {
+            // The result is intentionally ignored; the transaction-scoped advisory lock is the
+            // effect. Hash collisions only serialize unrelated source identities.
+          }
+        },
+        lockKey);
+  }
+
+  @Override
+  public Optional<DirectorySourceProjectionState> lockMcsdSourceProjection(
+      ExternalReference identity) {
+    return jdbc
+        .query(
+            "SELECT * FROM directory.mcsd_source_projection WHERE source_issuer = ? "
+                + "AND source_resource_type = ? AND source_reference = ? FOR UPDATE",
+            JdbcDirectoryStore::mcsdSourceProjection,
+            identity.issuer().value(),
+            identity.resourceType(),
+            identity.value())
+        .stream()
+        .findFirst();
+  }
+
+  @Override
+  public void insertMcsdSourceProjection(DirectorySourceProjectionState projection) {
+    jdbc.update(
+        "INSERT INTO directory.mcsd_source_projection (projection_id, source_issuer, "
+            + "source_resource_type, source_reference, concept_type, concept_id, "
+            + "source_profile_uri, source_version_id, source_updated_at, "
+            + "source_updated_at_ordered_revision, projection_fingerprint, source_active, "
+            + "last_outcome, version, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        projection.projectionId().value(),
+        projection.sourceIdentity().issuer().value(),
+        projection.sourceIdentity().resourceType(),
+        projection.sourceIdentity().value(),
+        projection.conceptType().name(),
+        projection.conceptId().map(InternalId::value).orElse(null),
+        projection.profileUri(),
+        projection.opaqueVersionId().orElse(null),
+        projection.sourceUpdatedAt().map(Timestamp::from).orElse(null),
+        projection.sourceUpdatedAtIsOrderedRevision(),
+        projection.projectionFingerprint(),
+        projection.sourceActive(),
+        projection.lastOutcome().name(),
+        projection.version(),
+        Timestamp.from(projection.recordedAt()));
+  }
+
+  @Override
+  public boolean updateMcsdSourceProjection(
+      DirectorySourceProjectionState projection, long expectedVersion) {
+    return jdbc.update(
+            "UPDATE directory.mcsd_source_projection SET concept_type = ?, concept_id = ?, "
+                + "source_profile_uri = ?, source_version_id = ?, source_updated_at = ?, "
+                + "source_updated_at_ordered_revision = ?, projection_fingerprint = ?, "
+                + "source_active = ?, last_outcome = ?, version = ?, recorded_at = ? "
+                + "WHERE projection_id = ? AND version = ?",
+            projection.conceptType().name(),
+            projection.conceptId().map(InternalId::value).orElse(null),
+            projection.profileUri(),
+            projection.opaqueVersionId().orElse(null),
+            projection.sourceUpdatedAt().map(Timestamp::from).orElse(null),
+            projection.sourceUpdatedAtIsOrderedRevision(),
+            projection.projectionFingerprint(),
+            projection.sourceActive(),
+            projection.lastOutcome().name(),
+            projection.version(),
+            Timestamp.from(projection.recordedAt()),
+            projection.projectionId().value(),
+            expectedVersion)
+        == 1;
+  }
+
+  @Override
+  public Optional<DirectoryExternalIdentifier> findActiveExternalIdentifier(
+      ExternalReference externalIdentifier) {
+    List<DirectoryExternalIdentifier> matches =
+        jdbc.query(
+            "SELECT * FROM directory.external_identifier WHERE issuer = ? AND resource_type = ? "
+                + "AND identifier_value = ? AND lifecycle_status = 'ACTIVE'",
+            (result, rowNumber) -> externalIdentifier(result),
+            externalIdentifier.issuer().value(),
+            externalIdentifier.resourceType(),
+            externalIdentifier.value());
+    if (matches.size() > 1) {
+      throw new IllegalStateException(
+          "The Directory source identity is linked to more than one active concept type.");
+    }
+    return matches.stream().findFirst();
+  }
+
+  @Override
   public List<LocatedFacilitySearchResult> findNearbyFacilities(
       Optional<InternalId> organizationId,
       Optional<InternalId> facilityId,
@@ -1372,6 +1472,27 @@ public class JdbcDirectoryStore implements DirectoryStore {
         result.getLong("version"),
         result.getTimestamp("created_at").toInstant(),
         result.getTimestamp("updated_at").toInstant());
+  }
+
+  private static DirectorySourceProjectionState mcsdSourceProjection(
+      java.sql.ResultSet result, int rowNumber) throws java.sql.SQLException {
+    return new DirectorySourceProjectionState(
+        new InternalId(result.getObject("projection_id", UUID.class)),
+        new ExternalReference(
+            new IssuerId(result.getString("source_issuer")),
+            result.getString("source_resource_type"),
+            result.getString("source_reference")),
+        DirectoryConceptType.valueOf(result.getString("concept_type")),
+        Optional.ofNullable(result.getObject("concept_id", UUID.class)).map(InternalId::new),
+        result.getString("source_profile_uri"),
+        Optional.ofNullable(result.getString("source_version_id")),
+        Optional.ofNullable(result.getTimestamp("source_updated_at")).map(Timestamp::toInstant),
+        result.getBoolean("source_updated_at_ordered_revision"),
+        result.getString("projection_fingerprint").trim(),
+        result.getBoolean("source_active"),
+        DirectorySourceProjectionReconciliation.Outcome.valueOf(result.getString("last_outcome")),
+        result.getLong("version"),
+        result.getTimestamp("recorded_at").toInstant());
   }
 
   private static DirectoryProvenance provenance(java.sql.ResultSet result)

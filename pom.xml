@@ -26,6 +26,7 @@
         <archunit.version>1.5.1</archunit.version>
         <spotless.version>3.10.1</spotless.version>
         <google-java-format.version>1.30.0</google-java-format.version>
+        <hapi-fhir.version>8.8.2</hapi-fhir.version>
     </properties>
 
     <dependencies>
@@ -44,6 +45,26 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-jdbc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ca.uhn.hapi.fhir</groupId>
+            <artifactId>hapi-fhir-structures-r4</artifactId>
+            <version>${hapi-fhir.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ca.uhn.hapi.fhir</groupId>
+            <artifactId>hapi-fhir-validation</artifactId>
+            <version>${hapi-fhir.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ca.uhn.hapi.fhir</groupId>
+            <artifactId>hapi-fhir-validation-resources-r4</artifactId>
+            <version>${hapi-fhir.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ca.uhn.hapi.fhir</groupId>
+            <artifactId>hapi-fhir-caching-caffeine</artifactId>
+            <version>${hapi-fhir.version}</version>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -153,7 +174,7 @@
                                 </requireReleaseDeps>
                                 <bannedDependencies>
                                     <searchTransitive>true</searchTransitive>
-                                    <message>A Phase 2 dependency introduces a forbidden future-domain, integration, persistence, or infrastructure capability.</message>
+                                    <message>A dependency introduces a forbidden future-domain, integration, persistence, or infrastructure capability without an explicit phase-approved allowlist entry.</message>
                                     <excludes>
                                         <exclude>ca.uhn.hapi.fhir:*</exclude>
                                         <exclude>org.hl7.fhir:*</exclude>
@@ -178,6 +199,28 @@
                                         <exclude>org.apache.cassandra:*</exclude>
                                         <exclude>org.springframework.cloud:*</exclude>
                                     </excludes>
+                                    <includes>
+                                        <include>ca.uhn.hapi.fhir:hapi-fhir-base</include>
+                                        <include>ca.uhn.hapi.fhir:hapi-fhir-structures-r4</include>
+                                        <include>ca.uhn.hapi.fhir:hapi-fhir-validation</include>
+                                        <include>ca.uhn.hapi.fhir:hapi-fhir-validation-resources-r4</include>
+                                        <include>ca.uhn.hapi.fhir:hapi-fhir-structures-r5</include>
+                                        <include>ca.uhn.hapi.fhir:hapi-fhir-caching-caffeine</include>
+                                        <include>ca.uhn.hapi.fhir:org.hl7.fhir.utilities</include>
+                                        <include>ca.uhn.hapi.fhir:org.hl7.fhir.r4</include>
+                                        <include>ca.uhn.hapi.fhir:org.hl7.fhir.r5</include>
+                                        <include>ca.uhn.hapi.fhir:org.hl7.fhir.validation</include>
+                                        <include>ca.uhn.hapi.fhir:hapi-fhir-caching-api</include>
+                                        <include>ca.uhn.hapi.fhir:hapi-fhir-converter</include>
+                                        <include>ca.uhn.hapi.fhir:org.hl7.fhir.convertors</include>
+                                        <include>ca.uhn.hapi.fhir:org.hl7.fhir.r4b</include>
+                                        <include>ca.uhn.hapi.fhir:org.hl7.fhir.dstu2</include>
+                                        <include>ca.uhn.hapi.fhir:org.hl7.fhir.dstu2016may</include>
+                                        <include>ca.uhn.hapi.fhir:org.hl7.fhir.dstu3</include>
+                                        <include>ca.uhn.hapi.fhir:org.hl7.fhir.dstu3.support</include>
+                                        <include>ca.uhn.hapi.fhir:org.hl7.fhir.model</include>
+                                        <include>ca.uhn.hapi.fhir:org.hl7.fhir.support</include>
+                                    </includes>
                                 </bannedDependencies>
                             </rules>
                         </configuration>

@@ -35,6 +35,9 @@ public final class TransferAuthorities {
       new FunctionalAuthority("TransferJourneyClosureAuthority", ORIGIN_SCOPES);
   private static final FunctionalAuthority VIEW =
       new FunctionalAuthority("TransferViewAuthority", ORIGIN_SCOPES);
+  private static final FunctionalAuthority PATIENT_CONTEXT_PARTICIPATION =
+      new FunctionalAuthority(
+          "TransferPatientContextParticipation", Set.of(ExecutionScope.Kind.FACILITY));
   private static final FunctionalAuthority REFERRAL_AMENDMENT_CHECK =
       new FunctionalAuthority("TransferReferralAmendmentCheck", ORIGIN_SCOPES);
 
@@ -86,6 +89,10 @@ public final class TransferAuthorities {
 
   public static FunctionalAuthority view() {
     return VIEW;
+  }
+
+  public static FunctionalAuthority patientContextParticipation() {
+    return PATIENT_CONTEXT_PARTICIPATION;
   }
 
   public static FunctionalAuthority referralAmendmentCheck() {

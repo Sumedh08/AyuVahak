@@ -96,6 +96,22 @@ final class Phase1ArchitectureRules {
         .allowEmptyShould(true);
   }
 
+  static ArchRule fhirTypesMustRemainInApprovedAdapterPackages() {
+    return noClasses()
+        .that()
+        .resideOutsideOfPackages(
+            "org.ayuvahak.platform.fhir..",
+            "org.ayuvahak.directory.adapter.mcsd..",
+            "org.ayuvahak.referral.adapter.ips..",
+            "org.ayuvahak.capacity.adapter.fhir..")
+        .should()
+        .dependOnClassesThat()
+        .resideInAnyPackage("ca.uhn.fhir..", "org.hl7.fhir..")
+        .as(
+            "FHIR API/model types may appear only in the platform boundary or an approved"
+                + " owner-context adapter; never in domains, application contracts, APIs, or persistence");
+  }
+
   static ArchRule coreCodeMustNotDependOnOuterLayers() {
     return noClasses()
         .that()

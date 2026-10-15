@@ -117,6 +117,19 @@ public interface DirectoryStore extends DirectoryScopeReferenceLookup {
   boolean updateExternalIdentifier(
       DirectoryExternalIdentifier corrected, long expectedVersion, Instant updatedAt);
 
+  /** Serializes first imports of one exact source-scoped identity in the current transaction. */
+  void lockMcsdSourceIdentity(ExternalReference identity);
+
+  Optional<DirectorySourceProjectionState> lockMcsdSourceProjection(ExternalReference identity);
+
+  void insertMcsdSourceProjection(DirectorySourceProjectionState projection);
+
+  boolean updateMcsdSourceProjection(
+      DirectorySourceProjectionState projection, long expectedVersion);
+
+  Optional<DirectoryExternalIdentifier> findActiveExternalIdentifier(
+      ExternalReference externalIdentifier);
+
   List<LocatedFacilitySearchResult> findNearbyFacilities(
       Optional<InternalId> organizationId,
       Optional<InternalId> facilityId,

@@ -23,6 +23,9 @@ public final class ReferralAuthorities {
       new FunctionalAuthority("ReferralCancel", ORIGIN_SCOPES);
   private static final FunctionalAuthority READ =
       new FunctionalAuthority("ReferralRead", ORIGIN_SCOPES);
+  private static final FunctionalAuthority PATIENT_CONTEXT_DISCLOSURE =
+      new FunctionalAuthority(
+          "ReferralPatientContextDisclosure", Set.of(ExecutionScope.Kind.FACILITY));
 
   private ReferralAuthorities() {}
 
@@ -52,5 +55,9 @@ public final class ReferralAuthorities {
 
   public static FunctionalAuthority read() {
     return READ;
+  }
+
+  public static FunctionalAuthority patientContextDisclosure() {
+    return PATIENT_CONTEXT_DISCLOSURE;
   }
 }
