@@ -1,6 +1,6 @@
 # Phase 2 — Platform Kernel, Identity & Trust
 
-**Status:** Phase 2 architecture baseline, approved for specification. Phase 1 is frozen; Phase 2 has not started.
+**Status:** Canonical Phase 2 architecture, frozen. Implementation and acceptance passed; see [Phase 2 acceptance evidence](../reviews/phase-2-acceptance.md).
 
 This document turns the frozen product boundaries and Phase 0 decisions into a coherent Phase 2 architecture. It defines the platform kernel that later business contexts can rely on. It does not define healthcare business aggregates, production table layouts, API endpoints, event payloads, or deployment topology. The companion [Phase 2 specification](../specs/phase-2-platform-kernel-spec.md) defines observable capabilities and verification seams without creating tickets.
 

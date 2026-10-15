@@ -40,6 +40,20 @@ Synthetic identifiers and data are used in examples. Real patient data and produ
 - Route estimates are untrusted operational estimates; they are not dispatch instructions or clinical recommendations.
 - Each integration validates the expected source, recipient, scope, format, and authorization. Unknown, conflicting, or stale input is surfaced rather than silently promoted to truth.
 
+## Volume III external-partner trust
+
+External FHIR, directory, clinical-summary, and transport providers are independently administered trust domains. A valid TLS connection, FHIR profile, OAuth token, SMART scope, HIE route, or provider status does not by itself make content true or authorize a business action.
+
+- Phase 9 provides a shared technical trust envelope, not a universal connector/gateway. Owner adapters retain their ports, mappings, external identifier links, reconciliation, and business retry decisions.
+- Partner endpoints and token endpoints come from administrator-controlled, versioned configuration. Ordinary requests and external FHIR `Endpoint`/absolute `Reference` values cannot choose network destinations. Validate scheme/host/port/path and resolved addresses, prevent DNS rebinding, disable cross-origin redirects, enforce bounded time/size/pages, and apply egress controls. Loopback/link-local/metadata are denied; private networks require explicit deployment allowlisting because some health-system endpoints are intentionally private.
+- Use HTTPS with certificate/hostname validation. Production cannot disable verification. Local tests may use disposable certificates explicitly trusted by that test. XML, if a named partner requires it, disables DTD/external entities and schema retrieval; JSON and XML parsing are size/depth bounded.
+- OAuth/SMART client credentials, signed client assertions, and mTLS are separate partner mechanisms selected by bilateral configuration. AyuVahak validates the partner identity and operation scope, then the owning context rechecks its own grants and state. Client credential/private key is never stored as ordinary business data, included in logs, or committed. Tokens are short-lived, bounded-cache only, rotation-aware, and not persisted in business records.
+- Suspending/revoking a partner blocks new and queued exchanges, clears/invalidates cached credentials, and stops indefinite retries. A remote outcome that may have committed remains unknown pending safe reconciliation; revocation does not fabricate rejection or success.
+- External operation identifiers and duplicate/replay receipts are namespaced by partner and operation. External message replay, HTTP retry, owner command idempotency, and internal event consumer dedup remain separate. No exactly-once claim.
+- No exchange persists a full clinical payload by default. A named owner may retain only minimized encrypted retry content if its operation contract requires it and explicitly defines access, expiry, deletion, and audit. The shared trust capability does not become a payload archive.
+
+The [Volume III threat model](volume-3-threat-model.md) gives threats, mitigations, residual risks, and local verification seams. All future tests use local mock endpoints, synthetic payloads, local certificates/tokens, and disposable infrastructure; public healthcare sandboxes are prohibited.
+
 ## Safe failure behavior
 
 - Stale or unavailable capacity is unknown for current matching; it is never silently treated as available.
@@ -55,6 +69,8 @@ Synthetic identifiers and data are used in examples. Real patient data and produ
 Every safety- or access-relevant action is attributable to the human or machine actor, organization and optional facility context, action, target reference, timestamp, outcome, and correlation identifier; distinguish event time from recorded time where reports may be delayed. Audit data should establish chronology and responsibility without copying the entire clinical payload. For protected mutations, required audit evidence commits atomically with the mutation; failure rolls both back. Sensitive successful reads are not disclosed before their required audit record is durable. Denials remain denials if the separate non-mutating security-audit path is unavailable; report the operational failure without claiming a record was persisted. Restrict and monitor audit access; include privileged configuration changes and accesses to patient context. Retention, correction, export, and tamper-evidence requirements are deployment-specific and must be settled before production.
 
 These mechanisms belong to Phase 2, not Phase 1. See the [Phase 2 platform-kernel architecture](phase-2-platform-kernel.md) and [specification](../specs/phase-2-platform-kernel-spec.md).
+
+Volume III uses these frozen mechanisms for partner configuration audit, sensitive patient-context read audit, and owner event delivery. It does not change Phase 2 ownership or promise exactly-once external exchange. Transport authority and privacy constraints are defined in the [Volume III architecture](volume-3-interoperability-security-transport.md).
 
 ## Pre-production governance gates
 

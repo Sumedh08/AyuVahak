@@ -6,7 +6,7 @@ FHIR, IPS, SMART, mCSD, DHIS2, HAPI, Spring, PostgreSQL/PostGIS, a routing provi
 
 ## Context definitions
 
-The active business contexts for Volume II are Directory, Capacity, Referral, Matching, and Transfer. They are implemented sequentially in Phases 3–7. Transport, Notifications, and Analytics remain later-volume contexts and are not implemented or required by Volume II. The [Volume II context map](volume-2-core-care-coordination.md#context-model) shows the current five-context collaboration and the Phase 2 platform boundary.
+Volume II's implemented business contexts are Directory, Capacity, Referral, Matching, and Transfer. They were implemented sequentially in Phases 3–7. Volume III design adds Transport as a new business context for Phase 10; it is not part of the frozen Volume II implementation and remains unimplemented. Notifications and Analytics remain outside Volume III's authorized Phase 8–10 scope. The [Volume II context map](volume-2-core-care-coordination.md#context-model) shows the frozen five-context collaboration; [Volume III architecture](volume-3-interoperability-security-transport.md) defines the design-only extension.
 
 ### Directory
 
@@ -65,16 +65,16 @@ The active business contexts for Volume II are Directory, Capacity, Referral, Ma
 
 ### Transport
 
-**Volume II status:** Later-volume context; no Transport entity, dispatch adapter, endpoint, schema, or implementation is part of Phases 3–7. In Volume II, Transfer records only a reported `IN_TRANSIT` state and does not claim to coordinate or control transport.
+**Phase status:** Volume III design only; Phase 10 is specified, but no Transport entity, dispatch adapter, endpoint, schema, or implementation is part of frozen Phases 3–7. In Volume II, Transfer records only an attributed reported `IN_TRANSIT` state and does not claim to coordinate or control transport.
 
 - **Purpose:** Coordinate and display the transport relationship needed for a Transfer.
-- **Owns:** A transport request/reference, reported assignment and journey status, and coordination exceptions.
+- **Owns:** A separate TransportRequest, provider-scoped assignment reference, attributed ETA/status/movement observations, cancellation/reconciliation outcome, provider/manual destination-change operation, and transport coordination exceptions. Provider systems remain authoritative for vehicles, crews, and dispatch algorithms. Transfer remains owner of destination-change intent and final active destination.
 - **Does not own:** Fleet inventory, call taking, dispatch authority, vehicle tracking infrastructure, or medical control.
-- **Upstream dependencies:** Transfer; DispatchPort implementations such as an EMS adapter, dispatcher, or attributed manual report.
+- **Upstream dependencies:** Transfer owner contracts; an optional DispatchPort implemented by a partner adapter or a human/manual reporting path. Phase 9 supplies technical trust safeguards for any external adapter.
 - **Downstream consumers:** Transfer, Notifications, authorized referring/receiving teams, and Audit.
-- **Allowed communication:** Record a transport need and, only when deployment policy explicitly authorizes the integration, send a purpose-limited request if supported; otherwise a human contacts dispatch out of band and records the sourced assignment/status. Transport owns the DispatchPort and the meaning/reconciliation of dispatch responses.
-- **Events potentially published:** TransportRequested, TransportAssigned, TransportUnavailable, TransportStatusChanged, TransportCompleted.
-- **Prohibited coupling:** Never issue a dispatch command unless a separately authorized future integration explicitly grants that role; transport failure does not silently cancel the Transfer.
+- **Allowed communication:** Receive purpose-limited request/cancel/destination-change commands from Transfer after independent service-grant validation and the named Transfer-owned eligibility query. Use a configured DispatchPort only where a deployment authorizes it; otherwise record authorized manual coordination. Transport maps provider responses and owns status reconciliation. Transfer records its own movement and applies its own destination change only through validated owner contracts/events.
+- **Events potentially published:** `transport.cancellation-resolved.v1`, `transport.destination-change-resolved.v1`, `transport.departure-confirmed.v1`, `transport.arrival-reported.v1`, `transport.interrupted.v1`, and `transport.unfulfilled.v1`, each only for a named Transfer consumer and purpose. No event-per-state stream.
+- **Prohibited coupling:** No Transfer persistence access; no patient clinical context; no implicit dispatch authority; assignment, ETA, and vehicle arrival do not imply Transfer departure, Arrival, Handover, or Completion; transport failure does not silently cancel or reroute Transfer.
 
 ### Notifications
 
@@ -130,7 +130,7 @@ The active business contexts for Volume II are Directory, Capacity, Referral, Ma
 
 Identity & Access and Audit are platform bounded contexts: they own the semantics and records of application authorization and AyuVahak's own audit chronology. They are not business workflow contexts such as Referral or Transfer. Provenance, correlation, event contracts, outbox delivery, command idempotency, and event-consumer deduplication are platform capabilities or owner-local mechanisms; none is a universal business-data store.
 
-Interoperability is a shared platform capability, not a universal gateway and not a business bounded context. It supplies replaceable technical building blocks to adapters owned by the contexts that need external information or action. Those building blocks may include FHIR client/runtime support, protocol authentication, conformance validation, terminology lookup, external-correlation helpers, provenance metadata, transport-level retry scheduling, and transport observability. A deployment may route an adapter through an HIE/OpenHIM, but that route is optional and does not change semantic ownership.
+Interoperability is a shared platform capability, not a universal gateway and not a business bounded context. Phase 8 adds owner-context adapters; Phase 9 adds shared partner trust enforcement and exchange transport. The capability supplies replaceable technical building blocks such as bounded HTTP/TLS, configured protocol authentication, parser/validation plumbing, terminology utilities, correlation, and transport observability. It does not own partner semantics, a business mapping, external identifier association, reconciliation outcome, or all connections. A deployment may route a particular adapter through an HIE/OpenHIM, but that route is optional and does not change semantic ownership.
 
 The consuming business context owns its port, the meaning of the data or action requested, partner mapping, business retry/reconciliation policy, and the outcome it records. Specifically:
 
@@ -145,13 +145,13 @@ The consuming business context owns its port, the meaning of the data or action 
 
 External-system identifiers remain issued and authoritative within their source system. The context that owns the referenced AyuVahak concept owns the association to an external identifier, scoped by issuer and resource type. There is no central identifier-mapping business context. Shared terminology infrastructure may resolve codes, but the domain context owns what a code means for its rules and which local mappings are accepted.
 
-Connection and mapping configuration is declared with the adapter that consumes it. Endpoint credentials are references to deployment-managed secrets, not stored in adapter configuration or source control. Operators may have a shared view of health and configuration ownership, but there is no centralized connector registry that owns every partner mapping or workflow. Country-specific mapping stays at the relevant adapter; jurisdiction-specific business policy remains owned by the accountable deployment and consuming domain.
+Owner-specific connection use, profile mapping, external identifiers, and operation semantics remain declared with the adapter that consumes them. A shared, administrator-controlled trust envelope may centralize only technical partner identity, approved origin/host/path policy, authentication mode, trust status, limits, and secret/key references so every adapter receives the same enforcement. That envelope is not a connector registry and contains no owner mapping or business workflow. Secret material remains outside ordinary configuration and source control. Country-specific mapping stays at the relevant adapter; jurisdiction-specific policy remains with the accountable deployment and consuming domain.
 
 Transport-level retries may be supplied by shared infrastructure only when duplicate delivery is safe and bounded. The owning context decides whether a business operation may be retried, what confirmation is required, how conflicts are reconciled, and when it can be considered complete. An outbox is technical delivery support; it does not transfer business-event ownership out of the publishing context.
 
 ## Context map
 
-This diagram is the longer-term architecture context map. The active Volume II business contexts, phase order and minimal event catalog are shown more precisely in the [Volume II architecture](volume-2-core-care-coordination.md) and [context contracts](volume-2-context-contracts.md). Later contexts below are not Phase 3–7 implementation requirements.
+This diagram shows the longer-term context map, including Volume III design. It does not represent implementation status or authorize implementation. The frozen Volume II phase order and event catalog remain in the [Volume II architecture](volume-2-core-care-coordination.md) and [context contracts](volume-2-context-contracts.md); Volume III boundaries are detailed in its [architecture](volume-3-interoperability-security-transport.md), [contracts](volume-3-context-contracts.md), and specifications.
 
 ```mermaid
 flowchart LR
@@ -183,14 +183,14 @@ flowchart LR
     DHISAdapter["Analytics: aggregate export adapter"]
   end
 
-  subgraph Platform["Shared platform capabilities — technical support, no business workflow ownership"]
-    FHIR["FHIR client and version support"]
-    Auth["Protocol authentication and secret references"]
-    Terminology["Terminology lookup and mapping helpers"]
-    Provenance["External IDs, provenance and correlation helpers"]
-    Reliability["Internal transactional outbox, retry and telemetry"]
+  subgraph Platform["Shared platform capabilities — technical safeguards, no business semantic ownership"]
+    FHIR["FHIR parser/version support"]
+    Auth["Partner trust enforcement, TLS, token mechanics, secret references"]
+    Terminology["Terminology utilities; owner chooses meaning"]
+    Provenance["Technical correlation/provenance helpers"]
+    Reliability["Internal outbox plus bounded transport mechanics"]
     Idempotency["Owner-local command idempotency and consumer dedup"]
-    Validation["Conformance validation and transport observability"]
+    Validation["Payload bounds, conformance plumbing, safe telemetry"]
   end
 
   subgraph External["External actors and systems — optional by deployment unless noted"]
@@ -271,7 +271,7 @@ flowchart LR
   class Users,EHR,FReg,PReg,MPI,CapSrc,IdP,EMS,HIE,DHIS,Route,Gateway,LMIS external
 ```
 
-The diagram distinguishes business ownership from adapter implementation and shared platform support; it does not prescribe network topology. Each external adapter is logically owned by the context whose need it satisfies. Shared platform capabilities support several adapters and do not mediate every external call through one central business service. An HIE/OpenHIM may carry a particular exchange where the deployment uses it. It does not make AyuVahak mandatory if another system already owns the coordination lifecycle. LMIS is shown as a neighboring authority only; no routine dependency or exchange is part of the initial workflow.
+The diagram distinguishes business ownership, platform capability, adapter, and external system; it does not prescribe network topology. Each external adapter is logically owned by the context whose need it satisfies. Shared trust enforcement may be common, but every adapter calls it with a preconfigured partner/operation reference and keeps its own meaning and outcome. There is no universal `InteropService`. An HIE/OpenHIM may carry a particular exchange where deployed; it is not mandatory. LMIS remains outside this volume's coordination workflow.
 
 ## Communication and modularity rules
 

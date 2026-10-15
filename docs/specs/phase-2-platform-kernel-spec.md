@@ -1,6 +1,6 @@
 # Phase 2 Specification — Platform Kernel, Identity & Trust
 
-**Status:** Canonical Phase 2 implementation specification. Design audit and implementation-spec review are recorded in [the Phase 2 design review](../reviews/phase-2-design-review.md). Phase 2 implementation has not started.
+**Status:** Canonical Phase 2 implementation specification, frozen and accepted. Design audit and implementation-spec review are recorded in [the Phase 2 design review](../reviews/phase-2-design-review.md); implementation evidence is in [Phase 2 acceptance](../reviews/phase-2-acceptance.md).
 
 ## 1. Outcome
 

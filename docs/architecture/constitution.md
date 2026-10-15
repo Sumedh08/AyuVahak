@@ -26,6 +26,10 @@ Authentication is delegated to an external identity provider, and AyuVahak autho
 
 The Phase 2 platform-kernel design is documented in [Phase 2 architecture](phase-2-platform-kernel.md) and its [behavioral specification](../specs/phase-2-platform-kernel-spec.md). Keycloak is a local reference OIDC provider, not a deployment requirement. AyuVahak validates signed access tokens locally and owns scoped authorization grants. Protected mutations and their required audit evidence are atomic; non-mutating sensitive-read/security audit has a separate durable path. Internal events are at-least-once, with no global order and per-aggregate order where required. Command idempotency and consumer deduplication remain distinct and locally owned. Phase 2 is implemented and frozen. Business-context implementation follows its own phase gate and does not follow from this architecture document alone.
 
+## Volume III design boundary
+
+Volume III extends the frozen core only at owner-defined ports. [Volume III architecture](volume-3-interoperability-security-transport.md), [contracts](volume-3-context-contracts.md), and [state machines](volume-3-state-machines.md) define the design for Phase 8 standards adapters, Phase 9 secure exchange, and Phase 10 Transport. FHIR is an external representation; Referral, Directory, Capacity, and Transport retain semantic mapping and persistence ownership. Shared exchange support enforces technical trust but is not a universal gateway. Transport is separate from Transfer: Transport owns movement-provider coordination; Transfer owns acceptance, reservation relationship, care-transition lifecycle, Arrival, Handover, and Completion. The Phase 8–10 specifications are design artifacts only and do not authorize implementation.
+
 ## Volume II architecture
 
 Phases 3–7 are designed as five business contexts in the sequence Directory → Capacity → Referral → Matching → Transfer. Their authority, application contracts, state machines, stale-evidence rules, recommendation policy, and reservation boundary are defined in the [Volume II core architecture](volume-2-core-care-coordination.md), [context contracts](volume-2-context-contracts.md), [state machines](volume-2-state-machines.md), [Capacity policy](capacity-readiness-policy-v1.md), and [Matching policy](matching-policy-v1.md). The implementation-ready phase boundaries are in the [Phase 3–7 specifications](../specs/). These documents do not authorize implementation by themselves; the owning phase must be separately started and frozen under its execution gate.
@@ -37,4 +41,6 @@ The permanent external-mutation policy in [AGENTS.md](../../AGENTS.md) applies i
 ## System view
 
 [System context](system-context.md) shows AyuVahak as one optional system interacting with people and external authorities. It is distinct from the internal [context map](bounded-contexts.md). Deployment-specific law, authorization mapping, terminology, retention, partner profiles, and federation agreements are explicit configuration/governance questions; they do not change the core ownership boundary.
+
+The current program status is maintained in root [AGENTS.md](../../AGENTS.md). The Volume III design freeze does not authorize Phase 8, 9, or 10 implementation; each requires a separate human-authorized execution prompt.
 

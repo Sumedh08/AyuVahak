@@ -60,6 +60,42 @@ The coordinated movement of a patient from a referring facility to a receiving f
 **Transport**  
 The vehicle, crew, mode, and journey arrangement used to move a patient. A transfer can exist before transport is assigned, and AyuVahak does not thereby become the transport dispatch authority.
 
+**Transport Request**
+
+A request to coordinate movement for a Transfer. It is a separate transport lifecycle, does not itself assign a vehicle, and contains only the operational facts needed to coordinate movement.
+
+**Transport Assignment**
+
+A provider- or dispatcher-reported association of a transport resource with a Transport Request. It is not proof that a patient boarded, departed, or reached a destination.
+
+**Transport Status Observation**
+
+An attributed report about the transport request or movement, including its source and observed/received time. It is evidence to reconcile, not automatically a Transfer lifecycle transition.
+
+**ETA Observation**
+
+A source-attributed estimate of expected arrival time, with its observation time and freshness. It is not a guarantee or proof of movement.
+
+**Movement Evidence**
+
+An attributed report that a patient boarded, departed, or arrived. Transport retains its source observation; Transfer separately decides whether to record its own movement fact.
+
+**Destination Change**
+
+A Transfer-owned change to the currently selected receiving facility. It requires the applicable destination checks and authority; after movement begins, it also requires an acknowledged transport instruction. A provider acknowledgement is evidence for Transfer to validate, not a direct change to Transfer state.
+
+**Transport Destination-Change Operation**
+
+A Transport-owned request to a provider or authorized manual transport participant to change an active movement's destination instruction. Its accepted, rejected, or unknown outcome is separate from Transfer's decision to apply a new destination.
+
+**External Exchange Operation**
+
+A purpose-limited attempt by an AyuVahak owner context to exchange a named message or request with a configured partner. External delivery status is distinct from the owner context's business outcome.
+
+**Partner Trust Profile**
+
+Deployment-controlled facts that identify an external partner and bound which configured operations, directions, endpoints, protocols, and authentication methods may be used. It does not establish that partner data is correct or grant a human AyuVahak permission.
+
 **Dispatch**  
 The act of assigning or activating a transport resource by the authorized transport-dispatch organization. Recording a dispatch status does not mean AyuVahak dispatched the resource.
 

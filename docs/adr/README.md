@@ -37,6 +37,9 @@ ADRs record durable AyuVahak architecture decisions, their context, and the rati
 | [0020](0020-declared-future-consumer-delivery-state.md) | A declared same-Volume future consumer uses a durable non-replayable waiting state | Accepted |
 | [0021](0021-grant-registered-authorities-at-declared-scope.md) | Identity & Access administers registered authorities at their declared scope | Accepted |
 | [0022](0022-matching-owner-reads-use-a-dedicated-service-identity.md) | Matching owner reads use a dedicated scoped service identity | Accepted |
+| [0023](0023-referral-owned-transient-patient-context-exchange.md) | Referral owns authorized, transient patient-context exchange | Accepted |
+| [0024](0024-partner-trust-and-exchange-lifecycle.md) | Shared partner trust enforcement; owner-owned exchange meaning | Accepted |
+| [0025](0025-transport-separate-from-transfer.md) | Transport is a separate context from Transfer | Accepted |
 
 ADR 0005 and ADR 0007 have dated amendments for the Phase 2 identity/token boundary and at-least-once/per-aggregate event delivery semantics. These amendments clarify the existing decisions; they do not change the Phase 1 baseline or begin Phase 2 implementation.
 
@@ -47,4 +50,8 @@ ADRs 0018–0020 resolve cross-phase ownership and event-activation semantics fo
 ADR 0021 extends the existing Identity & Access grant-administration boundary for later context-owned authorities. It preserves grant ownership, platform-scoped administration, and the Phase 2 trust/audit/idempotency invariants while permitting an explicit target scope validated by the owner of the referenced organization or facility facts.
 
 ADR 0022 separates the human authority to request a recommendation from the machine identity used to read other contexts' facts. It preserves each context's authorization and audit ownership and documents the exact deployment-scoped read grants required by Matching.
+
+ADR 0010 was clarified on 2026-10-15: owner adapters own mapping/operation configuration, while Phase 9 may centralize a narrow technical trust envelope for consistent endpoint and credential enforcement. This does not create a connector registry or alter domain ownership.
+
+ADRs 0023–0025 record the Volume III design decisions: Referral controls and transiently processes optional IPS context; a shared platform capability enforces partner trust without owning exchange semantics; and Transport owns movement coordination separately from Transfer. They freeze design only. Phases 8–10 implementation requires separate authorization.
 
