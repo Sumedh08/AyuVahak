@@ -166,6 +166,28 @@ class PartnerTrustConfigurationTest {
                 new IssuerId("https://identity.example.test/realm"), "synthetic-partner"));
   }
 
+  @Test
+  void transportProviderOperationsUseJsonAndNeverExchangeAutomaticRetries() {
+    AllowedOperation inbound = AllowedOperation.transportProviderEvidence();
+    assertThat(inbound.ownerContext()).isEqualTo(OwnerContext.TRANSPORT);
+    assertThat(inbound.direction()).isEqualTo(Direction.INBOUND);
+    assertThat(inbound.protocol()).isEqualTo(Protocol.JSON);
+
+    assertThatThrownBy(() -> profile(inbound, RetryClass.IDEMPOTENT_READ, 2))
+        .isInstanceOf(IllegalArgumentException.class);
+
+    AllowedOperation outbound =
+        new AllowedOperation(
+            OwnerContext.TRANSPORT,
+            "transport.dispatch",
+            Direction.OUTBOUND,
+            Protocol.JSON,
+            "AyuVahakTransportProvider-v1");
+    assertThatThrownBy(() -> profile(outbound, RetryClass.IDEMPOTENT_READ, 2))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("must not be automatically retried");
+  }
+
   private static PartnerTrustConfiguration profile(
       AllowedOperation operation, RetryClass retryClass, int maxAttempts) {
     return new PartnerTrustConfiguration(

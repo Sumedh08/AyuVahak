@@ -35,11 +35,15 @@ import org.apache.hc.core5.http.ContentType;
 import org.apache.hc.core5.http.Header;
 import org.apache.hc.core5.http.HttpEntity;
 import org.apache.hc.core5.http.io.SocketConfig;
+import org.apache.hc.core5.http.io.entity.ByteArrayEntity;
 import org.apache.hc.core5.http.io.entity.StringEntity;
 import org.apache.hc.core5.util.Timeout;
 import org.ayuvahak.platform.api.CorrelationIdFilter;
 import org.ayuvahak.platform.exchange.application.PartnerBearerToken;
+import org.ayuvahak.platform.exchange.application.PartnerHttpOperationTransportPort;
 import org.ayuvahak.platform.exchange.application.PartnerHttpTransportPort;
+import org.ayuvahak.platform.exchange.application.PartnerOutboundOperationRequest;
+import org.ayuvahak.platform.exchange.application.PartnerOutboundOperationResponse;
 import org.ayuvahak.platform.exchange.application.PartnerOutboundReadRequest;
 import org.ayuvahak.platform.exchange.application.PartnerOutboundReadResponse;
 import org.ayuvahak.platform.exchange.application.PartnerTlsContextProvider;
@@ -56,7 +60,9 @@ import org.springframework.stereotype.Component;
 /** Single-operation Apache HttpClient transport pinned to one fully vetted DNS answer set. */
 @Component
 final class ApachePartnerHttpTransport
-    implements PartnerHttpTransportPort, PartnerTokenEndpointPort {
+    implements PartnerHttpTransportPort,
+        PartnerHttpOperationTransportPort,
+        PartnerTokenEndpointPort {
 
   private final OutboundAddressPolicy addressPolicy;
   private final VettedDnsResolver.AddressLookup addressLookup;
@@ -80,6 +86,114 @@ final class ApachePartnerHttpTransport
       PartnerOutboundReadRequest request,
       Optional<PartnerBearerToken> bearerToken) {
     return execute(activeProfile, request, bearerToken, () -> {});
+  }
+
+  @Override
+  public PartnerOutboundOperationResponse execute(
+      PartnerProfileVersion activeProfile,
+      PartnerOutboundOperationRequest request,
+      Optional<PartnerBearerToken> bearerToken,
+      Runnable beforeAttempt) {
+    Objects.requireNonNull(activeProfile, "activeProfile");
+    Objects.requireNonNull(request, "request");
+    Objects.requireNonNull(bearerToken, "bearerToken");
+    Objects.requireNonNull(beforeAttempt, "beforeAttempt");
+    PartnerTrustConfiguration configuration = activeProfile.configuration();
+    if (activeProfile.state() != PartnerProfileState.ACTIVE
+        || !configuration.partnerKey().equals(request.partnerKey())
+        || !configuration.allowedOperations().contains(request.operation())
+        || request.operation().ownerContext() != PartnerTrustConfiguration.OwnerContext.TRANSPORT
+        || request.operation().direction() != PartnerTrustConfiguration.Direction.OUTBOUND
+        || request.operation().protocol() != PartnerTrustConfiguration.Protocol.JSON
+        || configuration.retryClass() != PartnerTrustConfiguration.RetryClass.NEVER) {
+      throw new PartnerTransportException(PartnerTransportFailure.PROFILE_NOT_ACTIVE);
+    }
+    PartnerTrustConfiguration.AuthenticationMethod authenticationMethod =
+        configuration.authentication().method();
+    if (authenticationMethod == PartnerTrustConfiguration.AuthenticationMethod.MUTUAL_TLS
+        || (authenticationMethod == PartnerTrustConfiguration.AuthenticationMethod.NONE
+            && bearerToken.isPresent())
+        || (authenticationMethod != PartnerTrustConfiguration.AuthenticationMethod.NONE
+            && bearerToken.isEmpty())) {
+      throw new PartnerTransportException(PartnerTransportFailure.AUTHENTICATION_NOT_SUPPORTED);
+    }
+
+    URI uri;
+    try {
+      uri = PartnerRequestUriBuilder.build(configuration, request);
+    } catch (IllegalArgumentException exception) {
+      throw new PartnerTransportException(PartnerTransportFailure.DESTINATION_REJECTED);
+    }
+    int port = uri.getPort() < 0 ? 443 : uri.getPort();
+    VettedDnsResolver resolver =
+        new VettedDnsResolver(
+            uri.getHost(),
+            configuration.partnerKey(),
+            port,
+            Duration.ofMillis(configuration.limits().connectTimeoutMillis()),
+            addressPolicy,
+            addressLookup);
+    SSLContext sslContext = tlsContexts.resolve(configuration);
+    if (sslContext == null) {
+      throw new PartnerTransportException(PartnerTransportFailure.TLS_FAILURE);
+    }
+
+    HttpPost outbound = new HttpPost(uri);
+    outbound.setHeader("Accept", "application/json");
+    outbound.setHeader("Accept-Encoding", "identity");
+    outbound.setHeader("Content-Type", "application/json");
+    outbound.setHeader("X-AyuVahak-Operation-Reference", request.operationReference());
+    outbound.setEntity(
+        new ByteArrayEntity(
+            request.body(),
+            ContentType.APPLICATION_JSON.withCharset(java.nio.charset.StandardCharsets.UTF_8)));
+    request
+        .correlationId()
+        .ifPresent(
+            correlationId ->
+                outbound.setHeader(CorrelationIdFilter.HEADER_NAME, correlationId.value()));
+    bearerToken.ifPresent(
+        token -> outbound.setHeader("Authorization", token.authorizationHeader()));
+    HttpClientContext context = HttpClientContext.create();
+    Duration operationTimeout = Duration.ofMillis(configuration.limits().operationTimeoutMillis());
+    PoolingHttpClientConnectionManager manager =
+        buildConnectionManager(configuration, resolver, sslContext);
+    try (manager;
+        CloseableHttpClient client =
+            HttpClients.custom()
+                .setConnectionManager(manager)
+                .disableAutomaticRetries()
+                .disableRedirectHandling()
+                .disableCookieManagement()
+                .disableAuthCaching()
+                .disableContentCompression()
+                .disableDefaultUserAgent()
+                .setDefaultRequestConfig(requestConfig(configuration))
+                .build()) {
+      return operations.execute(
+          () -> {
+            beforeAttempt.run();
+            return client.execute(
+                outbound,
+                context,
+                response ->
+                    handleOperationResponse(
+                        response, context, resolver, activeProfile, configuration));
+          },
+          operationTimeout,
+          () -> {
+            outbound.cancel();
+            try {
+              client.close();
+            } catch (IOException ignored) {
+              // Cancellation already fails closed; transport diagnostics remain sanitized.
+            }
+          });
+    } catch (PartnerTransportException exception) {
+      throw exception;
+    } catch (Exception exception) {
+      throw classify(exception);
+    }
   }
 
   @Override
@@ -350,6 +464,69 @@ final class ApachePartnerHttpTransport
     }
     byte[] body = decompressBounded(response, compressed, configuration);
     return new PartnerOutboundReadResponse(
+        status, Optional.of(mediaType(contentType)), body, profile.version());
+  }
+
+  private static PartnerOutboundOperationResponse handleOperationResponse(
+      ClassicHttpResponse response,
+      HttpClientContext context,
+      VettedDnsResolver resolver,
+      PartnerProfileVersion profile,
+      PartnerTrustConfiguration configuration)
+      throws IOException {
+    verifyPeer(context, resolver);
+    int status = response.getCode();
+    if (status >= 300 && status < 400) {
+      throw new PartnerTransportException(PartnerTransportFailure.INVALID_RESPONSE);
+    }
+    if (status >= 400 && status < 500) {
+      if (status == 401) {
+        throw new PartnerTransportException(PartnerTransportFailure.REMOTE_AUTHENTICATION_FAILURE);
+      }
+      if (status == 403) {
+        throw new PartnerTransportException(PartnerTransportFailure.REMOTE_AUTHORIZATION_FAILURE);
+      }
+      if (status == 429) {
+        throw new PartnerTransportException(
+            PartnerTransportFailure.RATE_LIMITED,
+            parseRetryAfter(responseHeader(response, "Retry-After")));
+      }
+      throw new PartnerTransportException(PartnerTransportFailure.REMOTE_4XX);
+    }
+    if (status >= 500) {
+      throw new PartnerTransportException(PartnerTransportFailure.REMOTE_5XX);
+    }
+    if (status < 200 || status >= 300) {
+      throw new PartnerTransportException(PartnerTransportFailure.INVALID_RESPONSE);
+    }
+
+    HttpEntity entity = response.getEntity();
+    if (entity == null) {
+      return new PartnerOutboundOperationResponse(
+          status, Optional.empty(), new byte[0], profile.version());
+    }
+    if (entity.getContentLength() > configuration.limits().maxResponseBytes()) {
+      throw new PartnerTransportException(PartnerTransportFailure.RESPONSE_TOO_LARGE);
+    }
+    String contentEncoding = responseHeader(response, "Content-Encoding");
+    if (contentEncoding != null && !"identity".equalsIgnoreCase(contentEncoding.strip())) {
+      throw new PartnerTransportException(PartnerTransportFailure.UNSUPPORTED_CONTENT_ENCODING);
+    }
+    byte[] body;
+    try (InputStream input = entity.getContent()) {
+      body = readBounded(input, configuration.limits().maxResponseBytes());
+    } catch (ResponseTooLargeException tooLarge) {
+      throw new PartnerTransportException(PartnerTransportFailure.RESPONSE_TOO_LARGE);
+    }
+    if (body.length == 0) {
+      return new PartnerOutboundOperationResponse(
+          status, Optional.empty(), body, profile.version());
+    }
+    String contentType = responseHeader(response, "Content-Type");
+    if (contentType == null || !"application/json".equals(mediaType(contentType))) {
+      throw new PartnerTransportException(PartnerTransportFailure.INVALID_RESPONSE);
+    }
+    return new PartnerOutboundOperationResponse(
         status, Optional.of(mediaType(contentType)), body, profile.version());
   }
 

@@ -370,14 +370,19 @@ public final class TransferProgressController {
             content.expectedVersion(),
             idempotencyKey,
             RequestFingerprint.from(content.normalized()));
-    boolean transportLinked =
-        transportCancellation.requestIfSelected(
-            context,
-            id,
-            actor,
-            command.fact().id(),
-            content.reasonCode().orElse("TRANSFER_CANCELLED"));
-    if (!transportLinked) {
+    var selectedTransport = commands.selectedTransportRequest(context, id);
+    if (selectedTransport.isPresent()) {
+      var selected = selectedTransport.orElseThrow();
+      transportCancellation.request(
+          context,
+          id,
+          selected.transportRequestId(),
+          selected.originOrganization(),
+          selected.originFacility(),
+          actor,
+          command.fact().id(),
+          content.reasonCode().orElse("TRANSFER_CANCELLED"));
+    } else {
       reservationRecovery.reconcileCancellation(id);
     }
     TransferProgressHistory history = commands.history(context, id);

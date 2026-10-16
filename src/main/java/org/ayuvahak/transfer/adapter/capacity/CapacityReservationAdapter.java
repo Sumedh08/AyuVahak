@@ -34,6 +34,17 @@ public final class CapacityReservationAdapter implements CapacityReservationPort
   }
 
   @Override
+  public CapacityReleaseResult release(
+      ExecutionContext serviceContext,
+      InternalId releaseOperationId,
+      InternalId reservationOperationId,
+      InternalId transferId) {
+    return commands
+        .getObject()
+        .release(serviceContext, releaseOperationId, reservationOperationId, transferId);
+  }
+
+  @Override
   public CapacityReservationOutcome getReservationOutcome(
       ExecutionContext serviceContext, InternalId operationId, InternalId transferId) {
     return commands.getObject().getReservationOutcome(serviceContext, operationId, transferId);

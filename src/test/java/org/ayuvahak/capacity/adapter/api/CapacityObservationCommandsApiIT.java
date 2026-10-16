@@ -261,7 +261,9 @@ class CapacityObservationCommandsApiIT {
         }
         """;
     var parsedSlot =
-        FhirR4PayloadParser.withCoreProfiles(FhirPayloadLimits.conservativeDefaults())
+        FhirR4PayloadParser.withCoreProfiles(
+                new FhirPayloadLimits(
+                    4 * 1024 * 1024, 64, 250, 1000, java.time.Duration.ofSeconds(10)))
             .parse(
                 freeSlot.getBytes(java.nio.charset.StandardCharsets.UTF_8),
                 "application/fhir+json",
@@ -280,7 +282,9 @@ class CapacityObservationCommandsApiIT {
         }
         """;
     var parsedSchedule =
-        FhirR4PayloadParser.withCoreProfiles(FhirPayloadLimits.conservativeDefaults())
+        FhirR4PayloadParser.withCoreProfiles(
+                new FhirPayloadLimits(
+                    4 * 1024 * 1024, 64, 250, 1000, java.time.Duration.ofSeconds(10)))
             .parse(
                 schedule.getBytes(java.nio.charset.StandardCharsets.UTF_8),
                 "application/fhir+json",

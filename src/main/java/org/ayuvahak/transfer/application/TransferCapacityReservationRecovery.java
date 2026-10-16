@@ -238,10 +238,18 @@ public final class TransferCapacityReservationRecovery {
         "TRANSFER_PROGRESS_RECONCILIATION_DENIED")) {
       return Optional.empty();
     }
+    Optional<InternalId> selectedRequest = transfers.findSelectedTransportRequest(transferId);
+    if (selectedRequest.isEmpty()) return Optional.empty();
 
     Optional<CancellationOutcome> queried;
     try {
-      queried = transportCancellation.getOutcomeIfSelected(context, transferId);
+      queried =
+          transportCancellation.getOutcome(
+              context,
+              transferId,
+              selectedRequest.orElseThrow(),
+              target.originOrganization(),
+              originFacility);
     } catch (RuntimeException unavailable) {
       logger.warn(
           "Transfer Transport cancellation outcome query deferred correlationId={} failureType={}",
@@ -252,10 +260,7 @@ public final class TransferCapacityReservationRecovery {
     if (queried.isEmpty()) return Optional.empty();
     CancellationOutcome outcome = queried.orElseThrow();
     if (!outcome.transferId().equals(transferId)
-        || transfers
-            .findSelectedTransportRequest(transferId)
-            .filter(outcome.transportRequestId()::equals)
-            .isEmpty()
+        || selectedRequest.filter(outcome.transportRequestId()::equals).isEmpty()
         || outcome.state() != OperationState.RESOLVED
         || outcome.outcome().isEmpty()
         || outcome.resolutionEventId().isEmpty()

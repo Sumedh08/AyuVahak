@@ -25,6 +25,7 @@ import org.ayuvahak.platform.core.CorrelationId;
 import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.InternalId;
 import org.ayuvahak.platform.core.IssuerId;
+import org.ayuvahak.platform.exchange.application.PartnerOutboundOperationRequest;
 import org.ayuvahak.platform.exchange.application.PartnerOutboundReadRequest;
 import org.ayuvahak.platform.exchange.application.PartnerTokenEndpointRequest;
 import org.ayuvahak.platform.exchange.application.PartnerTransportException;
@@ -45,6 +46,118 @@ class ApachePartnerHttpTransportTest {
           PartnerTrustConfiguration.Direction.OUTBOUND,
           PartnerTrustConfiguration.Protocol.FHIR_R4_JSON,
           "IHE-mCSD");
+
+  private static final PartnerTrustConfiguration.AllowedOperation TRANSPORT_DISPATCH =
+      new PartnerTrustConfiguration.AllowedOperation(
+          PartnerTrustConfiguration.OwnerContext.TRANSPORT,
+          "transport.dispatch",
+          PartnerTrustConfiguration.Direction.OUTBOUND,
+          PartnerTrustConfiguration.Protocol.JSON,
+          "AyuVahakTransportProvider-v1");
+
+  @Test
+  void sendsOnlyTheConfiguredBoundedJsonOperationToTheVettedTlsPartner() throws Exception {
+    AtomicReference<String> method = new AtomicReference<>();
+    AtomicReference<String> path = new AtomicReference<>();
+    AtomicReference<String> operationReference = new AtomicReference<>();
+    AtomicReference<String> contentType = new AtomicReference<>();
+    AtomicReference<String> requestBody = new AtomicReference<>();
+    try (LocalPartner partner =
+            LocalPartner.start(
+                exchange -> {
+                  method.set(exchange.getRequestMethod());
+                  path.set(exchange.getRequestURI().toASCIIString());
+                  operationReference.set(
+                      exchange.getRequestHeaders().getFirst("X-AyuVahak-Operation-Reference"));
+                  contentType.set(exchange.getRequestHeaders().getFirst("Content-Type"));
+                  requestBody.set(
+                      new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+                  return new LocalResponse(
+                      202,
+                      "application/json",
+                      "{\"accepted\":true}".getBytes(StandardCharsets.UTF_8));
+                });
+        BoundedPartnerOperationExecutor executor = new BoundedPartnerOperationExecutor(2, 8)) {
+      ApachePartnerHttpTransport transport = localTransport(partner, executor, null);
+      var response =
+          transport.execute(
+              transportProfile("partner.test", partner.port()),
+              new PartnerOutboundOperationRequest(
+                  PARTNER,
+                  TRANSPORT_DISPATCH,
+                  List.of("transport", "requests"),
+                  "{\"transportRequestId\":\"SYN-TRANSPORT-001\"}".getBytes(StandardCharsets.UTF_8),
+                  "dispatch-SYN-TRANSPORT-001"),
+              Optional.empty(),
+              () -> {});
+
+      assertThat(method).hasValue("POST");
+      assertThat(path).hasValue("/api/transport/requests");
+      assertThat(operationReference).hasValue("dispatch-SYN-TRANSPORT-001");
+      assertThat(contentType).hasValue("application/json");
+      assertThat(requestBody).hasValue("{\"transportRequestId\":\"SYN-TRANSPORT-001\"}");
+      assertThat(response.status()).isEqualTo(202);
+      assertThat(new String(response.body(), StandardCharsets.UTF_8))
+          .isEqualTo("{\"accepted\":true}");
+      assertThat(partner.requests()).hasValue(1);
+    }
+  }
+
+  @Test
+  void acceptsAnEmptySuccessfulOperationResponseWithoutAContentType() throws Exception {
+    try (LocalPartner partner =
+            LocalPartner.start(exchange -> new LocalResponse(202, null, new byte[0]));
+        BoundedPartnerOperationExecutor executor = new BoundedPartnerOperationExecutor(2, 8)) {
+      ApachePartnerHttpTransport transport = localTransport(partner, executor, null);
+      var response =
+          transport.execute(
+              transportProfile("partner.test", partner.port()),
+              new PartnerOutboundOperationRequest(
+                  PARTNER,
+                  TRANSPORT_DISPATCH,
+                  List.of("transport", "requests"),
+                  "{}".getBytes(StandardCharsets.UTF_8),
+                  "dispatch-SYN-TRANSPORT-EMPTY-RESPONSE"),
+              Optional.empty(),
+              () -> {});
+
+      assertThat(response.status()).isEqualTo(202);
+      assertThat(response.contentType()).isEmpty();
+      assertThat(response.body()).isEmpty();
+      assertThat(partner.requests()).hasValue(1);
+    }
+  }
+
+  @Test
+  void refusesRedirectsForTransportCommandsAndDoesNotRetryProviderSideEffects() throws Exception {
+    try (LocalPartner partner =
+            LocalPartner.start(
+                exchange -> {
+                  exchange
+                      .getResponseHeaders()
+                      .add("Location", "https://other.partner.test/dispatch");
+                  return new LocalResponse(302, "application/json", new byte[0]);
+                });
+        BoundedPartnerOperationExecutor executor = new BoundedPartnerOperationExecutor(2, 8)) {
+      ApachePartnerHttpTransport transport = localTransport(partner, executor, null);
+      var profile = transportProfile("partner.test", partner.port());
+      var request =
+          new PartnerOutboundOperationRequest(
+              PARTNER,
+              TRANSPORT_DISPATCH,
+              List.of("transport", "requests"),
+              "{}".getBytes(StandardCharsets.UTF_8),
+              "dispatch-SYN-TRANSPORT-002");
+
+      assertThatThrownBy(() -> transport.execute(profile, request, Optional.empty(), () -> {}))
+          .isInstanceOfSatisfying(
+              PartnerTransportException.class,
+              failure ->
+                  assertThat(failure.failure())
+                      .isEqualTo(PartnerTransportFailure.INVALID_RESPONSE));
+      assertThat(partner.requests()).hasValue(1);
+    }
+  }
 
   @Test
   void pinsSocketToTheOneValidatedAddressAndPreservesHostnameVerification() throws Exception {
@@ -410,6 +523,25 @@ class ApachePartnerHttpTransportTest {
             limits,
             PartnerTrustConfiguration.RetryClass.IDEMPOTENT_READ,
             List.of(OPERATION));
+    Instant now = Instant.now();
+    return new PartnerProfileVersion(
+        InternalId.generate(), 1, PartnerProfileState.ACTIVE, configuration, now, now);
+  }
+
+  private static PartnerProfileVersion transportProfile(String hostname, int port) {
+    PartnerTrustConfiguration configuration =
+        new PartnerTrustConfiguration(
+            PARTNER,
+            new ExternalReference(
+                new IssuerId("urn:synthetic:directory"), "Organization", "SYN-ORG-001"),
+            "https://" + hostname + ":" + port,
+            "/api",
+            PartnerTrustConfiguration.Authentication.none(),
+            PartnerTrustConfiguration.TlsPolicy.SYSTEM_CA,
+            Optional.empty(),
+            limits(2_000, 100_000, 200_000),
+            PartnerTrustConfiguration.RetryClass.NEVER,
+            List.of(TRANSPORT_DISPATCH));
     Instant now = Instant.now();
     return new PartnerProfileVersion(
         InternalId.generate(), 1, PartnerProfileState.ACTIVE, configuration, now, now);

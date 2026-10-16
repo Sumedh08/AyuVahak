@@ -15,6 +15,12 @@ public interface CapacityReservationPort {
 
   CapacityReleaseResult release(ExecutionContext serviceContext, InternalId transferId);
 
+  CapacityReleaseResult release(
+      ExecutionContext serviceContext,
+      InternalId releaseOperationId,
+      InternalId reservationOperationId,
+      InternalId transferId);
+
   CapacityReservationOutcome getReservationOutcome(
       ExecutionContext serviceContext, InternalId operationId, InternalId transferId);
 }

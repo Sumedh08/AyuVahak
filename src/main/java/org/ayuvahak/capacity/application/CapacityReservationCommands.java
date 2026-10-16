@@ -378,7 +378,99 @@ public final class CapacityReservationCommands {
           HttpStatus.SERVICE_UNAVAILABLE,
           PlatformErrorCode.CAPACITY_UNAVAILABLE,
           "Capacity could not confirm reservation release safely.");
+    } catch (CapacityReservationStore.AmbiguousReleaseException ambiguous) {
+      throw problem(
+          HttpStatus.CONFLICT,
+          PlatformErrorCode.CAPACITY_RESERVATION_CONFLICT,
+          "More than one active Capacity reservation exists; identify the reservation operation explicitly.");
     }
+  }
+
+  /** Releases exactly one hold under a stable owner operation identity. */
+  public CapacityReleaseResult release(
+      ExecutionContext context,
+      InternalId releaseOperationId,
+      InternalId reservationOperationId,
+      InternalId transferId) {
+    Objects.requireNonNull(context, "execution context");
+    Objects.requireNonNull(releaseOperationId, "release operation id");
+    Objects.requireNonNull(reservationOperationId, "reservation operation id");
+    Objects.requireNonNull(transferId, "Transfer id");
+    requireFacilityScope(context);
+    requireReservationAuthority(context, releaseOperationId);
+    RequestFingerprint fingerprint =
+        releaseFingerprint(reservationOperationId, transferId, context);
+    try {
+      return Objects.requireNonNull(
+          transaction.execute(
+              status -> {
+                Instant now = clock.instant();
+                CapacityReservationStore.ReleaseOperationClaim claim =
+                    reservations.lockReleaseOperation(
+                        releaseOperationId, reservationOperationId, transferId, fingerprint, now);
+                if (!claim.fingerprintMatches()) {
+                  throw problem(
+                      HttpStatus.CONFLICT,
+                      PlatformErrorCode.IDEMPOTENCY_KEY_REUSED,
+                      "The Capacity release operation identifier is already bound to different inputs.");
+                }
+                if (claim.current().isPresent()) {
+                  CapacityReservationStore.ReleaseResult replay = claim.current().orElseThrow();
+                  return new CapacityReleaseResult(
+                      CapacityReleaseResult.Outcome.valueOf(replay.outcome().name()),
+                      replay.reservationId(),
+                      replay.sequence());
+                }
+                CapacityReservationStore.ReleaseResult result =
+                    reservations.releaseReservation(
+                        reservationOperationId,
+                        transferId,
+                        context.scope().facility().orElseThrow().value(),
+                        now);
+                if (result.outcome() == CapacityReservationStore.ReleaseOutcome.SCOPE_MISMATCH) {
+                  throw problem(
+                      HttpStatus.FORBIDDEN,
+                      PlatformErrorCode.INVALID_EXECUTION_SCOPE,
+                      "Capacity release requires the reservation's validated Facility scope.");
+                }
+                reservations.completeReleaseOperation(releaseOperationId, result, now);
+                if (result.changed()) {
+                  auditRelease(
+                      context,
+                      releaseOperationId,
+                      "CAPACITY_RESERVATION_RELEASE",
+                      result.outcome().name(),
+                      result.outcome() == CapacityReservationStore.ReleaseOutcome.RELEASED);
+                  if (result.outcome() == CapacityReservationStore.ReleaseOutcome.EXPIRED) {
+                    recordExpiryEvent(context, transferId, result, now);
+                  }
+                }
+                return new CapacityReleaseResult(
+                    CapacityReleaseResult.Outcome.valueOf(result.outcome().name()),
+                    result.reservationId(),
+                    result.sequence());
+              }),
+          "Capacity operation-scoped release result");
+    } catch (AuditPersistenceUnavailableException unavailable) {
+      throw problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          PlatformErrorCode.AUDIT_UNAVAILABLE,
+          "The Capacity release and required audit evidence could not be committed.");
+    } catch (DataAccessException unavailable) {
+      throw problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          PlatformErrorCode.CAPACITY_UNAVAILABLE,
+          "Capacity could not confirm reservation release safely.");
+    }
+  }
+
+  private RequestFingerprint releaseFingerprint(
+      InternalId reservationOperationId, InternalId transferId, ExecutionContext context) {
+    var json = objectMapper.createObjectNode();
+    json.put("reservationOperationId", reservationOperationId.toString());
+    json.put("transferId", transferId.toString());
+    json.put("facility", context.scope().facility().orElseThrow().value());
+    return RequestFingerprint.from(json);
   }
 
   private void recordExpiryEvent(

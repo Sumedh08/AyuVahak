@@ -3,13 +3,16 @@ package org.ayuvahak.transfer.application;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.InternalId;
 import org.ayuvahak.platform.event.EventType;
 import org.ayuvahak.platform.idempotency.CommandReceiptKey;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
 import org.ayuvahak.transfer.domain.CapacityReservationIntent;
 import org.ayuvahak.transfer.domain.CoordinatedTransfer;
+import org.ayuvahak.transfer.domain.DestinationChangeAssessment;
 import org.ayuvahak.transfer.domain.ReceivingAssessment;
+import org.ayuvahak.transfer.domain.TransferDestinationChangeOperation;
 import org.ayuvahak.transfer.domain.TransferJourney;
 import org.ayuvahak.transfer.domain.TransferJourneyClosure;
 import org.ayuvahak.transfer.domain.TransferProgressCorrection;
@@ -51,6 +54,58 @@ public interface TransferStore {
   Optional<TransferJourney> findJourneyByReferral(InternalId referralId);
 
   Optional<TransferJourneyClosure> findJourneyClosure(InternalId journeyId);
+
+  DestinationChangeReceiptClaim claimDestinationChangeReceipt(
+      CommandReceiptKey key,
+      RequestFingerprint fingerprint,
+      InternalId operationId,
+      Instant recordedAt);
+
+  void completeDestinationChangeReceipt(
+      CommandReceiptKey key,
+      RequestFingerprint fingerprint,
+      InternalId operationId,
+      Instant recordedAt);
+
+  boolean insertDestinationChange(TransferDestinationChangeOperation operation);
+
+  Optional<TransferDestinationChangeOperation> findDestinationChange(InternalId operationId);
+
+  Optional<ActiveDestination> findActiveDestination(InternalId transferId);
+
+  Optional<TransferDestinationChangeOperation> lockDestinationChange(InternalId operationId);
+
+  Optional<TransferDestinationChangeOperation> findUnresolvedDestinationChange(
+      InternalId transferId);
+
+  List<InternalId> findPendingDestinationChangeReleases(int limit);
+
+  boolean updateDestinationChange(
+      TransferDestinationChangeOperation operation, long expectedVersion);
+
+  void insertDestinationChangeAssessment(DestinationChangeAssessment assessment);
+
+  Optional<DestinationChangeAssessment> findDestinationChangeAssessment(
+      InternalId operationId, ReceivingAssessment.Kind kind);
+
+  boolean insertDestinationChangeDecision(
+      InternalId operationId,
+      String decisionKind,
+      Optional<String> reasonCode,
+      org.ayuvahak.platform.core.ActorReference recordedBy,
+      org.ayuvahak.platform.core.ExternalReference organization,
+      org.ayuvahak.platform.core.ExternalReference facility,
+      Instant occurredAt,
+      Instant recordedAt);
+
+  boolean updateActiveDestination(
+      InternalId transferId,
+      ExternalReference expectedFacility,
+      ExternalReference organization,
+      ExternalReference facility,
+      InternalId reservationOperationId,
+      InternalId destinationChangeOperationId,
+      Instant updatedAt);
 
   boolean canCloseJourneyUnfulfilled(InternalId journeyId);
 
@@ -217,6 +272,24 @@ public interface TransferStore {
       Optional<Integer> responseStatus,
       Optional<InternalId> resultReference,
       Optional<Long> resultVersion) {}
+
+  record DestinationChangeReceiptClaim(ReceiptState state, Optional<InternalId> operationId) {
+    public DestinationChangeReceiptClaim {
+      java.util.Objects.requireNonNull(state, "destination-change receipt state");
+      operationId = java.util.Objects.requireNonNull(operationId, "destination-change operation");
+    }
+  }
+
+  record ActiveDestination(
+      ExternalReference organization,
+      ExternalReference facility,
+      InternalId reservationOperationId) {
+    public ActiveDestination {
+      java.util.Objects.requireNonNull(organization, "active destination Organization");
+      java.util.Objects.requireNonNull(facility, "active destination Facility");
+      java.util.Objects.requireNonNull(reservationOperationId, "active Capacity operation id");
+    }
+  }
 
   record DecisionResult(
       org.ayuvahak.transfer.domain.TransferDecision decision,

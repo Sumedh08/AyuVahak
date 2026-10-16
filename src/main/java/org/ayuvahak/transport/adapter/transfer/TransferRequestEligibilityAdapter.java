@@ -1,4 +1,4 @@
-package org.ayuvahak.transfer.adapter.transport;
+package org.ayuvahak.transport.adapter.transfer;
 
 import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.InternalId;

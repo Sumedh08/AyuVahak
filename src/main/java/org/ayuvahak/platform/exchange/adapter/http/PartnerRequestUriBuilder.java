@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
+import org.ayuvahak.platform.exchange.application.PartnerOutboundOperationRequest;
 import org.ayuvahak.platform.exchange.application.PartnerOutboundReadRequest;
 import org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration;
 
@@ -43,6 +44,34 @@ final class PartnerRequestUriBuilder {
       return uri;
     } catch (IllegalArgumentException exception) {
       throw new IllegalArgumentException("Partner request URI is invalid.");
+    }
+  }
+
+  static URI build(
+      PartnerTrustConfiguration configuration, PartnerOutboundOperationRequest request) {
+    Objects.requireNonNull(configuration, "configuration");
+    Objects.requireNonNull(request, "request");
+    if (!configuration.partnerKey().equals(request.partnerKey())
+        || !configuration.allowedOperations().contains(request.operation())) {
+      throw new IllegalArgumentException(
+          "Requested operation is not allowed by this partner profile.");
+    }
+    StringBuilder value =
+        new StringBuilder(configuration.endpointOrigin()).append(configuration.basePath());
+    request.pathSegments().forEach(segment -> value.append('/').append(segment));
+    try {
+      URI uri = URI.create(value.toString());
+      if (!"https".equals(uri.getScheme())
+          || uri.getHost() == null
+          || uri.getRawUserInfo() != null
+          || uri.getRawQuery() != null
+          || uri.getRawFragment() != null) {
+        throw new IllegalArgumentException(
+            "Partner operation URI is not a safe configured HTTPS URI.");
+      }
+      return uri;
+    } catch (IllegalArgumentException exception) {
+      throw new IllegalArgumentException("Partner operation URI is invalid.");
     }
   }
 

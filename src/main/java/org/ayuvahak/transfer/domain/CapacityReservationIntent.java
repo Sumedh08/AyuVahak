@@ -46,8 +46,8 @@ public record CapacityReservationIntent(
     reservationId = Objects.requireNonNull(reservationId, "reservation id");
     reasonCode = Objects.requireNonNull(reasonCode, "reason code");
     Objects.requireNonNull(nextAttemptAt, "next attempt time");
-    if (!operationId.equals(transferId) || attemptCount < 0) {
-      throw new IllegalArgumentException("reservation operation must use its stable Transfer id");
+    if (attemptCount < 0) {
+      throw new IllegalArgumentException("reservation attempt count cannot be negative");
     }
     boolean configured =
         dimensionCode.isPresent()

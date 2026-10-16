@@ -321,71 +321,198 @@ public class JdbcCapacityReservationStore implements CapacityReservationStore {
   }
 
   @Override
-  public ReleaseResult release(
-      InternalId transferId, String facilityIdentifier, Instant releasedAt) {
-    List<ReservationOperationLockRow> operation =
-        jdbc.query(
-            "SELECT o.outcome, o.reservation_id, r.facility_identifier "
-                + "FROM capacity.reservation_operation o LEFT JOIN capacity.coordination_reservation r "
-                + "ON r.reservation_id = o.reservation_id WHERE o.transfer_id = ? FOR UPDATE OF o",
+  public ReleaseOperationClaim lockReleaseOperation(
+      InternalId releaseOperationId,
+      InternalId reservationOperationId,
+      InternalId transferId,
+      RequestFingerprint fingerprint,
+      Instant recordedAt) {
+    jdbc.update(
+        "INSERT INTO capacity.reservation_release_operation (release_operation_id, "
+            + "reservation_operation_id, transfer_id, request_fingerprint, recorded_at) "
+            + "VALUES (?, ?, ?, ?, ?) ON CONFLICT (release_operation_id) DO NOTHING",
+        releaseOperationId.value(),
+        reservationOperationId.value(),
+        transferId.value(),
+        fingerprint.value(),
+        Timestamp.from(recordedAt));
+    ReleaseOperationRow row =
+        jdbc.queryForObject(
+            "SELECT reservation_operation_id, transfer_id, request_fingerprint, outcome, "
+                + "reservation_id, lifecycle_sequence FROM capacity.reservation_release_operation "
+                + "WHERE release_operation_id = ? FOR UPDATE",
             (result, rowNumber) ->
-                new ReservationOperationLockRow(
+                new ReleaseOperationRow(
+                    result.getObject("reservation_operation_id", UUID.class),
+                    result.getObject("transfer_id", UUID.class),
+                    result.getString("request_fingerprint"),
                     result.getString("outcome"),
                     result.getObject("reservation_id", UUID.class),
-                    result.getObject("facility_identifier", UUID.class)),
-            transferId.value());
-    if (operation.isEmpty() || !"RESERVED".equals(operation.getFirst().outcome())) {
-      return new ReleaseResult(
-          ReleaseOutcome.NOT_RESERVED, Optional.empty(), 0, false, Optional.empty());
+                    result.getObject("lifecycle_sequence", Long.class)),
+            releaseOperationId.value());
+    boolean matches =
+        reservationOperationId.value().equals(row.reservationOperationId())
+            && transferId.value().equals(row.transferId())
+            && fingerprint.value().equals(row.fingerprint());
+    Optional<ReleaseResult> current =
+        matches && row.outcome() != null
+            ? Optional.of(
+                new ReleaseResult(
+                    ReleaseOutcome.valueOf(row.outcome()),
+                    Optional.ofNullable(row.reservationId()).map(InternalId::new),
+                    row.sequence() == null ? 0 : row.sequence(),
+                    false,
+                    Optional.empty()))
+            : Optional.empty();
+    return new ReleaseOperationClaim(matches, current);
+  }
+
+  @Override
+  public void completeReleaseOperation(
+      InternalId releaseOperationId, ReleaseResult result, Instant recordedAt) {
+    int changed =
+        jdbc.update(
+            "UPDATE capacity.reservation_release_operation SET outcome = ?, reservation_id = ?, "
+                + "lifecycle_sequence = ?, recorded_at = ? WHERE release_operation_id = ? "
+                + "AND outcome IS NULL",
+            result.outcome().name(),
+            result.reservationId().map(InternalId::value).orElse(null),
+            result.reservationId().isPresent() ? result.sequence() : null,
+            Timestamp.from(recordedAt),
+            releaseOperationId.value());
+    if (changed != 1) {
+      throw new IllegalStateException("Capacity release operation could not be completed");
     }
-    UUID reservedFacility = operation.getFirst().facilityIdentifier();
-    if (reservedFacility != null && !reservedFacility.toString().equals(facilityIdentifier)) {
-      return new ReleaseResult(
-          ReleaseOutcome.SCOPE_MISMATCH, Optional.empty(), 0, false, Optional.empty());
-    }
-    List<ReservationLifecycleRow> changed =
+  }
+
+  @Override
+  public ReleaseResult releaseReservation(
+      InternalId reservationOperationId,
+      InternalId transferId,
+      String facilityIdentifier,
+      Instant releasedAt) {
+    List<ReservationLifecycleRow> rows =
         jdbc.query(
-            "UPDATE capacity.coordination_reservation SET reservation_status = "
-                + "CASE WHEN expires_at <= ? THEN 'EXPIRED' ELSE 'RELEASED' END, "
-                + "lifecycle_sequence = lifecycle_sequence + 1, status_recorded_at = ? "
-                + "WHERE transfer_id = ? AND reservation_status IN ('ACTIVE', 'AT_RISK') "
-                + "RETURNING reservation_id, reservation_status, lifecycle_sequence, expires_at",
+            "SELECT r.reservation_id, r.reservation_status, r.lifecycle_sequence, r.expires_at, "
+                + "r.facility_identifier FROM capacity.reservation_operation o "
+                + "JOIN capacity.coordination_reservation r ON r.operation_id = o.operation_id "
+                + "AND r.transfer_id = o.transfer_id WHERE o.operation_id = ? "
+                + "AND o.transfer_id = ? AND o.outcome = 'RESERVED' FOR UPDATE OF o, r",
             (result, rowNumber) ->
                 new ReservationLifecycleRow(
                     result.getObject("reservation_id", UUID.class),
                     result.getString("reservation_status"),
                     result.getLong("lifecycle_sequence"),
-                    result.getTimestamp("expires_at").toInstant()),
-            Timestamp.from(releasedAt),
-            Timestamp.from(releasedAt),
+                    result.getTimestamp("expires_at").toInstant(),
+                    result.getObject("facility_identifier", UUID.class)),
+            reservationOperationId.value(),
             transferId.value());
-    if (!changed.isEmpty()) {
-      ReservationLifecycleRow row = changed.getFirst();
+    if (rows.isEmpty()) {
+      return new ReleaseResult(
+          ReleaseOutcome.NOT_RESERVED, Optional.empty(), 0, false, Optional.empty());
+    }
+    ReservationLifecycleRow row = rows.getFirst();
+    if (!row.facilityIdentifier().toString().equals(facilityIdentifier)) {
+      return new ReleaseResult(
+          ReleaseOutcome.SCOPE_MISMATCH, Optional.empty(), 0, false, Optional.empty());
+    }
+    if ("RELEASED".equals(row.status()) || "EXPIRED".equals(row.status())) {
       return new ReleaseResult(
           ReleaseOutcome.valueOf(row.status()),
           Optional.of(new InternalId(row.reservationId())),
           row.sequence(),
-          true,
+          false,
           Optional.of(row.expiresAt()));
     }
-    ReservationLifecycleRow row =
-        jdbc.queryForObject(
-            "SELECT reservation_id, reservation_status, lifecycle_sequence, expires_at "
-                + "FROM capacity.coordination_reservation WHERE transfer_id = ?",
+    String next = row.expiresAt().isAfter(releasedAt) ? "RELEASED" : "EXPIRED";
+    jdbc.update(
+        "UPDATE capacity.coordination_reservation SET reservation_status = ?, "
+            + "lifecycle_sequence = lifecycle_sequence + 1, status_recorded_at = ? "
+            + "WHERE reservation_id = ? AND reservation_status IN ('ACTIVE', 'AT_RISK')",
+        next,
+        Timestamp.from(releasedAt),
+        row.reservationId());
+    return new ReleaseResult(
+        ReleaseOutcome.valueOf(next),
+        Optional.of(new InternalId(row.reservationId())),
+        row.sequence() + 1,
+        true,
+        Optional.of(row.expiresAt()));
+  }
+
+  @Override
+  public ReleaseResult release(
+      InternalId transferId, String facilityIdentifier, Instant releasedAt) {
+    List<ReservationLifecycleRow> active =
+        jdbc.query(
+            "SELECT r.reservation_id, r.reservation_status, r.lifecycle_sequence, r.expires_at, "
+                + "r.facility_identifier FROM capacity.reservation_operation o "
+                + "JOIN capacity.coordination_reservation r ON r.operation_id = o.operation_id "
+                + "AND r.transfer_id = o.transfer_id WHERE o.transfer_id = ? "
+                + "AND o.outcome = 'RESERVED' AND r.reservation_status IN ('ACTIVE', 'AT_RISK') "
+                + "FOR UPDATE OF o, r",
             (result, rowNumber) ->
                 new ReservationLifecycleRow(
                     result.getObject("reservation_id", UUID.class),
                     result.getString("reservation_status"),
                     result.getLong("lifecycle_sequence"),
-                    result.getTimestamp("expires_at").toInstant()),
+                    result.getTimestamp("expires_at").toInstant(),
+                    result.getObject("facility_identifier", UUID.class)),
             transferId.value());
-    ReleaseOutcome outcome =
-        "EXPIRED".equals(row.status()) ? ReleaseOutcome.EXPIRED : ReleaseOutcome.RELEASED;
+    if (active.size() > 1) {
+      throw new CapacityReservationStore.AmbiguousReleaseException();
+    }
+    if (active.isEmpty()) {
+      List<ReservationLifecycleRow> previous =
+          jdbc.query(
+              "SELECT reservation_id, reservation_status, lifecycle_sequence, expires_at, "
+                  + "facility_identifier FROM capacity.coordination_reservation "
+                  + "WHERE transfer_id = ? ORDER BY created_at DESC, reservation_id DESC LIMIT 1",
+              (result, rowNumber) ->
+                  new ReservationLifecycleRow(
+                      result.getObject("reservation_id", UUID.class),
+                      result.getString("reservation_status"),
+                      result.getLong("lifecycle_sequence"),
+                      result.getTimestamp("expires_at").toInstant(),
+                      result.getObject("facility_identifier", UUID.class)),
+              transferId.value());
+      if (previous.isEmpty()) {
+        return new ReleaseResult(
+            ReleaseOutcome.NOT_RESERVED, Optional.empty(), 0, false, Optional.empty());
+      }
+      ReservationLifecycleRow row = previous.getFirst();
+      if (!row.facilityIdentifier().toString().equals(facilityIdentifier)) {
+        return new ReleaseResult(
+            ReleaseOutcome.SCOPE_MISMATCH, Optional.empty(), 0, false, Optional.empty());
+      }
+      if (!"RELEASED".equals(row.status()) && !"EXPIRED".equals(row.status())) {
+        throw new IllegalStateException("Capacity reservation outcome and lifecycle disagree");
+      }
+      return new ReleaseResult(
+          ReleaseOutcome.valueOf(row.status()),
+          Optional.of(new InternalId(row.reservationId())),
+          row.sequence(),
+          false,
+          Optional.of(row.expiresAt()));
+    }
+    ReservationLifecycleRow row = active.getFirst();
+    if (!row.facilityIdentifier().toString().equals(facilityIdentifier)) {
+      return new ReleaseResult(
+          ReleaseOutcome.SCOPE_MISMATCH, Optional.empty(), 0, false, Optional.empty());
+    }
+    String next = row.expiresAt().isAfter(releasedAt) ? "RELEASED" : "EXPIRED";
+    jdbc.update(
+        "UPDATE capacity.coordination_reservation SET reservation_status = ?, "
+            + "lifecycle_sequence = lifecycle_sequence + 1, status_recorded_at = ? "
+            + "WHERE reservation_id = ? AND reservation_status IN ('ACTIVE', 'AT_RISK')",
+        next,
+        Timestamp.from(releasedAt),
+        row.reservationId());
     return new ReleaseResult(
-        outcome,
+        ReleaseOutcome.valueOf(next),
         Optional.of(new InternalId(row.reservationId())),
-        row.sequence(),
-        false,
+        row.sequence() + 1,
+        true,
         Optional.of(row.expiresAt()));
   }
 
@@ -500,8 +627,17 @@ public class JdbcCapacityReservationStore implements CapacityReservationStore {
       String reasonCode) {}
 
   private record ReservationLifecycleRow(
-      UUID reservationId, String status, long sequence, Instant expiresAt) {}
+      UUID reservationId,
+      String status,
+      long sequence,
+      Instant expiresAt,
+      UUID facilityIdentifier) {}
 
-  private record ReservationOperationLockRow(
-      String outcome, UUID reservationId, UUID facilityIdentifier) {}
+  private record ReleaseOperationRow(
+      UUID reservationOperationId,
+      UUID transferId,
+      String fingerprint,
+      String outcome,
+      UUID reservationId,
+      Long sequence) {}
 }

@@ -84,4 +84,14 @@ class TransferAuthorityConfiguration {
   FunctionalAuthority transferTransportRequestEligibilityAuthority() {
     return TransferAuthorities.transportRequestEligibility();
   }
+
+  @Bean
+  FunctionalAuthority transferRerouteAuthority() {
+    return TransferAuthorities.reroute();
+  }
+
+  @Bean
+  FunctionalAuthority transferTransportDestinationChangeEligibilityAuthority() {
+    return TransferAuthorities.transportDestinationChangeEligibility();
+  }
 }

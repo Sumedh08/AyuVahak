@@ -88,6 +88,12 @@ public record PartnerTrustConfiguration(
             .anyMatch(operation -> operation.direction() != Direction.OUTBOUND)) {
       throw new IllegalArgumentException("automatic retries are limited to outbound reads");
     }
+    if (allowedOperations.stream()
+            .anyMatch(operation -> operation.ownerContext() == OwnerContext.TRANSPORT)
+        && retryClass != RetryClass.NEVER) {
+      throw new IllegalArgumentException(
+          "Transport provider operations must not be automatically retried by Exchange");
+    }
   }
 
   /** Compatibility constructor for outbound-only profiles. */
@@ -204,11 +210,13 @@ public record PartnerTrustConfiguration(
 
   public enum OwnerContext {
     DIRECTORY,
-    REFERRAL
+    REFERRAL,
+    TRANSPORT
   }
 
   public enum Protocol {
-    FHIR_R4_JSON
+    FHIR_R4_JSON,
+    JSON
   }
 
   public enum AuthenticationMethod {
@@ -242,6 +250,10 @@ public record PartnerTrustConfiguration(
       }
       Objects.requireNonNull(direction, "direction");
       Objects.requireNonNull(protocol, "protocol");
+      if ((ownerContext == OwnerContext.TRANSPORT) != (protocol == Protocol.JSON)) {
+        throw new IllegalArgumentException(
+            "Transport operations use bounded JSON and other owner operations use their declared standards protocol");
+      }
       if (profile == null || !SAFE_PROFILE.matcher(profile).matches()) {
         throw new IllegalArgumentException("profile must be a bounded identifier");
       }
@@ -254,6 +266,37 @@ public record PartnerTrustConfiguration(
           Direction.INBOUND,
           Protocol.FHIR_R4_JSON,
           "IHE-mCSD");
+    }
+
+    /** Named partner-authenticated input for provider-neutral Transport observations. */
+    public static AllowedOperation transportProviderEvidence() {
+      return new AllowedOperation(
+          OwnerContext.TRANSPORT,
+          "transport.provider.evidence",
+          Direction.INBOUND,
+          Protocol.JSON,
+          "AyuVahakTransportProvider-v1");
+    }
+
+    public static AllowedOperation transportDispatch() {
+      return transportOutbound("transport.dispatch");
+    }
+
+    public static AllowedOperation transportCancellation() {
+      return transportOutbound("transport.request-cancellation");
+    }
+
+    public static AllowedOperation transportDestinationChange() {
+      return transportOutbound("transport.destination-change");
+    }
+
+    private static AllowedOperation transportOutbound(String operationCode) {
+      return new AllowedOperation(
+          OwnerContext.TRANSPORT,
+          operationCode,
+          Direction.OUTBOUND,
+          Protocol.JSON,
+          "AyuVahakTransportProvider-v1");
     }
   }
 

@@ -62,6 +62,22 @@ public interface CapacityReservationStore {
   CapacityReservationOutcome findReservationOutcome(
       InternalId operationId, InternalId transferId, String facilityIdentifier, Instant at);
 
+  ReleaseOperationClaim lockReleaseOperation(
+      InternalId releaseOperationId,
+      InternalId reservationOperationId,
+      InternalId transferId,
+      RequestFingerprint fingerprint,
+      Instant recordedAt);
+
+  void completeReleaseOperation(
+      InternalId releaseOperationId, ReleaseResult result, Instant recordedAt);
+
+  ReleaseResult releaseReservation(
+      InternalId reservationOperationId,
+      InternalId transferId,
+      String facilityIdentifier,
+      Instant releasedAt);
+
   ReleaseResult release(InternalId transferId, String facilityIdentifier, Instant releasedAt);
 
   List<LifecycleCandidate> findLifecycleCandidates(Instant at, int limit);
@@ -129,11 +145,23 @@ public interface CapacityReservationStore {
     }
   }
 
+  record ReleaseOperationClaim(boolean fingerprintMatches, Optional<ReleaseResult> current) {
+    public ReleaseOperationClaim {
+      current = java.util.Objects.requireNonNull(current, "current release operation outcome");
+    }
+  }
+
   enum ReleaseOutcome {
     RELEASED,
     EXPIRED,
     NOT_RESERVED,
     SCOPE_MISMATCH
+  }
+
+  final class AmbiguousReleaseException extends RuntimeException {
+    public AmbiguousReleaseException() {
+      super("Transfer has more than one active Capacity reservation; an operation ID is required");
+    }
   }
 
   enum ReceiptState {

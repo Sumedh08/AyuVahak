@@ -322,6 +322,33 @@ public final class TransferProgressCommands {
         target.transfer().journeyId(), target.transfer(), facts, corrections);
   }
 
+  /** Returns the selected Transport reference only to an authorized Transfer participant. */
+  public Optional<SelectedTransportRequest> selectedTransportRequest(
+      ExecutionContext context, InternalId transferId) {
+    Objects.requireNonNull(context, "execution context");
+    requireFacilityScope(context);
+    TransferProgressTarget target =
+        store.findProgressTarget(transferId).orElseThrow(TransferProgressCommands::notFound);
+    requireAuthority(
+        context, transferId, TransferAuthorities.progress().code(), "TRANSFER_CANCELLATION");
+    requireParticipant(context, target, transferId, TransferProgressFact.Kind.CANCELLATION);
+    Optional<InternalId> selected = store.findSelectedTransportRequest(transferId);
+    if (selected.isEmpty()) return Optional.empty();
+    ExternalReference originFacility =
+        target
+            .originFacility()
+            .orElseThrow(
+                () -> new IllegalStateException("Selected Transfer has no origin Facility"));
+    return Optional.of(
+        new SelectedTransportRequest(
+            selected.orElseThrow(), target.originOrganization(), originFacility));
+  }
+
+  public record SelectedTransportRequest(
+      InternalId transportRequestId,
+      ExternalReference originOrganization,
+      ExternalReference originFacility) {}
+
   private static void validateCorrection(
       TransferProgressCorrection.Kind kind,
       Optional<Instant> correctedOccurredAt,

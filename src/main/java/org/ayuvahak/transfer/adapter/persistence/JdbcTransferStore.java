@@ -14,6 +14,7 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.ayuvahak.platform.core.ActorKind;
 import org.ayuvahak.platform.core.ActorReference;
+import org.ayuvahak.platform.core.CorrelationId;
 import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.InternalId;
 import org.ayuvahak.platform.core.IssuerId;
@@ -25,8 +26,11 @@ import org.ayuvahak.transfer.application.TransferProgressTarget;
 import org.ayuvahak.transfer.application.TransferStore;
 import org.ayuvahak.transfer.domain.CapacityReservationIntent;
 import org.ayuvahak.transfer.domain.CoordinatedTransfer;
+import org.ayuvahak.transfer.domain.DestinationChangeAssessment;
+import org.ayuvahak.transfer.domain.DestinationChangeReservationPlan;
 import org.ayuvahak.transfer.domain.ReceivingAssessment;
 import org.ayuvahak.transfer.domain.TransferDecision;
+import org.ayuvahak.transfer.domain.TransferDestinationChangeOperation;
 import org.ayuvahak.transfer.domain.TransferJourney;
 import org.ayuvahak.transfer.domain.TransferJourneyClosure;
 import org.ayuvahak.transfer.domain.TransferProgressCorrection;
@@ -296,6 +300,305 @@ public class JdbcTransferStore implements TransferStore {
   @Override
   public Optional<TransferJourney> findJourneyByReferral(InternalId referralId) {
     return findJourney("referral_id", referralId);
+  }
+
+  @Override
+  public DestinationChangeReceiptClaim claimDestinationChangeReceipt(
+      CommandReceiptKey key,
+      RequestFingerprint fingerprint,
+      InternalId operationId,
+      Instant recordedAt) {
+    int inserted =
+        jdbc.update(
+            "INSERT INTO transfer.destination_change_receipt (scope_digest, "
+                + "idempotency_key_digest, request_fingerprint, operation_id, receipt_state, recorded_at) "
+                + "VALUES (?, ?, ?, ?, 'IN_PROGRESS', ?) ON CONFLICT DO NOTHING",
+            key.scopeDigest(),
+            key.idempotencyKey().value(),
+            fingerprint.value(),
+            operationId.value(),
+            Timestamp.from(recordedAt));
+    if (inserted == 1) {
+      return new DestinationChangeReceiptClaim(ReceiptState.OWNER, Optional.of(operationId));
+    }
+    return jdbc.queryForObject(
+        "SELECT request_fingerprint, operation_id, receipt_state "
+            + "FROM transfer.destination_change_receipt "
+            + "WHERE scope_digest = ? AND idempotency_key_digest = ? FOR UPDATE",
+        (result, row) -> {
+          InternalId existing = internalId(result, "operation_id");
+          if (!fingerprint.value().equals(result.getString("request_fingerprint").trim())) {
+            return new DestinationChangeReceiptClaim(ReceiptState.KEY_REUSED, Optional.empty());
+          }
+          return new DestinationChangeReceiptClaim(
+              "COMPLETED".equals(result.getString("receipt_state"))
+                  ? ReceiptState.REPLAY
+                  : ReceiptState.IN_PROGRESS,
+              Optional.of(existing));
+        },
+        key.scopeDigest(),
+        key.idempotencyKey().value());
+  }
+
+  @Override
+  public void completeDestinationChangeReceipt(
+      CommandReceiptKey key,
+      RequestFingerprint fingerprint,
+      InternalId operationId,
+      Instant recordedAt) {
+    int changed =
+        jdbc.update(
+            "UPDATE transfer.destination_change_receipt SET receipt_state = 'COMPLETED', recorded_at = ? "
+                + "WHERE scope_digest = ? AND idempotency_key_digest = ? AND request_fingerprint = ? "
+                + "AND operation_id = ? AND receipt_state = 'IN_PROGRESS'",
+            Timestamp.from(recordedAt),
+            key.scopeDigest(),
+            key.idempotencyKey().value(),
+            fingerprint.value(),
+            operationId.value());
+    if (changed != 1) {
+      throw new IllegalStateException("Transfer destination-change receipt could not be completed");
+    }
+  }
+
+  @Override
+  public boolean insertDestinationChange(TransferDestinationChangeOperation operation) {
+    return jdbc.update(
+            "INSERT INTO transfer.destination_change_operation (operation_id, transfer_id, "
+                + "transport_request_id, old_organization_id, old_facility_id, proposed_organization_id, "
+                + "proposed_facility_id, recommendation_id, referral_revision, reason_code, "
+                + "capacity_dimension_code, capacity_unit_code, capacity_quantity, "
+                + "capacity_interval_start, capacity_interval_end, status, "
+                + "capacity_reservation_operation_id, capacity_reservation_outcome, "
+                + "old_reservation_operation_id, old_hold_release_operation_id, "
+                + "proposed_hold_release_operation_id, transport_operation_id, provider_outcome, "
+                + "initiated_by_kind, initiated_by_issuer, initiated_by_identifier_type, "
+                + "initiated_by_identifier, origin_organization_id, origin_facility_id, correlation_id, "
+                + "version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ",
+            operation.id().value(),
+            operation.transferId().value(),
+            operation.transportRequestId().value(),
+            directoryId(operation.oldOrganization()),
+            directoryId(operation.oldFacility()),
+            directoryId(operation.proposedOrganization()),
+            directoryId(operation.proposedFacility()),
+            operation.recommendationId().value(),
+            operation.referralRevision(),
+            operation.reasonCode(),
+            operation
+                .reservationPlan()
+                .map(DestinationChangeReservationPlan::dimensionCode)
+                .orElse(null),
+            operation.reservationPlan().map(DestinationChangeReservationPlan::unit).orElse(null),
+            operation
+                .reservationPlan()
+                .map(DestinationChangeReservationPlan::quantity)
+                .orElse(null),
+            operation
+                .reservationPlan()
+                .map(DestinationChangeReservationPlan::intervalStart)
+                .map(Timestamp::from)
+                .orElse(null),
+            operation
+                .reservationPlan()
+                .map(DestinationChangeReservationPlan::intervalEnd)
+                .map(Timestamp::from)
+                .orElse(null),
+            operation.status().name(),
+            operation.capacityReservationOperationId().value(),
+            operation.capacityReservationOutcome().name(),
+            operation.oldReservationOperationId().value(),
+            operation.oldHoldReleaseOperationId().value(),
+            operation.proposedHoldReleaseOperationId().value(),
+            operation.transportOperationId().value(),
+            operation.providerOutcome().map(Enum::name).orElse(null),
+            operation.initiatedBy().kind().name(),
+            operation.initiatedBy().identity().issuer().value(),
+            operation.initiatedBy().identity().resourceType(),
+            operation.initiatedBy().identity().value(),
+            directoryId(operation.originOrganization()),
+            directoryId(operation.originFacility()),
+            operation.correlationId().value(),
+            operation.version(),
+            Timestamp.from(operation.createdAt()),
+            Timestamp.from(operation.updatedAt()))
+        == 1;
+  }
+
+  @Override
+  public Optional<TransferDestinationChangeOperation> findDestinationChange(
+      InternalId operationId) {
+    return destinationChange(operationId, false);
+  }
+
+  @Override
+  public Optional<ActiveDestination> findActiveDestination(InternalId transferId) {
+    return jdbc
+        .query(
+            "SELECT organization_id, facility_id, reservation_operation_id "
+                + "FROM transfer.active_destination WHERE transfer_id = ?",
+            (result, row) ->
+                new ActiveDestination(
+                    directoryReference(
+                        "Organization", result.getObject("organization_id", UUID.class)),
+                    directoryReference("Facility", result.getObject("facility_id", UUID.class)),
+                    internalId(result, "reservation_operation_id")),
+            transferId.value())
+        .stream()
+        .findFirst();
+  }
+
+  @Override
+  public Optional<TransferDestinationChangeOperation> lockDestinationChange(
+      InternalId operationId) {
+    return destinationChange(operationId, true);
+  }
+
+  private Optional<TransferDestinationChangeOperation> destinationChange(
+      InternalId operationId, boolean lock) {
+    return jdbc
+        .query(
+            "SELECT * FROM transfer.destination_change_operation WHERE operation_id = ?"
+                + (lock ? " FOR UPDATE" : ""),
+            JdbcTransferStore::destinationChange,
+            operationId.value())
+        .stream()
+        .findFirst();
+  }
+
+  @Override
+  public Optional<TransferDestinationChangeOperation> findUnresolvedDestinationChange(
+      InternalId transferId) {
+    return jdbc
+        .query(
+            "SELECT * FROM transfer.destination_change_operation WHERE transfer_id = ? "
+                + "AND status <> 'RESOLVED'",
+            JdbcTransferStore::destinationChange,
+            transferId.value())
+        .stream()
+        .findFirst();
+  }
+
+  @Override
+  public List<InternalId> findPendingDestinationChangeReleases(int limit) {
+    if (limit < 1 || limit > 500) {
+      throw new IllegalArgumentException(
+          "destination-change recovery limit must be between 1 and 500");
+    }
+    return jdbc.query(
+        "SELECT operation_id FROM transfer.destination_change_operation "
+            + "WHERE status IN ('OLD_HOLD_RELEASE_PENDING', 'PROPOSED_HOLD_RELEASE_PENDING') "
+            + "ORDER BY updated_at, operation_id LIMIT ?",
+        (result, row) -> new InternalId(result.getObject("operation_id", UUID.class)),
+        limit);
+  }
+
+  @Override
+  public boolean updateDestinationChange(
+      TransferDestinationChangeOperation operation, long expectedVersion) {
+    return jdbc.update(
+            "UPDATE transfer.destination_change_operation SET status = ?, "
+                + "capacity_reservation_outcome = ?, provider_outcome = ?, version = ?, updated_at = ? "
+                + "WHERE operation_id = ? AND version = ?",
+            operation.status().name(),
+            operation.capacityReservationOutcome().name(),
+            operation.providerOutcome().map(Enum::name).orElse(null),
+            operation.version(),
+            Timestamp.from(operation.updatedAt()),
+            operation.id().value(),
+            expectedVersion)
+        == 1;
+  }
+
+  @Override
+  public void insertDestinationChangeAssessment(DestinationChangeAssessment assessment) {
+    jdbc.update(
+        "INSERT INTO transfer.destination_change_assessment (assessment_id, operation_id, "
+            + "assessment_kind, outcome, reason_code, evidence_reference, recorded_by_kind, "
+            + "recorded_by_issuer, recorded_by_identifier_type, recorded_by_identifier, authority_code, "
+            + "organization_id, facility_id, occurred_at, recorded_at) "
+            + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        assessment.id().value(),
+        assessment.operationId().value(),
+        assessment.kind().name(),
+        assessment.outcome().name(),
+        assessment.reasonCode(),
+        assessment.evidenceReference().orElse(null),
+        assessment.recordedBy().kind().name(),
+        assessment.recordedBy().identity().issuer().value(),
+        assessment.recordedBy().identity().resourceType(),
+        assessment.recordedBy().identity().value(),
+        assessment.kind().authorityCode(),
+        directoryId(assessment.organization()),
+        directoryId(assessment.facility()),
+        Timestamp.from(assessment.occurredAt()),
+        Timestamp.from(assessment.recordedAt()));
+  }
+
+  @Override
+  public Optional<DestinationChangeAssessment> findDestinationChangeAssessment(
+      InternalId operationId, ReceivingAssessment.Kind kind) {
+    return jdbc
+        .query(
+            "SELECT * FROM transfer.destination_change_assessment "
+                + "WHERE operation_id = ? AND assessment_kind = ?",
+            JdbcTransferStore::destinationChangeAssessment,
+            operationId.value(),
+            kind.name())
+        .stream()
+        .findFirst();
+  }
+
+  @Override
+  public boolean insertDestinationChangeDecision(
+      InternalId operationId,
+      String decisionKind,
+      Optional<String> reasonCode,
+      ActorReference recordedBy,
+      ExternalReference organization,
+      ExternalReference facility,
+      Instant occurredAt,
+      Instant recordedAt) {
+    return jdbc.update(
+            "INSERT INTO transfer.destination_change_decision (operation_id, decision_kind, reason_code, "
+                + "recorded_by_kind, recorded_by_issuer, recorded_by_identifier_type, recorded_by_identifier, "
+                + "organization_id, facility_id, occurred_at, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                + "ON CONFLICT (operation_id) DO NOTHING",
+            operationId.value(),
+            decisionKind,
+            reasonCode.orElse(null),
+            recordedBy.kind().name(),
+            recordedBy.identity().issuer().value(),
+            recordedBy.identity().resourceType(),
+            recordedBy.identity().value(),
+            directoryId(organization),
+            directoryId(facility),
+            Timestamp.from(occurredAt),
+            Timestamp.from(recordedAt))
+        == 1;
+  }
+
+  @Override
+  public boolean updateActiveDestination(
+      InternalId transferId,
+      ExternalReference expectedFacility,
+      ExternalReference organization,
+      ExternalReference facility,
+      InternalId reservationOperationId,
+      InternalId destinationChangeOperationId,
+      Instant updatedAt) {
+    return jdbc.update(
+            "UPDATE transfer.active_destination SET organization_id = ?, facility_id = ?, "
+                + "reservation_operation_id = ?, source_destination_change_id = ?, "
+                + "version = version + 1, updated_at = ? WHERE transfer_id = ? AND facility_id = ?",
+            directoryId(organization),
+            directoryId(facility),
+            reservationOperationId.value(),
+            destinationChangeOperationId.value(),
+            Timestamp.from(updatedAt),
+            transferId.value(),
+            directoryId(expectedFacility))
+        == 1;
   }
 
   @Override
@@ -725,10 +1028,10 @@ public class JdbcTransferStore implements TransferStore {
         "SELECT t.transfer_id, t.journey_id, t.request_attempt_id, t.transfer_status, "
             + "t.created_at, t.version AS transfer_version, j.referral_id, "
             + "j.origin_organization_id, j.origin_facility_id, j.version AS journey_version, "
-            + "d.receiving_organization_id, d.receiving_facility_id "
+            + "ad.organization_id AS receiving_organization_id, ad.facility_id AS receiving_facility_id "
             + "FROM transfer.transfer_record t "
             + "JOIN transfer.journey j ON j.journey_id = t.journey_id "
-            + "JOIN transfer.request_decision d ON d.request_attempt_id = t.request_attempt_id "
+            + "JOIN transfer.active_destination ad ON ad.transfer_id = t.transfer_id "
             + "WHERE t.transfer_id = ?"
             + (lock ? " FOR UPDATE OF t, j" : "");
     return jdbc
@@ -977,7 +1280,9 @@ public class JdbcTransferStore implements TransferStore {
   public Optional<CapacityReservationIntent> findReservationIntent(InternalId transferId) {
     return jdbc
         .query(
-            reservationIntentSelect() + " WHERE transfer_id = ?",
+            reservationIntentSelect()
+                + " JOIN transfer.active_destination ad ON ad.transfer_id = r.transfer_id "
+                + "AND ad.reservation_operation_id = r.operation_id WHERE r.transfer_id = ?",
             JdbcTransferStore::reservationIntent,
             transferId.value())
         .stream()
@@ -992,9 +1297,11 @@ public class JdbcTransferStore implements TransferStore {
     }
     return jdbc.query(
         reservationIntentSelect()
-            + " WHERE outcome IN ('PENDING', 'IN_PROGRESS', 'UNAVAILABLE', 'UNKNOWN', 'RESERVED') "
+            + " JOIN transfer.active_destination ad ON ad.transfer_id = r.transfer_id "
+            + "AND ad.reservation_operation_id = r.operation_id "
+            + "WHERE r.outcome IN ('PENDING', 'IN_PROGRESS', 'UNAVAILABLE', 'UNKNOWN', 'RESERVED') "
             + "AND next_attempt_at <= ? "
-            + "ORDER BY next_attempt_at, transfer_id LIMIT ?",
+            + "ORDER BY r.next_attempt_at, r.transfer_id LIMIT ?",
         JdbcTransferStore::reservationIntent,
         Timestamp.from(dueAt),
         limit);
@@ -1315,6 +1622,17 @@ public class JdbcTransferStore implements TransferStore {
         Timestamp.from(decision.occurredAt()),
         Timestamp.from(decision.recordedAt()),
         decision.requestVersion());
+    transfer.ifPresent(
+        value ->
+            jdbc.update(
+                "INSERT INTO transfer.active_destination (transfer_id, organization_id, facility_id, "
+                    + "reservation_operation_id, source_destination_change_id, version, updated_at) "
+                    + "VALUES (?, ?, ?, ?, NULL, 1, ?)",
+                value.id().value(),
+                UUID.fromString(decision.receivingOrganization().value()),
+                UUID.fromString(decision.receivingFacility().value()),
+                value.id().value(),
+                Timestamp.from(decision.recordedAt())));
   }
 
   private void insertReservationIntent(CapacityReservationIntent intent) {
@@ -1347,10 +1665,10 @@ public class JdbcTransferStore implements TransferStore {
   }
 
   private static String reservationIntentSelect() {
-    return "SELECT operation_id, transfer_id, organization_identifier, facility_identifier, "
-        + "dimension_code, unit_code, quantity, interval_start, interval_end, expires_at, outcome, "
-        + "reservation_id, reason_code, attempt_count, next_attempt_at "
-        + "FROM transfer.capacity_reservation_request";
+    return "SELECT r.operation_id, r.transfer_id, r.organization_identifier, r.facility_identifier, "
+        + "r.dimension_code, r.unit_code, r.quantity, r.interval_start, r.interval_end, r.expires_at, "
+        + "r.outcome, r.reservation_id, r.reason_code, r.attempt_count, r.next_attempt_at "
+        + "FROM transfer.capacity_reservation_request r";
   }
 
   private static CapacityReservationIntent reservationIntent(ResultSet result, int row)
@@ -1517,6 +1835,71 @@ public class JdbcTransferStore implements TransferStore {
         result.getTimestamp("occurred_at").toInstant(),
         result.getTimestamp("recorded_at").toInstant(),
         result.getLong("aggregate_sequence"));
+  }
+
+  private static TransferDestinationChangeOperation destinationChange(ResultSet result, int row)
+      throws SQLException {
+    return new TransferDestinationChangeOperation(
+        internalId(result, "operation_id"),
+        internalId(result, "transfer_id"),
+        internalId(result, "transport_request_id"),
+        directoryReference("Organization", result.getObject("old_organization_id", UUID.class)),
+        directoryReference("Facility", result.getObject("old_facility_id", UUID.class)),
+        directoryReference(
+            "Organization", result.getObject("proposed_organization_id", UUID.class)),
+        directoryReference("Facility", result.getObject("proposed_facility_id", UUID.class)),
+        internalId(result, "recommendation_id"),
+        result.getLong("referral_revision"),
+        result.getString("reason_code"),
+        reservationPlan(result),
+        TransferDestinationChangeOperation.Status.valueOf(result.getString("status")),
+        internalId(result, "capacity_reservation_operation_id"),
+        TransferDestinationChangeOperation.CapacityOutcome.valueOf(
+            result.getString("capacity_reservation_outcome")),
+        internalId(result, "old_reservation_operation_id"),
+        internalId(result, "old_hold_release_operation_id"),
+        internalId(result, "proposed_hold_release_operation_id"),
+        internalId(result, "transport_operation_id"),
+        Optional.ofNullable(result.getString("provider_outcome"))
+            .map(TransferDestinationChangeOperation.ProviderOutcome::valueOf),
+        actor(result, "initiated_by"),
+        directoryReference("Organization", result.getObject("origin_organization_id", UUID.class)),
+        directoryReference("Facility", result.getObject("origin_facility_id", UUID.class)),
+        new CorrelationId(result.getString("correlation_id")),
+        result.getLong("version"),
+        result.getTimestamp("created_at").toInstant(),
+        result.getTimestamp("updated_at").toInstant());
+  }
+
+  private static Optional<DestinationChangeReservationPlan> reservationPlan(ResultSet result)
+      throws SQLException {
+    String dimension = result.getString("capacity_dimension_code");
+    if (dimension == null) {
+      return Optional.empty();
+    }
+    return Optional.of(
+        new DestinationChangeReservationPlan(
+            dimension,
+            result.getString("capacity_unit_code"),
+            result.getBigDecimal("capacity_quantity"),
+            result.getTimestamp("capacity_interval_start").toInstant(),
+            result.getTimestamp("capacity_interval_end").toInstant()));
+  }
+
+  private static DestinationChangeAssessment destinationChangeAssessment(ResultSet result, int row)
+      throws SQLException {
+    return new DestinationChangeAssessment(
+        internalId(result, "assessment_id"),
+        internalId(result, "operation_id"),
+        ReceivingAssessment.Kind.valueOf(result.getString("assessment_kind")),
+        ReceivingAssessment.Outcome.valueOf(result.getString("outcome")),
+        result.getString("reason_code"),
+        Optional.ofNullable(result.getString("evidence_reference")),
+        actor(result, "recorded_by"),
+        directoryReference("Organization", result.getObject("organization_id", UUID.class)),
+        directoryReference("Facility", result.getObject("facility_id", UUID.class)),
+        result.getTimestamp("occurred_at").toInstant(),
+        result.getTimestamp("recorded_at").toInstant());
   }
 
   private static TransferRequestAttempt requestAttempt(ResultSet result, int row)

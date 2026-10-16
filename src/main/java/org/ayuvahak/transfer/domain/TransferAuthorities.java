@@ -43,6 +43,11 @@ public final class TransferAuthorities {
   private static final FunctionalAuthority TRANSPORT_REQUEST_ELIGIBILITY =
       new FunctionalAuthority(
           "TransferTransportRequestEligibility", Set.of(ExecutionScope.Kind.FACILITY));
+  private static final FunctionalAuthority REROUTE =
+      new FunctionalAuthority("TransferRerouteAuthority", ORIGIN_SCOPES);
+  private static final FunctionalAuthority TRANSPORT_DESTINATION_CHANGE_ELIGIBILITY =
+      new FunctionalAuthority(
+          "TransferTransportDestinationChangeEligibility", Set.of(ExecutionScope.Kind.FACILITY));
 
   private TransferAuthorities() {}
 
@@ -104,5 +109,13 @@ public final class TransferAuthorities {
 
   public static FunctionalAuthority transportRequestEligibility() {
     return TRANSPORT_REQUEST_ELIGIBILITY;
+  }
+
+  public static FunctionalAuthority reroute() {
+    return REROUTE;
+  }
+
+  public static FunctionalAuthority transportDestinationChangeEligibility() {
+    return TRANSPORT_DESTINATION_CHANGE_ELIGIBILITY;
   }
 }

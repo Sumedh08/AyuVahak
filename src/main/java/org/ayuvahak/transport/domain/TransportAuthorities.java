@@ -17,6 +17,8 @@ public final class TransportAuthorities {
       new FunctionalAuthority("TransportStatusAuthority", FACILITY_SCOPE);
   private static final FunctionalAuthority CANCELLATION =
       new FunctionalAuthority("TransportCancellationAuthority", FACILITY_SCOPE);
+  private static final FunctionalAuthority DESTINATION_CHANGE =
+      new FunctionalAuthority("TransportDestinationChangeAuthority", FACILITY_SCOPE);
 
   private TransportAuthorities() {}
 
@@ -34,5 +36,9 @@ public final class TransportAuthorities {
 
   public static FunctionalAuthority cancellation() {
     return CANCELLATION;
+  }
+
+  public static FunctionalAuthority destinationChange() {
+    return DESTINATION_CHANGE;
   }
 }

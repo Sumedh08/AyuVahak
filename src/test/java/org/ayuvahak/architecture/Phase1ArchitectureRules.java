@@ -66,11 +66,13 @@ final class Phase1ArchitectureRules {
             "org.ayuvahak.matching",
             "org.ayuvahak.matching..",
             "org.ayuvahak.transfer",
-            "org.ayuvahak.transfer..")
+            "org.ayuvahak.transfer..",
+            "org.ayuvahak.transport",
+            "org.ayuvahak.transport..")
         .as(
             "Production code contains only implemented platform concerns and the active Directory"
-                + ", Capacity, Referral, Matching, and Transfer contexts; create later healthcare"
-                + " contexts only when their phase begins");
+                + ", Capacity, Referral, Matching, Transfer, and Transport contexts; create later"
+                + " healthcare contexts only when their phase begins");
   }
 
   static ArchRule packageSlicesAreAcyclic() {
@@ -151,7 +153,7 @@ final class Phase1ArchitectureRules {
         .resideInAnyPackage("org.ayuvahak.capacity..")
         .should(
             new ArchCondition<>(
-                "not depend on CareCapability, Directory persistence, Referral, Matching, or Transfer") {
+                "not depend on CareCapability, Directory persistence, Referral, Matching, Transfer, or Transport") {
               @Override
               public void check(JavaClass item, ConditionEvents events) {
                 for (Dependency dependency : item.getDirectDependenciesFromSelf()) {
@@ -161,7 +163,8 @@ final class Phase1ArchitectureRules {
                       || targetPackage.startsWith("org.ayuvahak.directory.adapter.persistence")
                       || targetPackage.startsWith("org.ayuvahak.referral.")
                       || targetPackage.startsWith("org.ayuvahak.matching.")
-                      || targetPackage.startsWith("org.ayuvahak.transfer.")) {
+                      || targetPackage.startsWith("org.ayuvahak.transfer.")
+                      || targetPackage.startsWith("org.ayuvahak.transport.")) {
                     events.add(
                         SimpleConditionEvent.violated(
                             item,
@@ -175,7 +178,7 @@ final class Phase1ArchitectureRules {
         .as(
             "Capacity must evaluate only explicit CapacityDimensions through owner contracts; it"
                 + " must not translate CareCapabilities or depend on Referral, Matching, Transfer,"
-                + " or Directory persistence")
+                + " Transport, or Directory persistence")
         .allowEmptyShould(true);
   }
 
@@ -185,8 +188,9 @@ final class Phase1ArchitectureRules {
         .resideInAnyPackage("org.ayuvahak.referral..")
         .should()
         .dependOnClassesThat()
-        .resideInAnyPackage("org.ayuvahak.matching..", "org.ayuvahak.transfer..")
-        .as("Referral must not depend on Matching or Transfer implementation")
+        .resideInAnyPackage(
+            "org.ayuvahak.matching..", "org.ayuvahak.transfer..", "org.ayuvahak.transport..")
+        .as("Referral must not depend on Matching, Transfer, or Transport implementation")
         .allowEmptyShould(true);
   }
 
@@ -224,6 +228,41 @@ final class Phase1ArchitectureRules {
             "Matching domain decisions must use Matching-owned evidence types and remain free of"
                 + " business-context, framework, persistence, interoperability, and AI/ML"
                 + " dependencies; owner projections are translated at the application boundary")
+        .allowEmptyShould(true);
+  }
+
+  static ArchRule transportDomainMustRemainProviderNeutral() {
+    return noClasses()
+        .that()
+        .resideInAnyPackage("org.ayuvahak.transport.domain..")
+        .should()
+        .dependOnClassesThat()
+        .resideInAnyPackage(
+            "org.ayuvahak.directory..",
+            "org.ayuvahak.capacity..",
+            "org.ayuvahak.referral..",
+            "org.ayuvahak.matching..",
+            "org.ayuvahak.transfer..",
+            "org.springframework..",
+            "ca.uhn.fhir..",
+            "org.hl7.fhir..",
+            "org.apache.http..",
+            "java.net.http..",
+            "okhttp3..")
+        .as(
+            "Transport domain decisions must remain provider-neutral and depend only on"
+                + " Transport-owned concepts and the platform core")
+        .allowEmptyShould(true);
+  }
+
+  static ArchRule transportMustNotAccessTransferPersistencePort() {
+    return noClasses()
+        .that()
+        .resideInAnyPackage("org.ayuvahak.transport..")
+        .should()
+        .dependOnClassesThat()
+        .haveFullyQualifiedName("org.ayuvahak.transfer.application.TransferStore")
+        .as("Transport must use Transfer owner contracts, never Transfer's persistence port")
         .allowEmptyShould(true);
   }
 

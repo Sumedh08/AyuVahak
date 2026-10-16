@@ -118,7 +118,8 @@ import org.testcontainers.utility.DockerImageName;
       "management.tracing.sampling.probability=0.0",
       "ayuvahak.test.partner.enabled=true",
       "ayuvahak.authentication.audience=ayuvahak-api",
-      "ayuvahak.authentication.service-client-ids=synthetic-worker,synthetic-directory-feed,synthetic-directory-curator",
+      "ayuvahak.authentication.service-client-ids=synthetic-worker,synthetic-directory-feed,synthetic-directory-curator,synthetic-transport-provider",
+      "ayuvahak.transport.provider-partner-key=SYNTHETIC-TRANSPORT-PROVIDER",
       "ayuvahak.authentication.allow-http=true"
     })
 @AutoConfigureMockMvc
@@ -163,11 +164,26 @@ class PartnerTrustAdministrationIT {
   private static final AtomicReference<String> MCSD_REQUEST_TARGET = new AtomicReference<>();
   private static final AtomicReference<byte[]> MCSD_RESPONSE_BODY =
       new AtomicReference<>(new byte[0]);
+  private static final AtomicInteger TRANSPORT_PROVIDER_REQUESTS = new AtomicInteger();
+  private static final AtomicReference<String> TRANSPORT_PROVIDER_REQUEST_TARGET =
+      new AtomicReference<>();
+  private static final AtomicReference<String> TRANSPORT_PROVIDER_REQUEST_BODY =
+      new AtomicReference<>();
+  private static final AtomicReference<String> TRANSPORT_PROVIDER_OPERATION_REFERENCE =
+      new AtomicReference<>();
+  private static final java.util.concurrent.atomic.AtomicBoolean DROP_TRANSPORT_PROVIDER_RESPONSE =
+      new java.util.concurrent.atomic.AtomicBoolean();
 
   @Autowired private MockMvc mockMvc;
   @Autowired private JdbcTemplate jdbc;
   @Autowired private BootstrapGrantService bootstrapService;
   @Autowired private PartnerTrustProfileStore trustProfileStore;
+
+  @Autowired
+  private org.ayuvahak.transport.application.TransportProviderSubmissionCommands
+      transportProviderSubmissions;
+
+  @Autowired private org.ayuvahak.transport.application.TransportRequestStore transportRequests;
   @Autowired private DirectorySourceProjectionImportPort directoryProjectionImporter;
   @Autowired private ExecutionContextFactory executionContextFactory;
   @Autowired private AuthorizationService authorizationService;
@@ -220,6 +236,22 @@ class PartnerTrustAdministrationIT {
     mcsdServer.createContext(
         "/",
         exchange -> {
+          if ("POST".equals(exchange.getRequestMethod())) {
+            TRANSPORT_PROVIDER_REQUESTS.incrementAndGet();
+            TRANSPORT_PROVIDER_REQUEST_TARGET.set(
+                exchange.getRequestMethod() + " " + exchange.getRequestURI());
+            TRANSPORT_PROVIDER_REQUEST_BODY.set(
+                new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            TRANSPORT_PROVIDER_OPERATION_REFERENCE.set(
+                exchange.getRequestHeaders().getFirst("X-AyuVahak-Operation-Reference"));
+            if (DROP_TRANSPORT_PROVIDER_RESPONSE.get()) {
+              exchange.close();
+              return;
+            }
+            exchange.sendResponseHeaders(202, -1);
+            exchange.close();
+            return;
+          }
           MCSD_REQUESTS.incrementAndGet();
           MCSD_REQUEST_TARGET.set(exchange.getRequestMethod() + " " + exchange.getRequestURI());
           byte[] response = MCSD_RESPONSE_BODY.get();
@@ -284,6 +316,11 @@ class PartnerTrustAdministrationIT {
     jdbc.update("DELETE FROM identity_access.authorization_grant");
     jdbc.execute("DROP TRIGGER IF EXISTS test_fail_audit_insert ON audit.audit_record");
     jdbc.execute("DROP FUNCTION IF EXISTS test_fail_audit_insert()");
+    TRANSPORT_PROVIDER_REQUESTS.set(0);
+    TRANSPORT_PROVIDER_REQUEST_TARGET.set(null);
+    TRANSPORT_PROVIDER_REQUEST_BODY.set(null);
+    TRANSPORT_PROVIDER_OPERATION_REFERENCE.set(null);
+    DROP_TRANSPORT_PROVIDER_RESPONSE.set(false);
 
     bootstrapService.provisionFirstGrant(bootstrapProperties(), "synthetic-host");
     mockMvc
@@ -560,6 +597,220 @@ class PartnerTrustAdministrationIT {
             trustProfileStore.findActiveInbound(
                 ActorReference.service(new IssuerId(ISSUER), "another-service"), operation))
         .isEmpty();
+  }
+
+  @Test
+  void activeTransportProviderProfileStoresOnlyNamedJsonOperations() throws Exception {
+    String configuration = transportProviderConfigurationJson();
+    String create =
+        "{\"partnerKey\":\"synthetic-transport-provider\","
+            + configuration.substring(1, configuration.length() - 1)
+            + ",\"reasonCode\":\"PARTNER_SETUP\"}";
+    mockMvc
+        .perform(
+            partnerRequest(
+                post("/api/v1/platform/exchange-partners"),
+                PARTNER_ADMIN,
+                "transport-provider-create",
+                create))
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.inboundPrincipalClientId").value("synthetic-transport-provider"));
+    mockMvc
+        .perform(
+            partnerRequest(
+                post(
+                    "/api/v1/platform/exchange-partners/synthetic-transport-provider/versions/1/activate"),
+                PARTNER_ADMIN,
+                "transport-provider-activate",
+                "{\"reasonCode\":\"PARTNER_ACTIVATION\"}"))
+        .andExpect(status().isOk());
+
+    var providerPrincipal =
+        ActorReference.service(new IssuerId(ISSUER), "synthetic-transport-provider");
+    assertThat(
+            trustProfileStore.findActiveInbound(
+                providerPrincipal, AllowedOperation.transportProviderEvidence()))
+        .isPresent();
+    assertThat(
+            jdbc.queryForList(
+                "SELECT owner_context, operation_code, direction, protocol "
+                    + "FROM platform_exchange.partner_profile_operation "
+                    + "WHERE profile_version_id = (SELECT profile_version_id "
+                    + "FROM platform_exchange.partner_profile_version v "
+                    + "JOIN platform_exchange.partner_profile p USING (partner_id) "
+                    + "WHERE partner_key = 'SYNTHETIC-TRANSPORT-PROVIDER' AND version_number = 1) "
+                    + "ORDER BY operation_code"))
+        .containsExactly(
+            java.util.Map.of(
+                "owner_context", "TRANSPORT",
+                "operation_code", "transport.destination-change",
+                "direction", "OUTBOUND",
+                "protocol", "JSON"),
+            java.util.Map.of(
+                "owner_context", "TRANSPORT",
+                "operation_code", "transport.dispatch",
+                "direction", "OUTBOUND",
+                "protocol", "JSON"),
+            java.util.Map.of(
+                "owner_context", "TRANSPORT",
+                "operation_code", "transport.provider.evidence",
+                "direction", "INBOUND",
+                "protocol", "JSON"),
+            java.util.Map.of(
+                "owner_context", "TRANSPORT",
+                "operation_code", "transport.request-cancellation",
+                "direction", "OUTBOUND",
+                "protocol", "JSON"));
+  }
+
+  @Test
+  void transportProviderDispatchUsesLocalTrustedExchangeOnceAndPersistsAcknowledgement()
+      throws Exception {
+    DirectoryFacility origin = createReceivingFacility();
+    InternalId organizationId = InternalId.parse(origin.organizationId());
+    InternalId facilityId = InternalId.parse(origin.facilityId());
+    InternalId requestId = InternalId.parse("20000000-0000-4000-8000-000000000003");
+    activateLocalTransportProvider();
+    createHumanGrant(
+        "transport-provider-dispatch-authority",
+        "synthetic-transport-operator",
+        "TransportDispatchCoordinationAuthority",
+        facilityScopeJson(organizationId, facilityId));
+    var request =
+        syntheticTransportRequest(
+            requestId,
+            InternalId.parse("20000000-0000-4000-8000-000000000004"),
+            organizationId,
+            facilityId);
+    assertThat(
+            transportRequests.insert(
+                request,
+                request.initiatedBy().identity().issuer().value(),
+                request.initiatedBy().identity().resourceType(),
+                request.recordedBy().identity().issuer().value(),
+                request.recordedBy().identity().resourceType()))
+        .isTrue();
+    var operator = ActorReference.human(new IssuerId(ISSUER), "synthetic-transport-operator");
+    var context =
+        executionContextFactory.forInteractiveRequest(
+            operator,
+            RequestedExecutionScope.facility(
+                new ExternalReference(
+                    new IssuerId("urn:ayuvahak:directory"),
+                    "Organization",
+                    organizationId.toString()),
+                request.originFacility()),
+            new CorrelationId("synthetic-provider-dispatch"));
+
+    var sent =
+        transportProviderSubmissions
+            .submit(
+                context,
+                requestId,
+                org.ayuvahak.transport.domain.TransportProviderSubmission.OperationKind.DISPATCH,
+                requestId)
+            .orElseThrow();
+    assertThat(sent.submission().state())
+        .as(
+            "provider failure=%s, local requests=%s",
+            sent.submission().failureCode(), TRANSPORT_PROVIDER_REQUESTS.get())
+        .isEqualTo(org.ayuvahak.transport.domain.TransportProviderSubmission.State.ACKNOWLEDGED);
+    assertThat(sent.submission().responseStatus()).contains(202);
+    assertThat(sent.submission().configurationVersion()).contains(1);
+    assertThat(TRANSPORT_PROVIDER_REQUESTS).hasValue(1);
+    assertThat(TRANSPORT_PROVIDER_REQUEST_TARGET)
+        .hasValue("POST /api/transport-requests/" + requestId + "/dispatches");
+    assertThat(TRANSPORT_PROVIDER_OPERATION_REFERENCE).hasValue(requestId.toString());
+    assertThat(TRANSPORT_PROVIDER_REQUEST_BODY.get())
+        .contains(requestId.toString(), request.transferId().toString())
+        .doesNotContain("Patient", "SYN-PATIENT", "diagnosis", "clinical");
+
+    var replay =
+        transportProviderSubmissions
+            .submit(
+                context,
+                requestId,
+                org.ayuvahak.transport.domain.TransportProviderSubmission.OperationKind.DISPATCH,
+                requestId)
+            .orElseThrow();
+    assertThat(replay.replayed()).isTrue();
+    assertThat(TRANSPORT_PROVIDER_REQUESTS).hasValue(1);
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM audit.audit_record "
+                    + "WHERE action_code = 'TRANSPORT_PROVIDER_SUBMISSION_ACKNOWLEDGED'"))
+        .isEqualTo(1);
+  }
+
+  @Test
+  void transportProviderLostResponseIsUnknownAndNeverBlindlyRepeated() throws Exception {
+    DirectoryFacility origin = createReceivingFacility();
+    InternalId organizationId = InternalId.parse(origin.organizationId());
+    InternalId facilityId = InternalId.parse(origin.facilityId());
+    InternalId requestId = InternalId.parse("20000000-0000-4000-8000-000000000013");
+    activateLocalTransportProvider();
+    createHumanGrant(
+        "transport-provider-lost-response-authority",
+        "synthetic-transport-operator",
+        "TransportDispatchCoordinationAuthority",
+        facilityScopeJson(organizationId, facilityId));
+    var request =
+        syntheticTransportRequest(
+            requestId,
+            InternalId.parse("20000000-0000-4000-8000-000000000014"),
+            organizationId,
+            facilityId);
+    assertThat(
+            transportRequests.insert(
+                request,
+                request.initiatedBy().identity().issuer().value(),
+                request.initiatedBy().identity().resourceType(),
+                request.recordedBy().identity().issuer().value(),
+                request.recordedBy().identity().resourceType()))
+        .isTrue();
+    var operator = ActorReference.human(new IssuerId(ISSUER), "synthetic-transport-operator");
+    var context =
+        executionContextFactory.forInteractiveRequest(
+            operator,
+            RequestedExecutionScope.facility(
+                new ExternalReference(
+                    new IssuerId("urn:ayuvahak:directory"),
+                    "Organization",
+                    organizationId.toString()),
+                request.originFacility()),
+            new CorrelationId("synthetic-provider-lost-response"));
+    DROP_TRANSPORT_PROVIDER_RESPONSE.set(true);
+
+    var unknown =
+        transportProviderSubmissions
+            .submit(
+                context,
+                requestId,
+                org.ayuvahak.transport.domain.TransportProviderSubmission.OperationKind.DISPATCH,
+                requestId)
+            .orElseThrow();
+    assertThat(unknown.submission().state())
+        .isEqualTo(org.ayuvahak.transport.domain.TransportProviderSubmission.State.OUTCOME_UNKNOWN);
+    assertThat(unknown.submission().failureCode()).isPresent();
+    assertThat(TRANSPORT_PROVIDER_REQUESTS).hasValue(1);
+    assertThat(TRANSPORT_PROVIDER_REQUEST_BODY.get()).contains(requestId.toString());
+
+    var replay =
+        transportProviderSubmissions
+            .submit(
+                context,
+                requestId,
+                org.ayuvahak.transport.domain.TransportProviderSubmission.OperationKind.DISPATCH,
+                requestId)
+            .orElseThrow();
+    assertThat(replay.replayed()).isTrue();
+    assertThat(replay.submission().state())
+        .isEqualTo(org.ayuvahak.transport.domain.TransportProviderSubmission.State.OUTCOME_UNKNOWN);
+    assertThat(TRANSPORT_PROVIDER_REQUESTS).hasValue(1);
+    assertThat(transportRequests.find(requestId))
+        .get()
+        .extracting(value -> value.status())
+        .isEqualTo(org.ayuvahak.transport.domain.TransportRequest.Status.REQUESTED);
   }
 
   @Test
@@ -1349,6 +1600,114 @@ class PartnerTrustAdministrationIT {
         + "\"inboundPrincipal\":{\"issuer\":\""
         + ISSUER
         + "\",\"clientId\":\"synthetic-directory-feed\"}}";
+  }
+
+  private String transportProviderConfigurationJson() {
+    return "{\"organization\":{\"issuer\":\"urn:synthetic:transport-provider\","
+        + "\"identifier\":\"SYN-PROVIDER-001\"},"
+        + "\"endpointOrigin\":\"https://provider.example.test\",\"basePath\":\"/api\","
+        + "\"authentication\":{\"method\":\"NONE\"},\"tlsPolicy\":\"SYSTEM_CA\","
+        + "\"limits\":{\"connectTimeoutMillis\":1000,\"responseTimeoutMillis\":2000,"
+        + "\"operationTimeoutMillis\":5000,\"maxResponseBytes\":262144,"
+        + "\"maxDecompressedBytes\":524288,\"maxPages\":1,\"maxResources\":20,"
+        + "\"maxNestingDepth\":16,\"maxAttempts\":1},\"retryClass\":\"NEVER\","
+        + "\"allowedOperations\":["
+        + "{\"ownerContext\":\"TRANSPORT\",\"operationCode\":\"transport.dispatch\","
+        + "\"direction\":\"OUTBOUND\",\"protocol\":\"JSON\",\"profile\":\"AyuVahakTransportProvider-v1\"},"
+        + "{\"ownerContext\":\"TRANSPORT\",\"operationCode\":\"transport.request-cancellation\","
+        + "\"direction\":\"OUTBOUND\",\"protocol\":\"JSON\",\"profile\":\"AyuVahakTransportProvider-v1\"},"
+        + "{\"ownerContext\":\"TRANSPORT\",\"operationCode\":\"transport.destination-change\","
+        + "\"direction\":\"OUTBOUND\",\"protocol\":\"JSON\",\"profile\":\"AyuVahakTransportProvider-v1\"},"
+        + "{\"ownerContext\":\"TRANSPORT\",\"operationCode\":\"transport.provider.evidence\","
+        + "\"direction\":\"INBOUND\",\"protocol\":\"JSON\",\"profile\":\"AyuVahakTransportProvider-v1\"}],"
+        + "\"inboundPrincipal\":{\"issuer\":\""
+        + ISSUER
+        + "\",\"clientId\":\"synthetic-transport-provider\"}}";
+  }
+
+  private void activateLocalTransportProvider() throws Exception {
+    String configuration =
+        localTransportProviderConfigurationJson(
+            "https://partner.test:" + mcsdServer.getAddress().getPort());
+    String create =
+        "{\"partnerKey\":\"synthetic-transport-provider\","
+            + configuration.substring(1, configuration.length() - 1)
+            + ",\"reasonCode\":\"PARTNER_SETUP\"}";
+    mockMvc
+        .perform(
+            partnerRequest(
+                post("/api/v1/platform/exchange-partners"),
+                PARTNER_ADMIN,
+                "local-transport-provider-create",
+                create))
+        .andExpect(status().isCreated());
+    mockMvc
+        .perform(
+            partnerRequest(
+                post(
+                    "/api/v1/platform/exchange-partners/synthetic-transport-provider/versions/1/activate"),
+                PARTNER_ADMIN,
+                "local-transport-provider-activate",
+                "{\"reasonCode\":\"PARTNER_ACTIVATION\"}"))
+        .andExpect(status().isOk());
+  }
+
+  private String localTransportProviderConfigurationJson(String endpointOrigin) {
+    return "{\"organization\":{\"issuer\":\"urn:synthetic:transport-provider\","
+        + "\"identifier\":\"SYN-PROVIDER-001\"},"
+        + "\"endpointOrigin\":\""
+        + endpointOrigin
+        + "\",\"basePath\":\"/api\","
+        + "\"authentication\":{\"method\":\"NONE\"},\"tlsPolicy\":\"SYSTEM_CA\","
+        + "\"limits\":{\"connectTimeoutMillis\":1000,\"responseTimeoutMillis\":2000,"
+        + "\"operationTimeoutMillis\":5000,\"maxResponseBytes\":262144,"
+        + "\"maxDecompressedBytes\":524288,\"maxPages\":1,\"maxResources\":20,"
+        + "\"maxNestingDepth\":16,\"maxAttempts\":1},\"retryClass\":\"NEVER\","
+        + "\"allowedOperations\":["
+        + "{\"ownerContext\":\"TRANSPORT\",\"operationCode\":\"transport.dispatch\","
+        + "\"direction\":\"OUTBOUND\",\"protocol\":\"JSON\",\"profile\":\"AyuVahakTransportProvider-v1\"},"
+        + "{\"ownerContext\":\"TRANSPORT\",\"operationCode\":\"transport.request-cancellation\","
+        + "\"direction\":\"OUTBOUND\",\"protocol\":\"JSON\",\"profile\":\"AyuVahakTransportProvider-v1\"},"
+        + "{\"ownerContext\":\"TRANSPORT\",\"operationCode\":\"transport.destination-change\","
+        + "\"direction\":\"OUTBOUND\",\"protocol\":\"JSON\",\"profile\":\"AyuVahakTransportProvider-v1\"},"
+        + "{\"ownerContext\":\"TRANSPORT\",\"operationCode\":\"transport.provider.evidence\","
+        + "\"direction\":\"INBOUND\",\"protocol\":\"JSON\",\"profile\":\"AyuVahakTransportProvider-v1\"}],"
+        + "\"inboundPrincipal\":{\"issuer\":\""
+        + ISSUER
+        + "\",\"clientId\":\"synthetic-transport-provider\"}}";
+  }
+
+  private static String facilityScopeJson(InternalId organizationId, InternalId facilityId) {
+    return "{\"kind\":\"FACILITY\",\"organization\":{\"issuer\":\""
+        + DIRECTORY_ISSUER
+        + "\",\"identifier\":\""
+        + organizationId
+        + "\"},\"facility\":{\"issuer\":\""
+        + DIRECTORY_ISSUER
+        + "\",\"identifier\":\""
+        + facilityId
+        + "\"}}";
+  }
+
+  private static org.ayuvahak.transport.domain.TransportRequest syntheticTransportRequest(
+      InternalId requestId,
+      InternalId transferId,
+      InternalId organizationId,
+      InternalId facilityId) {
+    var operator = ActorReference.human(new IssuerId(ISSUER), "synthetic-transport-operator");
+    var transportWorker = ActorReference.service(new IssuerId(ISSUER), "ayuvahak-transport-worker");
+    return new org.ayuvahak.transport.domain.TransportRequest(
+        requestId,
+        transferId,
+        new ExternalReference(new IssuerId(DIRECTORY_ISSUER), "Facility", facilityId.toString()),
+        new ExternalReference(
+            new IssuerId(DIRECTORY_ISSUER), "Facility", "20000000-0000-4000-8000-000000000005"),
+        operator,
+        transportWorker,
+        org.ayuvahak.transport.domain.TransportRequest.Status.REQUESTED,
+        Instant.parse("2026-10-15T10:00:00Z"),
+        new CorrelationId("synthetic-transport-provider-request"),
+        1);
   }
 
   private String localOutboundDirectoryConfigurationJson() {

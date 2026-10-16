@@ -1,6 +1,8 @@
 package org.ayuvahak.transport.adapter.configuration;
 
+import org.ayuvahak.directory.application.DirectoryScopeReferenceLookup;
 import org.ayuvahak.platform.authorization.domain.FunctionalAuthority;
+import org.ayuvahak.transport.application.TransportGrantTargetScopeValidator;
 import org.ayuvahak.transport.domain.TransportAuthorities;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -28,5 +30,16 @@ class TransportAuthorityConfiguration {
   @Bean
   FunctionalAuthority transportCancellationAuthority() {
     return TransportAuthorities.cancellation();
+  }
+
+  @Bean
+  FunctionalAuthority transportDestinationChangeAuthority() {
+    return TransportAuthorities.destinationChange();
+  }
+
+  @Bean
+  TransportGrantTargetScopeValidator transportGrantTargetScopeValidator(
+      DirectoryScopeReferenceLookup directoryScopeReferenceLookup) {
+    return new TransportGrantTargetScopeValidator(directoryScopeReferenceLookup);
   }
 }

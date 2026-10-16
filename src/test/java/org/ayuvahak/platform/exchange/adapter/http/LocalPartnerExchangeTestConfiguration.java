@@ -5,6 +5,7 @@ import java.net.UnknownHostException;
 import java.security.KeyStore;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Set;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManagerFactory;
 import org.ayuvahak.platform.exchange.application.PartnerTlsContextProvider;
@@ -24,7 +25,10 @@ import org.springframework.context.annotation.Primary;
     matchIfMissing = false)
 public class LocalPartnerExchangeTestConfiguration {
 
-  private static final PartnerKey TEST_PARTNER = new PartnerKey("synthetic-directory-feed");
+  private static final Set<PartnerKey> TEST_PARTNERS =
+      Set.of(
+          new PartnerKey("synthetic-directory-feed"),
+          new PartnerKey("synthetic-transport-provider"));
   private static final byte[] LOOPBACK = {127, 0, 0, 1};
 
   @Bean
@@ -34,7 +38,7 @@ public class LocalPartnerExchangeTestConfiguration {
     return new OutboundAddressPolicy() {
       @Override
       public void validatePort(PartnerKey partnerKey, int port) {
-        if (!TEST_PARTNER.equals(partnerKey) || port != localPartnerPort) {
+        if (!TEST_PARTNERS.contains(partnerKey) || port != localPartnerPort) {
           throw new UnsafeOutboundDestinationException(
               UnsafeOutboundDestinationException.Reason.PORT_NOT_ALLOWED);
         }

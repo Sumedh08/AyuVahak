@@ -33,6 +33,9 @@ class Phase1ArchitectureTest {
         .check(productionClasses);
     Phase1ArchitectureRules.referralMustNotDependOnMatchingOrTransfer().check(productionClasses);
     Phase1ArchitectureRules.matchingDomainMustRemainIndependent().check(productionClasses);
+    Phase1ArchitectureRules.transportDomainMustRemainProviderNeutral().check(productionClasses);
+    Phase1ArchitectureRules.transportMustNotAccessTransferPersistencePort()
+        .check(productionClasses);
   }
 
   @Test
@@ -56,6 +59,7 @@ class Phase1ArchitectureTest {
     assertThat(
             productionClasses.get("org.ayuvahak.matching.application.MatchingOwnerEvidenceReader"))
         .isNotNull();
+    assertThat(productionClasses.get("org.ayuvahak.transport.domain.TransportRequest")).isNotNull();
     Phase1ArchitectureRules.productionPackagesArePlatformOnly().check(productionClasses);
     Phase1ArchitectureRules.domainCodeMustNotDependOnFrameworks().check(productionClasses);
     Phase1ArchitectureRules.directoryMustNotDependOnOtherBusinessContexts()
@@ -65,6 +69,9 @@ class Phase1ArchitectureTest {
     Phase1ArchitectureRules.capacityMustNotDependOnReferralMatchingOrTransfer()
         .check(productionClasses);
     Phase1ArchitectureRules.matchingDomainMustRemainIndependent().check(productionClasses);
+    Phase1ArchitectureRules.transportDomainMustRemainProviderNeutral().check(productionClasses);
+    Phase1ArchitectureRules.transportMustNotAccessTransferPersistencePort()
+        .check(productionClasses);
   }
 
   @Test
@@ -151,6 +158,24 @@ class Phase1ArchitectureTest {
     assertThat(result.getFailureReport().toString())
         .contains("A context must use another context's public application boundary")
         .contains("org.ayuvahak.directory.adapter.persistence.DirectoryStoreFixture");
+  }
+
+  @Test
+  void transportOwnerBoundaryRuleDetectsTransferPersistencePortAccessInTestFixture() {
+    JavaClasses fixtureClasses =
+        new ClassFileImporter()
+            .withImportOption(ImportOption.Predefined.DO_NOT_INCLUDE_JARS)
+            .importClasses(
+                org.ayuvahak.transport.adapter.fixture.TransferPersistenceAccessFixture.class);
+
+    EvaluationResult result =
+        Phase1ArchitectureRules.transportMustNotAccessTransferPersistencePort()
+            .evaluate(fixtureClasses);
+
+    assertThat(result.hasViolation()).isTrue();
+    assertThat(result.getFailureReport().toString())
+        .contains("Transport must use Transfer owner contracts")
+        .contains("org.ayuvahak.transfer.application.TransferStore");
   }
 
   @Test
