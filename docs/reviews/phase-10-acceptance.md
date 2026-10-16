@@ -1,6 +1,6 @@
 # Phase 10 — Emergency Transport Coordination Acceptance
 
-**Result:** PASS. Phase 10 passed its local verification and independent review and is ready for its local freeze commit. Volume III still requires its separate post-freeze integration gate and final review.
+**Result:** PASS. Phase 10 passed local verification, post-freeze remediation, and independent review. The current authoritative Phase 10 freeze commit is recorded in the Volume III acceptance record. Volume III passed its separate cross-phase integration gate and final review.
 
 **Scope:** Transport coordination for an existing Transfer, including manual operation and the optional Phase 9 partner boundary. No live EMS, provider, routing, or healthcare system was used. No Volume IV work was started.
 
@@ -76,3 +76,15 @@ Provider acceptance is intentionally local-only. The provider remains authoritat
 ## Safety
 
 All verification used synthetic identifiers and local containers/mocks. No public healthcare/EMS system, external IdP, production credential, real patient information, or external service was accessed or mutated. No remote Git operation, publication, deployment, issue, or pull request was performed. Phase 10 completion does not authorize Volume IV.
+
+## Final post-freeze correction and re-review
+
+A cross-phase review identified a stale destination-change race: after Transfer recorded Arrival at the old destination, a later Transport provider submission could still reach the provider port without rechecking Transfer's current eligibility. This violated the frozen Phase 10 requirement to revalidate before provider contact.
+
+The correction adds a Transfer-owned eligibility check immediately before a destination-change submission is sent. It runs under the scoped Transport worker service identity, preserves correlation and causation, records an ineligible result and reconciliation requirement with audit evidence, and sends no provider request. An unavailable Transfer check remains retry-pending and also sends no request. A regression was first run red against the old behavior, then passed after the correction; the focused parameterized rerun covered 18 cases and asserted the local provider port was not called after old-destination Arrival.
+
+After the correction, `.\mvnw.cmd -B -ntp clean verify` passed: Surefire 313, Failsafe 292, failures 0, errors 0, skips 0. The cross-volume `DirectoryCapacityReferralScenarioIT#volumeTwoHappyPathRunsThroughDirectoryCapacityReferralMatchingAndTransfer` passed 1/1. A fresh localhost-only Compose smoke verified configuration, PostgreSQL/PostGIS migration startup, health, liveness, readiness, system information, Prometheus, local Keycloak discovery, the one-shot synthetic bootstrap grant, and an authenticated platform grant query.
+
+Final post-integration review: **0 BLOCKER, 0 MAJOR, 1 MINOR, 0 DOCUMENTATION findings**. The retained MINOR is limited to Transfer eligibility lookup retries sharing the provider-submission attempt counter; at its cap, the result may use `TRUST_LOOKUP_RETRIES_EXHAUSTED` even though the provider was not called, leaving operator reconciliation necessary. It fails closed and does not bypass Transfer eligibility or send a stale destination change. This limitation is recorded rather than hidden. No Phase 10 or Volume III scope was broadened.
+
+The earlier full verification attempt that ran before applying Spotless formatting stopped at the formatting check; the subsequent clean verification above passed. Test shutdown emitted occasional Hikari executor shutdown-order warnings, but the final test processes completed and Maven returned success. No persistent application-thread leak was observed.
