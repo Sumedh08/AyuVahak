@@ -85,6 +85,17 @@ final class Phase1ArchitectureRules {
                 + " another cyclically");
   }
 
+  static ArchRule applicationPackagesMustNotDependOnAdapters() {
+    return noClasses()
+        .that()
+        .resideInAnyPackage("org.ayuvahak..application..")
+        .should()
+        .dependOnClassesThat()
+        .resideInAnyPackage("org.ayuvahak..adapter..")
+        .as("Application policies and contracts must not depend on outer adapter packages")
+        .allowEmptyShould(true);
+  }
+
   static ArchRule domainCodeMustNotDependOnFrameworks() {
     return noClasses()
         .that()

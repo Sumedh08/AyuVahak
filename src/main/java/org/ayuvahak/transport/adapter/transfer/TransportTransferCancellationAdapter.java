@@ -11,6 +11,7 @@ import org.ayuvahak.platform.executioncontext.ExecutionContext;
 import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
 import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
+import org.ayuvahak.transfer.application.TransferSettings;
 import org.ayuvahak.transfer.application.TransportCancellationPort;
 import org.ayuvahak.transfer.application.TransportCancellationPort.CancellationOutcome;
 import org.ayuvahak.transfer.application.TransportCancellationPort.OperationState;
@@ -26,14 +27,14 @@ public final class TransportTransferCancellationAdapter implements TransportCanc
   private final TransportCancellationCommands transport;
   private final ExecutionContextFactory contexts;
   private final AuthenticationProperties authentication;
-  private final org.ayuvahak.transfer.adapter.configuration.TransferProperties properties;
+  private final TransferSettings properties;
   private final ObjectMapper mapper;
 
   public TransportTransferCancellationAdapter(
       TransportCancellationCommands transport,
       ExecutionContextFactory contexts,
       AuthenticationProperties authentication,
-      org.ayuvahak.transfer.adapter.configuration.TransferProperties properties,
+      TransferSettings properties,
       ObjectMapper mapper) {
     this.transport = transport;
     this.contexts = contexts;

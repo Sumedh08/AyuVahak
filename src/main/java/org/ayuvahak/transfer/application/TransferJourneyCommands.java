@@ -25,7 +25,6 @@ import org.ayuvahak.platform.executioncontext.ExecutionContext;
 import org.ayuvahak.platform.executioncontext.ExecutionScope;
 import org.ayuvahak.platform.idempotency.CommandReceiptKey;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
-import org.ayuvahak.transfer.adapter.configuration.TransferProperties;
 import org.ayuvahak.transfer.domain.TransferAuthorities;
 import org.ayuvahak.transfer.domain.TransferJourney;
 import org.ayuvahak.transfer.domain.TransferRequestAttempt;
@@ -53,7 +52,7 @@ public final class TransferJourneyCommands {
   private final MatchingApplicabilityPort matching;
   private final ObjectProvider<AuthorizationService> authorization;
   private final ObjectProvider<AuditWriter> auditWriter;
-  private final TransferProperties properties;
+  private final TransferSettings properties;
   private final TransactionTemplate transaction;
   private final Clock clock;
 
@@ -62,7 +61,7 @@ public final class TransferJourneyCommands {
       MatchingApplicabilityPort matching,
       ObjectProvider<AuthorizationService> authorization,
       ObjectProvider<AuditWriter> auditWriter,
-      TransferProperties properties,
+      TransferSettings properties,
       @Lazy PlatformTransactionManager transactionManager,
       @Qualifier("auditClock") Clock clock) {
     this.store = Objects.requireNonNull(store, "Transfer store");

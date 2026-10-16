@@ -18,7 +18,7 @@ public final class TransportGrantTargetScopeValidator implements GrantTargetScop
   @Override
   public boolean supports(FunctionalAuthority authority) {
     return switch (authority.code()) {
-      case "TransportRequest",
+      case "TransportRequestAuthority",
           "TransportDispatchCoordinationAuthority",
           "TransportStatusAuthority",
           "TransportCancellationAuthority",

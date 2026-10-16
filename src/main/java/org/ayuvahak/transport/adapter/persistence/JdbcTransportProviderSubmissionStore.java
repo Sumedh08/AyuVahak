@@ -92,6 +92,25 @@ public class JdbcTransportProviderSubmissionStore implements TransportProviderSu
         == 1;
   }
 
+  @Override
+  public boolean claimRetry(
+      InternalId operationReference,
+      TransportProviderSubmission.OperationKind kind,
+      long expectedVersion,
+      java.time.Instant updatedAt) {
+    return jdbc.update(
+            "UPDATE transport.provider_submission SET submission_state = 'ATTEMPTING', "
+                + "failure_code = NULL, updated_at = ?, version = version + 1, "
+                + "attempt_count = attempt_count + 1 "
+                + "WHERE operation_kind = ? AND operation_reference = ? AND version = ? "
+                + "AND submission_state = 'RETRY_PENDING' AND attempt_count < 3",
+            Timestamp.from(updatedAt),
+            kind.name(),
+            operationReference.value(),
+            expectedVersion)
+        == 1;
+  }
+
   private static TransportProviderSubmission map(java.sql.ResultSet row)
       throws java.sql.SQLException {
     return new TransportProviderSubmission(
@@ -100,6 +119,7 @@ public class JdbcTransportProviderSubmissionStore implements TransportProviderSu
         TransportProviderSubmission.OperationKind.valueOf(row.getString("operation_kind")),
         row.getString("partner_key"),
         TransportProviderSubmission.State.valueOf(row.getString("submission_state")),
+        row.getInt("attempt_count"),
         Optional.ofNullable(row.getObject("configuration_version", Integer.class)),
         Optional.ofNullable(row.getObject("response_status", Integer.class)),
         Optional.ofNullable(row.getString("failure_code")),

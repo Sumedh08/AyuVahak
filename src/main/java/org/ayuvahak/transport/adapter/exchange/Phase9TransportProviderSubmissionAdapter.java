@@ -51,7 +51,7 @@ public final class Phase9TransportProviderSubmissionAdapter
           Optional.of(response.status()),
           Optional.empty());
     } catch (PartnerTrustLookupUnavailableException unavailable) {
-      return failed(TransportProviderSubmission.State.REJECTED, "TRUST_LOOKUP_UNAVAILABLE");
+      return failed(TransportProviderSubmission.State.RETRY_PENDING, "TRUST_LOOKUP_UNAVAILABLE");
     } catch (PartnerTransportException failure) {
       if (failure.failure() == PartnerTransportFailure.PROFILE_NOT_ACTIVE) {
         return failed(TransportProviderSubmission.State.REVOKED, "PARTNER_PROFILE_INACTIVE");

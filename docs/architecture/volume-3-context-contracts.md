@@ -1,6 +1,6 @@
 # Volume III context contracts
 
-**Status:** Volume III design frozen. Phase 8–10 implementation has not started and requires a separate human-authorized master prompt. The contracts below are conceptual owner-facing boundaries, not Java signatures, wire endpoints, or schemas.
+**Status:** Volume III design and Phases 8–10 implementation are frozen. The contracts below remain the normative owner-facing boundaries, not Java signatures, wire endpoints, or schemas; implementation evidence is in the phase acceptance records.
 
 ## Contract principles
 

@@ -35,9 +35,9 @@ import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
 import org.ayuvahak.platform.executioncontext.ExecutionScope;
 import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
-import org.ayuvahak.transport.adapter.configuration.TransportProperties;
 import org.ayuvahak.transport.domain.TransportAuthorities;
 import org.ayuvahak.transport.domain.TransportDestinationChangeOperation;
+import org.ayuvahak.transport.domain.TransportProviderSubmission;
 import org.ayuvahak.transport.domain.TransportRequest;
 import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.dao.DataAccessException;
@@ -56,13 +56,14 @@ public final class TransportDestinationChangeCommands {
   private static final String ISSUER = "urn:ayuvahak:directory";
   private final TransportRequestStore requests;
   private final TransportDestinationChangeStore changes;
+  private final TransportProviderSubmissionStore providerSubmissions;
   private final TransferDestinationChangeEligibilityPort transferEligibility;
   private final AuthorizationService authorization;
   private final AuditWriter audit;
   private final OutboxWriter outbox;
   private final ExecutionContextFactory contexts;
   private final AuthenticationProperties authentication;
-  private final TransportProperties properties;
+  private final TransportSettings properties;
   private final TransactionTemplate transaction;
   private final Clock clock;
   private final ObjectMapper mapper;
@@ -70,18 +71,20 @@ public final class TransportDestinationChangeCommands {
   public TransportDestinationChangeCommands(
       TransportRequestStore requests,
       TransportDestinationChangeStore changes,
+      TransportProviderSubmissionStore providerSubmissions,
       TransferDestinationChangeEligibilityPort transferEligibility,
       AuthorizationService authorization,
       AuditWriter audit,
       OutboxWriter outbox,
       ExecutionContextFactory contexts,
       AuthenticationProperties authentication,
-      TransportProperties properties,
+      TransportSettings properties,
       PlatformTransactionManager transactionManager,
       @org.springframework.beans.factory.annotation.Qualifier("auditClock") Clock clock,
       ObjectMapper mapper) {
     this.requests = Objects.requireNonNull(requests, "Transport request store");
     this.changes = Objects.requireNonNull(changes, "destination-change store");
+    this.providerSubmissions = Objects.requireNonNull(providerSubmissions, "provider submissions");
     this.transferEligibility = Objects.requireNonNull(transferEligibility, "Transfer eligibility");
     this.authorization = Objects.requireNonNull(authorization, "authorization");
     this.audit = Objects.requireNonNull(audit, "audit writer");
@@ -186,7 +189,8 @@ public final class TransportDestinationChangeCommands {
     Objects.requireNonNull(operatorContext, "operator context");
     Objects.requireNonNull(outcome, "outcome");
     Objects.requireNonNull(fingerprint, "resolution fingerprint");
-    if (operatorContext.actor().kind() != ActorKind.HUMAN
+    if ((operatorContext.actor().kind() != ActorKind.HUMAN
+            && operatorContext.actor().kind() != ActorKind.SERVICE)
         || operatorContext.scope().kind() != ExecutionScope.Kind.FACILITY) {
       throw invalidScope();
     }
@@ -271,6 +275,77 @@ public final class TransportDestinationChangeCommands {
           "Transport destination-change result");
     } catch (CannotAcquireLockException busy) {
       throw conflict("A matching Transport destination-change command is still processing.");
+    } catch (DataAccessException unavailable) {
+      throw unavailable();
+    }
+  }
+
+  /** Resolves an inbound partner outcome only for the partner recorded on its outbound request. */
+  public TransportDestinationChangeResult resolveFromPartner(
+      ExecutionContext context,
+      InternalId operationId,
+      TransportDestinationChangeOperation.Outcome outcome,
+      String sourceNamespace,
+      String sourceObservationId,
+      Instant sourceOccurredAt,
+      RequestFingerprint fingerprint,
+      String partnerKey) {
+    Objects.requireNonNull(context, "operator context");
+    if (context.scope().kind() != ExecutionScope.Kind.FACILITY) {
+      throw invalidScope();
+    }
+    authorize(context, operationId);
+    requireProviderSubmission(context, operationId, partnerKey);
+    return resolve(
+        context,
+        operationId,
+        outcome,
+        sourceNamespace,
+        sourceObservationId,
+        sourceOccurredAt,
+        fingerprint);
+  }
+
+  private void requireProviderSubmission(
+      ExecutionContext context, InternalId operationId, String partnerKey) {
+    try {
+      TransportDestinationChangeOperation operation =
+          changes.find(operationId).orElseThrow(TransportDestinationChangeCommands::notFound);
+      TransportProviderSubmission submission =
+          providerSubmissions
+              .find(TransportProviderSubmission.OperationKind.DESTINATION_CHANGE, operationId)
+              .orElse(null);
+      if (submission != null
+          && submission.partnerKey().equals(partnerKey)
+          && submission.transportRequestId().equals(operation.transportRequestId())) {
+        return;
+      }
+      String reason = submission == null ? "PROVIDER_SUBMISSION_MISSING" : "PARTNER_MISMATCH";
+      try {
+        audit.recordNonMutating(
+            new AuditEvidence(
+                AuditActionKind.SECURITY_OUTCOME,
+                Optional.of(context.actor()),
+                Optional.of(context.scope()),
+                "TRANSPORT_PROVIDER_OUTCOME_DENIED",
+                "TransportProviderSubmission",
+                Optional.of(operationId),
+                clock.instant(),
+                AuditOutcome.DENIED,
+                Optional.of(reason),
+                authenticationEvidence(context),
+                AuditAuthorizationOutcome.DENIED,
+                context.correlationId()));
+      } catch (AuditPersistenceUnavailableException auditUnavailable) {
+        throw problem(
+            HttpStatus.SERVICE_UNAVAILABLE,
+            PlatformErrorCode.AUDIT_UNAVAILABLE,
+            "The provider outcome remains denied because its audit is unavailable.");
+      }
+      throw problem(
+          HttpStatus.FORBIDDEN,
+          PlatformErrorCode.AUTHORIZATION_DENIED,
+          "The authenticated partner is not linked to this Transport operation.");
     } catch (DataAccessException unavailable) {
       throw unavailable();
     }

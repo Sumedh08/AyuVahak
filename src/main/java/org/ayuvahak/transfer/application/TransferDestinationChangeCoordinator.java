@@ -21,7 +21,6 @@ import org.ayuvahak.platform.core.IssuerId;
 import org.ayuvahak.platform.executioncontext.ExecutionContext;
 import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
 import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
-import org.ayuvahak.transfer.adapter.configuration.TransferProperties;
 import org.ayuvahak.transfer.domain.DestinationChangeReservationPlan;
 import org.ayuvahak.transfer.domain.TransferAuthorities;
 import org.ayuvahak.transfer.domain.TransferDestinationChangeOperation;
@@ -44,7 +43,7 @@ public final class TransferDestinationChangeCoordinator {
   private final TransportDestinationChangePort transport;
   private final ExecutionContextFactory contexts;
   private final AuthenticationProperties authentication;
-  private final TransferProperties properties;
+  private final TransferSettings properties;
   private final AuthorizationService authorization;
   private final AuditWriter audit;
   private final TransactionTemplate transaction;
@@ -56,7 +55,7 @@ public final class TransferDestinationChangeCoordinator {
       TransportDestinationChangePort transport,
       ExecutionContextFactory contexts,
       AuthenticationProperties authentication,
-      TransferProperties properties,
+      TransferSettings properties,
       AuthorizationService authorization,
       AuditWriter audit,
       PlatformTransactionManager transactionManager,

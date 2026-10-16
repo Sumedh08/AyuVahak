@@ -4,11 +4,12 @@ import jakarta.annotation.PostConstruct;
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.util.Optional;
+import org.ayuvahak.transfer.application.TransferSettings;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /** Deployment policy for Transfer request deadlines and Capacity reservation recovery. */
 @ConfigurationProperties(prefix = "ayuvahak.transfer")
-public class TransferProperties {
+public class TransferProperties implements TransferSettings {
 
   private Duration requestDeadline;
   private String expiryWorkerClientId = "ayuvahak-transfer-expiry-worker";
@@ -155,12 +156,12 @@ public class TransferProperties {
     this.reservationPollingEnabled = reservationPollingEnabled;
   }
 
-  public Optional<ReservationPolicy> reservationPolicy() {
+  public Optional<TransferSettings.ReservationPolicy> reservationPolicy() {
     if (reservationDimension == null) {
       return Optional.empty();
     }
     return Optional.of(
-        new ReservationPolicy(
+        new TransferSettings.ReservationPolicy(
             reservationDimension, reservationUnit, reservationQuantity, reservationDuration));
   }
 
@@ -224,7 +225,4 @@ public class TransferProperties {
           "Transfer reservation batch size must be between 1 and 500");
     }
   }
-
-  public record ReservationPolicy(
-      String dimension, String unit, BigDecimal quantity, Duration duration) {}
 }

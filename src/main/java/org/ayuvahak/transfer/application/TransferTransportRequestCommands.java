@@ -25,7 +25,6 @@ import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
 import org.ayuvahak.platform.executioncontext.ExecutionScope;
 import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
-import org.ayuvahak.transfer.adapter.configuration.TransferProperties;
 import org.ayuvahak.transfer.domain.TransferAuthorities;
 import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpStatus;
@@ -43,7 +42,7 @@ public final class TransferTransportRequestCommands {
   private final TransferStore store;
   private final ExecutionContextFactory contexts;
   private final AuthenticationProperties authentication;
-  private final TransferProperties properties;
+  private final TransferSettings properties;
   private final Clock clock;
   private final TransactionTemplate transaction;
 
@@ -54,7 +53,7 @@ public final class TransferTransportRequestCommands {
       TransferStore store,
       ExecutionContextFactory contexts,
       AuthenticationProperties authentication,
-      TransferProperties properties,
+      TransferSettings properties,
       PlatformTransactionManager transactionManager,
       @org.springframework.beans.factory.annotation.Qualifier("auditClock") Clock clock) {
     this.authorization = Objects.requireNonNull(authorization, "authorization");

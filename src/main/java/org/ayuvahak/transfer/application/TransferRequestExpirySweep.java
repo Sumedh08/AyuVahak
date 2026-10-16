@@ -11,7 +11,6 @@ import org.ayuvahak.platform.core.IssuerId;
 import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
 import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
-import org.ayuvahak.transfer.adapter.configuration.TransferProperties;
 import org.ayuvahak.transfer.domain.TransferRequestAttempt;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,7 +29,7 @@ public final class TransferRequestExpirySweep {
   private final TransferStore store;
   private final TransferRequestLifecycleCommands commands;
   private final ExecutionContextFactory contextFactory;
-  private final TransferProperties properties;
+  private final TransferSettings properties;
   private final ActorReference worker;
   private final Clock clock;
   private final ObjectMapper objectMapper;
@@ -39,7 +38,7 @@ public final class TransferRequestExpirySweep {
       TransferStore store,
       TransferRequestLifecycleCommands commands,
       ExecutionContextFactory contextFactory,
-      TransferProperties properties,
+      TransferSettings properties,
       AuthenticationProperties authentication,
       @Qualifier("auditClock") Clock clock,
       ObjectMapper objectMapper) {

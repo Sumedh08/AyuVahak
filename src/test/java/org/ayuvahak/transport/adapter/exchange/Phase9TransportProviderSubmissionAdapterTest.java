@@ -14,6 +14,7 @@ import org.ayuvahak.platform.exchange.application.PartnerOutboundOperationReques
 import org.ayuvahak.platform.exchange.application.PartnerOutboundOperationResponse;
 import org.ayuvahak.platform.exchange.application.PartnerTransportException;
 import org.ayuvahak.platform.exchange.application.PartnerTransportFailure;
+import org.ayuvahak.platform.exchange.application.PartnerTrustLookupUnavailableException;
 import org.ayuvahak.transport.application.TransportProviderSubmissionRequest;
 import org.ayuvahak.transport.domain.TransportProviderSubmission;
 import org.junit.jupiter.api.Test;
@@ -92,6 +93,60 @@ class Phase9TransportProviderSubmissionAdapterTest {
     assertThat(captured.get().operationReference()).isEqualTo(operation.toString());
     assertThat(result.state()).isEqualTo(TransportProviderSubmission.State.OUTCOME_UNKNOWN);
     assertThat(result.failureCode()).contains("READ_TIMEOUT");
+  }
+
+  @Test
+  void cancellationUsesItsNamedPhase9OperationAndStableOperationReference() {
+    AtomicReference<PartnerOutboundOperationRequest> captured = new AtomicReference<>();
+    PartnerOutboundOperationPort exchange =
+        request -> {
+          captured.set(request);
+          return new PartnerOutboundOperationResponse(202, Optional.empty(), new byte[0], 4);
+        };
+    var adapter = new Phase9TransportProviderSubmissionAdapter(exchange, new ObjectMapper());
+    InternalId operation = InternalId.parse("10000000-0000-4000-8000-000000000007");
+
+    var result =
+        adapter.submit(
+            new TransportProviderSubmissionRequest(
+                "SYNTHETIC-PROVIDER",
+                TransportProviderSubmission.OperationKind.CANCELLATION,
+                operation,
+                REQUEST,
+                TRANSFER,
+                facility(ORIGIN),
+                facility(DESTINATION),
+                Optional.of("TRANSFER_WITHDRAWN"),
+                Optional.empty(),
+                new CorrelationId("provider-adapter-fixture")));
+
+    assertThat(result.state()).isEqualTo(TransportProviderSubmission.State.ACKNOWLEDGED);
+    assertThat(captured.get().operation().operationCode())
+        .isEqualTo("transport.request-cancellation");
+    assertThat(captured.get().pathSegments())
+        .containsExactly(
+            "transport-requests", REQUEST.toString(), "cancellations", operation.toString());
+    assertThat(captured.get().operationReference()).isEqualTo(operation.toString());
+    assertThat(new ObjectMapper().readTree(captured.get().body()).get("reasonCode").asString())
+        .isEqualTo("TRANSFER_WITHDRAWN");
+  }
+
+  @Test
+  void trustStoreUnavailableIsRetryableBecauseNoProviderRequestWasSent() {
+    AtomicInteger attempts = new AtomicInteger();
+    PartnerOutboundOperationPort exchange =
+        request -> {
+          attempts.incrementAndGet();
+          throw new PartnerTrustLookupUnavailableException(new IllegalStateException("offline"));
+        };
+    var adapter = new Phase9TransportProviderSubmissionAdapter(exchange, new ObjectMapper());
+
+    var result =
+        adapter.submit(request(TransportProviderSubmission.OperationKind.DISPATCH, REQUEST));
+
+    assertThat(attempts).hasValue(1);
+    assertThat(result.state().name()).isEqualTo("RETRY_PENDING");
+    assertThat(result.failureCode()).contains("TRUST_LOOKUP_UNAVAILABLE");
   }
 
   private static TransportProviderSubmissionRequest request(

@@ -1,6 +1,6 @@
 # Phase 9 — Secure External Health-System Exchange Acceptance
 
-**Result:** PASS, subject to the bounded limitations recorded below. Phase 9 is locally frozen after Phase 8 passed and froze. Phase 10 remains unimplemented and unauthorized.
+**Result:** PASS, subject to the bounded limitations recorded below. Phase 9 is locally frozen after Phase 8 passed and froze. At the time this record was written, Phase 10 remained unimplemented and unauthorized.
 
 ## Scope and approved graph
 

@@ -23,6 +23,7 @@ class Phase1ArchitectureTest {
 
     assertThat(productionClasses).isNotEmpty();
     Phase1ArchitectureRules.productionPackagesArePlatformOnly().check(productionClasses);
+    Phase1ArchitectureRules.applicationPackagesMustNotDependOnAdapters().check(productionClasses);
     Phase1ArchitectureRules.fhirTypesMustRemainInApprovedAdapterPackages().check(productionClasses);
     Phase1ArchitectureRules.domainCodeMustNotDependOnFrameworks().check(productionClasses);
     Phase1ArchitectureRules.directoryMustNotDependOnOtherBusinessContexts()
@@ -45,6 +46,26 @@ class Phase1ArchitectureTest {
 
     assertThat(productionClasses).isNotEmpty();
     Phase1ArchitectureRules.packageSlicesAreAcyclic().check(productionClasses);
+  }
+
+  @Test
+  void applicationBoundaryRuleDetectsAdapterDependencyInTestFixture() {
+    JavaClasses fixtureClasses =
+        new ClassFileImporter()
+            .withImportOption(ImportOption.Predefined.DO_NOT_INCLUDE_JARS)
+            .importClasses(
+                org.ayuvahak.architecture.fixtures.application.AdapterConfigurationDependencyFixture
+                    .class,
+                org.ayuvahak.directory.adapter.persistence.DirectoryStoreFixture.class);
+
+    EvaluationResult result =
+        Phase1ArchitectureRules.applicationPackagesMustNotDependOnAdapters()
+            .evaluate(fixtureClasses);
+
+    assertThat(result.hasViolation()).isTrue();
+    assertThat(result.getFailureReport().toString())
+        .contains("Application policies and contracts must not depend on outer adapter packages")
+        .contains("org.ayuvahak.directory.adapter.persistence.DirectoryStoreFixture");
   }
 
   @Test

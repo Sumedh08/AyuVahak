@@ -3,6 +3,7 @@ package org.ayuvahak.platform.exchange;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -118,7 +119,7 @@ import org.testcontainers.utility.DockerImageName;
       "management.tracing.sampling.probability=0.0",
       "ayuvahak.test.partner.enabled=true",
       "ayuvahak.authentication.audience=ayuvahak-api",
-      "ayuvahak.authentication.service-client-ids=synthetic-worker,synthetic-directory-feed,synthetic-directory-curator,synthetic-transport-provider",
+      "ayuvahak.authentication.service-client-ids=synthetic-worker,synthetic-directory-feed,synthetic-directory-curator,synthetic-transport-provider,synthetic-transport-provider-other",
       "ayuvahak.transport.provider-partner-key=SYNTHETIC-TRANSPORT-PROVIDER",
       "ayuvahak.authentication.allow-http=true"
     })
@@ -184,6 +185,14 @@ class PartnerTrustAdministrationIT {
       transportProviderSubmissions;
 
   @Autowired private org.ayuvahak.transport.application.TransportRequestStore transportRequests;
+
+  @Autowired
+  private org.ayuvahak.transport.adapter.configuration.TransportProperties transportProperties;
+
+  @Autowired
+  private org.ayuvahak.transport.application.TransportProviderSubmissionStore
+      transportProviderSubmissionStore;
+
   @Autowired private DirectorySourceProjectionImportPort directoryProjectionImporter;
   @Autowired private ExecutionContextFactory executionContextFactory;
   @Autowired private AuthorizationService authorizationService;
@@ -658,9 +667,449 @@ class PartnerTrustAdministrationIT {
                 "protocol", "JSON"),
             java.util.Map.of(
                 "owner_context", "TRANSPORT",
+                "operation_code", "transport.provider.outcomes",
+                "direction", "INBOUND",
+                "protocol", "JSON"),
+            java.util.Map.of(
+                "owner_context", "TRANSPORT",
                 "operation_code", "transport.request-cancellation",
                 "direction", "OUTBOUND",
                 "protocol", "JSON"));
+  }
+
+  @Test
+  void configuredTransportProviderCanSubmitScopedIdempotentStatusEvidence() throws Exception {
+    DirectoryFacility origin = createReceivingFacility();
+    InternalId organizationId = InternalId.parse(origin.organizationId());
+    InternalId facilityId = InternalId.parse(origin.facilityId());
+    InternalId requestId = InternalId.parse("20000000-0000-4000-8000-000000000033");
+    activateLocalTransportProvider();
+    createGrant(
+        "transport-provider-evidence-authority",
+        "synthetic-transport-provider",
+        "TransportStatusAuthority",
+        facilityScopeJson(organizationId, facilityId));
+    var request =
+        syntheticTransportRequest(
+            requestId,
+            InternalId.parse("20000000-0000-4000-8000-000000000034"),
+            organizationId,
+            facilityId);
+    assertThat(
+            transportRequests.insert(
+                request,
+                request.initiatedBy().identity().issuer().value(),
+                request.initiatedBy().identity().resourceType(),
+                request.recordedBy().identity().issuer().value(),
+                request.recordedBy().identity().resourceType()))
+        .isTrue();
+
+    String evidence =
+        "{\"observationId\":\"SYN-PROVIDER-OBS-001\",\"sourceSequence\":1,"
+            + "\"status\":\"AWAITING_ASSIGNMENT\","
+            + "\"occurredAt\":\"2026-10-16T10:00:00Z\"}";
+    var accepted =
+        mockMvc
+            .perform(
+                post("/api/v1/transport-provider/evidence/{transportRequestId}/status", requestId)
+                    .header("Authorization", bearer(serviceToken("synthetic-transport-provider")))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", organizationId.toString())
+                    .header("X-AyuVahak-Facility-Id", facilityId.toString())
+                    .header("X-External-Message-ID", "SYN-PROVIDER-MESSAGE-001")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(evidence))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.requestStatus").value("AWAITING_ASSIGNMENT"))
+            .andReturn();
+    assertThat(accepted.getResponse().getHeader("X-Correlation-ID")).isNotBlank();
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM transport.status_observation "
+                    + "WHERE transport_request_id = ? AND source_observation_id = ?",
+                requestId.value(),
+                "SYN-PROVIDER-OBS-001"))
+        .isEqualTo(1);
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM audit.audit_record "
+                    + "WHERE action_code = 'TRANSPORT_STATUS_OBSERVATION'"))
+        .isEqualTo(1);
+
+    var replay =
+        mockMvc
+            .perform(
+                post("/api/v1/transport-provider/evidence/{transportRequestId}/status", requestId)
+                    .header("Authorization", bearer(serviceToken("synthetic-transport-provider")))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", organizationId.toString())
+                    .header("X-AyuVahak-Facility-Id", facilityId.toString())
+                    .header("X-External-Message-ID", "SYN-PROVIDER-MESSAGE-001")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(evidence))
+            .andExpect(status().isCreated())
+            .andReturn();
+    assertThat(replay.getResponse().getHeader("Idempotency-Replayed")).isEqualTo("true");
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM transport.status_observation "
+                    + "WHERE transport_request_id = ? AND source_observation_id = ?",
+                requestId.value(),
+                "SYN-PROVIDER-OBS-001"))
+        .isEqualTo(1);
+
+    mockMvc
+        .perform(
+            post("/api/v1/transport-provider/evidence/{transportRequestId}/status", requestId)
+                .header("Authorization", bearer(serviceToken("synthetic-transport-provider")))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", organizationId.toString())
+                .header("X-AyuVahak-Facility-Id", facilityId.toString())
+                .header("X-External-Message-ID", "SYN-PROVIDER-MESSAGE-001")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(evidence.replace("10:00:00Z", "10:01:00Z")))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("IDEMPOTENCY_KEY_REUSED"));
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM transport.status_observation "
+                    + "WHERE transport_request_id = ? AND source_observation_id = ?",
+                requestId.value(),
+                "SYN-PROVIDER-OBS-001"))
+        .isEqualTo(1);
+  }
+
+  @Test
+  void transportProviderOutcomesRequireNamedActiveProfileAndRecoverByMessageIdentity()
+      throws Exception {
+    DirectoryFacility origin = createReceivingFacility();
+    InternalId organizationId = InternalId.parse(origin.organizationId());
+    InternalId facilityId = InternalId.parse(origin.facilityId());
+    activateLocalTransportProvider();
+    createGrant(
+        "transport-provider-cancellation-authority",
+        "synthetic-transport-provider",
+        "TransportCancellationAuthority",
+        facilityScopeJson(organizationId, facilityId));
+    createGrant(
+        "transport-provider-destination-change-authority",
+        "synthetic-transport-provider",
+        "TransportDestinationChangeAuthority",
+        facilityScopeJson(organizationId, facilityId));
+    createHumanGrant(
+        "transport-cancellation-manual-authority",
+        "synthetic-transport-cancellation-operator",
+        "TransportCancellationAuthority",
+        facilityScopeJson(organizationId, facilityId));
+
+    InternalId requestId = InternalId.generate();
+    InternalId transferId = InternalId.generate();
+    var request = syntheticTransportRequest(requestId, transferId, organizationId, facilityId);
+    assertThat(
+            transportRequests.insert(
+                request,
+                request.initiatedBy().identity().issuer().value(),
+                request.initiatedBy().identity().resourceType(),
+                request.recordedBy().identity().issuer().value(),
+                request.recordedBy().identity().resourceType()))
+        .isTrue();
+
+    var cancellationResponse =
+        mockMvc
+            .perform(
+                post("/api/v1/transport-requests/{requestId}/cancellation-operations", requestId)
+                    .header(
+                        "Authorization", bearer(token("synthetic-transport-cancellation-operator")))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", organizationId.toString())
+                    .header("X-AyuVahak-Facility-Id", facilityId.toString())
+                    .header("Idempotency-Key", "transport-provider-cancellation-create")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("{\"reasonCode\":\"TRANSFER_CANCELLED\"}"))
+            .andExpect(status().isAccepted())
+            .andReturn();
+    String cancellationId =
+        com.jayway.jsonpath.JsonPath.read(
+            cancellationResponse.getResponse().getContentAsString(), "$.cancellationOperationId");
+    Instant cancellationSubmittedAt = Instant.parse("2026-10-16T09:59:00Z");
+    assertThat(
+            transportProviderSubmissionStore.insert(
+                new org.ayuvahak.transport.domain.TransportProviderSubmission(
+                    InternalId.parse(cancellationId),
+                    requestId,
+                    org.ayuvahak.transport.domain.TransportProviderSubmission.OperationKind
+                        .CANCELLATION,
+                    "SYNTHETIC-TRANSPORT-PROVIDER",
+                    org.ayuvahak.transport.domain.TransportProviderSubmission.State.ACKNOWLEDGED,
+                    1,
+                    java.util.Optional.of(1),
+                    java.util.Optional.of(202),
+                    java.util.Optional.empty(),
+                    cancellationSubmittedAt,
+                    cancellationSubmittedAt,
+                    1)))
+        .isTrue();
+    String cancellationBody =
+        "{\"outcome\":\"CANCELLED_BEFORE_MOVEMENT\"," + "\"occurredAt\":\"2026-10-16T10:00:00Z\"}";
+
+    mockMvc
+        .perform(
+            post("/api/v1/transport-cancellation-operations/{operationId}/outcome", cancellationId)
+                .header("Authorization", bearer(serviceToken("synthetic-transport-provider")))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", organizationId.toString())
+                .header("X-AyuVahak-Facility-Id", facilityId.toString())
+                .header("Idempotency-Key", "provider-must-not-use-manual-outcome-route")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(cancellationBody))
+        .andExpect(status().isForbidden());
+
+    var providerOutcome =
+        mockMvc
+            .perform(
+                post(
+                        "/api/v1/transport-provider/cancellation-operations/{operationId}/outcome",
+                        cancellationId)
+                    .header("Authorization", bearer(serviceToken("synthetic-transport-provider")))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", organizationId.toString())
+                    .header("X-AyuVahak-Facility-Id", facilityId.toString())
+                    .header("X-External-Message-ID", "SYN-PROVIDER-CANCEL-OUTCOME-001")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(cancellationBody))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.state").value("RESOLVED"))
+            .andExpect(jsonPath("$.outcome").value("CANCELLED_BEFORE_MOVEMENT"))
+            .andReturn();
+    assertThat(providerOutcome.getResponse().getHeader("X-Correlation-ID")).isNotBlank();
+
+    var replay =
+        mockMvc
+            .perform(
+                post(
+                        "/api/v1/transport-provider/cancellation-operations/{operationId}/outcome",
+                        cancellationId)
+                    .header("Authorization", bearer(serviceToken("synthetic-transport-provider")))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", organizationId.toString())
+                    .header("X-AyuVahak-Facility-Id", facilityId.toString())
+                    .header("X-External-Message-ID", "SYN-PROVIDER-CANCEL-OUTCOME-001")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(cancellationBody))
+            .andExpect(status().isCreated())
+            .andExpect(header().string("Idempotency-Replayed", "true"))
+            .andReturn();
+    assertThat(replay.getResponse().getContentAsString()).contains("CANCELLED_BEFORE_MOVEMENT");
+
+    mockMvc
+        .perform(
+            post(
+                    "/api/v1/transport-provider/cancellation-operations/{operationId}/outcome",
+                    cancellationId)
+                .header("Authorization", bearer(serviceToken("synthetic-transport-provider")))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", organizationId.toString())
+                .header("X-AyuVahak-Facility-Id", facilityId.toString())
+                .header("X-External-Message-ID", "SYN-PROVIDER-CANCEL-OUTCOME-001")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(
+                    "{\"outcome\":\"CANCEL_REJECTED_ACTIVE\","
+                        + "\"occurredAt\":\"2026-10-16T10:00:00Z\"}"))
+        .andExpect(status().isConflict());
+
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM audit.audit_record "
+                    + "WHERE action_code = 'TRANSPORT_CANCELLATION_RESOLVED'"))
+        .isEqualTo(1);
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM platform_eventing.internal_event "
+                    + "WHERE event_type = 'transport.cancellation-resolved.v1' "
+                    + "AND envelope #>> '{payload,cancellationOperationReference}' = ?",
+                cancellationId))
+        .isEqualTo(1);
+  }
+
+  @Test
+  void transportProviderDestinationChangeOutcomeUsesScopedPartnerTrustAndRecoversReplay()
+      throws Exception {
+    DirectoryFacility origin = createReceivingFacility();
+    InternalId organizationId = InternalId.parse(origin.organizationId());
+    InternalId facilityId = InternalId.parse(origin.facilityId());
+    activateLocalTransportProvider();
+    activateLocalTransportProvider(
+        "synthetic-transport-provider-other", "synthetic-transport-provider-other");
+    createGrant(
+        "transport-provider-destination-outcome-authority",
+        "synthetic-transport-provider",
+        "TransportDestinationChangeAuthority",
+        facilityScopeJson(organizationId, facilityId));
+    createGrant(
+        "transport-provider-other-destination-outcome-authority",
+        "synthetic-transport-provider-other",
+        "TransportDestinationChangeAuthority",
+        facilityScopeJson(organizationId, facilityId));
+
+    InternalId requestId = InternalId.generate();
+    InternalId transferId = InternalId.generate();
+    var request = syntheticTransportRequest(requestId, transferId, organizationId, facilityId);
+    assertThat(
+            transportRequests.insert(
+                request,
+                request.initiatedBy().identity().issuer().value(),
+                request.initiatedBy().identity().resourceType(),
+                request.recordedBy().identity().issuer().value(),
+                request.recordedBy().identity().resourceType()))
+        .isTrue();
+
+    InternalId operationId = InternalId.generate();
+    jdbc.update(
+        "INSERT INTO transport.destination_change_operation (operation_id, "
+            + "transfer_destination_change_id, transfer_id, transport_request_id, old_facility_id, "
+            + "proposed_facility_id, reason_code, operation_state, initiated_by_kind, "
+            + "initiated_by_issuer, initiated_by_identifier_type, initiated_by_identifier, "
+            + "correlation_id, version, created_at, updated_at) "
+            + "VALUES (?, ?, ?, ?, ?, ?, 'REROUTE_REQUIRED', 'PENDING', 'HUMAN', ?, "
+            + "'subject', 'synthetic-transfer-operator', 'synthetic-provider-destination-outcome', "
+            + "1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        operationId.value(),
+        InternalId.generate().value(),
+        transferId.value(),
+        requestId.value(),
+        InternalId.generate().value(),
+        InternalId.generate().value(),
+        ISSUER);
+
+    String body = "{\"outcome\":\"ACCEPTED\",\"occurredAt\":\"2026-10-16T10:00:00Z\"}";
+    mockMvc
+        .perform(
+            post(
+                    "/api/v1/transport-provider/destination-change-operations/{operationId}/outcome",
+                    operationId)
+                .header("Authorization", bearer(serviceToken("synthetic-worker")))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body))
+        .andExpect(status().isForbidden());
+
+    mockMvc
+        .perform(
+            post(
+                    "/api/v1/transport-provider/destination-change-operations/{operationId}/outcome",
+                    operationId)
+                .header("Authorization", bearer(serviceToken("synthetic-transport-provider")))
+                .header("X-External-Message-ID", "SYN-PROVIDER-INVALID-SCOPE-001")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body))
+        .andExpect(status().isForbidden());
+
+    mockMvc
+        .perform(
+            post(
+                    "/api/v1/transport-provider/destination-change-operations/{operationId}/outcome",
+                    operationId)
+                .header("Authorization", bearer(serviceToken("synthetic-transport-provider")))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", organizationId.toString())
+                .header("X-AyuVahak-Facility-Id", facilityId.toString())
+                .header("X-External-Message-ID", "SYN-PROVIDER-DESTINATION-MISSING-001")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body))
+        .andExpect(status().isForbidden());
+
+    Instant submittedAt = Instant.parse("2026-10-16T09:59:00Z");
+    assertThat(
+            transportProviderSubmissionStore.insert(
+                new org.ayuvahak.transport.domain.TransportProviderSubmission(
+                    operationId,
+                    requestId,
+                    org.ayuvahak.transport.domain.TransportProviderSubmission.OperationKind
+                        .DESTINATION_CHANGE,
+                    "SYNTHETIC-TRANSPORT-PROVIDER",
+                    org.ayuvahak.transport.domain.TransportProviderSubmission.State.ACKNOWLEDGED,
+                    1,
+                    java.util.Optional.of(1),
+                    java.util.Optional.of(202),
+                    java.util.Optional.empty(),
+                    submittedAt,
+                    submittedAt,
+                    1)))
+        .isTrue();
+
+    mockMvc
+        .perform(
+            post(
+                    "/api/v1/transport-provider/destination-change-operations/{operationId}/outcome",
+                    operationId)
+                .header("Authorization", bearer(serviceToken("synthetic-transport-provider-other")))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", organizationId.toString())
+                .header("X-AyuVahak-Facility-Id", facilityId.toString())
+                .header("X-External-Message-ID", "SYN-OTHER-PROVIDER-DESTINATION-001")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body))
+        .andExpect(status().isForbidden());
+
+    var resolved =
+        mockMvc
+            .perform(
+                post(
+                        "/api/v1/transport-provider/destination-change-operations/{operationId}/outcome",
+                        operationId)
+                    .header("Authorization", bearer(serviceToken("synthetic-transport-provider")))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", organizationId.toString())
+                    .header("X-AyuVahak-Facility-Id", facilityId.toString())
+                    .header("X-External-Message-ID", "SYN-PROVIDER-DESTINATION-001")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.state").value("RESOLVED"))
+            .andExpect(jsonPath("$.outcome").value("ACCEPTED"))
+            .andReturn();
+    assertThat(resolved.getResponse().getHeader("X-Correlation-ID")).isNotBlank();
+
+    mockMvc
+        .perform(
+            post(
+                    "/api/v1/transport-provider/destination-change-operations/{operationId}/outcome",
+                    operationId)
+                .header("Authorization", bearer(serviceToken("synthetic-transport-provider")))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", organizationId.toString())
+                .header("X-AyuVahak-Facility-Id", facilityId.toString())
+                .header("X-External-Message-ID", "SYN-PROVIDER-DESTINATION-001")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body))
+        .andExpect(status().isCreated())
+        .andExpect(header().string("Idempotency-Replayed", "true"));
+
+    mockMvc
+        .perform(
+            post(
+                    "/api/v1/transport-provider/destination-change-operations/{operationId}/outcome",
+                    operationId)
+                .header("Authorization", bearer(serviceToken("synthetic-transport-provider")))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", organizationId.toString())
+                .header("X-AyuVahak-Facility-Id", facilityId.toString())
+                .header("X-External-Message-ID", "SYN-PROVIDER-DESTINATION-001")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"outcome\":\"REJECTED\"," + "\"occurredAt\":\"2026-10-16T10:00:00Z\"}"))
+        .andExpect(status().isConflict());
+
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM platform_eventing.internal_event "
+                    + "WHERE event_type = 'transport.destination-change-resolved.v1' "
+                    + "AND envelope #>> '{payload,transportDestinationChangeReference}' = ?",
+                operationId.toString()))
+        .isEqualTo(1);
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM audit.audit_record "
+                    + "WHERE action_code = 'TRANSPORT_PROVIDER_OUTCOME_DENIED'"))
+        .isEqualTo(4);
   }
 
   @Test
@@ -834,6 +1283,89 @@ class PartnerTrustAdministrationIT {
         .isEqualTo(org.ayuvahak.transport.domain.TransportProviderSubmission.State.OUTCOME_UNKNOWN);
     assertThat(recoveredAfterCrash.submission().failureCode()).contains("ATTEMPT_EXPIRED_UNKNOWN");
     assertThat(TRANSPORT_PROVIDER_REQUESTS).hasValue(1);
+  }
+
+  @Test
+  void transportProviderTrustLookupOutageCanRetrySameOperationWithoutDuplicateDispatch()
+      throws Exception {
+    DirectoryFacility origin = createReceivingFacility();
+    InternalId organizationId = InternalId.parse(origin.organizationId());
+    InternalId facilityId = InternalId.parse(origin.facilityId());
+    InternalId requestId = InternalId.parse("20000000-0000-4000-8000-000000000023");
+    activateLocalTransportProvider();
+    createHumanGrant(
+        "transport-provider-trust-retry-authority",
+        "synthetic-transport-operator",
+        "TransportDispatchCoordinationAuthority",
+        facilityScopeJson(organizationId, facilityId));
+    var request =
+        syntheticTransportRequest(
+            requestId,
+            InternalId.parse("20000000-0000-4000-8000-000000000024"),
+            organizationId,
+            facilityId);
+    assertThat(
+            transportRequests.insert(
+                request,
+                request.initiatedBy().identity().issuer().value(),
+                request.initiatedBy().identity().resourceType(),
+                request.recordedBy().identity().issuer().value(),
+                request.recordedBy().identity().resourceType()))
+        .isTrue();
+    var operator = ActorReference.human(new IssuerId(ISSUER), "synthetic-transport-operator");
+    var context =
+        executionContextFactory.forInteractiveRequest(
+            operator,
+            RequestedExecutionScope.facility(
+                new ExternalReference(
+                    new IssuerId("urn:ayuvahak:directory"),
+                    "Organization",
+                    organizationId.toString()),
+                request.originFacility()),
+            new CorrelationId("synthetic-provider-trust-retry"));
+
+    jdbc.execute(
+        "ALTER TABLE platform_exchange.partner_profile_version "
+            + "RENAME TO partner_profile_version_unavailable");
+    try {
+      var retryPending =
+          transportProviderSubmissions
+              .submit(
+                  context,
+                  requestId,
+                  org.ayuvahak.transport.domain.TransportProviderSubmission.OperationKind.DISPATCH,
+                  requestId)
+              .orElseThrow();
+      assertThat(retryPending.submission().state())
+          .isEqualTo(org.ayuvahak.transport.domain.TransportProviderSubmission.State.RETRY_PENDING);
+      assertThat(retryPending.submission().failureCode()).contains("TRUST_LOOKUP_UNAVAILABLE");
+      assertThat(TRANSPORT_PROVIDER_REQUESTS).hasValue(0);
+    } finally {
+      jdbc.execute(
+          "ALTER TABLE platform_exchange.partner_profile_version_unavailable "
+              + "RENAME TO partner_profile_version");
+    }
+
+    String configuredPartner = transportProperties.getProviderPartnerKey();
+    transportProperties.setProviderPartnerKey("SYNTHETIC-TRANSPORT-PROVIDER-OTHER");
+    org.ayuvahak.transport.application.TransportProviderSubmissionCommands.SubmissionResult retried;
+    try {
+      retried =
+          transportProviderSubmissions
+              .submit(
+                  context,
+                  requestId,
+                  org.ayuvahak.transport.domain.TransportProviderSubmission.OperationKind.DISPATCH,
+                  requestId)
+              .orElseThrow();
+    } finally {
+      transportProperties.setProviderPartnerKey(configuredPartner);
+    }
+    assertThat(retried.submission().state())
+        .isEqualTo(org.ayuvahak.transport.domain.TransportProviderSubmission.State.ACKNOWLEDGED);
+    assertThat(retried.submission().attemptCount()).isEqualTo(2);
+    assertThat(TRANSPORT_PROVIDER_REQUESTS).hasValue(1);
+    assertThat(TRANSPORT_PROVIDER_OPERATION_REFERENCE).hasValue(requestId.toString());
   }
 
   @Test
@@ -1642,6 +2174,8 @@ class PartnerTrustAdministrationIT {
         + "{\"ownerContext\":\"TRANSPORT\",\"operationCode\":\"transport.destination-change\","
         + "\"direction\":\"OUTBOUND\",\"protocol\":\"JSON\",\"profile\":\"AyuVahakTransportProvider-v1\"},"
         + "{\"ownerContext\":\"TRANSPORT\",\"operationCode\":\"transport.provider.evidence\","
+        + "\"direction\":\"INBOUND\",\"protocol\":\"JSON\",\"profile\":\"AyuVahakTransportProvider-v1\"},"
+        + "{\"ownerContext\":\"TRANSPORT\",\"operationCode\":\"transport.provider.outcomes\","
         + "\"direction\":\"INBOUND\",\"protocol\":\"JSON\",\"profile\":\"AyuVahakTransportProvider-v1\"}],"
         + "\"inboundPrincipal\":{\"issuer\":\""
         + ISSUER
@@ -1649,11 +2183,18 @@ class PartnerTrustAdministrationIT {
   }
 
   private void activateLocalTransportProvider() throws Exception {
+    activateLocalTransportProvider("synthetic-transport-provider", "synthetic-transport-provider");
+  }
+
+  private void activateLocalTransportProvider(String partnerKey, String clientId) throws Exception {
     String configuration =
         localTransportProviderConfigurationJson(
-            "https://partner.test:" + mcsdServer.getAddress().getPort());
+                "https://partner.test:" + mcsdServer.getAddress().getPort())
+            .replace("synthetic-transport-provider", clientId);
     String create =
-        "{\"partnerKey\":\"synthetic-transport-provider\","
+        "{\"partnerKey\":\""
+            + partnerKey
+            + "\","
             + configuration.substring(1, configuration.length() - 1)
             + ",\"reasonCode\":\"PARTNER_SETUP\"}";
     mockMvc
@@ -1667,8 +2208,7 @@ class PartnerTrustAdministrationIT {
     mockMvc
         .perform(
             partnerRequest(
-                post(
-                    "/api/v1/platform/exchange-partners/synthetic-transport-provider/versions/1/activate"),
+                post("/api/v1/platform/exchange-partners/" + partnerKey + "/versions/1/activate"),
                 PARTNER_ADMIN,
                 "local-transport-provider-activate",
                 "{\"reasonCode\":\"PARTNER_ACTIVATION\"}"))
@@ -1694,6 +2234,8 @@ class PartnerTrustAdministrationIT {
         + "{\"ownerContext\":\"TRANSPORT\",\"operationCode\":\"transport.destination-change\","
         + "\"direction\":\"OUTBOUND\",\"protocol\":\"JSON\",\"profile\":\"AyuVahakTransportProvider-v1\"},"
         + "{\"ownerContext\":\"TRANSPORT\",\"operationCode\":\"transport.provider.evidence\","
+        + "\"direction\":\"INBOUND\",\"protocol\":\"JSON\",\"profile\":\"AyuVahakTransportProvider-v1\"},"
+        + "{\"ownerContext\":\"TRANSPORT\",\"operationCode\":\"transport.provider.outcomes\","
         + "\"direction\":\"INBOUND\",\"protocol\":\"JSON\",\"profile\":\"AyuVahakTransportProvider-v1\"}],"
         + "\"inboundPrincipal\":{\"issuer\":\""
         + ISSUER

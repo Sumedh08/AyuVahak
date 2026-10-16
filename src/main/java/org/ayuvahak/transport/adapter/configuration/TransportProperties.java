@@ -1,11 +1,12 @@
 package org.ayuvahak.transport.adapter.configuration;
 
 import jakarta.annotation.PostConstruct;
+import org.ayuvahak.transport.application.TransportSettings;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /** Identity used only for the explicit Transfer-to-Transport service boundary. */
 @ConfigurationProperties("ayuvahak.transport")
-public class TransportProperties {
+public class TransportProperties implements TransportSettings {
 
   private String workerClientId = "ayuvahak-transport-worker";
   private String providerPartnerKey = "";

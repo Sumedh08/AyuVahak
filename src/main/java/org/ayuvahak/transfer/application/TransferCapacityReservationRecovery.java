@@ -28,7 +28,6 @@ import org.ayuvahak.platform.event.EventType;
 import org.ayuvahak.platform.executioncontext.ExecutionContext;
 import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
 import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
-import org.ayuvahak.transfer.adapter.configuration.TransferProperties;
 import org.ayuvahak.transfer.application.TransportCancellationPort.CancellationOutcome;
 import org.ayuvahak.transfer.application.TransportCancellationPort.OperationState;
 import org.ayuvahak.transfer.domain.CapacityReservationIntent;
@@ -60,7 +59,7 @@ public final class TransferCapacityReservationRecovery {
   private final ObjectProvider<AuthorizationService> authorization;
   private final ObjectProvider<AuditWriter> auditWriter;
   private final TransactionTemplate transaction;
-  private final TransferProperties properties;
+  private final TransferSettings properties;
   private final ActorReference worker;
   private final ActorReference ownerEventWorker;
   private final Clock clock;
@@ -73,7 +72,7 @@ public final class TransferCapacityReservationRecovery {
       ObjectProvider<AuthorizationService> authorization,
       ObjectProvider<AuditWriter> auditWriter,
       @Lazy PlatformTransactionManager transactionManager,
-      TransferProperties properties,
+      TransferSettings properties,
       org.ayuvahak.platform.authentication.AuthenticationProperties authentication,
       @Qualifier("auditClock") Clock clock) {
     this.transfers = Objects.requireNonNull(transfers, "Transfer store");

@@ -22,7 +22,6 @@ import org.ayuvahak.platform.executioncontext.ExecutionContext;
 import org.ayuvahak.platform.executioncontext.ExecutionScope;
 import org.ayuvahak.platform.idempotency.CommandReceiptKey;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
-import org.ayuvahak.transfer.adapter.configuration.TransferProperties;
 import org.ayuvahak.transfer.domain.CapacityReservationIntent;
 import org.ayuvahak.transfer.domain.CoordinatedTransfer;
 import org.ayuvahak.transfer.domain.ReceivingAssessment;
@@ -57,7 +56,7 @@ public final class TransferReceivingCommands {
   private final ObjectProvider<AuditWriter> auditWriter;
   private final TransactionTemplate transaction;
   private final Clock clock;
-  private final TransferProperties properties;
+  private final TransferSettings properties;
   private final TransferCapacityReservationRecovery reservationRecovery;
 
   public TransferReceivingCommands(
@@ -66,7 +65,7 @@ public final class TransferReceivingCommands {
       ObjectProvider<AuditWriter> auditWriter,
       @Lazy PlatformTransactionManager transactionManager,
       @Qualifier("auditClock") Clock clock,
-      TransferProperties properties,
+      TransferSettings properties,
       TransferCapacityReservationRecovery reservationRecovery) {
     this.store = Objects.requireNonNull(store, "Transfer store");
     this.authorization = Objects.requireNonNull(authorization, "authorization");
@@ -320,7 +319,7 @@ public final class TransferReceivingCommands {
       TransferRequestAttempt attempt,
       CoordinatedTransfer transfer,
       Instant now) {
-    Optional<TransferProperties.ReservationPolicy> configured = properties.reservationPolicy();
+    Optional<TransferSettings.ReservationPolicy> configured = properties.reservationPolicy();
     if (configured.isEmpty()) {
       return new CapacityReservationIntent(
           transfer.id(),
@@ -339,7 +338,7 @@ public final class TransferReceivingCommands {
           0,
           now);
     }
-    TransferProperties.ReservationPolicy policy = configured.orElseThrow();
+    TransferSettings.ReservationPolicy policy = configured.orElseThrow();
     Instant expiresAt = now.plus(policy.duration());
     return new CapacityReservationIntent(
         transfer.id(),

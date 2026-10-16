@@ -191,6 +191,12 @@ public final class TransportCancellationController {
           PlatformErrorCode.AUTHENTICATION_REQUIRED,
           "A verified actor is required.");
     }
+    if (actor.kind() != ActorKind.HUMAN) {
+      throw new PlatformProblemException(
+          HttpStatus.FORBIDDEN,
+          PlatformErrorCode.AUTHORIZATION_DENIED,
+          "Manual cancellation operations require an authorized human operator.");
+    }
     if (!"FACILITY".equals(scope) || organizationId == null || facilityId == null) {
       throw invalidScope();
     }
@@ -199,9 +205,7 @@ public final class TransportCancellationController {
           RequestedExecutionScope.facility(
               directoryReference("Organization", organizationId),
               directoryReference("Facility", facilityId));
-      return actor.kind() == ActorKind.HUMAN
-          ? contexts.forInteractiveRequest(actor, requested, correlationId())
-          : contexts.forIntegrationRequest(actor, requested, correlationId());
+      return contexts.forInteractiveRequest(actor, requested, correlationId());
     } catch (ExecutionScopeDeniedException | IllegalArgumentException denied) {
       throw invalidScope();
     }

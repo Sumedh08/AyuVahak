@@ -26,7 +26,6 @@ import org.ayuvahak.platform.eventing.application.InternalEventHandler;
 import org.ayuvahak.platform.executioncontext.ExecutionContext;
 import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
 import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
-import org.ayuvahak.referral.adapter.configuration.ReferralProperties;
 import org.ayuvahak.referral.domain.ReferralAuthorities;
 import org.ayuvahak.referral.domain.ReferralDraft;
 import org.ayuvahak.referral.domain.ReferralResolution;
@@ -65,7 +64,7 @@ public final class ReferralTransferOutcomeEventHandler implements InternalEventH
       ObjectProvider<AuthorizationService> authorization,
       ObjectProvider<AuditWriter> auditWriter,
       @Lazy PlatformTransactionManager transactionManager,
-      ReferralProperties properties,
+      ReferralSettings properties,
       AuthenticationProperties authentication,
       @org.springframework.beans.factory.annotation.Qualifier("auditClock") Clock clock,
       ObjectMapper mapper) {

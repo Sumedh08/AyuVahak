@@ -1,6 +1,6 @@
 # Phase 8 specification — Healthcare Standards & Interoperability
 
-**Status:** specification frozen; implementation not started. A separate human-authorized master prompt is required to begin implementation.
+**Status:** specification frozen. This file is the canonical Phase 8 behavior contract; implementation and acceptance status are recorded in `docs/reviews/phase-8-acceptance.md`.
 
 **Volume:** III.
 

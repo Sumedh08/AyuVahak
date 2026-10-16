@@ -130,7 +130,7 @@ network adapter exists.
 
 ## Phase boundary and safety
 
-Phase 8 is frozen after this acceptance. Phase 9 has not started. Phase 10,
+Phase 8 is frozen after this acceptance. At the time this record was written, Phase 9 had not started. Phase 10,
 Transport, EMS and Volume IV remain unimplemented. Verification used only
 synthetic fixtures, local Testcontainers, local Compose, and local Keycloak.
 No public healthcare system, partner endpoint, real patient data, production

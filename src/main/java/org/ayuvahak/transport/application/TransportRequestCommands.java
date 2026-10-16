@@ -24,7 +24,6 @@ import org.ayuvahak.platform.executioncontext.ExecutionContext;
 import org.ayuvahak.platform.executioncontext.ExecutionScope;
 import org.ayuvahak.platform.idempotency.CommandReceiptKey;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
-import org.ayuvahak.transport.adapter.configuration.TransportProperties;
 import org.ayuvahak.transport.domain.TransportAuthorities;
 import org.ayuvahak.transport.domain.TransportRequest;
 import org.springframework.dao.CannotAcquireLockException;
@@ -48,7 +47,7 @@ public final class TransportRequestCommands {
   private final TransferRequestEligibilityPort transferEligibility;
   private final TransactionTemplate transaction;
   private final Clock clock;
-  private final TransportProperties properties;
+  private final TransportSettings properties;
 
   public TransportRequestCommands(
       TransportRequestStore store,
@@ -57,7 +56,7 @@ public final class TransportRequestCommands {
       TransferRequestEligibilityPort transferEligibility,
       PlatformTransactionManager transactionManager,
       @org.springframework.beans.factory.annotation.Qualifier("auditClock") Clock clock,
-      TransportProperties properties) {
+      TransportSettings properties) {
     this.store = Objects.requireNonNull(store, "Transport request store");
     this.authorization = Objects.requireNonNull(authorization, "authorization");
     this.audit = Objects.requireNonNull(audit, "audit writer");

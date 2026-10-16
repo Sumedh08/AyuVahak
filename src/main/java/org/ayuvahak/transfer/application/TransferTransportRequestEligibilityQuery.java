@@ -20,7 +20,6 @@ import org.ayuvahak.platform.core.InternalId;
 import org.ayuvahak.platform.executioncontext.AuthenticationMechanism;
 import org.ayuvahak.platform.executioncontext.ExecutionContext;
 import org.ayuvahak.platform.executioncontext.ExecutionScope;
-import org.ayuvahak.transfer.adapter.configuration.TransferProperties;
 import org.ayuvahak.transfer.domain.CapacityReservationIntent;
 import org.ayuvahak.transfer.domain.CoordinatedTransfer;
 import org.ayuvahak.transfer.domain.TransferAuthorities;
@@ -38,14 +37,14 @@ public final class TransferTransportRequestEligibilityQuery {
   private final TransferStore transfers;
   private final AuthorizationService authorization;
   private final AuditWriter audit;
-  private final TransferProperties properties;
+  private final TransferSettings properties;
   private final Clock clock;
 
   public TransferTransportRequestEligibilityQuery(
       TransferStore transfers,
       AuthorizationService authorization,
       AuditWriter audit,
-      TransferProperties properties,
+      TransferSettings properties,
       @org.springframework.beans.factory.annotation.Qualifier("auditClock") Clock clock) {
     this.transfers = Objects.requireNonNull(transfers, "Transfer store");
     this.authorization = Objects.requireNonNull(authorization, "authorization");

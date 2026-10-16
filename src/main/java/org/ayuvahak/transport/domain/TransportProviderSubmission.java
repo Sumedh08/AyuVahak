@@ -12,6 +12,7 @@ public record TransportProviderSubmission(
     OperationKind operationKind,
     String partnerKey,
     State state,
+    int attemptCount,
     Optional<Integer> configurationVersion,
     Optional<Integer> responseStatus,
     Optional<String> failureCode,
@@ -35,6 +36,9 @@ public record TransportProviderSubmission(
     if (version < 1 || updatedAt.isBefore(createdAt)) {
       throw new IllegalArgumentException("provider submission version/time is invalid");
     }
+    if (attemptCount < 1 || attemptCount > 3) {
+      throw new IllegalArgumentException("provider submission attempt count is invalid");
+    }
     if (configurationVersion.filter(value -> value < 1).isPresent()
         || responseStatus.filter(value -> value < 100 || value > 599).isPresent()
         || failureCode.filter(value -> !value.matches("[A-Z][A-Z0-9_]{1,63}")).isPresent()) {
@@ -44,7 +48,10 @@ public record TransportProviderSubmission(
       throw new IllegalArgumentException(
           "only acknowledged provider submissions carry HTTP status");
     }
-    if ((state == State.OUTCOME_UNKNOWN || state == State.REJECTED || state == State.REVOKED)
+    if ((state == State.RETRY_PENDING
+            || state == State.OUTCOME_UNKNOWN
+            || state == State.REJECTED
+            || state == State.REVOKED)
         != failureCode.isPresent()) {
       throw new IllegalArgumentException(
           "provider submission failure metadata does not match state");
@@ -59,6 +66,7 @@ public record TransportProviderSubmission(
 
   public enum State {
     ATTEMPTING,
+    RETRY_PENDING,
     ACKNOWLEDGED,
     OUTCOME_UNKNOWN,
     REJECTED,

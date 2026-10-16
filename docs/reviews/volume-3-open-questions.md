@@ -2,7 +2,7 @@
 
 **Review date:** 2026-10-15
 
-**Status:** Volume III design frozen; implementation has not started.
+**Status at review time:** Volume III design frozen; implementation had not started when this design-time disposition was recorded. Current implementation and freeze evidence is maintained in the Phase 8–10 and Volume III acceptance records.
 **Purpose:** Separate design questions that block a Phase 8–10 implementation from values selected by a deployment and matters outside Volume III.
 
 ## Decision timing summary

@@ -27,9 +27,9 @@ import org.ayuvahak.platform.executioncontext.ExecutionContext;
 import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
 import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
-import org.ayuvahak.transfer.adapter.configuration.TransferProperties;
 import org.ayuvahak.transfer.domain.CoordinatedTransfer;
 import org.ayuvahak.transfer.domain.TransferAuthorities;
+import org.ayuvahak.transfer.domain.TransferDestinationChangeOperation;
 import org.ayuvahak.transfer.domain.TransferProgressFact;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.annotation.Lazy;
@@ -71,7 +71,7 @@ public final class TransferTransportMovementEventHandler implements InternalEven
       AuditWriter audit,
       ExecutionContextFactory contexts,
       @Lazy PlatformTransactionManager transactionManager,
-      TransferProperties properties,
+      TransferSettings properties,
       AuthenticationProperties authentication,
       @org.springframework.beans.factory.annotation.Qualifier("auditClock") Clock clock,
       ObjectMapper mapper) {
@@ -106,7 +106,7 @@ public final class TransferTransportMovementEventHandler implements InternalEven
     TransferProgressTarget target =
         transfers.findProgressTarget(transferId).orElseThrow(TransferNotFound::new);
     ExecutionContext context = contextForOrigin(target, envelope, event.eventId());
-    requireSourceScope(envelope, payload, target);
+    requireSourceScope(event.eventType(), envelope, payload, target, transferId);
     AuthorizationDecision decision =
         authorization.getObject().evaluate(context, TransferAuthorities.progress().code());
     if (!decision.isAllowed()) {
@@ -246,6 +246,11 @@ public final class TransferTransportMovementEventHandler implements InternalEven
       if (!"ARRIVED_DESTINATION".equals(evidenceKind)
           || !text(payload, "destinationFacilityReference")
               .equals(target.receivingFacility().value())) {
+        if (isPendingDestinationChangeArrival(
+            evidenceKind, text(payload, "destinationFacilityReference"), target, transferId)) {
+          throw new IllegalStateException(
+              "Transport arrival awaits Transfer destination-change reconciliation");
+        }
         completeWithoutTransition(
             event, transferId, context, "ARRIVAL_DESTINATION_MISMATCH", recordedAt);
       } else if (target.transfer().status() == CoordinatedTransfer.Status.ARRIVED
@@ -300,6 +305,24 @@ public final class TransferTransportMovementEventHandler implements InternalEven
       outcome = "TRANSPORT_INTERRUPTION_REQUIRES_RECONCILIATION";
     }
     completeWithoutTransition(event, transferId, context, outcome, recordedAt);
+  }
+
+  private boolean isPendingDestinationChangeArrival(
+      String evidenceKind,
+      String destinationReference,
+      TransferProgressTarget target,
+      InternalId transferId) {
+    if (!"ARRIVED_DESTINATION".equals(evidenceKind)) return false;
+    return transfers
+        .findUnresolvedDestinationChange(transferId)
+        .filter(
+            change ->
+                (change.status() == TransferDestinationChangeOperation.Status.TRANSPORT_ACK_PENDING
+                        || change.status()
+                            == TransferDestinationChangeOperation.Status.TRANSPORT_OUTCOME_UNKNOWN)
+                    && change.oldFacility().equals(target.receivingFacility())
+                    && change.proposedFacility().value().equals(destinationReference))
+        .isPresent();
   }
 
   private void recordProgress(
@@ -364,13 +387,22 @@ public final class TransferTransportMovementEventHandler implements InternalEven
         Optional.of(new CausationId(eventId.toString())));
   }
 
-  private static void requireSourceScope(
-      JsonNode envelope, JsonNode payload, TransferProgressTarget target) {
+  private void requireSourceScope(
+      EventType eventType,
+      JsonNode envelope,
+      JsonNode payload,
+      TransferProgressTarget target,
+      InternalId transferId) {
     JsonNode scope = object(envelope, "executionScope");
     JsonNode organization = scope.get("organizationRef");
     JsonNode facility = scope.get("facilityRef");
     String expectedFacility = target.originFacility().map(ExternalReference::value).orElse("");
-    String expectedDestination = target.receivingFacility().value();
+    String suppliedDestination = text(payload, "destinationFacilityReference");
+    boolean currentDestination = suppliedDestination.equals(target.receivingFacility().value());
+    boolean pendingRerouteArrival =
+        eventType.equals(ARRIVAL)
+            && isPendingDestinationChangeArrival(
+                text(payload, "evidenceKind"), suppliedDestination, target, transferId);
     if (organization == null
         || facility == null
         || !text(organization, "issuer").equals(DIRECTORY_ISSUER)
@@ -380,7 +412,7 @@ public final class TransferTransportMovementEventHandler implements InternalEven
         || !text(facility, "resourceType").equals("Facility")
         || !text(facility, "value").equals(expectedFacility)
         || !text(payload, "originFacilityReference").equals(expectedFacility)
-        || !text(payload, "destinationFacilityReference").equals(expectedDestination)) {
+        || (!currentDestination && !pendingRerouteArrival)) {
       throw new IllegalArgumentException(
           "Transport movement event scope does not match Transfer origin");
     }

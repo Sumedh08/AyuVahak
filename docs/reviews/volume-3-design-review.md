@@ -3,11 +3,11 @@
 **Review date:** 2026-10-15
 
 **Scope:** Volume III Phase 8–10 design and specifications against the frozen Volume I–II constitution, ADRs, context contracts, state machines, data ownership, security/privacy constraints, and official standards research. Documentation-only review; no implementation was performed.
-**Review status:** Final independent reviews complete; all findings dispositioned.
+**Review status:** Final independent design reviews complete; all findings dispositioned. This review predates implementation and does not replace the separate phase implementation reviews and acceptance records.
 
 ## Review result
 
-**Result:** PASS. Independent standards/interoperability and security/transport reviewers confirmed the remediations. No issue required changing the approved Volume I–II ownership model. Volume III implementation has not started and remains separately gated.
+**Result:** PASS. Independent standards/interoperability and security/transport reviewers confirmed the remediations. No issue required changing the approved Volume I–II ownership model. At the time of this design review, Volume III implementation had not started and remained separately gated.
 
 ## Review method
 
@@ -55,7 +55,7 @@ See [Volume III open questions](volume-3-open-questions.md). MUST RESOLVE BEFORE
 
 ## Final review disposition
 
-Independent review and final semantic/link checks passed. Final findings: **BLOCKER 0; MAJOR 5 (all resolved); MINOR 4 (all resolved); DOCUMENTATION 4 (all resolved).** No unresolved blocker or major finding remains. Volume III design and Phase 8–10 specifications are frozen; implementation is not started and requires a separate human-authorized master prompt.
+Independent review and final semantic/link checks passed. Final findings: **BLOCKER 0; MAJOR 5 (all resolved); MINOR 4 (all resolved); DOCUMENTATION 4 (all resolved).** No unresolved blocker or major finding remained at design freeze. This is a design-time review; subsequent implementation and acceptance are recorded in the phase and Volume III acceptance records.
 
 ## Retrospective
 

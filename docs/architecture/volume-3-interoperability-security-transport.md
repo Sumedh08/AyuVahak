@@ -1,7 +1,7 @@
 # Volume III architecture: interoperability, secure exchange, and transport
 
-**Status:** Volume III design frozen. Phase 8–10 specifications are frozen; implementation has not started and requires a separate human-authorized master prompt.
-**Scope:** attaches standards adapters, external exchange controls, and transport coordination to the frozen Volume I–II modular monolith. It does not authorize implementation.
+**Status:** Volume III design and Phases 8–10 implementation are frozen. Implementation acceptance evidence is recorded in `docs/reviews/phase-8-acceptance.md`, `docs/reviews/phase-9-acceptance.md`, `docs/reviews/phase-10-acceptance.md`, and `docs/reviews/volume-3-acceptance.md`.
+**Scope:** attaches standards adapters, external exchange controls, and transport coordination to the frozen Volume I–II modular monolith. This document records the approved architecture; implementation scope was separately authorized and gated by phase.
 
 ## Architecture intent
 

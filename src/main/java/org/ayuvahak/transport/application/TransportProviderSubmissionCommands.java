@@ -21,7 +21,6 @@ import org.ayuvahak.platform.core.InternalId;
 import org.ayuvahak.platform.executioncontext.AuthenticationMechanism;
 import org.ayuvahak.platform.executioncontext.ExecutionContext;
 import org.ayuvahak.platform.executioncontext.ExecutionScope;
-import org.ayuvahak.transport.adapter.configuration.TransportProperties;
 import org.ayuvahak.transport.domain.TransportAuthorities;
 import org.ayuvahak.transport.domain.TransportCancellationOperation;
 import org.ayuvahak.transport.domain.TransportDestinationChangeOperation;
@@ -40,6 +39,7 @@ public final class TransportProviderSubmissionCommands {
   // Phase 9 bounds partner operations to five minutes; this extra minute permits clean timeout
   // completion before a persisted ATTEMPTING row is classified as an unknown outcome.
   private static final Duration STALE_ATTEMPT_AFTER = Duration.ofMinutes(6);
+  private static final int MAX_ATTEMPTS = 3;
 
   private final TransportRequestStore requests;
   private final TransportCancellationStore cancellations;
@@ -50,7 +50,7 @@ public final class TransportProviderSubmissionCommands {
   private final AuditWriter audit;
   private final TransactionTemplate transaction;
   private final Clock clock;
-  private final TransportProperties properties;
+  private final TransportSettings properties;
 
   public TransportProviderSubmissionCommands(
       TransportRequestStore requests,
@@ -62,7 +62,7 @@ public final class TransportProviderSubmissionCommands {
       AuditWriter audit,
       PlatformTransactionManager transactionManager,
       @org.springframework.beans.factory.annotation.Qualifier("auditClock") Clock clock,
-      TransportProperties properties) {
+      TransportSettings properties) {
     this.requests = Objects.requireNonNull(requests, "Transport requests");
     this.cancellations = Objects.requireNonNull(cancellations, "Transport cancellations");
     this.destinationChanges =
@@ -127,6 +127,7 @@ public final class TransportProviderSubmissionCommands {
                             existing.operationKind(),
                             existing.partnerKey(),
                             TransportProviderSubmission.State.OUTCOME_UNKNOWN,
+                            existing.attemptCount(),
                             existing.configurationVersion(),
                             Optional.empty(),
                             Optional.of(failureCode),
@@ -137,10 +138,71 @@ public final class TransportProviderSubmissionCommands {
                         context, unknown, "TRANSPORT_PROVIDER_SUBMISSION_OUTCOME_UNKNOWN");
                     return new Prepared(unknown, Optional.empty(), false);
                   }
+                  if (existing.state() == TransportProviderSubmission.State.RETRY_PENDING) {
+                    if (existing.attemptCount() >= MAX_ATTEMPTS) {
+                      String failureCode = "TRUST_LOOKUP_RETRIES_EXHAUSTED";
+                      if (!submissions.transition(
+                          operationReference,
+                          kind,
+                          existing.version(),
+                          TransportProviderSubmission.State.REJECTED,
+                          existing.configurationVersion(),
+                          Optional.empty(),
+                          Optional.of(failureCode),
+                          now)) {
+                        throw unavailable();
+                      }
+                      TransportProviderSubmission rejected =
+                          new TransportProviderSubmission(
+                              existing.operationReference(),
+                              existing.transportRequestId(),
+                              existing.operationKind(),
+                              existing.partnerKey(),
+                              TransportProviderSubmission.State.REJECTED,
+                              existing.attemptCount(),
+                              existing.configurationVersion(),
+                              Optional.empty(),
+                              Optional.of(failureCode),
+                              existing.createdAt(),
+                              now,
+                              existing.version() + 1);
+                      auditMutation(context, rejected, "TRANSPORT_PROVIDER_SUBMISSION_REJECTED");
+                      return new Prepared(rejected, Optional.empty(), false);
+                    }
+                    TransportProviderSubmissionRequest providerRequest =
+                        buildRequest(
+                            context, request, kind, operationReference, existing.partnerKey());
+                    if (!submissions.claimRetry(
+                        operationReference, kind, existing.version(), now)) {
+                      throw unavailable();
+                    }
+                    TransportProviderSubmission attempting =
+                        new TransportProviderSubmission(
+                            existing.operationReference(),
+                            existing.transportRequestId(),
+                            existing.operationKind(),
+                            existing.partnerKey(),
+                            TransportProviderSubmission.State.ATTEMPTING,
+                            existing.attemptCount() + 1,
+                            existing.configurationVersion(),
+                            Optional.empty(),
+                            Optional.empty(),
+                            existing.createdAt(),
+                            now,
+                            existing.version() + 1);
+                    auditMutation(
+                        context, attempting, "TRANSPORT_PROVIDER_SUBMISSION_RETRY_STARTED");
+                    return new Prepared(attempting, Optional.of(providerRequest), true);
+                  }
                   return new Prepared(existing, Optional.empty(), false);
                 }
                 TransportProviderSubmissionRequest providerRequest =
-                    buildRequest(context, request, kind, operationReference);
+                    buildRequest(
+                        context,
+                        request,
+                        kind,
+                        operationReference,
+                        properties.getProviderPartnerKey());
                 Instant now = clock.instant();
                 TransportProviderSubmission attempting =
                     new TransportProviderSubmission(
@@ -149,6 +211,7 @@ public final class TransportProviderSubmissionCommands {
                         kind,
                         properties.getProviderPartnerKey(),
                         TransportProviderSubmission.State.ATTEMPTING,
+                        1,
                         Optional.empty(),
                         Optional.empty(),
                         Optional.empty(),
@@ -198,18 +261,25 @@ public final class TransportProviderSubmissionCommands {
                   return current;
                 }
                 Instant now = clock.instant();
+                TransportProviderSubmission.State finalState = outcome.state();
+                Optional<String> finalFailureCode = outcome.failureCode();
+                if (outcome.state() == TransportProviderSubmission.State.RETRY_PENDING
+                    && current.attemptCount() >= MAX_ATTEMPTS) {
+                  finalState = TransportProviderSubmission.State.REJECTED;
+                  finalFailureCode = Optional.of("TRUST_LOOKUP_RETRIES_EXHAUSTED");
+                }
                 if (!submissions.transition(
                     operationReference,
                     kind,
                     current.version(),
-                    outcome.state(),
+                    finalState,
                     outcome.configurationVersion(),
                     outcome.responseStatus(),
-                    outcome.failureCode(),
+                    finalFailureCode,
                     now)) {
                   throw unavailable();
                 }
-                if (outcome.state() == TransportProviderSubmission.State.OUTCOME_UNKNOWN) {
+                if (finalState == TransportProviderSubmission.State.OUTCOME_UNKNOWN) {
                   recordBusinessUncertainty(context, kind, operationReference);
                 }
                 TransportProviderSubmission result =
@@ -218,10 +288,11 @@ public final class TransportProviderSubmissionCommands {
                         current.transportRequestId(),
                         current.operationKind(),
                         current.partnerKey(),
-                        outcome.state(),
+                        finalState,
+                        current.attemptCount(),
                         outcome.configurationVersion(),
                         outcome.responseStatus(),
-                        outcome.failureCode(),
+                        finalFailureCode,
                         current.createdAt(),
                         now,
                         current.version() + 1);
@@ -238,7 +309,8 @@ public final class TransportProviderSubmissionCommands {
       ExecutionContext context,
       TransportRequest request,
       TransportProviderSubmission.OperationKind kind,
-      InternalId operationReference) {
+      InternalId operationReference,
+      String partnerKey) {
     Optional<String> reason = Optional.empty();
     Optional<InternalId> proposedDestination = Optional.empty();
     switch (kind) {
@@ -273,7 +345,7 @@ public final class TransportProviderSubmissionCommands {
       }
     }
     return new TransportProviderSubmissionRequest(
-        properties.getProviderPartnerKey(),
+        partnerKey,
         kind,
         operationReference,
         request.id(),

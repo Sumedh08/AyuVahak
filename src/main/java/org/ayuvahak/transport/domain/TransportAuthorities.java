@@ -10,7 +10,7 @@ public final class TransportAuthorities {
   private static final Set<ExecutionScope.Kind> FACILITY_SCOPE =
       Set.of(ExecutionScope.Kind.FACILITY);
   private static final FunctionalAuthority REQUEST =
-      new FunctionalAuthority("TransportRequest", FACILITY_SCOPE);
+      new FunctionalAuthority("TransportRequestAuthority", FACILITY_SCOPE);
   private static final FunctionalAuthority DISPATCH_COORDINATION =
       new FunctionalAuthority("TransportDispatchCoordinationAuthority", FACILITY_SCOPE);
   private static final FunctionalAuthority STATUS =

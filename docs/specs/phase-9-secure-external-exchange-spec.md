@@ -1,6 +1,6 @@
 # Phase 9 specification — Secure External Health-System Exchange
 
-**Status:** specification frozen; implementation not started. A separate human-authorized master prompt is required to begin implementation.
+**Status:** specification frozen. This file is the canonical Phase 9 behavior contract; implementation and acceptance status are recorded in `docs/reviews/phase-9-acceptance.md`.
 
 **Volume:** III.
 

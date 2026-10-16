@@ -32,9 +32,9 @@ import org.ayuvahak.platform.executioncontext.ExecutionContext;
 import org.ayuvahak.platform.executioncontext.ExecutionScope;
 import org.ayuvahak.platform.idempotency.CommandReceiptKey;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
-import org.ayuvahak.transport.adapter.configuration.TransportProperties;
 import org.ayuvahak.transport.domain.TransportAuthorities;
 import org.ayuvahak.transport.domain.TransportCancellationOperation;
+import org.ayuvahak.transport.domain.TransportProviderSubmission;
 import org.ayuvahak.transport.domain.TransportRequest;
 import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.dao.DataAccessException;
@@ -57,30 +57,36 @@ public final class TransportCancellationCommands {
   private final TransportRequestStore requests;
   private final TransportEvidenceStore evidence;
   private final TransportCancellationStore cancellations;
+  private final TransportProviderSubmissionStore providerSubmissions;
+  private final TransportDestinationChangeStore destinationChanges;
   private final AuthorizationService authorization;
   private final AuditWriter audit;
   private final OutboxWriter outbox;
   private final ObjectMapper mapper;
   private final TransactionTemplate transaction;
   private final Clock clock;
-  private final TransportProperties properties;
+  private final TransportSettings properties;
   private final AuthenticationProperties authenticationProperties;
 
   public TransportCancellationCommands(
       TransportRequestStore requests,
       TransportEvidenceStore evidence,
       TransportCancellationStore cancellations,
+      TransportProviderSubmissionStore providerSubmissions,
+      TransportDestinationChangeStore destinationChanges,
       AuthorizationService authorization,
       AuditWriter audit,
       OutboxWriter outbox,
       ObjectMapper mapper,
       PlatformTransactionManager transactionManager,
       @org.springframework.beans.factory.annotation.Qualifier("auditClock") Clock clock,
-      TransportProperties properties,
+      TransportSettings properties,
       AuthenticationProperties authenticationProperties) {
     this.requests = Objects.requireNonNull(requests);
     this.evidence = Objects.requireNonNull(evidence);
     this.cancellations = Objects.requireNonNull(cancellations);
+    this.providerSubmissions = Objects.requireNonNull(providerSubmissions);
+    this.destinationChanges = Objects.requireNonNull(destinationChanges);
     this.authorization = Objects.requireNonNull(authorization);
     this.audit = Objects.requireNonNull(audit);
     this.outbox = Objects.requireNonNull(outbox);
@@ -485,6 +491,67 @@ public final class TransportCancellationCommands {
     }
   }
 
+  /** Resolves an inbound partner outcome only for the partner recorded on its outbound request. */
+  public CancellationResult resolveFromPartner(
+      ExecutionContext context,
+      InternalId operationId,
+      ResolutionInput input,
+      String idempotencyKey,
+      RequestFingerprint fingerprint,
+      String partnerKey) {
+    requireScope(context, operationId);
+    requireAuthority(context, operationId);
+    requireProviderSubmission(
+        context, operationId, TransportProviderSubmission.OperationKind.CANCELLATION, partnerKey);
+    return resolve(context, operationId, input, idempotencyKey, fingerprint);
+  }
+
+  private void requireProviderSubmission(
+      ExecutionContext context,
+      InternalId operationId,
+      TransportProviderSubmission.OperationKind kind,
+      String partnerKey) {
+    try {
+      TransportCancellationOperation operation =
+          cancellations.find(operationId).orElseThrow(TransportCancellationCommands::notFound);
+      TransportProviderSubmission submission =
+          providerSubmissions.find(kind, operationId).orElse(null);
+      if (submission != null
+          && submission.partnerKey().equals(partnerKey)
+          && submission.transportRequestId().equals(operation.transportRequestId())) {
+        return;
+      }
+      String reason = submission == null ? "PROVIDER_SUBMISSION_MISSING" : "PARTNER_MISMATCH";
+      try {
+        audit.recordNonMutating(
+            new AuditEvidence(
+                AuditActionKind.SECURITY_OUTCOME,
+                Optional.of(context.actor()),
+                Optional.of(context.scope()),
+                "TRANSPORT_PROVIDER_OUTCOME_DENIED",
+                "TransportProviderSubmission",
+                Optional.of(operationId),
+                clock.instant(),
+                AuditOutcome.DENIED,
+                Optional.of(reason),
+                authenticationEvidence(context),
+                AuditAuthorizationOutcome.DENIED,
+                context.correlationId()));
+      } catch (AuditPersistenceUnavailableException auditUnavailable) {
+        throw problem(
+            HttpStatus.SERVICE_UNAVAILABLE,
+            PlatformErrorCode.AUDIT_UNAVAILABLE,
+            "The provider outcome remains denied because its audit is unavailable.");
+      }
+      throw problem(
+          HttpStatus.FORBIDDEN,
+          PlatformErrorCode.AUTHORIZATION_DENIED,
+          "The authenticated partner is not linked to this Transport operation.");
+    } catch (DataAccessException unavailable) {
+      throw unavailable();
+    }
+  }
+
   private TransportRequest lockRequest(ExecutionContext context, InternalId requestId) {
     TransportRequest request =
         requests.lock(requestId).orElseThrow(TransportCancellationCommands::notFound);
@@ -620,7 +687,12 @@ public final class TransportCancellationCommands {
     payload.put("transportRequestReference", request.id().toString());
     payload.put("cancellationOperationReference", operation.id().toString());
     payload.put("originFacilityReference", request.originFacility().value());
-    payload.put("destinationFacilityReference", request.destinationFacility().value());
+    String currentDestination =
+        destinationChanges
+            .findLatestAcceptedForRequest(request.id())
+            .map(change -> change.proposedFacilityId().toString())
+            .orElse(request.destinationFacility().value());
+    payload.put("destinationFacilityReference", currentDestination);
     payload.put("outcome", operation.outcome().orElseThrow().name());
     payload.put("sourceNamespace", sourceNamespace);
     payload.put("sourceObservationId", sourceObservationId);
@@ -708,6 +780,11 @@ public final class TransportCancellationCommands {
 
   private static PlatformProblemException conflict(PlatformErrorCode code, String detail) {
     return new PlatformProblemException(HttpStatus.CONFLICT, code, detail);
+  }
+
+  private static PlatformProblemException problem(
+      HttpStatus status, PlatformErrorCode code, String detail) {
+    return new PlatformProblemException(status, code, detail);
   }
 
   private static PlatformProblemException notFound() {

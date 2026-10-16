@@ -330,8 +330,10 @@ public final class TransportEvidenceCommands {
     }
     auditMutation(
         context, "TRANSPORT_STATUS_OBSERVATION", requestId, outcome.name(), authorityCode, now);
-    movementEventType(input.status())
-        .ifPresent(type -> recordMovementEvent(context, request, observation, type));
+    if (outcome == TransportStatusObservation.Outcome.APPLIED) {
+      movementEventType(input.status())
+          .ifPresent(type -> recordMovementEvent(context, request, observation, type));
+    }
     requests.completeReceipt(receiptKey, requestId, now);
     return new TransportEvidenceCommandResult(
         observation.id(),

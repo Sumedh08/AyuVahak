@@ -25,4 +25,10 @@ public interface TransportProviderSubmissionStore {
       Optional<Integer> responseStatus,
       Optional<String> failureCode,
       Instant updatedAt);
+
+  boolean claimRetry(
+      InternalId operationReference,
+      TransportProviderSubmission.OperationKind kind,
+      long expectedVersion,
+      Instant updatedAt);
 }

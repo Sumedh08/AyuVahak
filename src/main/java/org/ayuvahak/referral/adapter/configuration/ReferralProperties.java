@@ -1,11 +1,12 @@
 package org.ayuvahak.referral.adapter.configuration;
 
 import jakarta.annotation.PostConstruct;
+import org.ayuvahak.referral.application.ReferralSettings;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /** Referral-owned deployment settings for consuming Transfer outcome events. */
 @ConfigurationProperties(prefix = "ayuvahak.referral")
-public class ReferralProperties {
+public class ReferralProperties implements ReferralSettings {
 
   private String transferOutcomeConsumerClientId = "ayuvahak-transfer-outcome-consumer";
   private String transferAmendmentCheckClientId = "ayuvahak-transfer-amendment-guard";

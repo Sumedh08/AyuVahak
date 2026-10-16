@@ -278,6 +278,16 @@ public record PartnerTrustConfiguration(
           "AyuVahakTransportProvider-v1");
     }
 
+    /** Named partner-authenticated input for cancellation and destination-change outcomes. */
+    public static AllowedOperation transportProviderOutcomes() {
+      return new AllowedOperation(
+          OwnerContext.TRANSPORT,
+          "transport.provider.outcomes",
+          Direction.INBOUND,
+          Protocol.JSON,
+          "AyuVahakTransportProvider-v1");
+    }
+
     public static AllowedOperation transportDispatch() {
       return transportOutbound("transport.dispatch");
     }

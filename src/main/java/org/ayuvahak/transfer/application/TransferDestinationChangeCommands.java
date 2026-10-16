@@ -26,7 +26,6 @@ import org.ayuvahak.platform.executioncontext.ExecutionContext;
 import org.ayuvahak.platform.executioncontext.ExecutionScope;
 import org.ayuvahak.platform.idempotency.CommandReceiptKey;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
-import org.ayuvahak.transfer.adapter.configuration.TransferProperties;
 import org.ayuvahak.transfer.domain.CoordinatedTransfer;
 import org.ayuvahak.transfer.domain.DestinationChangeReservationPlan;
 import org.ayuvahak.transfer.domain.TransferAuthorities;
@@ -52,7 +51,7 @@ public final class TransferDestinationChangeCommands {
   private final DirectoryScopeReferenceLookup directory;
   private final AuthorizationService authorization;
   private final AuditWriter audit;
-  private final TransferProperties properties;
+  private final TransferSettings properties;
   private final TransactionTemplate transaction;
   private final Clock clock;
 
@@ -62,7 +61,7 @@ public final class TransferDestinationChangeCommands {
       DirectoryScopeReferenceLookup directory,
       AuthorizationService authorization,
       AuditWriter audit,
-      TransferProperties properties,
+      TransferSettings properties,
       PlatformTransactionManager transactionManager,
       @org.springframework.beans.factory.annotation.Qualifier("auditClock") Clock clock) {
     this.transfers = Objects.requireNonNull(transfers, "Transfer store");

@@ -27,7 +27,6 @@ import org.ayuvahak.platform.executioncontext.ExecutionContext;
 import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
 import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
-import org.ayuvahak.transfer.adapter.configuration.TransferProperties;
 import org.ayuvahak.transfer.domain.CapacityReservationIntent;
 import org.ayuvahak.transfer.domain.CoordinatedTransfer;
 import org.ayuvahak.transfer.domain.TransferAuthorities;
@@ -65,7 +64,7 @@ public final class TransferOwnerEventHandler implements InternalEventHandler {
   private final ObjectProvider<AuditWriter> auditWriter;
   private final TransactionTemplate transaction;
   private final TransactionTemplate denialTransaction;
-  private final TransferProperties properties;
+  private final TransferSettings properties;
   private final ActorReference worker;
   private final Clock clock;
   private final ObjectMapper mapper;
@@ -78,7 +77,7 @@ public final class TransferOwnerEventHandler implements InternalEventHandler {
       ObjectProvider<AuthorizationService> authorization,
       ObjectProvider<AuditWriter> auditWriter,
       @Lazy PlatformTransactionManager transactionManager,
-      TransferProperties properties,
+      TransferSettings properties,
       AuthenticationProperties authentication,
       @org.springframework.beans.factory.annotation.Qualifier("auditClock") Clock clock,
       ObjectMapper mapper) {

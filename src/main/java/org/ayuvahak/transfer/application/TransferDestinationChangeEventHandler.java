@@ -28,7 +28,6 @@ import org.ayuvahak.platform.eventing.application.InternalEventHandler;
 import org.ayuvahak.platform.executioncontext.ExecutionContext;
 import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
 import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
-import org.ayuvahak.transfer.adapter.configuration.TransferProperties;
 import org.ayuvahak.transfer.domain.CoordinatedTransfer;
 import org.ayuvahak.transfer.domain.ReceivingAssessment;
 import org.ayuvahak.transfer.domain.TransferAuthorities;
@@ -61,7 +60,7 @@ public final class TransferDestinationChangeEventHandler implements InternalEven
   private final AuthorizationService authorization;
   private final AuditWriter audit;
   private final ExecutionContextFactory contexts;
-  private final TransferProperties properties;
+  private final TransferSettings properties;
   private final AuthenticationProperties authentication;
   private final TransactionTemplate transaction;
   private final Clock clock;
@@ -74,7 +73,7 @@ public final class TransferDestinationChangeEventHandler implements InternalEven
       AuthorizationService authorization,
       AuditWriter audit,
       ExecutionContextFactory contexts,
-      TransferProperties properties,
+      TransferSettings properties,
       AuthenticationProperties authentication,
       @Lazy PlatformTransactionManager transactionManager,
       @org.springframework.beans.factory.annotation.Qualifier("auditClock") Clock clock,
