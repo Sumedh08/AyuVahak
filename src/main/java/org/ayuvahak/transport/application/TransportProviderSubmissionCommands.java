@@ -1,6 +1,7 @@
 package org.ayuvahak.transport.application;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.Optional;
@@ -35,6 +36,10 @@ import org.springframework.transaction.support.TransactionTemplate;
 /** One-attempt, Transport-owned provider submissions through the Phase 9 technical boundary. */
 @Service
 public final class TransportProviderSubmissionCommands {
+
+  // Phase 9 bounds partner operations to five minutes; this extra minute permits clean timeout
+  // completion before a persisted ATTEMPTING row is classified as an unknown outcome.
+  private static final Duration STALE_ATTEMPT_AFTER = Duration.ofMinutes(6);
 
   private final TransportRequestStore requests;
   private final TransportCancellationStore cancellations;
@@ -98,9 +103,40 @@ public final class TransportProviderSubmissionCommands {
                         .orElseThrow(TransportProviderSubmissionCommands::notFound);
                 requireOriginScope(context, request);
                 TransportProviderSubmission existing =
-                    submissions.find(kind, operationReference).orElse(null);
+                    submissions.findForUpdate(kind, operationReference).orElse(null);
                 if (existing != null) {
                   requireSameTarget(existing, requestId);
+                  Instant now = clock.instant();
+                  if (isStaleAttempt(existing, now)) {
+                    String failureCode = "ATTEMPT_EXPIRED_UNKNOWN";
+                    if (!submissions.transition(
+                        operationReference,
+                        kind,
+                        existing.version(),
+                        TransportProviderSubmission.State.OUTCOME_UNKNOWN,
+                        existing.configurationVersion(),
+                        Optional.empty(),
+                        Optional.of(failureCode),
+                        now)) {
+                      throw unavailable();
+                    }
+                    TransportProviderSubmission unknown =
+                        new TransportProviderSubmission(
+                            existing.operationReference(),
+                            existing.transportRequestId(),
+                            existing.operationKind(),
+                            existing.partnerKey(),
+                            TransportProviderSubmission.State.OUTCOME_UNKNOWN,
+                            existing.configurationVersion(),
+                            Optional.empty(),
+                            Optional.of(failureCode),
+                            existing.createdAt(),
+                            now,
+                            existing.version() + 1);
+                    auditMutation(
+                        context, unknown, "TRANSPORT_PROVIDER_SUBMISSION_OUTCOME_UNKNOWN");
+                    return new Prepared(unknown, Optional.empty(), false);
+                  }
                   return new Prepared(existing, Optional.empty(), false);
                 }
                 TransportProviderSubmissionRequest providerRequest =
@@ -247,6 +283,11 @@ public final class TransportProviderSubmissionCommands {
         reason,
         proposedDestination,
         context.correlationId());
+  }
+
+  private static boolean isStaleAttempt(TransportProviderSubmission submission, Instant now) {
+    return submission.state() == TransportProviderSubmission.State.ATTEMPTING
+        && !now.isBefore(submission.updatedAt().plus(STALE_ATTEMPT_AFTER));
   }
 
   private void recordBusinessUncertainty(

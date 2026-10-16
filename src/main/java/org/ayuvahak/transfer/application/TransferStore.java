@@ -13,6 +13,7 @@ import org.ayuvahak.transfer.domain.CoordinatedTransfer;
 import org.ayuvahak.transfer.domain.DestinationChangeAssessment;
 import org.ayuvahak.transfer.domain.ReceivingAssessment;
 import org.ayuvahak.transfer.domain.TransferDestinationChangeOperation;
+import org.ayuvahak.transfer.domain.TransferDestinationChangeReconciliation;
 import org.ayuvahak.transfer.domain.TransferJourney;
 import org.ayuvahak.transfer.domain.TransferJourneyClosure;
 import org.ayuvahak.transfer.domain.TransferProgressCorrection;
@@ -82,6 +83,9 @@ public interface TransferStore {
 
   boolean updateDestinationChange(
       TransferDestinationChangeOperation operation, long expectedVersion);
+
+  void insertDestinationChangeReconciliation(
+      TransferDestinationChangeReconciliation reconciliation);
 
   void insertDestinationChangeAssessment(DestinationChangeAssessment assessment);
 

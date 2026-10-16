@@ -21,6 +21,9 @@ public interface TransportDestinationChangeStore {
   Optional<TransportDestinationChangeOperation> findByTransferOperation(
       InternalId transferOperationId);
 
+  Optional<TransportDestinationChangeOperation> findLatestAcceptedForRequest(
+      InternalId transportRequestId);
+
   boolean markUncertain(
       InternalId operationId,
       long expectedVersion,

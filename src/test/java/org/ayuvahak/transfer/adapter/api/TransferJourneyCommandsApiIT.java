@@ -219,6 +219,7 @@ class TransferJourneyCommandsApiIT {
     jdbc.update("DELETE FROM transfer.destination_change_receipt");
     jdbc.update("DELETE FROM transfer.destination_change_decision");
     jdbc.update("DELETE FROM transfer.destination_change_assessment");
+    jdbc.update("DELETE FROM transfer.destination_change_reconciliation");
     jdbc.update("DELETE FROM transfer.destination_change_operation");
     jdbc.update("DELETE FROM transfer.active_destination");
     jdbc.update("DELETE FROM transfer.capacity_reservation_request");
@@ -755,7 +756,8 @@ class TransferJourneyCommandsApiIT {
         "STALE_ACCEPTED",
         "ACCEPTED_RELEASE_UNKNOWN",
         "REJECTED_RELEASE_UNKNOWN",
-        "ARRIVAL_BEFORE_ACK"
+        "ARRIVAL_BEFORE_ACK",
+        "ACCEPTED_NEW_DESTINATION_ARRIVAL"
       })
   void postMovementDestinationChangeKeepsCurrentDestinationUntilTransportAcknowledges(
       String providerOutcome) throws Exception {
@@ -1010,7 +1012,11 @@ class TransferJourneyCommandsApiIT {
             UUID.fromString(operationId));
     String transportOutcome =
         switch (providerOutcome) {
-          case "STALE_ACCEPTED", "ACCEPTED_RELEASE_UNKNOWN", "ARRIVAL_BEFORE_ACK" -> "ACCEPTED";
+          case "STALE_ACCEPTED",
+              "ACCEPTED_RELEASE_UNKNOWN",
+              "ARRIVAL_BEFORE_ACK",
+              "ACCEPTED_NEW_DESTINATION_ARRIVAL" ->
+              "ACCEPTED";
           case "REJECTED_RELEASE_UNKNOWN" -> "REJECTED";
           default -> providerOutcome;
         };
@@ -1166,6 +1172,77 @@ class TransferJourneyCommandsApiIT {
                   Integer.class,
                   UUID.fromString(transferId)))
           .isEqualTo(2);
+      long reconciliationVersion =
+          jdbc.queryForObject(
+              "SELECT version FROM transfer.destination_change_operation WHERE operation_id = ?",
+              Long.class,
+              UUID.fromString(operationId));
+      String reconciliationBody =
+          "{\"expectedVersion\":"
+              + reconciliationVersion
+              + ",\"resolution\":\"RETAIN_OLD_DESTINATION\","
+              + "\"evidenceReference\":\"synthetic:old-destination-confirmed\","
+              + "\"occurredAt\":\""
+              + Instant.now()
+              + "\"}";
+      mockMvc
+          .perform(
+              post(
+                      "/api/v1/transfers/{transferId}/destination-changes/{operationId}/reconciliation",
+                      transferId,
+                      operationId)
+                  .header("Authorization", "Bearer " + token(SENDER))
+                  .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                  .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                  .header("X-AyuVahak-Facility-Id", scope.originFacilityId())
+                  .header("Idempotency-Key", "reroute-keep-old-after-arrival")
+                  .contentType("application/json")
+                  .content(reconciliationBody))
+          .andExpect(status().isAccepted())
+          .andExpect(jsonPath("$.status").value("PROPOSED_HOLD_RELEASE_PENDING"));
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT COUNT(*) FROM transfer.destination_change_reconciliation "
+                      + "WHERE operation_id = ?",
+                  Integer.class,
+                  UUID.fromString(operationId)))
+          .isEqualTo(1);
+      mockMvc
+          .perform(
+              post(
+                      "/api/v1/transfers/{transferId}/destination-changes/{operationId}/reconciliation",
+                      transferId,
+                      operationId)
+                  .header("Authorization", "Bearer " + token(SENDER))
+                  .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                  .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                  .header("X-AyuVahak-Facility-Id", scope.originFacilityId())
+                  .header("Idempotency-Key", "reroute-keep-old-after-arrival")
+                  .contentType("application/json")
+                  .content(reconciliationBody))
+          .andExpect(status().isAccepted())
+          .andExpect(header().string("Idempotency-Replayed", "true"));
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT COUNT(*) FROM transfer.destination_change_reconciliation "
+                      + "WHERE operation_id = ?",
+                  Integer.class,
+                  UUID.fromString(operationId)))
+          .isEqualTo(1);
+      assertThat(destinationChangeRecovery.recoverPendingCapacityReleases(10)).isEqualTo(1);
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT status FROM transfer.destination_change_operation WHERE operation_id = ?",
+                  String.class,
+                  UUID.fromString(operationId)))
+          .isEqualTo("RESOLVED");
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT COUNT(*) FROM capacity.coordination_reservation "
+                      + "WHERE transfer_id = ? AND reservation_status IN ('ACTIVE', 'AT_RISK')",
+                  Integer.class,
+                  UUID.fromString(transferId)))
+          .isEqualTo(1);
       return;
     }
     if (providerOutcome.equals("STALE_ACCEPTED")) {
@@ -1264,6 +1341,24 @@ class TransferJourneyCommandsApiIT {
                 Integer.class,
                 UUID.fromString(transferId)))
         .isEqualTo(1);
+    if (providerOutcome.equals("ACCEPTED_NEW_DESTINATION_ARRIVAL")) {
+      transportEvidenceCommand(
+              scope,
+              transportRequestId,
+              "status-observations",
+              "reroute-arrival-at-accepted-destination",
+              "synthetic-reroute-operator",
+              statusBody(
+                  "SYN-REROUTE-NEW-DESTINATION-ARRIVAL",
+                  "ARRIVED_DESTINATION",
+                  base.plusSeconds(5)))
+          .andExpect(status().isCreated());
+      var arrivalDispatch = outboxDispatcher.dispatchAvailable(Instant.now().plusSeconds(1));
+      assertThat(arrivalDispatch.delivered())
+          .as("the Transport event for the accepted destination must reach Transfer")
+          .isGreaterThan(0);
+      assertThat(transferStatus(transferId)).isEqualTo("ARRIVED");
+    }
   }
 
   @Test

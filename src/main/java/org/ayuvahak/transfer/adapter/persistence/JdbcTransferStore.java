@@ -31,6 +31,7 @@ import org.ayuvahak.transfer.domain.DestinationChangeReservationPlan;
 import org.ayuvahak.transfer.domain.ReceivingAssessment;
 import org.ayuvahak.transfer.domain.TransferDecision;
 import org.ayuvahak.transfer.domain.TransferDestinationChangeOperation;
+import org.ayuvahak.transfer.domain.TransferDestinationChangeReconciliation;
 import org.ayuvahak.transfer.domain.TransferJourney;
 import org.ayuvahak.transfer.domain.TransferJourneyClosure;
 import org.ayuvahak.transfer.domain.TransferProgressCorrection;
@@ -508,6 +509,29 @@ public class JdbcTransferStore implements TransferStore {
             operation.id().value(),
             expectedVersion)
         == 1;
+  }
+
+  @Override
+  public void insertDestinationChangeReconciliation(
+      TransferDestinationChangeReconciliation reconciliation) {
+    jdbc.update(
+        "INSERT INTO transfer.destination_change_reconciliation (operation_id, resolution_code, "
+            + "evidence_reference, occurred_at, recorded_at, recorded_by_kind, recorded_by_issuer, "
+            + "recorded_by_identifier_type, recorded_by_identifier, organization_id, facility_id, "
+            + "correlation_id, request_fingerprint) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        reconciliation.operationId().value(),
+        reconciliation.resolution().name(),
+        reconciliation.evidenceReference(),
+        Timestamp.from(reconciliation.occurredAt()),
+        Timestamp.from(reconciliation.recordedAt()),
+        reconciliation.recordedBy().kind().name(),
+        reconciliation.recordedBy().identity().issuer().value(),
+        reconciliation.recordedBy().identity().resourceType(),
+        reconciliation.recordedBy().identity().value(),
+        reconciliation.organizationId().value(),
+        reconciliation.facilityId().value(),
+        reconciliation.correlationId().value(),
+        reconciliation.requestFingerprint());
   }
 
   @Override

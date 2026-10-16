@@ -56,6 +56,7 @@ public final class TransportEvidenceCommands {
 
   private final TransportRequestStore requests;
   private final TransportEvidenceStore evidence;
+  private final TransportDestinationChangeStore destinationChanges;
   private final AuthorizationService authorization;
   private final AuditWriter audit;
   private final TransactionTemplate transaction;
@@ -66,6 +67,7 @@ public final class TransportEvidenceCommands {
   public TransportEvidenceCommands(
       TransportRequestStore requests,
       TransportEvidenceStore evidence,
+      TransportDestinationChangeStore destinationChanges,
       AuthorizationService authorization,
       AuditWriter audit,
       PlatformTransactionManager transactionManager,
@@ -74,6 +76,8 @@ public final class TransportEvidenceCommands {
       @org.springframework.beans.factory.annotation.Qualifier("auditClock") Clock clock) {
     this.requests = Objects.requireNonNull(requests, "Transport request store");
     this.evidence = Objects.requireNonNull(evidence, "Transport evidence store");
+    this.destinationChanges =
+        Objects.requireNonNull(destinationChanges, "Transport destination-change store");
     this.authorization = Objects.requireNonNull(authorization, "authorization");
     this.audit = Objects.requireNonNull(audit, "audit writer");
     this.transaction = new TransactionTemplate(Objects.requireNonNull(transactionManager));
@@ -688,7 +692,12 @@ public final class TransportEvidenceCommands {
     payload.put("transferReference", request.transferId().toString());
     payload.put("transportRequestReference", request.id().toString());
     payload.put("originFacilityReference", request.originFacility().value());
-    payload.put("destinationFacilityReference", request.destinationFacility().value());
+    String currentDestination =
+        destinationChanges
+            .findLatestAcceptedForRequest(request.id())
+            .map(operation -> operation.proposedFacilityId().toString())
+            .orElse(request.destinationFacility().value());
+    payload.put("destinationFacilityReference", currentDestination);
     payload.put("evidenceReference", observation.id().toString());
     payload.put("evidenceKind", observation.status().name());
     payload.put("sourceNamespace", observation.sourceNamespace());

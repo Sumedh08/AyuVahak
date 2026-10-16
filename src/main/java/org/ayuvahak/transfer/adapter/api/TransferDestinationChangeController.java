@@ -56,6 +56,8 @@ public final class TransferDestinationChangeController {
   private static final Set<String> ACCEPTANCE_FIELDS = Set.of("expectedVersion", "occurredAt");
   private static final Set<String> REJECTION_FIELDS =
       Set.of("expectedVersion", "reasonCode", "occurredAt");
+  private static final Set<String> RECONCILIATION_FIELDS =
+      Set.of("expectedVersion", "resolution", "evidenceReference", "occurredAt");
   private static final java.util.regex.Pattern REASON_CODE =
       java.util.regex.Pattern.compile("[A-Z][A-Z0-9_]{1,63}");
   private static final java.util.regex.Pattern EVIDENCE_REFERENCE =
@@ -223,6 +225,51 @@ public final class TransferDestinationChangeController {
             result.operation().version()),
         responseHeaders(result.replayed()),
         HttpStatus.CREATED);
+  }
+
+  @PostMapping("/{operationId}/reconciliation")
+  public ResponseEntity<DestinationChangeRepresentation> reconcile(
+      @PathVariable String transferId,
+      @PathVariable String operationId,
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = "X-AyuVahak-Execution-Scope", required = false) String scope,
+      @RequestHeader(value = "X-AyuVahak-Organization-Id", required = false) String organizationId,
+      @RequestHeader(value = "X-AyuVahak-Facility-Id", required = false) String facilityId,
+      @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+      @RequestBody JsonNode body) {
+    requireFields(body, RECONCILIATION_FIELDS);
+    long version = expectedVersion(body);
+    String resolution =
+        requiredText(
+            body.get("resolution"), "A supported destination-change reconciliation is required.");
+    if (!"RETAIN_OLD_DESTINATION".equals(resolution)) {
+      throw invalid("A supported destination-change reconciliation is required.");
+    }
+    Optional<String> evidence = optionalEvidence(body.get("evidenceReference"));
+    if (evidence.isEmpty()) {
+      throw invalid("A bounded evidence reference is required for reconciliation.");
+    }
+    Instant occurredAt = parseInstant(body.get("occurredAt"));
+    ObjectNode normalized = mapper.createObjectNode();
+    normalized.put("expectedVersion", version);
+    normalized.put("resolution", resolution);
+    normalized.put("evidenceReference", evidence.orElseThrow());
+    normalized.put("occurredAt", occurredAt.toString());
+    var result =
+        commands.reconcileOldDestination(
+            context(actor, scope, organizationId, facilityId),
+            parseId(transferId, "Transfer id"),
+            parseId(operationId, "destination-change operation id"),
+            version,
+            resolution,
+            evidence.orElseThrow(),
+            occurredAt,
+            idempotencyKey,
+            RequestFingerprint.from(normalized));
+    return new ResponseEntity<>(
+        DestinationChangeRepresentation.from(result.operation()),
+        responseHeaders(result.commandReplayed()),
+        HttpStatus.ACCEPTED);
   }
 
   private ResponseEntity<AssessmentRepresentation> recordAssessment(

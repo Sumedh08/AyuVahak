@@ -78,6 +78,20 @@ public class JdbcTransportDestinationChangeStore implements TransportDestination
   }
 
   @Override
+  public Optional<TransportDestinationChangeOperation> findLatestAcceptedForRequest(
+      InternalId transportRequestId) {
+    return jdbc
+        .query(
+            "SELECT * FROM transport.destination_change_operation "
+                + "WHERE transport_request_id = ? AND operation_state = 'RESOLVED' "
+                + "AND outcome = 'ACCEPTED' ORDER BY resolved_at DESC, operation_id DESC LIMIT 1",
+            JdbcTransportDestinationChangeStore::map,
+            transportRequestId.value())
+        .stream()
+        .findFirst();
+  }
+
+  @Override
   public boolean markUncertain(
       InternalId operationId,
       long expectedVersion,

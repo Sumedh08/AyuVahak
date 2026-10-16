@@ -11,6 +11,9 @@ public interface TransportProviderSubmissionStore {
   Optional<TransportProviderSubmission> find(
       TransportProviderSubmission.OperationKind kind, InternalId operationReference);
 
+  Optional<TransportProviderSubmission> findForUpdate(
+      TransportProviderSubmission.OperationKind kind, InternalId operationReference);
+
   boolean insert(TransportProviderSubmission submission);
 
   boolean transition(

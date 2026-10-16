@@ -31,6 +31,7 @@ import org.ayuvahak.transfer.domain.CoordinatedTransfer;
 import org.ayuvahak.transfer.domain.DestinationChangeReservationPlan;
 import org.ayuvahak.transfer.domain.TransferAuthorities;
 import org.ayuvahak.transfer.domain.TransferDestinationChangeOperation;
+import org.ayuvahak.transfer.domain.TransferDestinationChangeReconciliation;
 import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpStatus;
@@ -204,6 +205,144 @@ public final class TransferDestinationChangeCommands {
     }
   }
 
+  /**
+   * Records an origin-authorized operator decision that the old destination remains actual after a
+   * destination-change exception. Capacity release is left to the existing recovery worker.
+   */
+  public TransferDestinationChangeCommandResult reconcileOldDestination(
+      ExecutionContext context,
+      InternalId transferId,
+      InternalId operationId,
+      long expectedVersion,
+      String resolution,
+      String evidenceReference,
+      Instant occurredAt,
+      String idempotencyKey,
+      RequestFingerprint fingerprint) {
+    requireOriginContext(context);
+    if (expectedVersion < 1
+        || !"RETAIN_OLD_DESTINATION".equals(resolution)
+        || evidenceReference == null
+        || !evidenceReference.matches("[A-Za-z0-9:/._-]{1,128}")
+        || occurredAt == null) {
+      throw invalid(
+          "A supported reconciliation, bounded evidence reference and occurrence time are required.");
+    }
+    requireRerouteAuthority(context, transferId);
+    CommandReceiptKey receiptKey =
+        reconciliationKey(context, transferId, operationId, idempotencyKey);
+    try {
+      TransferDestinationChangeCommandResult result =
+          transaction.execute(
+              ignored -> {
+                Instant now = clock.instant();
+                if (occurredAt.isAfter(now.plusSeconds(300))) {
+                  throw invalid(
+                      "The reconciliation occurrence time cannot be materially in the future.");
+                }
+                transfers.configureBoundedReceiptWait();
+                TransferStore.DestinationChangeReceiptClaim claim =
+                    transfers.claimDestinationChangeReceipt(
+                        receiptKey, fingerprint, operationId, now);
+                if (claim.state() == TransferStore.ReceiptState.KEY_REUSED) {
+                  throw problem(
+                      HttpStatus.CONFLICT,
+                      PlatformErrorCode.IDEMPOTENCY_KEY_REUSED,
+                      "The Idempotency-Key was already used for a different reconciliation command.");
+                }
+                if (claim.state() == TransferStore.ReceiptState.IN_PROGRESS) {
+                  throw problem(
+                      HttpStatus.CONFLICT, PlatformErrorCode.IDEMPOTENCY_IN_PROGRESS, BUSY_DETAIL);
+                }
+
+                TransferDestinationChangeOperation current =
+                    transfers
+                        .lockDestinationChange(operationId)
+                        .filter(found -> found.transferId().equals(transferId))
+                        .orElseThrow(TransferDestinationChangeCommands::notFound);
+                if (claim.state() == TransferStore.ReceiptState.REPLAY) {
+                  TransferProgressTarget target =
+                      transfers
+                          .lockProgressTarget(transferId)
+                          .orElseThrow(TransferDestinationChangeCommands::notFound);
+                  requireOrigin(context, transferId, target);
+                  return new TransferDestinationChangeCommandResult(current, true);
+                }
+
+                TransferProgressTarget target =
+                    transfers
+                        .lockProgressTarget(transferId)
+                        .orElseThrow(TransferDestinationChangeCommands::notFound);
+                requireOrigin(context, transferId, target);
+                if (target.transfer().status() != CoordinatedTransfer.Status.IN_TRANSIT
+                    && target.transfer().status() != CoordinatedTransfer.Status.ARRIVED) {
+                  throw conflict(
+                      "Old-destination reconciliation is allowed only after movement has begun.");
+                }
+                if (current.status()
+                        != TransferDestinationChangeOperation.Status.RECONCILIATION_REQUIRED
+                    || current.version() != expectedVersion) {
+                  throw conflict(
+                      "The destination-change operation no longer requires this reconciliation.");
+                }
+                if (!current.oldFacility().equals(target.receivingFacility())) {
+                  throw conflict(
+                      "The active Transfer destination no longer matches the old destination.");
+                }
+                if (!transfers.isSelectedTransportRequest(
+                    transferId, current.transportRequestId())) {
+                  throw conflict("The linked Transport request is no longer selected.");
+                }
+                TransferStore.ActiveDestination active =
+                    transfers
+                        .findActiveDestination(transferId)
+                        .orElseThrow(TransferDestinationChangeCommands::unavailable);
+                if (!active.facility().equals(current.oldFacility())
+                    || !active.organization().equals(current.oldOrganization())) {
+                  throw conflict(
+                      "The active destination changed and cannot be reconciled as the old destination.");
+                }
+
+                TransferDestinationChangeReconciliation reconciliation =
+                    new TransferDestinationChangeReconciliation(
+                        operationId,
+                        TransferDestinationChangeReconciliation.Resolution.RETAIN_OLD_DESTINATION,
+                        evidenceReference,
+                        occurredAt,
+                        now,
+                        context.actor(),
+                        InternalId.parse(context.scope().organization().orElseThrow().value()),
+                        InternalId.parse(context.scope().facility().orElseThrow().value()),
+                        context.correlationId(),
+                        fingerprint.value());
+                TransferDestinationChangeOperation updated =
+                    copy(
+                        current,
+                        TransferDestinationChangeOperation.Status.PROPOSED_HOLD_RELEASE_PENDING,
+                        current.capacityReservationOutcome(),
+                        current.providerOutcome(),
+                        now);
+                transfers.insertDestinationChangeReconciliation(reconciliation);
+                if (!transfers.updateDestinationChange(updated, current.version())) {
+                  throw conflict("The destination-change operation changed concurrently.");
+                }
+                auditMutation(
+                    context,
+                    transferId,
+                    "TRANSFER_DESTINATION_CHANGE_RECONCILED_OLD_DESTINATION",
+                    now);
+                transfers.completeDestinationChangeReceipt(
+                    receiptKey, fingerprint, operationId, now);
+                return new TransferDestinationChangeCommandResult(updated, false);
+              });
+      return Objects.requireNonNull(result, "destination-change reconciliation result");
+    } catch (CannotAcquireLockException busy) {
+      throw problem(HttpStatus.CONFLICT, PlatformErrorCode.IDEMPOTENCY_IN_PROGRESS, BUSY_DETAIL);
+    } catch (DataAccessException unavailable) {
+      throw unavailable();
+    }
+  }
+
   private TransferDestinationChangeCommandResult replay(
       TransferStore.DestinationChangeReceiptClaim claim, InternalId transferId) {
     return switch (claim.state()) {
@@ -335,6 +474,41 @@ public final class TransferDestinationChangeCommands {
     }
   }
 
+  private static TransferDestinationChangeOperation copy(
+      TransferDestinationChangeOperation current,
+      TransferDestinationChangeOperation.Status status,
+      TransferDestinationChangeOperation.CapacityOutcome capacityOutcome,
+      Optional<TransferDestinationChangeOperation.ProviderOutcome> providerOutcome,
+      Instant updatedAt) {
+    return new TransferDestinationChangeOperation(
+        current.id(),
+        current.transferId(),
+        current.transportRequestId(),
+        current.oldOrganization(),
+        current.oldFacility(),
+        current.proposedOrganization(),
+        current.proposedFacility(),
+        current.recommendationId(),
+        current.referralRevision(),
+        current.reasonCode(),
+        current.reservationPlan(),
+        status,
+        current.capacityReservationOperationId(),
+        capacityOutcome,
+        current.oldReservationOperationId(),
+        current.oldHoldReleaseOperationId(),
+        current.proposedHoldReleaseOperationId(),
+        current.transportOperationId(),
+        providerOutcome,
+        current.initiatedBy(),
+        current.originOrganization(),
+        current.originFacility(),
+        current.correlationId(),
+        current.version() + 1,
+        current.createdAt(),
+        updatedAt);
+  }
+
   private void auditDenied(ExecutionContext context, InternalId transferId, boolean unavailable) {
     try {
       audit.recordNonMutating(
@@ -398,6 +572,23 @@ public final class TransferDestinationChangeCommands {
           idempotencyKey);
     } catch (IllegalArgumentException malformed) {
       throw invalid("A valid Idempotency-Key is required for the destination-change command.");
+    }
+  }
+
+  private static CommandReceiptKey reconciliationKey(
+      ExecutionContext context,
+      InternalId transferId,
+      InternalId operationId,
+      String idempotencyKey) {
+    try {
+      return CommandReceiptKey.from(
+          context,
+          "transfer.destination-change.reconcile",
+          "transfer/" + transferId + "/destination-changes/" + operationId + "/reconciliation",
+          idempotencyKey);
+    } catch (IllegalArgumentException malformed) {
+      throw invalid(
+          "A valid Idempotency-Key is required for the destination-change reconciliation.");
     }
   }
 

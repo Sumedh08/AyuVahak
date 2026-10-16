@@ -743,7 +743,7 @@ class PartnerTrustAdministrationIT {
   }
 
   @Test
-  void transportProviderLostResponseIsUnknownAndNeverBlindlyRepeated() throws Exception {
+  void transportProviderLostResponseAndStaleAttemptAreUnknownAndNeverRepeated() throws Exception {
     DirectoryFacility origin = createReceivingFacility();
     InternalId organizationId = InternalId.parse(origin.organizationId());
     InternalId facilityId = InternalId.parse(origin.facilityId());
@@ -811,6 +811,29 @@ class PartnerTrustAdministrationIT {
         .get()
         .extracting(value -> value.status())
         .isEqualTo(org.ayuvahak.transport.domain.TransportRequest.Status.REQUESTED);
+
+    // Recreate the durable state left if the process stopped after sending but before persisting
+    // the response. The local provider has already observed exactly one operation.
+    java.time.Instant staleSince = java.time.Instant.now().minusSeconds(7 * 60);
+    jdbc.update(
+        "UPDATE transport.provider_submission SET submission_state = 'ATTEMPTING', "
+            + "response_status = NULL, failure_code = NULL, created_at = ?, updated_at = ?, "
+            + "version = version + 1 WHERE operation_kind = 'DISPATCH' AND operation_reference = ?",
+        java.sql.Timestamp.from(staleSince),
+        java.sql.Timestamp.from(staleSince),
+        requestId.value());
+    var recoveredAfterCrash =
+        transportProviderSubmissions
+            .submit(
+                context,
+                requestId,
+                org.ayuvahak.transport.domain.TransportProviderSubmission.OperationKind.DISPATCH,
+                requestId)
+            .orElseThrow();
+    assertThat(recoveredAfterCrash.submission().state())
+        .isEqualTo(org.ayuvahak.transport.domain.TransportProviderSubmission.State.OUTCOME_UNKNOWN);
+    assertThat(recoveredAfterCrash.submission().failureCode()).contains("ATTEMPT_EXPIRED_UNKNOWN");
+    assertThat(TRANSPORT_PROVIDER_REQUESTS).hasValue(1);
   }
 
   @Test

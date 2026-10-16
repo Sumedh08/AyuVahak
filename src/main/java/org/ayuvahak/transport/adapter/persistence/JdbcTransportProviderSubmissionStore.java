@@ -23,10 +23,22 @@ public class JdbcTransportProviderSubmissionStore implements TransportProviderSu
   @Override
   public Optional<TransportProviderSubmission> find(
       TransportProviderSubmission.OperationKind kind, InternalId operationReference) {
+    return select(kind, operationReference, false);
+  }
+
+  @Override
+  public Optional<TransportProviderSubmission> findForUpdate(
+      TransportProviderSubmission.OperationKind kind, InternalId operationReference) {
+    return select(kind, operationReference, true);
+  }
+
+  private Optional<TransportProviderSubmission> select(
+      TransportProviderSubmission.OperationKind kind, InternalId operationReference, boolean lock) {
     List<TransportProviderSubmission> found =
         jdbc.query(
             "SELECT * FROM transport.provider_submission "
-                + "WHERE operation_kind = ? AND operation_reference = ?",
+                + "WHERE operation_kind = ? AND operation_reference = ?"
+                + (lock ? " FOR UPDATE" : ""),
             (row, index) -> map(row),
             kind.name(),
             operationReference.value());
