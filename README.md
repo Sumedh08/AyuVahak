@@ -8,7 +8,7 @@ New contributors should start with the [contributor guide](docs/development/cont
 
 - [Architecture constitution](docs/architecture/constitution.md) — authoritative product and system boundaries.
 - [Volume II core care coordination](docs/architecture/volume-2-core-care-coordination.md) — frozen Directory, Capacity, Referral, Matching, and Transfer ownership.
-- [Volume III design](docs/architecture/volume-3-interoperability-security-transport.md) — frozen architecture and specifications for Phases 8–10; Volume III is complete and frozen after its separately authorized implementation and acceptance gates.
+- [Volume III design](docs/architecture/volume-3-interoperability-security-transport.md) — frozen architecture and specifications for Phases 8–10; Phases 8 and 9 are implemented and frozen, while Phase 10 implementation and Volume III acceptance remain in progress.
 - [Phase 8 specification](docs/specs/phase-8-healthcare-standards-interoperability-spec.md)
 - [Phase 9 specification](docs/specs/phase-9-secure-external-exchange-spec.md)
 - [Phase 10 specification](docs/specs/phase-10-emergency-transport-coordination-spec.md)

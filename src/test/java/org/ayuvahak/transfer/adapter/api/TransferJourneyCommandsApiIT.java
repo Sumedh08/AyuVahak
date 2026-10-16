@@ -804,6 +804,8 @@ class TransferJourneyCommandsApiIT {
         "ACCEPTED_RELEASE_UNKNOWN",
         "REJECTED_RELEASE_UNKNOWN",
         "ARRIVAL_BEFORE_ACK",
+        "ARRIVAL_AFTER_INTERRUPTION_BEFORE_ACK",
+        "OLD_ARRIVAL_EVENT_AFTER_ACK",
         "ARRIVAL_EVENT_BEFORE_RESOLUTION_EVENT",
         "ACCEPTED_NEW_DESTINATION_ARRIVAL"
       })
@@ -1063,19 +1065,45 @@ class TransferJourneyCommandsApiIT {
           case "STALE_ACCEPTED",
               "ACCEPTED_RELEASE_UNKNOWN",
               "ARRIVAL_BEFORE_ACK",
+              "ARRIVAL_AFTER_INTERRUPTION_BEFORE_ACK",
+              "OLD_ARRIVAL_EVENT_AFTER_ACK",
               "ARRIVAL_EVENT_BEFORE_RESOLUTION_EVENT",
               "ACCEPTED_NEW_DESTINATION_ARRIVAL" ->
               "ACCEPTED";
           case "REJECTED_RELEASE_UNKNOWN" -> "REJECTED";
           default -> providerOutcome;
         };
-    if (providerOutcome.equals("ARRIVAL_BEFORE_ACK")) {
+    boolean arrivalBeforeAck =
+        providerOutcome.equals("ARRIVAL_BEFORE_ACK")
+            || providerOutcome.equals("ARRIVAL_AFTER_INTERRUPTION_BEFORE_ACK");
+    boolean oldArrivalEventAfterAck = providerOutcome.equals("OLD_ARRIVAL_EVENT_AFTER_ACK");
+    if (arrivalBeforeAck) {
       grantFacilityAuthority("synthetic-reroute-operator", "TransferProgressAuthority", scope);
       long currentTransferVersion =
           jdbc.queryForObject(
               "SELECT version FROM transfer.transfer_record WHERE transfer_id = ?",
               Long.class,
               UUID.fromString(transferId));
+      if (providerOutcome.equals("ARRIVAL_AFTER_INTERRUPTION_BEFORE_ACK")) {
+        progressCommand(
+                scope,
+                transferId,
+                "interruption",
+                "synthetic-reroute-operator",
+                "reroute-old-destination-interruption-before-ack",
+                "{\"expectedVersion\":"
+                    + currentTransferVersion
+                    + ",\"occurredAt\":\""
+                    + Instant.now()
+                    + "\",\"reasonCode\":\"ROUTE_INTERRUPTED\"}")
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.status").value("INTERRUPTED"));
+        currentTransferVersion =
+            jdbc.queryForObject(
+                "SELECT version FROM transfer.transfer_record WHERE transfer_id = ?",
+                Long.class,
+                UUID.fromString(transferId));
+      }
       var oldDestinationArrival =
           progressCommand(
                   scope,
@@ -1092,6 +1120,91 @@ class TransferJourneyCommandsApiIT {
       assertThat(oldDestinationArrival.getResponse().getStatus())
           .as(oldDestinationArrival.getResponse().getContentAsString())
           .isEqualTo(201);
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT status FROM transfer.destination_change_operation WHERE operation_id = ?",
+                  String.class,
+                  UUID.fromString(operationId)))
+          .as("arrival at the old destination creates an immediately resolvable exception")
+          .isEqualTo("RECONCILIATION_REQUIRED");
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = ? AND target_id = ? "
+                      + "AND reason_code = 'OLD_DESTINATION_ARRIVAL_BEFORE_PROVIDER_ACK'",
+                  Integer.class,
+                  "TRANSFER_DESTINATION_CHANGE_OLD_DESTINATION_ARRIVAL_REQUIRES_RECONCILIATION",
+                  UUID.fromString(operationId)))
+          .isEqualTo(1);
+      long reconciliationVersion =
+          jdbc.queryForObject(
+              "SELECT version FROM transfer.destination_change_operation WHERE operation_id = ?",
+              Long.class,
+              UUID.fromString(operationId));
+      String reconciliationBody =
+          "{\"expectedVersion\":"
+              + reconciliationVersion
+              + ",\"resolution\":\"RETAIN_OLD_DESTINATION\","
+              + "\"evidenceReference\":\"synthetic:old-destination-confirmed-before-ack\","
+              + "\"occurredAt\":\""
+              + Instant.now()
+              + "\"}";
+      mockMvc
+          .perform(
+              post(
+                      "/api/v1/transfers/{transferId}/destination-changes/{operationId}/reconciliation",
+                      transferId,
+                      operationId)
+                  .header("Authorization", "Bearer " + token(SENDER))
+                  .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                  .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                  .header("X-AyuVahak-Facility-Id", scope.originFacilityId())
+                  .header("Idempotency-Key", "reroute-keep-old-before-provider-ack")
+                  .contentType("application/json")
+                  .content(reconciliationBody))
+          .andExpect(status().isAccepted())
+          .andExpect(jsonPath("$.status").value("PROPOSED_HOLD_RELEASE_PENDING"));
+      assertThat(destinationChangeRecovery.recoverPendingCapacityReleases(10)).isEqualTo(1);
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT status FROM transfer.destination_change_operation WHERE operation_id = ?",
+                  String.class,
+                  UUID.fromString(operationId)))
+          .isEqualTo("RESOLVED");
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT facility_id FROM transfer.active_destination WHERE transfer_id = ?",
+                  UUID.class,
+                  UUID.fromString(transferId)))
+          .isEqualTo(UUID.fromString(scope.destinationFacilityId()));
+    }
+    UUID oldDestinationArrivalEventId = null;
+    if (oldArrivalEventAfterAck) {
+      transportEvidenceCommand(
+              scope,
+              transportRequestId,
+              "status-observations",
+              "reroute-old-arrival-before-ack-dispatched-late",
+              "synthetic-reroute-operator",
+              statusBody(
+                  "SYN-REROUTE-OLD-ARRIVAL-BEFORE-ACK", "ARRIVED_DESTINATION", base.plusSeconds(5)))
+          .andExpect(status().isCreated());
+      oldDestinationArrivalEventId =
+          jdbc.queryForObject(
+              "SELECT event_id FROM platform_eventing.internal_event "
+                  + "WHERE event_type = 'transport.arrival-reported.v1' "
+                  + "AND envelope #>> '{payload,evidenceReference}' = "
+                  + "(SELECT status_observation_id::text FROM transport.status_observation "
+                  + "WHERE transport_request_id = ? AND source_observation_id = ?)",
+              UUID.class,
+              transportRequestId,
+              "SYN-REROUTE-OLD-ARRIVAL-BEFORE-ACK");
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT envelope #>> '{payload,destinationFacilityReference}' "
+                      + "FROM platform_eventing.internal_event WHERE event_id = ?",
+                  String.class,
+                  oldDestinationArrivalEventId))
+          .isEqualTo(scope.destinationFacilityId());
     }
     grantTransportAuthority(
         scope, "synthetic-reroute-operator", "TransportDestinationChangeAuthority");
@@ -1116,6 +1229,64 @@ class TransferJourneyCommandsApiIT {
                         + "\"}"))
         .andExpect(status().isCreated())
         .andExpect(jsonPath("$.outcome").value(transportOutcome));
+    if (oldArrivalEventAfterAck) {
+      UUID resolutionEventId =
+          jdbc.queryForObject(
+              "SELECT resolution_event_id FROM transport.destination_change_operation "
+                  + "WHERE operation_id = ?",
+              UUID.class,
+              transportDestinationChangeId);
+      destinationChangeRecovery.handle(internalEvent(resolutionEventId));
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT status FROM transfer.destination_change_operation WHERE operation_id = ?",
+                  String.class,
+                  UUID.fromString(operationId)))
+          .as("an earlier old-destination arrival prevents applying a later transport ACK")
+          .isEqualTo("RECONCILIATION_REQUIRED");
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT facility_id FROM transfer.active_destination WHERE transfer_id = ?",
+                  UUID.class,
+                  UUID.fromString(transferId)))
+          .isEqualTo(UUID.fromString(scope.destinationFacilityId()));
+      transportMovementEventHandler.handle(internalEvent(oldDestinationArrivalEventId));
+      assertThat(transferStatus(transferId)).isEqualTo("ARRIVED");
+      long reconciliationVersion =
+          jdbc.queryForObject(
+              "SELECT version FROM transfer.destination_change_operation WHERE operation_id = ?",
+              Long.class,
+              UUID.fromString(operationId));
+      mockMvc
+          .perform(
+              post(
+                      "/api/v1/transfers/{transferId}/destination-changes/{operationId}/reconciliation",
+                      transferId,
+                      operationId)
+                  .header("Authorization", "Bearer " + token(SENDER))
+                  .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                  .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                  .header("X-AyuVahak-Facility-Id", scope.originFacilityId())
+                  .header("Idempotency-Key", "reroute-old-arrival-before-ack-resolution")
+                  .contentType("application/json")
+                  .content(
+                      "{\"expectedVersion\":"
+                          + reconciliationVersion
+                          + ",\"resolution\":\"RETAIN_OLD_DESTINATION\","
+                          + "\"evidenceReference\":\"synthetic:old-arrival-before-ack\","
+                          + "\"occurredAt\":\""
+                          + Instant.now()
+                          + "\"}"))
+          .andExpect(status().isAccepted())
+          .andExpect(jsonPath("$.status").value("PROPOSED_HOLD_RELEASE_PENDING"));
+      assertThat(destinationChangeRecovery.recoverPendingCapacityReleases(10)).isEqualTo(1);
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT status FROM transfer.destination_change_operation WHERE operation_id = ?",
+                  String.class,
+                  UUID.fromString(operationId)))
+          .isEqualTo("RESOLVED");
+    }
     if (providerOutcome.equals("ARRIVAL_EVENT_BEFORE_RESOLUTION_EVENT")) {
       transportEvidenceCommand(
               scope,
@@ -1255,17 +1426,19 @@ class TransferJourneyCommandsApiIT {
         .isEqualTo(
             providerOutcome.equals("STALE_ACCEPTED")
                 ? "ACCEPTED_DESTINATION_CHANGE_NO_LONGER_APPLICABLE"
-                : providerOutcome.equals("ARRIVAL_BEFORE_ACK")
-                    ? "DESTINATION_CHANGE_LINKAGE_OR_STATE_CONFLICT"
-                    : "TRANSPORT_DESTINATION_CHANGE_" + transportOutcome);
-    if (providerOutcome.equals("ARRIVAL_BEFORE_ACK")) {
+                : oldArrivalEventAfterAck
+                    ? "ACCEPTED_DESTINATION_CHANGE_NO_LONGER_APPLICABLE"
+                    : arrivalBeforeAck
+                        ? "LATE_PROVIDER_OUTCOME_AFTER_RECONCILIATION"
+                        : "TRANSPORT_DESTINATION_CHANGE_" + transportOutcome);
+    if (arrivalBeforeAck) {
       assertThat(transferStatus(transferId)).isEqualTo("ARRIVED");
       assertThat(
               jdbc.queryForObject(
                   "SELECT status FROM transfer.destination_change_operation WHERE operation_id = ?",
                   String.class,
                   UUID.fromString(operationId)))
-          .isEqualTo("RECONCILIATION_REQUIRED");
+          .isEqualTo("RESOLVED");
       assertThat(
               jdbc.queryForObject(
                   "SELECT facility_id FROM transfer.active_destination WHERE transfer_id = ?",
@@ -1278,35 +1451,7 @@ class TransferJourneyCommandsApiIT {
                       + "WHERE transfer_id = ? AND reservation_status IN ('ACTIVE', 'AT_RISK')",
                   Integer.class,
                   UUID.fromString(transferId)))
-          .isEqualTo(2);
-      long reconciliationVersion =
-          jdbc.queryForObject(
-              "SELECT version FROM transfer.destination_change_operation WHERE operation_id = ?",
-              Long.class,
-              UUID.fromString(operationId));
-      String reconciliationBody =
-          "{\"expectedVersion\":"
-              + reconciliationVersion
-              + ",\"resolution\":\"RETAIN_OLD_DESTINATION\","
-              + "\"evidenceReference\":\"synthetic:old-destination-confirmed\","
-              + "\"occurredAt\":\""
-              + Instant.now()
-              + "\"}";
-      mockMvc
-          .perform(
-              post(
-                      "/api/v1/transfers/{transferId}/destination-changes/{operationId}/reconciliation",
-                      transferId,
-                      operationId)
-                  .header("Authorization", "Bearer " + token(SENDER))
-                  .header("X-AyuVahak-Execution-Scope", "FACILITY")
-                  .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
-                  .header("X-AyuVahak-Facility-Id", scope.originFacilityId())
-                  .header("Idempotency-Key", "reroute-keep-old-after-arrival")
-                  .contentType("application/json")
-                  .content(reconciliationBody))
-          .andExpect(status().isAccepted())
-          .andExpect(jsonPath("$.status").value("PROPOSED_HOLD_RELEASE_PENDING"));
+          .isEqualTo(1);
       assertThat(
               jdbc.queryForObject(
                   "SELECT COUNT(*) FROM transfer.destination_change_reconciliation "
@@ -1314,35 +1459,36 @@ class TransferJourneyCommandsApiIT {
                   Integer.class,
                   UUID.fromString(operationId)))
           .isEqualTo(1);
-      mockMvc
-          .perform(
-              post(
-                      "/api/v1/transfers/{transferId}/destination-changes/{operationId}/reconciliation",
-                      transferId,
-                      operationId)
-                  .header("Authorization", "Bearer " + token(SENDER))
-                  .header("X-AyuVahak-Execution-Scope", "FACILITY")
-                  .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
-                  .header("X-AyuVahak-Facility-Id", scope.originFacilityId())
-                  .header("Idempotency-Key", "reroute-keep-old-after-arrival")
-                  .contentType("application/json")
-                  .content(reconciliationBody))
-          .andExpect(status().isAccepted())
-          .andExpect(header().string("Idempotency-Replayed", "true"));
       assertThat(
               jdbc.queryForObject(
-                  "SELECT COUNT(*) FROM transfer.destination_change_reconciliation "
-                      + "WHERE operation_id = ?",
+                  "SELECT COUNT(*) FROM capacity.coordination_reservation "
+                      + "WHERE transfer_id = ? AND reservation_status IN ('ACTIVE', 'AT_RISK')",
                   Integer.class,
-                  UUID.fromString(operationId)))
+                  UUID.fromString(transferId)))
           .isEqualTo(1);
-      assertThat(destinationChangeRecovery.recoverPendingCapacityReleases(10)).isEqualTo(1);
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT provider_outcome FROM transfer.destination_change_operation "
+                      + "WHERE operation_id = ?",
+                  String.class,
+                  UUID.fromString(operationId)))
+          .isNull();
+      return;
+    }
+    if (oldArrivalEventAfterAck) {
+      assertThat(transferStatus(transferId)).isEqualTo("ARRIVED");
       assertThat(
               jdbc.queryForObject(
                   "SELECT status FROM transfer.destination_change_operation WHERE operation_id = ?",
                   String.class,
                   UUID.fromString(operationId)))
           .isEqualTo("RESOLVED");
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT facility_id FROM transfer.active_destination WHERE transfer_id = ?",
+                  UUID.class,
+                  UUID.fromString(transferId)))
+          .isEqualTo(UUID.fromString(scope.destinationFacilityId()));
       assertThat(
               jdbc.queryForObject(
                   "SELECT COUNT(*) FROM capacity.coordination_reservation "

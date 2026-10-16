@@ -2,6 +2,7 @@ package org.ayuvahak.transport.application;
 
 import java.time.Instant;
 import java.util.Optional;
+import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.InternalId;
 import org.ayuvahak.transport.domain.TransportAssignmentObservation;
 import org.ayuvahak.transport.domain.TransportEtaObservation;
@@ -25,6 +26,9 @@ public interface TransportEvidenceStore {
   Optional<Instant> latestAppliedStatusTime(InternalId requestId, String sourceNamespace);
 
   boolean hasConfirmedPatientMovement(InternalId requestId);
+
+  boolean hasArrivalAtOrBefore(
+      InternalId requestId, ExternalReference destinationFacility, Instant cutoff);
 
   Optional<Instant> latestEtaTime(InternalId requestId, String sourceNamespace);
 

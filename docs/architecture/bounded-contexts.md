@@ -6,7 +6,7 @@ FHIR, IPS, SMART, mCSD, DHIS2, HAPI, Spring, PostgreSQL/PostGIS, a routing provi
 
 ## Context definitions
 
-Volume II's implemented business contexts are Directory, Capacity, Referral, Matching, and Transfer. They were implemented sequentially in Phases 3–7. Volume III design adds Transport as a new business context for Phase 10; it is not part of the frozen Volume II implementation and remains unimplemented. Notifications and Analytics remain outside Volume III's authorized Phase 8–10 scope. The [Volume II context map](volume-2-core-care-coordination.md#context-model) shows the frozen five-context collaboration; [Volume III architecture](volume-3-interoperability-security-transport.md) defines the design-only extension.
+Volume II's implemented business contexts are Directory, Capacity, Referral, Matching, and Transfer. They were implemented sequentially in Phases 3–7. Volume III adds standards/exchange adapters and Transport as a distinct business context. Phases 8 and 9 are implemented and frozen; Phase 10 Transport implementation is in progress and has not yet passed its acceptance gate. Notifications and Analytics remain outside Volume III's authorized Phase 8–10 scope. The [Volume II context map](volume-2-core-care-coordination.md#context-model) shows the frozen five-context collaboration; [Volume III architecture](volume-3-interoperability-security-transport.md) defines the approved extension.
 
 ### Directory
 
@@ -65,7 +65,7 @@ Volume II's implemented business contexts are Directory, Capacity, Referral, Mat
 
 ### Transport
 
-**Phase status:** Volume III design only; Phase 10 is specified, but no Transport entity, dispatch adapter, endpoint, schema, or implementation is part of frozen Phases 3–7. In Volume II, Transfer records only an attributed reported `IN_TRANSIT` state and does not claim to coordinate or control transport.
+**Phase status:** Phase 10 implementation is in progress under the frozen Volume III design and Phase 10 specification. Transport is not part of frozen Phases 3–7. In Volume II, Transfer records only an attributed reported `IN_TRANSIT` state and does not claim to coordinate or control transport; the Phase 10 Transport context owns its separate movement coordination facts.
 
 - **Purpose:** Coordinate and display the transport relationship needed for a Transfer.
 - **Owns:** A separate TransportRequest, provider-scoped assignment reference, attributed ETA/status/movement observations, cancellation/reconciliation outcome, provider/manual destination-change operation, and transport coordination exceptions. Provider systems remain authoritative for vehicles, crews, and dispatch algorithms. Transfer remains owner of destination-change intent and final active destination.

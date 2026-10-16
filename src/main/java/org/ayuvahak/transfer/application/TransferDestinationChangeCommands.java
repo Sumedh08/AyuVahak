@@ -254,25 +254,19 @@ public final class TransferDestinationChangeCommands {
                       HttpStatus.CONFLICT, PlatformErrorCode.IDEMPOTENCY_IN_PROGRESS, BUSY_DETAIL);
                 }
 
+                TransferProgressTarget target =
+                    transfers
+                        .lockProgressTarget(transferId)
+                        .orElseThrow(TransferDestinationChangeCommands::notFound);
+                requireOrigin(context, transferId, target);
                 TransferDestinationChangeOperation current =
                     transfers
                         .lockDestinationChange(operationId)
                         .filter(found -> found.transferId().equals(transferId))
                         .orElseThrow(TransferDestinationChangeCommands::notFound);
                 if (claim.state() == TransferStore.ReceiptState.REPLAY) {
-                  TransferProgressTarget target =
-                      transfers
-                          .lockProgressTarget(transferId)
-                          .orElseThrow(TransferDestinationChangeCommands::notFound);
-                  requireOrigin(context, transferId, target);
                   return new TransferDestinationChangeCommandResult(current, true);
                 }
-
-                TransferProgressTarget target =
-                    transfers
-                        .lockProgressTarget(transferId)
-                        .orElseThrow(TransferDestinationChangeCommands::notFound);
-                requireOrigin(context, transferId, target);
                 if (target.transfer().status() != CoordinatedTransfer.Status.IN_TRANSIT
                     && target.transfer().status() != CoordinatedTransfer.Status.ARRIVED) {
                   throw conflict(

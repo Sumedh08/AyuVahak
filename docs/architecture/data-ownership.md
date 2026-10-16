@@ -104,7 +104,7 @@ The following cross-check keeps the categories used by the system-context, workf
 
 ## Volume III ownership additions
 
-The categories below extend the existing authority cross-check for the Volume III design. They do not change the frozen Phase 3–7 ownership model. “Design only” means no Phase 8–10 implementation or persisted records exist yet.
+The categories below extend the existing authority cross-check for Volume III. They do not change the frozen Phase 3–7 ownership model. Phase 8 and 9 implementation is frozen; Phase 10 implementation is in progress and its acceptance record will establish the final implemented-state evidence.
 
 | Category | Authoritative source / AyuVahak owner | Representation and persistence class | Retention and synchronization | Failure behavior |
 | --- | --- | --- | --- | --- |

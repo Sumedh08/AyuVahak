@@ -34,6 +34,7 @@ import org.ayuvahak.platform.idempotency.RequestFingerprint;
 import org.ayuvahak.transfer.domain.CapacityReservationIntent;
 import org.ayuvahak.transfer.domain.CoordinatedTransfer;
 import org.ayuvahak.transfer.domain.TransferAuthorities;
+import org.ayuvahak.transfer.domain.TransferDestinationChangeOperation;
 import org.ayuvahak.transfer.domain.TransferJourney;
 import org.ayuvahak.transfer.domain.TransferProgressCorrection;
 import org.ayuvahak.transfer.domain.TransferProgressFact;
@@ -171,6 +172,9 @@ public final class TransferProgressCommands {
           if (kind == TransferProgressFact.Kind.CAPACITY_RECONFIRMATION
               && !hasReservedIntent(transferId)) {
             throw stateConflict();
+          }
+          if (kind == TransferProgressFact.Kind.ARRIVAL) {
+            requirePendingDestinationChangeReconciliation(context, target, recordedAt);
           }
           Transition transition = transition(kind, current);
           TransferProgressFact fact =
@@ -622,6 +626,96 @@ public final class TransferProgressCommands {
         .filter(intent -> intent.outcome() == CapacityReservationIntent.Outcome.RESERVED)
         .filter(intent -> intent.reservationId().isPresent())
         .isPresent();
+  }
+
+  private void requirePendingDestinationChangeReconciliation(
+      ExecutionContext context, TransferProgressTarget target, Instant recordedAt) {
+    Optional<TransferDestinationChangeOperation> unresolved =
+        store.findUnresolvedDestinationChange(target.transfer().id());
+    if (unresolved.isEmpty()) return;
+    TransferDestinationChangeOperation candidate = unresolved.orElseThrow();
+    if (candidate.status() != TransferDestinationChangeOperation.Status.TRANSPORT_ACK_PENDING
+        && candidate.status()
+            != TransferDestinationChangeOperation.Status.TRANSPORT_OUTCOME_UNKNOWN) {
+      return;
+    }
+    TransferDestinationChangeOperation current =
+        store.lockDestinationChange(candidate.id()).orElseThrow(TransferProgressCommands::notFound);
+    if (!current.transferId().equals(target.transfer().id())
+        || (current.status() != TransferDestinationChangeOperation.Status.TRANSPORT_ACK_PENDING
+            && current.status()
+                != TransferDestinationChangeOperation.Status.TRANSPORT_OUTCOME_UNKNOWN)
+        || !current.oldFacility().equals(target.receivingFacility())) {
+      return;
+    }
+    TransferDestinationChangeOperation requiringReconciliation =
+        copyDestinationChange(
+            current, TransferDestinationChangeOperation.Status.RECONCILIATION_REQUIRED, recordedAt);
+    if (!store.updateDestinationChange(requiringReconciliation, current.version())) {
+      throw stateConflict();
+    }
+    auditDestinationChangeReconciliationRequired(context, current.id(), recordedAt);
+  }
+
+  private void auditDestinationChangeReconciliationRequired(
+      ExecutionContext context, InternalId operationId, Instant recordedAt) {
+    try {
+      auditWriter
+          .getObject()
+          .recordMutation(
+              new AuditEvidence(
+                  AuditActionKind.PROTECTED_MUTATION,
+                  Optional.of(context.actor()),
+                  Optional.of(context.scope()),
+                  "TRANSFER_DESTINATION_CHANGE_OLD_DESTINATION_ARRIVAL_REQUIRES_RECONCILIATION",
+                  "TransferDestinationChange",
+                  Optional.of(operationId),
+                  recordedAt,
+                  AuditOutcome.FAILED,
+                  Optional.of("OLD_DESTINATION_ARRIVAL_BEFORE_PROVIDER_ACK"),
+                  authenticationEvidence(context.authenticationMechanism()),
+                  AuditAuthorizationOutcome.ALLOWED,
+                  context.correlationId(),
+                  Optional.of(targetContext(context.scope()))));
+    } catch (AuditPersistenceUnavailableException unavailable) {
+      throw problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          PlatformErrorCode.AUDIT_UNAVAILABLE,
+          "The destination-change exception and required audit evidence could not be committed.");
+    }
+  }
+
+  private static TransferDestinationChangeOperation copyDestinationChange(
+      TransferDestinationChangeOperation current,
+      TransferDestinationChangeOperation.Status status,
+      Instant updatedAt) {
+    return new TransferDestinationChangeOperation(
+        current.id(),
+        current.transferId(),
+        current.transportRequestId(),
+        current.oldOrganization(),
+        current.oldFacility(),
+        current.proposedOrganization(),
+        current.proposedFacility(),
+        current.recommendationId(),
+        current.referralRevision(),
+        current.reasonCode(),
+        current.reservationPlan(),
+        status,
+        current.capacityReservationOperationId(),
+        current.capacityReservationOutcome(),
+        current.oldReservationOperationId(),
+        current.oldHoldReleaseOperationId(),
+        current.proposedHoldReleaseOperationId(),
+        current.transportOperationId(),
+        current.providerOutcome(),
+        current.initiatedBy(),
+        current.originOrganization(),
+        current.originFacility(),
+        current.correlationId(),
+        current.version() + 1,
+        current.createdAt(),
+        updatedAt);
   }
 
   private CommandReceiptKey commandKey(

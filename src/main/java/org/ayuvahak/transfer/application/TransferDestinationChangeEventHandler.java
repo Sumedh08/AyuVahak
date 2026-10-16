@@ -62,6 +62,7 @@ public final class TransferDestinationChangeEventHandler implements InternalEven
   private final ExecutionContextFactory contexts;
   private final TransferSettings properties;
   private final AuthenticationProperties authentication;
+  private final TransportArrivalEvidencePort transportArrivalEvidence;
   private final TransactionTemplate transaction;
   private final Clock clock;
   private final ObjectMapper mapper;
@@ -75,6 +76,7 @@ public final class TransferDestinationChangeEventHandler implements InternalEven
       ExecutionContextFactory contexts,
       TransferSettings properties,
       AuthenticationProperties authentication,
+      TransportArrivalEvidencePort transportArrivalEvidence,
       @Lazy PlatformTransactionManager transactionManager,
       @org.springframework.beans.factory.annotation.Qualifier("auditClock") Clock clock,
       ObjectMapper mapper) {
@@ -86,6 +88,7 @@ public final class TransferDestinationChangeEventHandler implements InternalEven
     this.contexts = contexts;
     this.properties = properties;
     this.authentication = authentication;
+    this.transportArrivalEvidence = transportArrivalEvidence;
     this.transaction = new TransactionTemplate(transactionManager);
     this.clock = clock;
     this.mapper = mapper;
@@ -159,8 +162,8 @@ public final class TransferDestinationChangeEventHandler implements InternalEven
     }
 
     Revalidation revalidation =
-        outcome == ProviderOutcome.ACCEPTED
-            ? revalidateAcceptedOutcome(initial, target, context, event)
+        outcome == ProviderOutcome.ACCEPTED && !isAlreadyReconciledWithoutProviderOutcome(initial)
+            ? revalidateAcceptedOutcome(initial, target, context, event, occurredAt)
             : Revalidation.CURRENT;
     Resolution resolution =
         transaction.execute(
@@ -206,7 +209,30 @@ public final class TransferDestinationChangeEventHandler implements InternalEven
       TransferDestinationChangeOperation operation,
       TransferProgressTarget target,
       ExecutionContext context,
-      InternalEvent event) {
+      InternalEvent event,
+      Instant acknowledgementOccurredAt) {
+    ExecutionContext transportContext =
+        contexts.forBackgroundWork(
+            ActorReference.service(
+                new IssuerId(authentication.issuer()), properties.getTransportWorkerClientId()),
+            RequestedExecutionScope.facility(
+                operation.originOrganization(), operation.originFacility()),
+            operation.correlationId(),
+            Optional.of(new CausationId(event.eventId().toString())));
+    boolean earlierArrival;
+    try {
+      earlierArrival =
+          transportArrivalEvidence.hasArrivalAtOrBefore(
+              transportContext,
+              operation.transportRequestId(),
+              operation.oldFacility(),
+              acknowledgementOccurredAt);
+    } catch (RuntimeException unavailable) {
+      throw new IllegalStateException(
+          "Transport could not verify movement chronology for destination change", unavailable);
+    }
+    if (earlierArrival) return Revalidation.STALE;
+
     var journey =
         transfers.findJourney(target.transfer().journeyId()).orElseThrow(TransferNotFound::new);
     RecommendationApplicabilityResult applicability;
@@ -277,6 +303,13 @@ public final class TransferDestinationChangeEventHandler implements InternalEven
             .isPresent();
   }
 
+  private static boolean isAlreadyReconciledWithoutProviderOutcome(
+      TransferDestinationChangeOperation operation) {
+    return operation.providerOutcome().isEmpty()
+        && (operation.status() == Status.PROPOSED_HOLD_RELEASE_PENDING
+            || operation.status() == Status.RESOLVED);
+  }
+
   private Resolution applyOutcome(
       InternalEvent event,
       JsonNode payload,
@@ -291,6 +324,8 @@ public final class TransferDestinationChangeEventHandler implements InternalEven
     if (!transfers.claimConsumerEvent(event.eventId(), event.eventType(), recordedAt)) {
       return Resolution.none();
     }
+    TransferProgressTarget target =
+        transfers.lockProgressTarget(transferId).orElseThrow(TransferNotFound::new);
     InternalId operationId = id(payload, "transferDestinationChangeReference");
     TransferDestinationChangeOperation current =
         transfers.lockDestinationChange(operationId).orElseThrow(TransferNotFound::new);
@@ -302,6 +337,16 @@ public final class TransferDestinationChangeEventHandler implements InternalEven
       auditReconciliation(context, current.id(), reconciliationReason, recordedAt);
       transfers.completeConsumerEvent(
           event.eventId(), Optional.of(transferId), "UNLINKED_DESTINATION_CHANGE", recordedAt);
+      return Resolution.none();
+    }
+    if (isAlreadyReconciledWithoutProviderOutcome(current)) {
+      auditReconciliation(
+          context, current.id(), "LATE_PROVIDER_OUTCOME_AFTER_RECONCILIATION", recordedAt);
+      transfers.completeConsumerEvent(
+          event.eventId(),
+          Optional.of(transferId),
+          "LATE_PROVIDER_OUTCOME_AFTER_RECONCILIATION",
+          recordedAt);
       return Resolution.none();
     }
     if (current.providerOutcome().isPresent()) {
@@ -328,8 +373,6 @@ public final class TransferDestinationChangeEventHandler implements InternalEven
       return Resolution.none();
     }
 
-    TransferProgressTarget target =
-        transfers.lockProgressTarget(transferId).orElseThrow(TransferNotFound::new);
     TransferStore.ActiveDestination active =
         transfers.findActiveDestination(transferId).orElseThrow(TransferNotFound::new);
     boolean linkedState =

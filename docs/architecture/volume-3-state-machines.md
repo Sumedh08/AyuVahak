@@ -1,6 +1,6 @@
 # Volume III state machines
 
-**Status:** Volume III design and Phases 8–10 implementation are frozen. This document remains the normative state-machine and ownership reference; acceptance evidence is in the corresponding phase and Volume III review records.
+**Status:** Volume III design is frozen. Phases 8 and 9 implementation are frozen; Phase 10 is in progress. This document remains the normative state-machine and ownership reference; acceptance evidence is in the corresponding phase and Volume III review records.
 
 The models are conceptual owner state, not provider-specific status mirrors. Every observation records source/actor, occurred time, received/recorded time, correlation, and sequence/version when supplied. Conflicting or out-of-order evidence is retained and reconciled; it does not rewrite prior facts.
 

@@ -111,6 +111,25 @@ public class JdbcTransportEvidenceStore implements TransportEvidenceStore {
   }
 
   @Override
+  public boolean hasArrivalAtOrBefore(
+      InternalId requestId, ExternalReference destinationFacility, Instant cutoff) {
+    Boolean arrivalRecorded =
+        jdbc.queryForObject(
+            "SELECT EXISTS (SELECT 1 FROM platform_eventing.internal_event "
+                + "WHERE producer_context = 'transport' "
+                + "AND event_type = 'transport.arrival-reported.v1' "
+                + "AND aggregate_ref = ? "
+                + "AND envelope #>> '{payload,evidenceKind}' = 'ARRIVED_DESTINATION' "
+                + "AND envelope #>> '{payload,destinationFacilityReference}' = ? "
+                + "AND (envelope ->> 'occurredAt')::timestamptz <= ?)",
+            Boolean.class,
+            "transport-request/" + requestId,
+            destinationFacility.value(),
+            Timestamp.from(cutoff));
+    return Boolean.TRUE.equals(arrivalRecorded);
+  }
+
+  @Override
   public Optional<Instant> latestEtaTime(InternalId requestId, String sourceNamespace) {
     return jdbc.query(
         "SELECT MAX(observed_at) AS observed_at FROM transport.eta_observation "
