@@ -240,10 +240,7 @@ public final class TransportEvidenceCommands {
                 commandKey(context, operation, target, requestId, idempotencyKey);
             TransportRequestStore.Claim claim = requests.claimReceipt(receiptKey, fingerprint, now);
             if (claim.state() == TransportRequestStore.ClaimState.KEY_REUSED) {
-              throw problem(
-                  HttpStatus.CONFLICT,
-                  PlatformErrorCode.IDEMPOTENCY_KEY_REUSED,
-                  "The Idempotency-Key was already used for different Transport evidence.");
+              throw new EvidenceConflictException("IDEMPOTENCY_KEY_REUSED");
             }
             if (claim.state() == TransportRequestStore.ClaimState.IN_PROGRESS) {
               throw problem(
@@ -259,18 +256,28 @@ public final class TransportEvidenceCommands {
               TransportEvidenceStore.EvidenceReplay source =
                   replay.orElseThrow(TransportEvidenceCommands::unavailable);
               if (!source.fingerprint().equals(fingerprint.value())) {
-                throw problem(
-                    HttpStatus.CONFLICT,
-                    PlatformErrorCode.IDEMPOTENCY_KEY_REUSED,
-                    "The Transport evidence receipt does not match the original evidence.");
+                throw new EvidenceConflictException("IDEMPOTENCY_KEY_REUSED");
               }
               return result(source, requestId, request.status().name(), true, true);
             }
             return persist.run(receiptKey, now);
           });
+    } catch (EvidenceConflictException conflict) {
+      auditEvidenceConflict(context, requestId, conflict.reasonCode());
+      if (conflict.reasonCode().equals("IDEMPOTENCY_KEY_REUSED")) {
+        throw problem(
+            HttpStatus.CONFLICT,
+            PlatformErrorCode.IDEMPOTENCY_KEY_REUSED,
+            "The Idempotency-Key was already used for different Transport evidence.");
+      }
+      throw problem(
+          HttpStatus.CONFLICT,
+          PlatformErrorCode.TRANSPORT_EVIDENCE_CONFLICT,
+          "The source observation identifier is already attached to different evidence.");
     } catch (CannotAcquireLockException busy) {
       throw problem(HttpStatus.CONFLICT, PlatformErrorCode.IDEMPOTENCY_IN_PROGRESS, BUSY_DETAIL);
     } catch (DuplicateKeyException conflict) {
+      auditEvidenceConflict(context, requestId, "SOURCE_OBSERVATION_ID_CONFLICT");
       throw problem(
           HttpStatus.CONFLICT,
           PlatformErrorCode.TRANSPORT_EVIDENCE_CONFLICT,
@@ -585,10 +592,7 @@ public final class TransportEvidenceCommands {
       CommandReceiptKey receiptKey,
       Instant now) {
     if (!source.fingerprint().equals(fingerprint.value())) {
-      throw problem(
-          HttpStatus.CONFLICT,
-          PlatformErrorCode.TRANSPORT_EVIDENCE_CONFLICT,
-          "The source observation identifier is already attached to different evidence.");
+      throw new EvidenceConflictException("SOURCE_OBSERVATION_ID_CONFLICT");
     }
     requests.completeReceipt(receiptKey, request.id(), now);
     return result(source, request.id(), request.status().name(), false, true);
@@ -696,6 +700,31 @@ public final class TransportEvidenceCommands {
           HttpStatus.SERVICE_UNAVAILABLE,
           PlatformErrorCode.AUDIT_UNAVAILABLE,
           "Transport withheld the evidence because scope-denial audit is unavailable.");
+    }
+  }
+
+  private void auditEvidenceConflict(
+      ExecutionContext context, InternalId requestId, String reasonCode) {
+    try {
+      audit.recordNonMutating(
+          new AuditEvidence(
+              AuditActionKind.SECURITY_OUTCOME,
+              Optional.of(context.actor()),
+              Optional.of(context.scope()),
+              "TRANSPORT_EVIDENCE_CONFLICT",
+              "TransportRequest",
+              Optional.of(requestId),
+              clock.instant(),
+              AuditOutcome.FAILED,
+              Optional.of(reasonCode),
+              authenticationEvidence(context),
+              AuditAuthorizationOutcome.ALLOWED,
+              context.correlationId()));
+    } catch (AuditPersistenceUnavailableException unavailable) {
+      throw problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          PlatformErrorCode.AUDIT_UNAVAILABLE,
+          "Transport withheld the conflicting evidence because audit is unavailable.");
     }
   }
 
@@ -935,5 +964,17 @@ public final class TransportEvidenceCommands {
 
   private interface EvidenceWork {
     TransportEvidenceCommandResult run(CommandReceiptKey receiptKey, Instant recordedAt);
+  }
+
+  private static final class EvidenceConflictException extends RuntimeException {
+    private final String reasonCode;
+
+    private EvidenceConflictException(String reasonCode) {
+      this.reasonCode = Objects.requireNonNull(reasonCode, "reason code");
+    }
+
+    private String reasonCode() {
+      return reasonCode;
+    }
   }
 }

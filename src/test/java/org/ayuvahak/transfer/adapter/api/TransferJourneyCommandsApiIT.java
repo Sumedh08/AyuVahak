@@ -2992,12 +2992,41 @@ class TransferJourneyCommandsApiIT {
             scope,
             requestId,
             "assignments",
-            "transport-assignment-changed-fingerprint",
+            "transport-assignment-source-conflict",
             operator,
             assignmentBody.replace(
                 "SYN-ASSIGNMENT-001\",\"occurredAt", "SYN-ASSIGNMENT-OTHER\",\"occurredAt"))
         .andExpect(status().isConflict())
         .andExpect(jsonPath("$.code").value("TRANSPORT_EVIDENCE_CONFLICT"));
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = "
+                    + "'TRANSPORT_EVIDENCE_CONFLICT' AND reason_code = "
+                    + "'SOURCE_OBSERVATION_ID_CONFLICT' AND target_id = '"
+                    + requestId
+                    + "'::uuid"))
+        .as("a conflicting source observation is durably audited without its payload")
+        .isEqualTo(1);
+
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "assignments",
+            "transport-assignment-001",
+            operator,
+            assignmentBody.replace(
+                "SYN-ASSIGNMENT-001\",\"occurredAt", "SYN-ASSIGNMENT-OTHER\",\"occurredAt"))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("IDEMPOTENCY_KEY_REUSED"));
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = "
+                    + "'TRANSPORT_EVIDENCE_CONFLICT' AND reason_code = "
+                    + "'IDEMPOTENCY_KEY_REUSED' AND target_id = '"
+                    + requestId
+                    + "'::uuid"))
+        .as("an idempotency key reused for changed evidence is durably audited")
+        .isEqualTo(1);
 
     transportEvidenceCommand(
             scope,
@@ -3027,7 +3056,7 @@ class TransferJourneyCommandsApiIT {
             jdbc.queryForObject(
                 "SELECT COUNT(*) FROM audit.audit_record WHERE action_code LIKE 'TRANSPORT_%'",
                 Integer.class))
-        .isEqualTo(4);
+        .isEqualTo(6);
     assertThat(
             jdbc.queryForObject(
                 "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
