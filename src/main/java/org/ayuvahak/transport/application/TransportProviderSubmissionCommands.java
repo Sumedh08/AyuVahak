@@ -15,12 +15,19 @@ import org.ayuvahak.platform.audit.domain.AuditAuthorizationOutcome;
 import org.ayuvahak.platform.audit.domain.AuditEvidence;
 import org.ayuvahak.platform.audit.domain.AuditOutcome;
 import org.ayuvahak.platform.audit.domain.AuditTargetContext;
+import org.ayuvahak.platform.authentication.AuthenticationProperties;
 import org.ayuvahak.platform.authorization.application.AuthorizationService;
 import org.ayuvahak.platform.core.ActorKind;
+import org.ayuvahak.platform.core.ActorReference;
+import org.ayuvahak.platform.core.CausationId;
+import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.InternalId;
+import org.ayuvahak.platform.core.IssuerId;
 import org.ayuvahak.platform.executioncontext.AuthenticationMechanism;
 import org.ayuvahak.platform.executioncontext.ExecutionContext;
+import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
 import org.ayuvahak.platform.executioncontext.ExecutionScope;
+import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
 import org.ayuvahak.transport.domain.TransportAuthorities;
 import org.ayuvahak.transport.domain.TransportCancellationOperation;
 import org.ayuvahak.transport.domain.TransportDestinationChangeOperation;
@@ -46,8 +53,11 @@ public final class TransportProviderSubmissionCommands {
   private final TransportDestinationChangeStore destinationChanges;
   private final TransportProviderSubmissionStore submissions;
   private final TransportProviderSubmissionPort provider;
+  private final TransferDestinationChangeEligibilityPort transferEligibility;
   private final AuthorizationService authorization;
   private final AuditWriter audit;
+  private final ExecutionContextFactory contexts;
+  private final AuthenticationProperties authentication;
   private final TransactionTemplate transaction;
   private final Clock clock;
   private final TransportSettings properties;
@@ -58,8 +68,11 @@ public final class TransportProviderSubmissionCommands {
       TransportDestinationChangeStore destinationChanges,
       TransportProviderSubmissionStore submissions,
       TransportProviderSubmissionPort provider,
+      TransferDestinationChangeEligibilityPort transferEligibility,
       AuthorizationService authorization,
       AuditWriter audit,
+      ExecutionContextFactory contexts,
+      AuthenticationProperties authentication,
       PlatformTransactionManager transactionManager,
       @org.springframework.beans.factory.annotation.Qualifier("auditClock") Clock clock,
       TransportSettings properties) {
@@ -69,8 +82,12 @@ public final class TransportProviderSubmissionCommands {
         Objects.requireNonNull(destinationChanges, "Transport destination changes");
     this.submissions = Objects.requireNonNull(submissions, "Transport provider submissions");
     this.provider = Objects.requireNonNull(provider, "Transport provider port");
+    this.transferEligibility =
+        Objects.requireNonNull(transferEligibility, "Transfer destination-change eligibility");
     this.authorization = Objects.requireNonNull(authorization, "authorization");
     this.audit = Objects.requireNonNull(audit, "audit writer");
+    this.contexts = Objects.requireNonNull(contexts, "execution context factory");
+    this.authentication = Objects.requireNonNull(authentication, "authentication properties");
     this.transaction = new TransactionTemplate(Objects.requireNonNull(transactionManager));
     this.clock = Objects.requireNonNull(clock, "audit clock");
     this.properties = Objects.requireNonNull(properties, "Transport properties");
@@ -236,9 +253,18 @@ public final class TransportProviderSubmissionCommands {
       return Optional.of(new SubmissionResult(prepared.submission(), true));
     }
 
+    TransportProviderSubmissionRequest providerRequest = prepared.request().orElseThrow();
+    if (kind == TransportProviderSubmission.OperationKind.DESTINATION_CHANGE) {
+      TransferDestinationChangeEligibility eligibility =
+          recheckDestinationChangeEligibility(context, providerRequest);
+      if (eligibility.outcome() != TransferDestinationChangeEligibility.Outcome.ELIGIBLE) {
+        return Optional.of(recordEligibilityOutcome(context, operationReference, eligibility));
+      }
+    }
+
     TransportProviderSubmissionResult submitted;
     try {
-      submitted = provider.submit(prepared.request().orElseThrow());
+      submitted = provider.submit(providerRequest);
     } catch (RuntimeException uncertain) {
       submitted =
           new TransportProviderSubmissionResult(
@@ -378,7 +404,8 @@ public final class TransportProviderSubmissionCommands {
               TransportCancellationOperation.State.OUTCOME_UNKNOWN)) {
         throw unavailable();
       }
-      auditBusinessOperation(context, operationReference, "TRANSPORT_CANCELLATION_OUTCOME_UNKNOWN");
+      auditBusinessOperation(
+          context, operationReference, "TRANSPORT_CANCELLATION_OUTCOME_UNKNOWN", "OUTCOME_UNKNOWN");
     } else if (kind == TransportProviderSubmission.OperationKind.DESTINATION_CHANGE) {
       TransportDestinationChangeOperation current =
           destinationChanges
@@ -393,7 +420,127 @@ public final class TransportProviderSubmissionCommands {
         throw unavailable();
       }
       auditBusinessOperation(
-          context, operationReference, "TRANSPORT_DESTINATION_CHANGE_OUTCOME_UNKNOWN");
+          context,
+          operationReference,
+          "TRANSPORT_DESTINATION_CHANGE_OUTCOME_UNKNOWN",
+          "OUTCOME_UNKNOWN");
+    }
+  }
+
+  private TransferDestinationChangeEligibility recheckDestinationChangeEligibility(
+      ExecutionContext operatorContext, TransportProviderSubmissionRequest request) {
+    try {
+      TransportDestinationChangeOperation operation =
+          destinationChanges
+              .find(request.operationReference())
+              .orElseThrow(TransportProviderSubmissionCommands::notFound);
+      if (operation.state() != TransportDestinationChangeOperation.State.PENDING
+          || !operation.transferId().equals(request.transferId())
+          || !operation.transportRequestId().equals(request.transportRequestId())) {
+        return ineligible();
+      }
+      ActorReference worker =
+          ActorReference.service(
+              new IssuerId(authentication.issuer()), properties.getWorkerClientId());
+      ExecutionContext serviceContext =
+          contexts.forBackgroundWork(
+              worker,
+              RequestedExecutionScope.facility(
+                  operatorContext.scope().organization().orElseThrow(), request.originFacility()),
+              operatorContext.correlationId(),
+              Optional.of(new CausationId(operation.id().toString())));
+      return transferEligibility.check(
+          serviceContext,
+          operation.transferId(),
+          operation.transportRequestId(),
+          operation.transferDestinationChangeId(),
+          facilityReference(operation.oldFacilityId()),
+          facilityReference(operation.proposedFacilityId()));
+    } catch (RuntimeException unavailable) {
+      return unavailableEligibility();
+    }
+  }
+
+  private SubmissionResult recordEligibilityOutcome(
+      ExecutionContext context,
+      InternalId operationReference,
+      TransferDestinationChangeEligibility eligibility) {
+    try {
+      return Objects.requireNonNull(
+          transaction.execute(
+              ignored -> {
+                TransportProviderSubmission current =
+                    submissions
+                        .findForUpdate(
+                            TransportProviderSubmission.OperationKind.DESTINATION_CHANGE,
+                            operationReference)
+                        .orElseThrow(TransportProviderSubmissionCommands::notFound);
+                if (current.state() != TransportProviderSubmission.State.ATTEMPTING) {
+                  return new SubmissionResult(current, true);
+                }
+                boolean transferRejected =
+                    eligibility.outcome()
+                        == TransferDestinationChangeEligibility.Outcome.INELIGIBLE;
+                TransportProviderSubmission.State state =
+                    transferRejected
+                        ? TransportProviderSubmission.State.REJECTED
+                        : TransportProviderSubmission.State.RETRY_PENDING;
+                String failureCode =
+                    transferRejected ? "TRANSFER_NOT_ELIGIBLE" : "TRANSFER_UNAVAILABLE";
+                Instant now = clock.instant();
+                if (!submissions.transition(
+                    operationReference,
+                    TransportProviderSubmission.OperationKind.DESTINATION_CHANGE,
+                    current.version(),
+                    state,
+                    current.configurationVersion(),
+                    Optional.empty(),
+                    Optional.of(failureCode),
+                    now)) {
+                  throw unavailable();
+                }
+                TransportProviderSubmission result =
+                    new TransportProviderSubmission(
+                        current.operationReference(),
+                        current.transportRequestId(),
+                        current.operationKind(),
+                        current.partnerKey(),
+                        state,
+                        current.attemptCount(),
+                        current.configurationVersion(),
+                        Optional.empty(),
+                        Optional.of(failureCode),
+                        current.createdAt(),
+                        now,
+                        current.version() + 1);
+                auditMutation(context, result, "TRANSPORT_PROVIDER_SUBMISSION_" + state.name());
+                if (transferRejected) {
+                  TransportDestinationChangeOperation operation =
+                      destinationChanges
+                          .lock(operationReference)
+                          .orElseThrow(TransportProviderSubmissionCommands::notFound);
+                  if (operation.state() != TransportDestinationChangeOperation.State.RESOLVED
+                      && operation.state()
+                          != TransportDestinationChangeOperation.State.RECONCILIATION_REQUIRED) {
+                    if (!destinationChanges.markUncertain(
+                        operationReference,
+                        operation.version(),
+                        TransportDestinationChangeOperation.State.RECONCILIATION_REQUIRED,
+                        now)) {
+                      throw unavailable();
+                    }
+                  }
+                  auditBusinessOperation(
+                      context,
+                      operationReference,
+                      "TRANSPORT_DESTINATION_CHANGE_SUBMISSION_BLOCKED",
+                      failureCode);
+                }
+                return new SubmissionResult(result, false);
+              }),
+          "Transfer eligibility outcome");
+    } catch (DataAccessException unavailable) {
+      throw unavailable();
     }
   }
 
@@ -494,7 +641,8 @@ public final class TransportProviderSubmissionCommands {
     }
   }
 
-  private void auditBusinessOperation(ExecutionContext context, InternalId id, String action) {
+  private void auditBusinessOperation(
+      ExecutionContext context, InternalId id, String action, String evidence) {
     try {
       audit.recordMutation(
           new AuditEvidence(
@@ -506,7 +654,7 @@ public final class TransportProviderSubmissionCommands {
               Optional.of(id),
               clock.instant(),
               AuditOutcome.SUCCEEDED,
-              Optional.of("OUTCOME_UNKNOWN"),
+              Optional.of(evidence),
               authenticationEvidence(context),
               AuditAuthorizationOutcome.ALLOWED,
               context.correlationId(),
@@ -551,6 +699,21 @@ public final class TransportProviderSubmissionCommands {
         HttpStatus.SERVICE_UNAVAILABLE,
         PlatformErrorCode.TRANSPORT_UNAVAILABLE,
         "Transport provider submission could not be recovered safely.");
+  }
+
+  private static ExternalReference facilityReference(InternalId facilityId) {
+    return new ExternalReference(
+        new IssuerId("urn:ayuvahak:directory"), "Facility", facilityId.toString());
+  }
+
+  private static TransferDestinationChangeEligibility ineligible() {
+    return new TransferDestinationChangeEligibility(
+        TransferDestinationChangeEligibility.Outcome.INELIGIBLE, "TRANSFER_NOT_ELIGIBLE");
+  }
+
+  private static TransferDestinationChangeEligibility unavailableEligibility() {
+    return new TransferDestinationChangeEligibility(
+        TransferDestinationChangeEligibility.Outcome.UNAVAILABLE, "TRANSFER_UNAVAILABLE");
   }
 
   private static PlatformProblemException conflict(String detail) {

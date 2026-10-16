@@ -24,6 +24,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Date;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -118,6 +119,7 @@ import tools.jackson.databind.ObjectMapper;
       "ayuvahak.transfer.reservation-duration=PT2H",
       "ayuvahak.transfer.expiry-polling-enabled=false",
       "ayuvahak.transfer.reservation-polling-enabled=false",
+      "ayuvahak.transport.provider-partner-key=SYNTHETIC-TRANSPORT-PROVIDER",
       "ayuvahak.capacity.reservation-lifecycle.enabled=false",
       "ayuvahak.eventing.outbox.dispatcher-enabled=false"
     })
@@ -165,6 +167,7 @@ class TransferJourneyCommandsApiIT {
   @Autowired private ExecutionContextFactory executionContexts;
   @Autowired private AutowireCapableBeanFactory beanFactory;
   @Autowired private StubCapacityReservationPort capacityPort;
+  @Autowired private StubTransportProviderSubmissionPort providerSubmissionPort;
   @Autowired private TransferOwnerEventHandler ownerEventHandler;
   @Autowired private EventEnvelopeJsonCodec eventCodec;
   @Autowired private OutboxDispatcher outboxDispatcher;
@@ -242,6 +245,7 @@ class TransferJourneyCommandsApiIT {
     jdbc.update("DELETE FROM transport.cancellation_operation");
     jdbc.update("DELETE FROM transport.destination_change_evidence");
     jdbc.update("DELETE FROM transport.destination_change_operation");
+    jdbc.update("DELETE FROM transport.provider_submission");
     jdbc.update("DELETE FROM transport.command_receipt");
     jdbc.update("DELETE FROM transport.transport_request");
     jdbc.update("DELETE FROM audit.audit_record");
@@ -252,6 +256,7 @@ class TransferJourneyCommandsApiIT {
     transferProperties.setReservationPollInterval(java.time.Duration.ofSeconds(15));
     matching.reset();
     capacityPort.reset();
+    providerSubmissionPort.reset();
   }
 
   @Test
@@ -838,6 +843,8 @@ class TransferJourneyCommandsApiIT {
     grantTransportAuthority(scope, "synthetic-reroute-operator", "TransportStatusAuthority");
     grantTransportAuthority(
         scope, "synthetic-reroute-operator", "TransportDispatchCoordinationAuthority");
+    grantTransportAuthority(
+        scope, "synthetic-reroute-operator", "TransportDestinationChangeAuthority");
     grantOwnerEventConsumer(scope, scope.originFacilityId(), "TransferProgressAuthority");
     Instant base = Instant.now().minusSeconds(30);
     transportEvidenceCommand(
@@ -1168,6 +1175,36 @@ class TransferJourneyCommandsApiIT {
                   "TRANSFER_DESTINATION_CHANGE_OLD_DESTINATION_ARRIVAL_REQUIRES_RECONCILIATION",
                   UUID.fromString(operationId)))
           .isEqualTo(1);
+      mockMvc
+          .perform(
+              post(
+                      "/api/v1/transport-requests/{transportRequestId}/destination-change-operations/{operationId}/provider-submit",
+                      transportRequestId,
+                      transportDestinationChangeId)
+                  .header("Authorization", "Bearer " + token("synthetic-reroute-operator"))
+                  .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                  .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                  .header("X-AyuVahak-Facility-Id", scope.originFacilityId()))
+          .andExpect(status().isAccepted())
+          .andExpect(jsonPath("$.state").value("REJECTED"))
+          .andExpect(jsonPath("$.failureCode").value("TRANSFER_NOT_ELIGIBLE"));
+      assertThat(providerSubmissionPort.submissionCount())
+          .as("a stale reroute must not be sent after Transfer records old-destination Arrival")
+          .isZero();
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT submission_state FROM transport.provider_submission "
+                      + "WHERE operation_reference = ? AND operation_kind = 'DESTINATION_CHANGE'",
+                  String.class,
+                  transportDestinationChangeId))
+          .isEqualTo("REJECTED");
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT operation_state FROM transport.destination_change_operation "
+                      + "WHERE operation_id = ?",
+                  String.class,
+                  transportDestinationChangeId))
+          .isEqualTo("RECONCILIATION_REQUIRED");
       long reconciliationVersion =
           jdbc.queryForObject(
               "SELECT version FROM transfer.destination_change_operation WHERE operation_id = ?",
@@ -1239,8 +1276,6 @@ class TransferJourneyCommandsApiIT {
                   oldDestinationArrivalEventId))
           .isEqualTo(scope.destinationFacilityId());
     }
-    grantTransportAuthority(
-        scope, "synthetic-reroute-operator", "TransportDestinationChangeAuthority");
     Instant previousAcknowledgmentAt = Instant.now().minusSeconds(2);
     if (providerOutcome.equals("REGRESSED_ACK_TIME")) {
       insertPriorAcceptedTransportDestinationChange(
@@ -9208,6 +9243,37 @@ class TransferJourneyCommandsApiIT {
     @Primary
     StubCapacityReservationPort capacityReservationPort(CapacityReservationCommands commands) {
       return new StubCapacityReservationPort(commands);
+    }
+
+    @Bean
+    @Primary
+    StubTransportProviderSubmissionPort transportProviderSubmissionPort() {
+      return new StubTransportProviderSubmissionPort();
+    }
+  }
+
+  static class StubTransportProviderSubmissionPort
+      implements org.ayuvahak.transport.application.TransportProviderSubmissionPort {
+    private final java.util.concurrent.atomic.AtomicInteger submissionCount =
+        new java.util.concurrent.atomic.AtomicInteger();
+
+    @Override
+    public org.ayuvahak.transport.application.TransportProviderSubmissionResult submit(
+        org.ayuvahak.transport.application.TransportProviderSubmissionRequest request) {
+      submissionCount.incrementAndGet();
+      return new org.ayuvahak.transport.application.TransportProviderSubmissionResult(
+          org.ayuvahak.transport.domain.TransportProviderSubmission.State.ACKNOWLEDGED,
+          Optional.of(1),
+          Optional.of(202),
+          Optional.empty());
+    }
+
+    int submissionCount() {
+      return submissionCount.get();
+    }
+
+    void reset() {
+      submissionCount.set(0);
     }
   }
 
