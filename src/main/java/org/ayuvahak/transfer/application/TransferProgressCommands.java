@@ -414,6 +414,8 @@ public final class TransferProgressCommands {
             };
         yield new Transition(CoordinatedTransfer.Status.ARRIVED, exceptionCode);
       }
+      case MOVEMENT_RECONCILIATION ->
+          new Transition(current, "MOVEMENT_EVIDENCE_REQUIRES_RECONCILIATION");
       case HANDOVER -> {
         if (current != CoordinatedTransfer.Status.ARRIVED) {
           throw problem(
@@ -566,7 +568,8 @@ public final class TransferProgressCommands {
 
   private String authorityFor(TransferProgressFact.Kind kind) {
     return switch (kind) {
-      case DEPARTURE, INTERRUPTION, RESUMPTION, ARRIVAL -> TransferAuthorities.progress().code();
+      case DEPARTURE, INTERRUPTION, RESUMPTION, ARRIVAL, MOVEMENT_RECONCILIATION ->
+          TransferAuthorities.progress().code();
       case HANDOVER -> TransferAuthorities.handover().code();
       case COMPLETION -> TransferAuthorities.completion().code();
       case CANCELLATION -> TransferAuthorities.progress().code();
@@ -586,7 +589,8 @@ public final class TransferProgressCommands {
             || kind == TransferProgressFact.Kind.FINAL_ABANDONMENT
             || kind == TransferProgressFact.Kind.REFERRAL_CANCELLATION
             || kind == TransferProgressFact.Kind.CAPACITY_EXCEPTION
-            || kind == TransferProgressFact.Kind.CAPACITY_RECONFIRMATION)
+            || kind == TransferProgressFact.Kind.CAPACITY_RECONFIRMATION
+            || kind == TransferProgressFact.Kind.MOVEMENT_RECONCILIATION)
         && reasonCode.isEmpty()) {
       throw problem(
           HttpStatus.UNPROCESSABLE_ENTITY,

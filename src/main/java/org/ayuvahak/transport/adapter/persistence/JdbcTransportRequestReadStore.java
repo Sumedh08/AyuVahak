@@ -1,8 +1,10 @@
 package org.ayuvahak.transport.adapter.persistence;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import org.ayuvahak.platform.core.CorrelationId;
 import org.ayuvahak.platform.core.InternalId;
 import org.ayuvahak.transport.application.TransportRequestReadStore;
@@ -132,25 +134,109 @@ public class JdbcTransportRequestReadStore implements TransportRequestReadStore 
 
   @Override
   public List<DestinationChangeRow> destinationChanges(InternalId requestId, int limit) {
+    List<DestinationChangeRow> rows =
+        jdbc.query(
+            "SELECT operation_id, transfer_destination_change_id, transfer_id, old_facility_id, "
+                + "proposed_facility_id, reason_code, operation_state, outcome, created_at, updated_at, version "
+                + "FROM transport.destination_change_operation WHERE transport_request_id = ? "
+                + "ORDER BY created_at, operation_id LIMIT ?",
+            (row, index) ->
+                new DestinationChangeRow(
+                    id(row, "operation_id"),
+                    id(row, "transfer_destination_change_id"),
+                    id(row, "transfer_id"),
+                    id(row, "old_facility_id"),
+                    id(row, "proposed_facility_id"),
+                    row.getString("reason_code"),
+                    row.getString("operation_state"),
+                    Optional.ofNullable(row.getString("outcome")),
+                    row.getTimestamp("created_at").toInstant(),
+                    row.getTimestamp("updated_at").toInstant(),
+                    row.getLong("version"),
+                    List.of()),
+            requestId.value(),
+            limit);
+    if (rows.isEmpty()) return rows;
+
+    Map<InternalId, List<DestinationChangeEvidenceRow>> evidenceByOperation =
+        destinationChangeEvidence(rows, 50);
+    return rows.stream()
+        .map(
+            row ->
+                new DestinationChangeRow(
+                    row.operationId(),
+                    row.transferOperationId(),
+                    row.transferId(),
+                    row.oldFacilityId(),
+                    row.proposedFacilityId(),
+                    row.reasonCode(),
+                    row.state(),
+                    row.outcome(),
+                    row.createdAt(),
+                    row.updatedAt(),
+                    row.version(),
+                    evidenceByOperation.getOrDefault(row.operationId(), List.of())))
+        .toList();
+  }
+
+  private Map<InternalId, List<DestinationChangeEvidenceRow>> destinationChangeEvidence(
+      List<DestinationChangeRow> operations, int limitPerOperation) {
+    String placeholders = operations.stream().map(ignored -> "?").collect(Collectors.joining(", "));
+    String sql =
+        "WITH ranked_evidence AS (SELECT operation_id, evidence_id, reported_outcome, "
+            + "source_namespace, source_observation_id, source_occurred_at, recorded_at, "
+            + "disposition, reason_code, ROW_NUMBER() OVER (PARTITION BY operation_id "
+            + "ORDER BY recorded_at, evidence_id) AS evidence_number "
+            + "FROM transport.destination_change_evidence WHERE operation_id IN ("
+            + placeholders
+            + ")) SELECT operation_id, evidence_id, reported_outcome, source_namespace, "
+            + "source_observation_id, source_occurred_at, recorded_at, disposition, reason_code "
+            + "FROM ranked_evidence WHERE evidence_number <= ? "
+            + "ORDER BY operation_id, recorded_at, evidence_id";
+    List<Object> parameters = new java.util.ArrayList<>(operations.size() + 1);
+    operations.forEach(operation -> parameters.add(operation.operationId().value()));
+    parameters.add(limitPerOperation);
+    return jdbc
+        .query(
+            sql,
+            (row, index) ->
+                Map.entry(
+                    id(row, "operation_id"),
+                    new DestinationChangeEvidenceRow(
+                        id(row, "evidence_id"),
+                        row.getString("reported_outcome"),
+                        row.getString("source_namespace"),
+                        row.getString("source_observation_id"),
+                        row.getTimestamp("source_occurred_at").toInstant(),
+                        row.getTimestamp("recorded_at").toInstant(),
+                        row.getString("disposition"),
+                        Optional.ofNullable(row.getString("reason_code")))),
+            parameters.toArray())
+        .stream()
+        .collect(
+            Collectors.groupingBy(
+                Map.Entry::getKey, Collectors.mapping(Map.Entry::getValue, Collectors.toList())));
+  }
+
+  @Override
+  public List<DestinationChangeEvidenceRow> destinationChangeEvidence(
+      InternalId operationId, int limit) {
     return jdbc.query(
-        "SELECT operation_id, transfer_destination_change_id, transfer_id, old_facility_id, "
-            + "proposed_facility_id, reason_code, operation_state, outcome, created_at, updated_at, version "
-            + "FROM transport.destination_change_operation WHERE transport_request_id = ? "
-            + "ORDER BY created_at, operation_id LIMIT ?",
+        "SELECT evidence_id, reported_outcome, source_namespace, source_observation_id, "
+            + "source_occurred_at, recorded_at, disposition, reason_code "
+            + "FROM transport.destination_change_evidence WHERE operation_id = ? "
+            + "ORDER BY recorded_at, evidence_id LIMIT ?",
         (row, index) ->
-            new DestinationChangeRow(
-                id(row, "operation_id"),
-                id(row, "transfer_destination_change_id"),
-                id(row, "transfer_id"),
-                id(row, "old_facility_id"),
-                id(row, "proposed_facility_id"),
-                row.getString("reason_code"),
-                row.getString("operation_state"),
-                Optional.ofNullable(row.getString("outcome")),
-                row.getTimestamp("created_at").toInstant(),
-                row.getTimestamp("updated_at").toInstant(),
-                row.getLong("version")),
-        requestId.value(),
+            new DestinationChangeEvidenceRow(
+                id(row, "evidence_id"),
+                row.getString("reported_outcome"),
+                row.getString("source_namespace"),
+                row.getString("source_observation_id"),
+                row.getTimestamp("source_occurred_at").toInstant(),
+                row.getTimestamp("recorded_at").toInstant(),
+                row.getString("disposition"),
+                Optional.ofNullable(row.getString("reason_code"))),
+        operationId.value(),
         limit);
   }
 

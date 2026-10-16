@@ -115,16 +115,14 @@ public class JdbcTransportEvidenceStore implements TransportEvidenceStore {
       InternalId requestId, ExternalReference destinationFacility, Instant cutoff) {
     Boolean arrivalRecorded =
         jdbc.queryForObject(
-            "SELECT EXISTS (SELECT 1 FROM platform_eventing.internal_event "
-                + "WHERE producer_context = 'transport' "
-                + "AND event_type = 'transport.arrival-reported.v1' "
-                + "AND aggregate_ref = ? "
-                + "AND envelope #>> '{payload,evidenceKind}' = 'ARRIVED_DESTINATION' "
-                + "AND envelope #>> '{payload,destinationFacilityReference}' = ? "
-                + "AND (envelope ->> 'occurredAt')::timestamptz <= ?)",
+            "SELECT EXISTS (SELECT 1 FROM transport.status_observation "
+                + "WHERE transport_request_id = ? AND status_code = 'ARRIVED_DESTINATION' "
+                + "AND (destination_facility_id = ? OR destination_chronology_resolved = false) "
+                + "AND occurred_at <= ? "
+                + "AND observation_outcome IN ('APPLIED', 'RECONCILIATION_REQUIRED'))",
             Boolean.class,
-            "transport-request/" + requestId,
-            destinationFacility.value(),
+            requestId.value(),
+            uuid(destinationFacility),
             Timestamp.from(cutoff));
     return Boolean.TRUE.equals(arrivalRecorded);
   }
@@ -168,9 +166,10 @@ public class JdbcTransportEvidenceStore implements TransportEvidenceStore {
             "INSERT INTO transport.status_observation (status_observation_id, transport_request_id, "
                 + "source_namespace, source_observation_id, source_sequence, status_code, occurred_at, "
                 + "recorded_at, recorded_by_kind, recorded_by_issuer, recorded_by_identifier_type, "
-                + "recorded_by_identifier, authority_code, organization_id, facility_id, correlation_id, "
+                + "recorded_by_identifier, authority_code, organization_id, facility_id, "
+                + "destination_facility_id, correlation_id, "
                 + "observation_outcome, reason_code, request_status_after, resulting_request_version, fingerprint) "
-                + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             observation.id().value(),
             observation.transportRequestId().value(),
             observation.sourceNamespace(),
@@ -188,6 +187,7 @@ public class JdbcTransportEvidenceStore implements TransportEvidenceStore {
             observation.authorityCode(),
             uuid(observation.organization()),
             uuid(observation.facility()),
+            uuid(observation.destinationFacility()),
             observation.correlationId().value(),
             observation.outcome().name(),
             observation.reasonCode().orElse(null),

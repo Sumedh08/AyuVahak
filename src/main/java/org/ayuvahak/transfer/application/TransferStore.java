@@ -82,7 +82,11 @@ public interface TransferStore {
   Optional<TransferDestinationChangeOperation> findUnresolvedDestinationChange(
       InternalId transferId);
 
-  List<InternalId> findPendingDestinationChangeReleases(int limit);
+  List<InternalId> findPendingDestinationChangeReleases(
+      int limit, Optional<InternalId> afterOperationId);
+
+  List<InternalId> findPendingTransportDestinationChanges(
+      int limit, Optional<InternalId> afterOperationId);
 
   boolean updateDestinationChange(
       TransferDestinationChangeOperation operation, long expectedVersion);

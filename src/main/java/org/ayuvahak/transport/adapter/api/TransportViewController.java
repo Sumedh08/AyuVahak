@@ -293,7 +293,8 @@ public final class TransportViewController {
       String outcome,
       Instant createdAt,
       Instant updatedAt,
-      long version) {
+      long version,
+      List<DestinationChangeEvidenceView> acknowledgementEvidence) {
     static DestinationChangeView from(TransportRequestReadStore.DestinationChangeRow row) {
       return new DestinationChangeView(
           row.operationId().toString(),
@@ -306,7 +307,31 @@ public final class TransportViewController {
           row.outcome().orElse(null),
           row.createdAt(),
           row.updatedAt(),
-          row.version());
+          row.version(),
+          row.evidence().stream().map(DestinationChangeEvidenceView::from).toList());
+    }
+  }
+
+  public record DestinationChangeEvidenceView(
+      String evidenceId,
+      String reportedOutcome,
+      String sourceNamespace,
+      String sourceObservationId,
+      Instant sourceOccurredAt,
+      Instant recordedAt,
+      String disposition,
+      String reasonCode) {
+    static DestinationChangeEvidenceView from(
+        TransportRequestReadStore.DestinationChangeEvidenceRow row) {
+      return new DestinationChangeEvidenceView(
+          row.evidenceId().toString(),
+          row.reportedOutcome(),
+          row.sourceNamespace(),
+          row.sourceObservationId(),
+          row.sourceOccurredAt(),
+          row.recordedAt(),
+          row.disposition(),
+          row.reasonCode().orElse(null));
     }
   }
 

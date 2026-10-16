@@ -25,6 +25,7 @@ import org.ayuvahak.transfer.domain.DestinationChangeReservationPlan;
 import org.ayuvahak.transfer.domain.TransferAuthorities;
 import org.ayuvahak.transfer.domain.TransferDestinationChangeOperation;
 import org.ayuvahak.transfer.domain.TransferDestinationChangeOperation.CapacityOutcome;
+import org.ayuvahak.transfer.domain.TransferDestinationChangeOperation.ProviderOutcome;
 import org.ayuvahak.transfer.domain.TransferDestinationChangeOperation.Status;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -48,6 +49,8 @@ public final class TransferDestinationChangeCoordinator {
   private final AuditWriter audit;
   private final TransactionTemplate transaction;
   private final Clock clock;
+  private final PendingOperationRecoveryScan pendingTransportOutcomeScan =
+      new PendingOperationRecoveryScan();
 
   public TransferDestinationChangeCoordinator(
       TransferStore transfers,
@@ -86,6 +89,125 @@ public final class TransferDestinationChangeCoordinator {
       requestTransportChange(current);
     }
     return load(operation.id());
+  }
+
+  /** Recovers bounded pending reroutes from Transport's linked owner outcome query. */
+  public int reconcilePendingTransportOutcomes(int limit) {
+    int processed = 0;
+    for (org.ayuvahak.platform.core.InternalId operationId :
+        pendingTransportOutcomeScan.next(
+            limit, transfers::findPendingTransportDestinationChanges)) {
+      try {
+        TransferDestinationChangeOperation operation = load(operationId);
+        ExecutionContext context = transportOutcomeContext(operation);
+        if (!authorization.evaluate(context, TransferAuthorities.progress().code()).isAllowed()) {
+          logger.warn(
+              "Destination-change Transport outcome recovery deferred correlationId={} reason=authorization",
+              operation.correlationId());
+          continue;
+        }
+        Optional<TransportDestinationChangePort.OutcomeSnapshot> outcome =
+            transport.getOutcome(
+                context,
+                operation.transportOperationId(),
+                operation.id(),
+                operation.transferId(),
+                operation.transportRequestId(),
+                operation.originOrganization(),
+                operation.originFacility());
+        if (outcome.isEmpty() || !linked(operation, outcome.orElseThrow())) continue;
+        switch (outcome.orElseThrow().state()) {
+          case OUTCOME_UNKNOWN ->
+              recordTransportOutcome(
+                  operation,
+                  context,
+                  Status.TRANSPORT_OUTCOME_UNKNOWN,
+                  ProviderOutcome.OUTCOME_UNKNOWN);
+          case RECONCILIATION_REQUIRED ->
+              recordTransportOutcome(
+                  operation,
+                  context,
+                  Status.RECONCILIATION_REQUIRED,
+                  ProviderOutcome.RECONCILIATION_REQUIRED);
+          case PENDING, RESOLVED -> {
+            // Pending remains pending; resolved outcomes are applied by the durable outbox event.
+          }
+        }
+        processed++;
+      } catch (RuntimeException unavailable) {
+        logger.warn(
+            "Destination-change Transport outcome recovery deferred failureType={}",
+            unavailable.getClass().getSimpleName());
+      }
+    }
+    return processed;
+  }
+
+  private void recordTransportOutcome(
+      TransferDestinationChangeOperation initial,
+      ExecutionContext context,
+      Status status,
+      ProviderOutcome outcome) {
+    transaction.executeWithoutResult(
+        ignored -> {
+          TransferDestinationChangeOperation current =
+              transfers.lockDestinationChange(initial.id()).orElseThrow();
+          if (current.status() != Status.TRANSPORT_ACK_PENDING
+              && current.status() != Status.TRANSPORT_OUTCOME_UNKNOWN) {
+            return;
+          }
+          if (current.status() == status
+              && current.providerOutcome().filter(outcome::equals).isPresent()) {
+            return;
+          }
+          TransferDestinationChangeOperation updated =
+              copyTransportOutcome(current, status, outcome);
+          if (!transfers.updateDestinationChange(updated, current.version())) {
+            throw new IllegalStateException(
+                "Transfer destination-change outcome changed concurrently");
+          }
+          audit.recordMutation(
+              new AuditEvidence(
+                  AuditActionKind.PROTECTED_MUTATION,
+                  Optional.of(context.actor()),
+                  Optional.of(context.scope()),
+                  status == Status.RECONCILIATION_REQUIRED
+                      ? "TRANSFER_DESTINATION_CHANGE_TRANSPORT_RECONCILIATION_REQUIRED"
+                      : "TRANSFER_DESTINATION_CHANGE_TRANSPORT_OUTCOME_UNKNOWN",
+                  "TransferDestinationChange",
+                  Optional.of(current.id()),
+                  clock.instant(),
+                  AuditOutcome.FAILED,
+                  Optional.of(outcome.name()),
+                  AuditAuthenticationEvidence.CONFIGURED_SERVICE_IDENTITY,
+                  AuditAuthorizationOutcome.ALLOWED,
+                  context.correlationId(),
+                  Optional.of(
+                      new AuditTargetContext(
+                          context.scope().kind(),
+                          context.scope().organization(),
+                          context.scope().facility()))));
+        });
+  }
+
+  private ExecutionContext transportOutcomeContext(TransferDestinationChangeOperation operation) {
+    return contexts.forBackgroundWork(
+        ActorReference.service(
+            new IssuerId(authentication.issuer()), properties.getOwnerEventConsumerClientId()),
+        RequestedExecutionScope.facility(
+            operation.originOrganization(), operation.originFacility()),
+        operation.correlationId(),
+        Optional.of(new CausationId(operation.id().toString())));
+  }
+
+  private static boolean linked(
+      TransferDestinationChangeOperation operation,
+      TransportDestinationChangePort.OutcomeSnapshot outcome) {
+    return outcome.transportOperationId().equals(operation.transportOperationId())
+        && outcome.transferDestinationChangeId().equals(operation.id())
+        && outcome.transferId().equals(operation.transferId())
+        && outcome.transportRequestId().equals(operation.transportRequestId())
+        && outcome.correlationId().equals(operation.correlationId());
   }
 
   private void reserveProposedDestination(TransferDestinationChangeOperation operation) {
@@ -295,6 +417,37 @@ public final class TransferDestinationChangeCoordinator {
         current.proposedHoldReleaseOperationId(),
         current.transportOperationId(),
         current.providerOutcome(),
+        current.initiatedBy(),
+        current.originOrganization(),
+        current.originFacility(),
+        current.correlationId(),
+        current.version() + 1,
+        current.createdAt(),
+        clock.instant());
+  }
+
+  private TransferDestinationChangeOperation copyTransportOutcome(
+      TransferDestinationChangeOperation current, Status status, ProviderOutcome outcome) {
+    return new TransferDestinationChangeOperation(
+        current.id(),
+        current.transferId(),
+        current.transportRequestId(),
+        current.oldOrganization(),
+        current.oldFacility(),
+        current.proposedOrganization(),
+        current.proposedFacility(),
+        current.recommendationId(),
+        current.referralRevision(),
+        current.reasonCode(),
+        current.reservationPlan(),
+        status,
+        current.capacityReservationOperationId(),
+        current.capacityReservationOutcome(),
+        current.oldReservationOperationId(),
+        current.oldHoldReleaseOperationId(),
+        current.proposedHoldReleaseOperationId(),
+        current.transportOperationId(),
+        Optional.of(outcome),
         current.initiatedBy(),
         current.originOrganization(),
         current.originFacility(),

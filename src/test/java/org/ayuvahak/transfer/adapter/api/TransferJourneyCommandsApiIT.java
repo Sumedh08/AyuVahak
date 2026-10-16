@@ -67,10 +67,12 @@ import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
 import org.ayuvahak.transfer.adapter.configuration.TransferProperties;
 import org.ayuvahak.transfer.application.MatchingApplicabilityPort;
 import org.ayuvahak.transfer.application.TransferCapacityReservationRecovery;
+import org.ayuvahak.transfer.application.TransferDestinationChangeCoordinator;
 import org.ayuvahak.transfer.application.TransferDestinationChangeEventHandler;
 import org.ayuvahak.transfer.application.TransferOwnerEventHandler;
 import org.ayuvahak.transfer.application.TransferRequestExpirySweep;
 import org.ayuvahak.transfer.application.TransferTransportMovementEventHandler;
+import org.ayuvahak.transport.application.TransportMovementEvidenceQuery;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -153,8 +155,10 @@ class TransferJourneyCommandsApiIT {
   @Autowired private StubMatchingApplicability matching;
   @Autowired private TransferRequestExpirySweep expirySweep;
   @Autowired private TransferCapacityReservationRecovery reservationRecovery;
+  @Autowired private TransferDestinationChangeCoordinator destinationChangeCoordinator;
   @Autowired private TransferDestinationChangeEventHandler destinationChangeRecovery;
   @Autowired private TransferTransportMovementEventHandler transportMovementEventHandler;
+  @Autowired private TransportMovementEvidenceQuery transportMovementEvidenceQuery;
   @Autowired private DataSource dataSource;
   @Autowired private CapacityReservationCommands capacityReservations;
   @Autowired private CapacityReservationLifecycleProperties capacityLifecycleProperties;
@@ -236,6 +240,7 @@ class TransferJourneyCommandsApiIT {
     jdbc.update("DELETE FROM transport.status_observation");
     jdbc.update("DELETE FROM transport.cancellation_command_receipt");
     jdbc.update("DELETE FROM transport.cancellation_operation");
+    jdbc.update("DELETE FROM transport.destination_change_evidence");
     jdbc.update("DELETE FROM transport.destination_change_operation");
     jdbc.update("DELETE FROM transport.command_receipt");
     jdbc.update("DELETE FROM transport.transport_request");
@@ -808,7 +813,14 @@ class TransferJourneyCommandsApiIT {
         "OLD_ARRIVAL_EVENT_AFTER_ACK",
         "ARRIVAL_EVENT_BEFORE_RESOLUTION_EVENT",
         "ACCEPTED_NEW_DESTINATION_ARRIVAL",
-        "LATE_OLD_ARRIVAL_AFTER_ACK"
+        "LATE_OLD_ARRIVAL_AFTER_ACK",
+        "LATE_OLD_ARRIVAL_AFTER_NEW_ARRIVAL",
+        "LATE_OLD_ARRIVAL_AFTER_HANDOVER",
+        "LATE_OLD_ARRIVAL_AFTER_COMPLETION",
+        "LATE_OLD_ARRIVAL_DURING_HOLD_RELEASE_UNKNOWN",
+        "SAME_DESTINATION_OUT_OF_ORDER_ARRIVAL",
+        "FUTURE_ACK_TIME",
+        "REGRESSED_ACK_TIME"
       })
   void postMovementDestinationChangeKeepsCurrentDestinationUntilTransportAcknowledges(
       String providerOutcome) throws Exception {
@@ -1070,8 +1082,15 @@ class TransferJourneyCommandsApiIT {
               "OLD_ARRIVAL_EVENT_AFTER_ACK",
               "ARRIVAL_EVENT_BEFORE_RESOLUTION_EVENT",
               "ACCEPTED_NEW_DESTINATION_ARRIVAL",
-              "LATE_OLD_ARRIVAL_AFTER_ACK" ->
+              "LATE_OLD_ARRIVAL_AFTER_ACK",
+              "LATE_OLD_ARRIVAL_AFTER_NEW_ARRIVAL",
+              "LATE_OLD_ARRIVAL_AFTER_HANDOVER",
+              "LATE_OLD_ARRIVAL_AFTER_COMPLETION",
+              "LATE_OLD_ARRIVAL_DURING_HOLD_RELEASE_UNKNOWN",
+              "FUTURE_ACK_TIME",
+              "REGRESSED_ACK_TIME" ->
               "ACCEPTED";
+          case "SAME_DESTINATION_OUT_OF_ORDER_ARRIVAL" -> "REJECTED";
           case "REJECTED_RELEASE_UNKNOWN" -> "REJECTED";
           default -> providerOutcome;
         };
@@ -1080,6 +1099,17 @@ class TransferJourneyCommandsApiIT {
             || providerOutcome.equals("ARRIVAL_AFTER_INTERRUPTION_BEFORE_ACK");
     boolean oldArrivalEventAfterAck = providerOutcome.equals("OLD_ARRIVAL_EVENT_AFTER_ACK");
     boolean lateOldArrivalAfterAck = providerOutcome.equals("LATE_OLD_ARRIVAL_AFTER_ACK");
+    boolean lateOldArrivalAfterNewArrival =
+        providerOutcome.equals("LATE_OLD_ARRIVAL_AFTER_NEW_ARRIVAL");
+    boolean lateOldArrivalAfterHandover = providerOutcome.equals("LATE_OLD_ARRIVAL_AFTER_HANDOVER");
+    boolean lateOldArrivalAfterCompletion =
+        providerOutcome.equals("LATE_OLD_ARRIVAL_AFTER_COMPLETION");
+    boolean lateOldArrivalDuringHoldRelease =
+        providerOutcome.equals("LATE_OLD_ARRIVAL_DURING_HOLD_RELEASE_UNKNOWN");
+    boolean lateOldArrivalAfterAdvancedState =
+        lateOldArrivalAfterNewArrival
+            || lateOldArrivalAfterHandover
+            || lateOldArrivalAfterCompletion;
     if (arrivalBeforeAck) {
       grantFacilityAuthority("synthetic-reroute-operator", "TransferProgressAuthority", scope);
       long currentTransferVersion =
@@ -1211,29 +1241,211 @@ class TransferJourneyCommandsApiIT {
     }
     grantTransportAuthority(
         scope, "synthetic-reroute-operator", "TransportDestinationChangeAuthority");
-    Instant acknowledgmentOccurredAt = Instant.now();
-    mockMvc
-        .perform(
-            post(
-                    "/api/v1/transport-destination-change-operations/{operationId}/outcome",
-                    transportDestinationChangeId)
-                .header("Authorization", "Bearer " + token("synthetic-reroute-operator"))
-                .header("X-AyuVahak-Execution-Scope", "FACILITY")
-                .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
-                .header("X-AyuVahak-Facility-Id", scope.originFacilityId())
-                .contentType("application/json")
-                .content(
-                    "{\"outcome\":\""
-                        + transportOutcome
-                        + "\","
-                        + "\"sourceNamespace\":\"urn:ayuvahak:manual\","
-                        + "\"sourceObservationId\":\"SYN-REROUTE-ACK-001\","
-                        + "\"occurredAt\":\""
-                        + acknowledgmentOccurredAt
-                        + "\"}"))
-        .andExpect(status().isCreated())
-        .andExpect(jsonPath("$.outcome").value(transportOutcome));
-    if (lateOldArrivalAfterAck) {
+    Instant previousAcknowledgmentAt = Instant.now().minusSeconds(2);
+    if (providerOutcome.equals("REGRESSED_ACK_TIME")) {
+      insertPriorAcceptedTransportDestinationChange(
+          UUID.fromString(transferId),
+          transportRequestId,
+          UUID.fromString(scope.destinationFacilityId()),
+          UUID.fromString(proposed.facilityId()),
+          previousAcknowledgmentAt);
+    }
+    Instant acknowledgmentOccurredAt =
+        providerOutcome.equals("FUTURE_ACK_TIME")
+            ? Instant.now().plus(Duration.ofMinutes(6))
+            : providerOutcome.equals("REGRESSED_ACK_TIME")
+                ? previousAcknowledgmentAt.minusSeconds(1)
+                : Instant.now();
+    var destinationChangeOutcomeResponse =
+        mockMvc
+            .perform(
+                post(
+                        "/api/v1/transport-destination-change-operations/{operationId}/outcome",
+                        transportDestinationChangeId)
+                    .header("Authorization", "Bearer " + token("synthetic-reroute-operator"))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                    .header("X-AyuVahak-Facility-Id", scope.originFacilityId())
+                    .contentType("application/json")
+                    .content(
+                        "{\"outcome\":\""
+                            + transportOutcome
+                            + "\","
+                            + "\"sourceNamespace\":\"urn:ayuvahak:manual\","
+                            + "\"sourceObservationId\":\"SYN-REROUTE-ACK-001\","
+                            + "\"occurredAt\":\""
+                            + acknowledgmentOccurredAt
+                            + "\"}"))
+            .andReturn();
+    if (providerOutcome.equals("FUTURE_ACK_TIME") || providerOutcome.equals("REGRESSED_ACK_TIME")) {
+      assertThat(destinationChangeOutcomeResponse.getResponse().getStatus())
+          .as("unsafe destination-change source chronology must be retained for reconciliation")
+          .isEqualTo(409);
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT operation_state FROM transport.destination_change_operation "
+                      + "WHERE operation_id = ?",
+                  String.class,
+                  transportDestinationChangeId))
+          .isEqualTo("RECONCILIATION_REQUIRED");
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT resolution_event_id IS NULL FROM transport.destination_change_operation "
+                      + "WHERE operation_id = ?",
+                  Boolean.class,
+                  transportDestinationChangeId))
+          .isTrue();
+      String expectedReason =
+          providerOutcome.equals("FUTURE_ACK_TIME")
+              ? "SOURCE_TIME_TOO_FAR_AHEAD"
+              : "SOURCE_TIME_REGRESSED";
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT COUNT(*) FROM transport.destination_change_evidence "
+                      + "WHERE operation_id = ? AND reported_outcome = ? "
+                      + "AND source_namespace = 'urn:ayuvahak:manual' "
+                      + "AND source_observation_id = 'SYN-REROUTE-ACK-001' "
+                      + "AND disposition = 'RECONCILIATION_REQUIRED' AND reason_code = ?",
+                  Integer.class,
+                  transportDestinationChangeId,
+                  transportOutcome,
+                  expectedReason))
+          .isEqualTo(1);
+      grantOriginAuthority("synthetic-reroute-operator", "TransferViewAuthority", scope);
+      int destinationChangeIndex = providerOutcome.equals("REGRESSED_ACK_TIME") ? 1 : 0;
+      String destinationChangePath =
+          "$.destinationChangeOperations[" + destinationChangeIndex + "]";
+      mockMvc
+          .perform(
+              get(
+                      "/api/v1/transfers/{transferId}/transport-requests/{requestId}",
+                      transferId,
+                      transportRequestId)
+                  .header("Authorization", "Bearer " + token("synthetic-reroute-operator"))
+                  .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                  .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                  .header("X-AyuVahak-Facility-Id", scope.originFacilityId()))
+          .andExpect(status().isOk())
+          .andExpect(jsonPath(destinationChangePath + ".state").value("RECONCILIATION_REQUIRED"))
+          .andExpect(
+              jsonPath(destinationChangePath + ".acknowledgementEvidence[0].reportedOutcome")
+                  .value(transportOutcome))
+          .andExpect(
+              jsonPath(destinationChangePath + ".acknowledgementEvidence[0].reasonCode")
+                  .value(expectedReason));
+      assertThat(destinationChangeCoordinator.reconcilePendingTransportOutcomes(50))
+          .as("Transfer recovers the scoped Transport owner outcome")
+          .isEqualTo(1);
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT status FROM transfer.destination_change_operation WHERE operation_id = ?",
+                  String.class,
+                  UUID.fromString(operationId)))
+          .as("Transfer must observe the linked Transport reconciliation state")
+          .isEqualTo("RECONCILIATION_REQUIRED");
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT provider_outcome FROM transfer.destination_change_operation "
+                      + "WHERE operation_id = ?",
+                  String.class,
+                  UUID.fromString(operationId)))
+          .isEqualTo("RECONCILIATION_REQUIRED");
+      grantOriginAuthority("synthetic-reroute-operator", "TransferRerouteAuthority", scope);
+      long transferOperationVersion =
+          jdbc.queryForObject(
+              "SELECT version FROM transfer.destination_change_operation WHERE operation_id = ?",
+              Long.class,
+              UUID.fromString(operationId));
+      mockMvc
+          .perform(
+              post(
+                      "/api/v1/transfers/{transferId}/destination-changes/{operationId}/reconciliation",
+                      transferId,
+                      operationId)
+                  .header("Authorization", "Bearer " + token("synthetic-reroute-operator"))
+                  .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                  .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                  .header("X-AyuVahak-Facility-Id", scope.originFacilityId())
+                  .header("Idempotency-Key", "reroute-query-reconcile-" + fixtureSuffix)
+                  .contentType("application/json")
+                  .content(
+                      "{\"expectedVersion\":"
+                          + transferOperationVersion
+                          + ",\"resolution\":\"RETAIN_OLD_DESTINATION\","
+                          + "\"evidenceReference\":\"synthetic:old-destination-confirmed\","
+                          + "\"occurredAt\":\""
+                          + Instant.now()
+                          + "\"}"))
+          .andExpect(status().isAccepted())
+          .andExpect(jsonPath("$.status").value("PROPOSED_HOLD_RELEASE_PENDING"));
+      assertThat(destinationChangeRecovery.recoverPendingCapacityReleases(10)).isEqualTo(1);
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT status FROM transfer.destination_change_operation WHERE operation_id = ?",
+                  String.class,
+                  UUID.fromString(operationId)))
+          .isEqualTo("RESOLVED");
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT facility_id FROM transfer.active_destination WHERE transfer_id = ?",
+                  UUID.class,
+                  UUID.fromString(transferId)))
+          .isEqualTo(UUID.fromString(scope.destinationFacilityId()));
+      if (providerOutcome.equals("FUTURE_ACK_TIME")) {
+        mockMvc
+            .perform(
+                post(
+                        "/api/v1/transport-destination-change-operations/{operationId}/outcome",
+                        transportDestinationChangeId)
+                    .header("Authorization", "Bearer " + token("synthetic-reroute-operator"))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                    .header("X-AyuVahak-Facility-Id", scope.originFacilityId())
+                    .contentType("application/json")
+                    .content(
+                        "{\"outcome\":\""
+                            + transportOutcome
+                            + "\",\"sourceNamespace\":\"urn:ayuvahak:manual\","
+                            + "\"sourceObservationId\":\"SYN-REROUTE-ACK-002\",\"occurredAt\":\""
+                            + Instant.now().plusSeconds(1)
+                            + "\"}"))
+            .andExpect(status().isCreated());
+        assertThat(
+                jdbc.queryForObject(
+                    "SELECT operation_state FROM transport.destination_change_operation "
+                        + "WHERE operation_id = ?",
+                    String.class,
+                    transportDestinationChangeId))
+            .isEqualTo("RESOLVED");
+        mockMvc
+            .perform(
+                post(
+                        "/api/v1/transport-destination-change-operations/{operationId}/outcome",
+                        transportDestinationChangeId)
+                    .header("Authorization", "Bearer " + token("synthetic-reroute-operator"))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                    .header("X-AyuVahak-Facility-Id", scope.originFacilityId())
+                    .contentType("application/json")
+                    .content(
+                        "{\"outcome\":\""
+                            + transportOutcome
+                            + "\",\"sourceNamespace\":\"urn:ayuvahak:manual\","
+                            + "\"sourceObservationId\":\"SYN-REROUTE-ACK-001\",\"occurredAt\":\""
+                            + acknowledgmentOccurredAt
+                            + "\"}"))
+            .andExpect(status().isConflict());
+      }
+      return;
+    }
+    assertThat(destinationChangeOutcomeResponse.getResponse().getStatus()).isEqualTo(201);
+    assertThat(
+            (String)
+                com.jayway.jsonpath.JsonPath.read(
+                    destinationChangeOutcomeResponse.getResponse().getContentAsString(),
+                    "$.outcome"))
+        .isEqualTo(transportOutcome);
+    if (lateOldArrivalAfterAck || lateOldArrivalAfterNewArrival || lateOldArrivalAfterCompletion) {
       UUID resolutionEventId =
           jdbc.queryForObject(
               "SELECT resolution_event_id FROM transport.destination_change_operation "
@@ -1249,17 +1461,114 @@ class TransferJourneyCommandsApiIT {
                   UUID.fromString(transferId)))
           .isEqualTo(UUID.fromString(proposed.facilityId()));
 
-      transportEvidenceCommand(
-              scope,
-              transportRequestId,
-              "status-observations",
-              "reroute-late-old-arrival-after-ack",
-              "synthetic-reroute-operator",
-              statusBody(
-                  "SYN-REROUTE-LATE-OLD-ARRIVAL",
-                  "ARRIVED_DESTINATION",
-                  acknowledgmentOccurredAt.minusSeconds(1)))
-          .andExpect(status().isCreated());
+      if (lateOldArrivalAfterAdvancedState) {
+        transportEvidenceCommand(
+                scope,
+                transportRequestId,
+                "status-observations",
+                "reroute-new-destination-arrival-first",
+                "synthetic-reroute-operator",
+                statusBody(
+                    "SYN-REROUTE-NEW-ARRIVAL-FIRST",
+                    "ARRIVED_DESTINATION",
+                    acknowledgmentOccurredAt.plusSeconds(1)))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.evidenceOutcome").value("APPLIED"));
+        UUID newArrivalEventId =
+            jdbc.queryForObject(
+                "SELECT event_id FROM platform_eventing.internal_event "
+                    + "WHERE event_type = 'transport.arrival-reported.v1' "
+                    + "AND envelope #>> '{payload,evidenceReference}' = "
+                    + "(SELECT status_observation_id::text FROM transport.status_observation "
+                    + "WHERE transport_request_id = ? AND source_observation_id = ?)",
+                UUID.class,
+                transportRequestId,
+                "SYN-REROUTE-NEW-ARRIVAL-FIRST");
+        transportMovementEventHandler.handle(internalEvent(newArrivalEventId));
+        assertThat(transferStatus(transferId)).isEqualTo("ARRIVED");
+        if (lateOldArrivalAfterHandover || lateOldArrivalAfterCompletion) {
+          grantFacilityAuthorityAt(
+              "synthetic-reroute-receiver",
+              "TransferHandoverAuthority",
+              proposed.organizationId(),
+              proposed.facilityId());
+          long arrivedVersion =
+              jdbc.queryForObject(
+                  "SELECT version FROM transfer.transfer_record WHERE transfer_id = ?",
+                  Long.class,
+                  UUID.fromString(transferId));
+          progressCommand(
+                  proposedScope,
+                  transferId,
+                  "handover",
+                  "synthetic-reroute-receiver",
+                  "reroute-completion-handover",
+                  "{\"expectedVersion\":"
+                      + arrivedVersion
+                      + ",\"occurredAt\":\""
+                      + Instant.now()
+                      + "\"}")
+              .andExpect(status().isCreated())
+              .andExpect(jsonPath("$.status").value("HANDED_OVER"));
+          if (lateOldArrivalAfterCompletion) {
+            grantFacilityAuthorityAt(
+                "synthetic-reroute-receiver",
+                "TransferCompletionAuthority",
+                proposed.organizationId(),
+                proposed.facilityId());
+            long handedOverVersion =
+                jdbc.queryForObject(
+                    "SELECT version FROM transfer.transfer_record WHERE transfer_id = ?",
+                    Long.class,
+                    UUID.fromString(transferId));
+            progressCommand(
+                    proposedScope,
+                    transferId,
+                    "completion",
+                    "synthetic-reroute-receiver",
+                    "reroute-completion-close",
+                    "{\"expectedVersion\":"
+                        + handedOverVersion
+                        + ",\"occurredAt\":\""
+                        + Instant.now()
+                        + "\",\"reasonCode\":\"COORDINATION_CLOSED\"}")
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.status").value("COMPLETED"));
+          }
+        }
+      }
+      var lateArrivalResponse =
+          transportEvidenceCommand(
+                  scope,
+                  transportRequestId,
+                  "status-observations",
+                  "reroute-late-old-arrival-after-ack",
+                  "synthetic-reroute-operator",
+                  statusBody(
+                      "SYN-REROUTE-LATE-OLD-ARRIVAL",
+                      "ARRIVED_DESTINATION",
+                      acknowledgmentOccurredAt.minusSeconds(1)))
+              .andReturn();
+      if (lateOldArrivalAfterAdvancedState) {
+        assertThat(lateArrivalResponse.getResponse().getStatus()).isEqualTo(409);
+        assertThat(
+                jdbc.queryForList(
+                    "SELECT source_observation_id, observation_outcome FROM "
+                        + "transport.status_observation WHERE transport_request_id = ?",
+                    transportRequestId))
+            .as(
+                "retained source evidence after conflict response %s",
+                lateArrivalResponse.getResponse().getContentAsString())
+            .anySatisfy(
+                observation -> {
+                  assertThat(observation.get("source_observation_id"))
+                      .isEqualTo("SYN-REROUTE-LATE-OLD-ARRIVAL");
+                  assertThat(observation.get("observation_outcome"))
+                      .isEqualTo("RECONCILIATION_REQUIRED");
+                });
+      } else {
+        assertThat(lateArrivalResponse.getResponse().getStatus()).isEqualTo(201);
+      }
       UUID lateArrivalEventId =
           jdbc.queryForObject(
               "SELECT event_id FROM platform_eventing.internal_event "
@@ -1280,19 +1589,37 @@ class TransferJourneyCommandsApiIT {
               "an arrival observed before the provider acknowledgement remains at the old destination")
           .isEqualTo(scope.destinationFacilityId());
       transportMovementEventHandler.handle(internalEvent(lateArrivalEventId));
-
-      assertThat(transferStatus(transferId)).isEqualTo("INTERRUPTED");
+      if (lateOldArrivalAfterAdvancedState) {
+        assertThat(transferStatus(transferId))
+            .isEqualTo(
+                lateOldArrivalAfterCompletion
+                    ? "COMPLETED"
+                    : lateOldArrivalAfterHandover ? "HANDED_OVER" : "ARRIVED");
+        assertThat(
+                jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM transfer.progress_fact WHERE transfer_id = ? "
+                        + "AND fact_kind = 'MOVEMENT_RECONCILIATION' "
+                        + "AND exception_code = 'MOVEMENT_EVIDENCE_REQUIRES_RECONCILIATION' "
+                        + "AND reason_code = 'OLD_DESTINATION_ARRIVAL_AFTER_REROUTE_ACK'",
+                    Integer.class,
+                    UUID.fromString(transferId)))
+            .as("late contradictory arrival is visible without rewriting Arrival")
+            .isEqualTo(1);
+      } else {
+        assertThat(transferStatus(transferId)).isEqualTo("INTERRUPTED");
+      }
       assertThat(
               jdbc.queryForObject(
                   "SELECT COUNT(*) FROM transfer.progress_fact WHERE transfer_id = ? "
                       + "AND fact_kind = 'ARRIVAL'",
                   Integer.class,
                   UUID.fromString(transferId)))
-          .isZero();
+          .isEqualTo(lateOldArrivalAfterAdvancedState ? 1 : 0);
       assertThat(
               jdbc.queryForObject(
                   "SELECT reason_code FROM transfer.progress_fact WHERE transfer_id = ? "
-                      + "AND fact_kind = 'INTERRUPTION' ORDER BY aggregate_sequence DESC LIMIT 1",
+                      + "AND fact_kind IN ('INTERRUPTION', 'MOVEMENT_RECONCILIATION') "
+                      + "ORDER BY aggregate_sequence DESC LIMIT 1",
                   String.class,
                   UUID.fromString(transferId)))
           .isEqualTo("OLD_DESTINATION_ARRIVAL_AFTER_REROUTE_ACK");
@@ -1311,7 +1638,29 @@ class TransferJourneyCommandsApiIT {
                   + "WHERE operation_id = ?",
               UUID.class,
               transportDestinationChangeId);
-      destinationChangeRecovery.handle(internalEvent(resolutionEventId));
+      InternalEvent resolutionEvent = internalEvent(resolutionEventId);
+      InternalEvent oldArrivalEvent = internalEvent(oldDestinationArrivalEventId);
+      jdbc.update(
+          "DELETE FROM platform_eventing.outbox_delivery WHERE event_id = ?",
+          oldDestinationArrivalEventId);
+      jdbc.update(
+          "DELETE FROM platform_eventing.internal_event WHERE event_id = ?",
+          oldDestinationArrivalEventId);
+      assertThat(
+              transportMovementEvidenceQuery.hasArrivalAtOrBefore(
+                  executionContexts.forBackgroundWork(
+                      ActorReference.service(new IssuerId(ISSUER), TRANSPORT_WORKER),
+                      RequestedExecutionScope.facility(
+                          directoryReference("Organization", scope.originOrganizationId()),
+                          directoryReference("Facility", scope.originFacilityId())),
+                      CorrelationId.generate(),
+                      java.util.Optional.empty()),
+                  InternalId.parse(transportRequestId.toString()),
+                  directoryReference("Facility", scope.destinationFacilityId()),
+                  acknowledgmentOccurredAt))
+          .as("Transport retains arrival chronology without reading the platform event store")
+          .isTrue();
+      destinationChangeRecovery.handle(resolutionEvent);
       assertThat(
               jdbc.queryForObject(
                   "SELECT status FROM transfer.destination_change_operation WHERE operation_id = ?",
@@ -1325,7 +1674,7 @@ class TransferJourneyCommandsApiIT {
                   UUID.class,
                   UUID.fromString(transferId)))
           .isEqualTo(UUID.fromString(scope.destinationFacilityId()));
-      transportMovementEventHandler.handle(internalEvent(oldDestinationArrivalEventId));
+      transportMovementEventHandler.handle(oldArrivalEvent);
       assertThat(transferStatus(transferId)).isEqualTo("ARRIVED");
       long reconciliationVersion =
           jdbc.queryForObject(
@@ -1482,6 +1831,43 @@ class TransferJourneyCommandsApiIT {
                   Integer.class,
                   UUID.fromString(transferId)))
           .isEqualTo(1);
+      if (lateOldArrivalDuringHoldRelease) {
+        var lateArrivalResponse =
+            transportEvidenceCommand(
+                    scope,
+                    transportRequestId,
+                    "status-observations",
+                    "reroute-late-old-arrival-during-release",
+                    "synthetic-reroute-operator",
+                    statusBody(
+                        "SYN-REROUTE-LATE-OLD-ARRIVAL-DURING-RELEASE",
+                        "ARRIVED_DESTINATION",
+                        acknowledgmentOccurredAt.minusSeconds(1)))
+                .andExpect(status().isCreated())
+                .andReturn();
+        UUID lateArrivalEventId =
+            jdbc.queryForObject(
+                "SELECT event_id FROM platform_eventing.internal_event "
+                    + "WHERE event_type = 'transport.arrival-reported.v1' "
+                    + "AND envelope #>> '{payload,evidenceReference}' = "
+                    + "(SELECT status_observation_id::text FROM transport.status_observation "
+                    + "WHERE transport_request_id = ? AND source_observation_id = ?)",
+                UUID.class,
+                transportRequestId,
+                "SYN-REROUTE-LATE-OLD-ARRIVAL-DURING-RELEASE");
+        transportMovementEventHandler.handle(internalEvent(lateArrivalEventId));
+        assertThat(transferStatus(transferId))
+            .as(lateArrivalResponse.getResponse().getContentAsString())
+            .isEqualTo("INTERRUPTED");
+        assertThat(
+                jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM transfer.progress_fact WHERE transfer_id = ? "
+                        + "AND fact_kind = 'INTERRUPTION' "
+                        + "AND reason_code = 'OLD_DESTINATION_ARRIVAL_AFTER_REROUTE_ACK'",
+                    Integer.class,
+                    UUID.fromString(transferId)))
+            .isEqualTo(1);
+      }
       assertThat(destinationChangeRecovery.recoverPendingCapacityReleases(10)).isEqualTo(1);
       assertThat(capacityPort.releaseOperationIds())
           .containsExactly(releaseOperationId, releaseOperationId);
@@ -1506,6 +1892,61 @@ class TransferJourneyCommandsApiIT {
                     : arrivalBeforeAck
                         ? "LATE_PROVIDER_OUTCOME_AFTER_RECONCILIATION"
                         : "TRANSPORT_DESTINATION_CHANGE_" + transportOutcome);
+    if (providerOutcome.equals("SAME_DESTINATION_OUT_OF_ORDER_ARRIVAL")) {
+      transportEvidenceCommand(
+              scope,
+              transportRequestId,
+              "status-observations",
+              "reroute-same-destination-out-of-order-arrival",
+              "synthetic-reroute-operator",
+              statusBody(
+                  "SYN-REROUTE-SAME-DESTINATION-OUT-OF-ORDER",
+                  "ARRIVED_DESTINATION",
+                  base.plusSeconds(3)))
+          .andExpect(status().isConflict());
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT observation_outcome FROM transport.status_observation "
+                      + "WHERE transport_request_id = ? AND source_observation_id = ?",
+                  String.class,
+                  transportRequestId,
+                  "SYN-REROUTE-SAME-DESTINATION-OUT-OF-ORDER"))
+          .isEqualTo("RECONCILIATION_REQUIRED");
+      UUID outOfOrderArrivalEventId =
+          jdbc.queryForObject(
+              "SELECT event_id FROM platform_eventing.internal_event "
+                  + "WHERE event_type = 'transport.arrival-reported.v1' "
+                  + "AND envelope #>> '{payload,evidenceReference}' = "
+                  + "(SELECT status_observation_id::text FROM transport.status_observation "
+                  + "WHERE transport_request_id = ? AND source_observation_id = ?)",
+              UUID.class,
+              transportRequestId,
+              "SYN-REROUTE-SAME-DESTINATION-OUT-OF-ORDER");
+      transportMovementEventHandler.handle(internalEvent(outOfOrderArrivalEventId));
+      assertThat(transferStatus(transferId)).isEqualTo("IN_TRANSIT");
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT COUNT(*) FROM transfer.progress_fact WHERE transfer_id = ? "
+                      + "AND fact_kind = 'ARRIVAL'",
+                  Integer.class,
+                  UUID.fromString(transferId)))
+          .isZero();
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT reason_code FROM transfer.progress_fact WHERE transfer_id = ? "
+                      + "AND fact_kind = 'MOVEMENT_RECONCILIATION' "
+                      + "ORDER BY aggregate_sequence DESC LIMIT 1",
+                  String.class,
+                  UUID.fromString(transferId)))
+          .isEqualTo("TRANSPORT_ARRIVAL_EVIDENCE_REQUIRES_RECONCILIATION");
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT outcome FROM transfer.consumer_event_receipt WHERE event_id = ?",
+                  String.class,
+                  outOfOrderArrivalEventId))
+          .isEqualTo("TRANSPORT_ARRIVAL_REQUIRES_RECONCILIATION");
+      return;
+    }
     if (arrivalBeforeAck) {
       assertThat(transferStatus(transferId)).isEqualTo("ARRIVED");
       assertThat(
@@ -2593,6 +3034,206 @@ class TransferJourneyCommandsApiIT {
                 String.class,
                 UUID.fromString(transferId)))
         .isEqualTo("READY");
+  }
+
+  @Test
+  void transportCanCloseCompletedRequestWithAuditedIdempotentEvidence() throws Exception {
+    Scope scope = createOriginAndDestination();
+    String transferId = createReadyTransfer(scope, "transport-completion", true);
+    grantTransportWorker(scope);
+    requestTransport(scope, transferId, "transport-completion-request", SENDER)
+        .andExpect(status().isCreated());
+    UUID requestId =
+        jdbc.queryForObject(
+            "SELECT transport_request_id FROM transport.transport_request WHERE transfer_id = ?",
+            UUID.class,
+            UUID.fromString(transferId));
+    String operator = "synthetic-transport-completion-operator";
+    grantTransportAuthority(scope, operator, "TransportStatusAuthority");
+    grantTransportAuthority(scope, operator, "TransportDispatchCoordinationAuthority");
+    Instant base = Instant.now().minusSeconds(30);
+
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "completion",
+            "transport-completion-too-early",
+            operator,
+            "{\"sourceNamespace\":\"urn:ayuvahak:manual\","
+                + "\"sourceObservationId\":\"SYN-COMPLETE-TOO-EARLY\","
+                + "\"occurredAt\":\""
+                + base
+                + "\",\"reasonCode\":\"PREMATURE_CLOSE_ATTEMPT\"}")
+        .andExpect(status().isConflict());
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT request_status FROM transport.transport_request "
+                    + "WHERE transport_request_id = ?",
+                String.class,
+                requestId))
+        .as("a completion attempt before arrival or interruption cannot close Transport")
+        .isEqualTo("REQUESTED");
+
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "status-observations",
+            "transport-completion-awaiting",
+            operator,
+            statusBody("SYN-COMPLETE-001", "AWAITING_ASSIGNMENT", base))
+        .andExpect(status().isCreated());
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "assignments",
+            "transport-completion-assignment",
+            operator,
+            "{\"sourceNamespace\":\"urn:ayuvahak:manual\","
+                + "\"sourceObservationId\":\"SYN-COMPLETE-ASSIGNMENT\","
+                + "\"assignmentReference\":\"SYN-ASSIGNMENT-COMPLETE\",\"occurredAt\":\""
+                + base.plusSeconds(1)
+                + "\"}")
+        .andExpect(status().isCreated());
+    String[] nextStatuses = {
+      "EN_ROUTE_TO_ORIGIN",
+      "AT_ORIGIN",
+      "PATIENT_ONBOARD",
+      "EN_ROUTE_TO_DESTINATION",
+      "ARRIVED_DESTINATION"
+    };
+    for (int index = 0; index < nextStatuses.length; index++) {
+      String statusValue = nextStatuses[index];
+      transportEvidenceCommand(
+              scope,
+              requestId,
+              "status-observations",
+              "transport-completion-status-" + index,
+              operator,
+              statusBody("SYN-COMPLETE-00" + (index + 2), statusValue, base.plusSeconds(index + 2)))
+          .andExpect(status().isCreated())
+          .andExpect(jsonPath("$.requestStatus").value(statusValue));
+    }
+
+    String completionBody =
+        "{\"sourceNamespace\":\"urn:ayuvahak:manual\","
+            + "\"sourceObservationId\":\"SYN-COMPLETE-FINAL\","
+            + "\"occurredAt\":\""
+            + base.plusSeconds(10)
+            + "\",\"reasonCode\":\"TRANSPORT_COORDINATION_CLOSED\"}";
+    transportEvidenceCommand(
+            scope, requestId, "completion", "transport-completion-final", operator, completionBody)
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.requestStatus").value("COMPLETED"));
+    transportEvidenceCommand(
+            scope, requestId, "completion", "transport-completion-final", operator, completionBody)
+        .andExpect(status().isCreated())
+        .andExpect(header().string("Idempotency-Replayed", "true"));
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT request_status FROM transport.transport_request WHERE transport_request_id = ?",
+                String.class,
+                requestId))
+        .isEqualTo("COMPLETED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM transport.status_observation WHERE transport_request_id = ? "
+                    + "AND status_code = 'COMPLETED' AND observation_outcome = 'APPLIED'",
+                Integer.class,
+                requestId))
+        .isEqualTo(1);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = 'TRANSPORT_STATUS_OBSERVATION' "
+                    + "AND target_id = ?",
+                Integer.class,
+                requestId))
+        .isEqualTo(8);
+    assertThat(transferStatus(transferId)).isEqualTo("READY");
+
+    Scope interruptedScope = createOriginAndDestination();
+    String interruptedTransferId =
+        createReadyTransfer(interruptedScope, "transport-interrupted-completion", true);
+    grantTransportWorker(interruptedScope);
+    grantTransportAuthority(interruptedScope, operator, "TransportStatusAuthority");
+    grantTransportAuthority(interruptedScope, operator, "TransportDispatchCoordinationAuthority");
+    requestTransport(
+            interruptedScope,
+            interruptedTransferId,
+            "transport-interrupted-completion-request",
+            SENDER)
+        .andExpect(status().isCreated());
+    UUID interruptedRequestId =
+        jdbc.queryForObject(
+            "SELECT transport_request_id FROM transport.transport_request WHERE transfer_id = ?",
+            UUID.class,
+            UUID.fromString(interruptedTransferId));
+    Instant interruptedBase = base.plusSeconds(20);
+    transportEvidenceCommand(
+            interruptedScope,
+            interruptedRequestId,
+            "status-observations",
+            "interrupted-completion-awaiting",
+            operator,
+            statusBody("SYN-COMPLETE-INTERRUPTED-001", "AWAITING_ASSIGNMENT", interruptedBase))
+        .andExpect(status().isCreated());
+    transportEvidenceCommand(
+            interruptedScope,
+            interruptedRequestId,
+            "assignments",
+            "interrupted-completion-assignment",
+            operator,
+            "{\"sourceNamespace\":\"urn:ayuvahak:manual\","
+                + "\"sourceObservationId\":\"SYN-COMPLETE-INTERRUPTED-ASSIGNMENT\","
+                + "\"assignmentReference\":\"SYN-ASSIGNMENT-INTERRUPTED-COMPLETE\","
+                + "\"occurredAt\":\""
+                + interruptedBase.plusSeconds(1)
+                + "\"}")
+        .andExpect(status().isCreated());
+    transportEvidenceCommand(
+            interruptedScope,
+            interruptedRequestId,
+            "status-observations",
+            "interrupted-completion-en-route",
+            operator,
+            statusBody(
+                "SYN-COMPLETE-INTERRUPTED-002",
+                "EN_ROUTE_TO_ORIGIN",
+                interruptedBase.plusSeconds(2)))
+        .andExpect(status().isCreated());
+    transportEvidenceCommand(
+            interruptedScope,
+            interruptedRequestId,
+            "status-observations",
+            "interrupted-completion-interrupted",
+            operator,
+            statusBodyWithReason(
+                "SYN-COMPLETE-INTERRUPTED-003",
+                "INTERRUPTED",
+                interruptedBase.plusSeconds(3),
+                "ROUTE_INTERRUPTED"))
+        .andExpect(status().isCreated());
+    transportEvidenceCommand(
+            interruptedScope,
+            interruptedRequestId,
+            "completion",
+            "interrupted-completion-final",
+            operator,
+            "{\"sourceNamespace\":\"urn:ayuvahak:manual\","
+                + "\"sourceObservationId\":\"SYN-COMPLETE-INTERRUPTED-FINAL\","
+                + "\"occurredAt\":\""
+                + interruptedBase.plusSeconds(4)
+                + "\",\"reasonCode\":\"COORDINATION_CLOSED_AFTER_INTERRUPTION\"}")
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.requestStatus").value("COMPLETED"));
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT request_status FROM transport.transport_request "
+                    + "WHERE transport_request_id = ?",
+                String.class,
+                interruptedRequestId))
+        .isEqualTo("COMPLETED");
+    assertThat(transferStatus(interruptedTransferId)).isEqualTo("READY");
   }
 
   @Test
@@ -7928,6 +8569,44 @@ class TransferJourneyCommandsApiIT {
     assertThat(count("SELECT COUNT(*) FROM transfer.command_receipt")).isEqualTo(2);
     assertThat(count("SELECT COUNT(*) FROM audit.audit_record WHERE action_code LIKE 'TRANSFER_%'"))
         .isEqualTo(2);
+  }
+
+  private void insertPriorAcceptedTransportDestinationChange(
+      UUID transferId,
+      UUID transportRequestId,
+      UUID oldFacilityId,
+      UUID proposedFacilityId,
+      Instant sourceOccurredAt) {
+    Instant createdAt = sourceOccurredAt.minusSeconds(1);
+    Instant resolvedAt = sourceOccurredAt.plusSeconds(1);
+    jdbc.update(
+        """
+        INSERT INTO transport.destination_change_operation (
+            operation_id, transfer_destination_change_id, transfer_id, transport_request_id,
+            old_facility_id, proposed_facility_id, reason_code, operation_state, outcome,
+            initiated_by_kind, initiated_by_issuer, initiated_by_identifier_type,
+            initiated_by_identifier, recorded_by_kind, recorded_by_issuer,
+            recorded_by_identifier_type, recorded_by_identifier, source_namespace,
+            source_observation_id, resolution_fingerprint, source_occurred_at, resolved_at,
+            resolution_event_id, correlation_id, version, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 'TEST_PRIOR_CHANGE', 'RESOLVED', 'ACCEPTED',
+            'HUMAN', 'urn:ayuvahak:test', 'subject', 'SYN-PRIOR-OPERATOR',
+            'HUMAN', 'urn:ayuvahak:test', 'subject', 'SYN-PRIOR-OPERATOR',
+            'urn:ayuvahak:test', 'SYN-PRIOR-ACK', ?, ?, ?, ?, ?, 2, ?, ?)
+        """,
+        UUID.randomUUID(),
+        UUID.randomUUID(),
+        transferId,
+        transportRequestId,
+        oldFacilityId,
+        proposedFacilityId,
+        "a".repeat(64),
+        java.sql.Timestamp.from(sourceOccurredAt),
+        java.sql.Timestamp.from(resolvedAt),
+        UUID.randomUUID(),
+        UUID.randomUUID().toString(),
+        java.sql.Timestamp.from(createdAt),
+        java.sql.Timestamp.from(resolvedAt));
   }
 
   private org.springframework.test.web.servlet.ResultActions receivingCommand(

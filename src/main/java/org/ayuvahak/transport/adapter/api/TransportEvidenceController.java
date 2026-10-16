@@ -56,6 +56,9 @@ public final class TransportEvidenceController {
   private static final Set<String> UNFULFILLED_FIELDS =
       Set.of(
           "sourceNamespace", "sourceObservationId", "sourceSequence", "occurredAt", "reasonCode");
+  private static final Set<String> COMPLETION_FIELDS =
+      Set.of(
+          "sourceNamespace", "sourceObservationId", "sourceSequence", "occurredAt", "reasonCode");
   private static final Set<String> ETA_FIELDS =
       Set.of("observationId", "sourceNamespace", "estimatedArrivalAt", "observedAt");
 
@@ -122,6 +125,42 @@ public final class TransportEvidenceController {
             Optional.of(request.reasonCode()));
     var result =
         commands.recordUnfulfilled(
+            context, requestId, input, idempotencyKey, RequestFingerprint.from(normalized));
+    return response(requestId, result);
+  }
+
+  @PostMapping("/completion")
+  public ResponseEntity<EvidenceRepresentation> complete(
+      @PathVariable String transportRequestId,
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = "X-AyuVahak-Execution-Scope", required = false) String scope,
+      @RequestHeader(value = "X-AyuVahak-Organization-Id", required = false) String organizationId,
+      @RequestHeader(value = "X-AyuVahak-Facility-Id", required = false) String facilityId,
+      @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+      @RequestBody JsonNode body) {
+    CompletionRequest request = read(body, COMPLETION_FIELDS, CompletionRequest.class);
+    InternalId requestId = parseId(transportRequestId);
+    validateSource(request.sourceNamespace(), request.sourceObservationId());
+    if (request.occurredAt() == null
+        || request.reasonCode() == null
+        || !request.reasonCode().matches("[A-Z][A-Z0-9_]{1,63}")
+        || (request.sourceSequence() != null && request.sourceSequence() < 0)) {
+      throw invalid("A valid completion time, source sequence, and closure reason are required.");
+    }
+    ExecutionContext context = context(actor, scope, organizationId, facilityId);
+    var normalized = mapper.valueToTree(request);
+    var input =
+        new TransportEvidenceCommands.StatusInput(
+            request.sourceNamespace(),
+            request.sourceObservationId(),
+            request.sourceSequence() == null
+                ? OptionalLong.empty()
+                : OptionalLong.of(request.sourceSequence()),
+            TransportRequest.Status.COMPLETED,
+            request.occurredAt(),
+            Optional.of(request.reasonCode()));
+    var result =
+        commands.recordCompletion(
             context, requestId, input, idempotencyKey, RequestFingerprint.from(normalized));
     return response(requestId, result);
   }
@@ -355,6 +394,13 @@ public final class TransportEvidenceController {
       Instant occurredAt) {}
 
   public record UnfulfilledRequest(
+      String sourceNamespace,
+      String sourceObservationId,
+      Long sourceSequence,
+      Instant occurredAt,
+      String reasonCode) {}
+
+  public record CompletionRequest(
       String sourceNamespace,
       String sourceObservationId,
       Long sourceSequence,

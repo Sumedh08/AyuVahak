@@ -66,6 +66,8 @@ public final class TransferDestinationChangeEventHandler implements InternalEven
   private final TransactionTemplate transaction;
   private final Clock clock;
   private final ObjectMapper mapper;
+  private final PendingOperationRecoveryScan pendingCapacityReleaseScan =
+      new PendingOperationRecoveryScan();
 
   public TransferDestinationChangeEventHandler(
       @Lazy TransferStore transfers,
@@ -189,7 +191,8 @@ public final class TransferDestinationChangeEventHandler implements InternalEven
    */
   public int recoverPendingCapacityReleases(int limit) {
     int processed = 0;
-    for (InternalId operationId : transfers.findPendingDestinationChangeReleases(limit)) {
+    for (InternalId operationId :
+        pendingCapacityReleaseScan.next(limit, transfers::findPendingDestinationChangeReleases)) {
       try {
         TransferDestinationChangeOperation operation =
             transfers.findDestinationChange(operationId).orElseThrow(TransferNotFound::new);
@@ -197,8 +200,7 @@ public final class TransferDestinationChangeEventHandler implements InternalEven
         processed++;
       } catch (RuntimeException failure) {
         logger.warn(
-            "Transfer destination-change Capacity cleanup deferred operation={} failureType={}",
-            operationId,
+            "Transfer destination-change Capacity cleanup deferred failureType={}",
             failure.getClass().getSimpleName());
       }
     }

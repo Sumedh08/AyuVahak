@@ -23,6 +23,7 @@ public record TransportStatusObservation(
     String authorityCode,
     ExternalReference organization,
     ExternalReference facility,
+    ExternalReference destinationFacility,
     CorrelationId correlationId,
     Outcome outcome,
     TransportRequest.Status requestStatusAfter,
@@ -48,6 +49,7 @@ public record TransportStatusObservation(
     requireToken(authorityCode, "authority code", 64);
     requireDirectoryReference(organization, "Organization");
     requireDirectoryReference(facility, "Facility");
+    requireDirectoryReference(destinationFacility, "Facility");
     Objects.requireNonNull(correlationId, "correlation id");
     Objects.requireNonNull(outcome, "observation outcome");
     Objects.requireNonNull(requestStatusAfter, "request status after observation");

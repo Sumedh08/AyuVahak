@@ -10,6 +10,7 @@ import org.ayuvahak.platform.core.ActorReference;
 import org.ayuvahak.platform.core.InternalId;
 import org.ayuvahak.platform.core.IssuerId;
 import org.ayuvahak.transport.application.TransportDestinationChangeStore;
+import org.ayuvahak.transport.domain.TransportDestinationChangeEvidence;
 import org.ayuvahak.transport.domain.TransportDestinationChangeOperation;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
@@ -104,6 +105,59 @@ public class JdbcTransportDestinationChangeStore implements TransportDestination
   }
 
   @Override
+  public List<TransportDestinationChangeOperation> findResolvedHistoryForRequest(
+      InternalId transportRequestId) {
+    return jdbc.query(
+        "SELECT * FROM transport.destination_change_operation "
+            + "WHERE transport_request_id = ? AND operation_state = 'RESOLVED' "
+            + "ORDER BY source_occurred_at, operation_id",
+        JdbcTransportDestinationChangeStore::map,
+        transportRequestId.value());
+  }
+
+  @Override
+  public Optional<TransportDestinationChangeEvidence> findEvidence(
+      InternalId operationId, String sourceNamespace, String sourceObservationId) {
+    return jdbc
+        .query(
+            "SELECT * FROM transport.destination_change_evidence WHERE operation_id = ? "
+                + "AND source_namespace = ? AND source_observation_id = ?",
+            JdbcTransportDestinationChangeStore::mapEvidence,
+            operationId.value(),
+            sourceNamespace,
+            sourceObservationId)
+        .stream()
+        .findFirst();
+  }
+
+  @Override
+  public boolean recordEvidence(TransportDestinationChangeEvidence evidence) {
+    return jdbc.update(
+            "INSERT INTO transport.destination_change_evidence (evidence_id, operation_id, "
+                + "reported_outcome, source_namespace, source_observation_id, fingerprint, "
+                + "source_occurred_at, recorded_by_kind, recorded_by_issuer, "
+                + "recorded_by_identifier_type, recorded_by_identifier, recorded_at, disposition, "
+                + "reason_code, correlation_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                + "ON CONFLICT (operation_id, source_namespace, source_observation_id) DO NOTHING",
+            evidence.id().value(),
+            evidence.operationId().value(),
+            evidence.reportedOutcome().name(),
+            evidence.sourceNamespace(),
+            evidence.sourceObservationId(),
+            evidence.fingerprint(),
+            Timestamp.from(evidence.sourceOccurredAt()),
+            evidence.recordedBy().kind().name(),
+            evidence.recordedBy().identity().issuer().value(),
+            evidence.recordedBy().identity().resourceType(),
+            evidence.recordedBy().identity().value(),
+            Timestamp.from(evidence.recordedAt()),
+            evidence.disposition().name(),
+            evidence.reasonCode().orElse(null),
+            evidence.correlationId().value())
+        == 1;
+  }
+
+  @Override
   public boolean markUncertain(
       InternalId operationId,
       long expectedVersion,
@@ -116,7 +170,7 @@ public class JdbcTransportDestinationChangeStore implements TransportDestination
     return jdbc.update(
             "UPDATE transport.destination_change_operation SET operation_state = ?, "
                 + "version = version + 1, updated_at = ? WHERE operation_id = ? AND version = ? "
-                + "AND operation_state IN ('PENDING', 'OUTCOME_UNKNOWN')",
+                + "AND operation_state IN ('PENDING', 'OUTCOME_UNKNOWN', 'RECONCILIATION_REQUIRED')",
             state.name(),
             Timestamp.from(updatedAt),
             operationId.value(),
@@ -198,6 +252,23 @@ public class JdbcTransportDestinationChangeStore implements TransportDestination
         result.getLong("version"),
         result.getTimestamp("created_at").toInstant(),
         result.getTimestamp("updated_at").toInstant());
+  }
+
+  private static TransportDestinationChangeEvidence mapEvidence(java.sql.ResultSet result, int row)
+      throws java.sql.SQLException {
+    return new TransportDestinationChangeEvidence(
+        id(result, "evidence_id"),
+        id(result, "operation_id"),
+        TransportDestinationChangeOperation.Outcome.valueOf(result.getString("reported_outcome")),
+        result.getString("source_namespace"),
+        result.getString("source_observation_id"),
+        result.getString("fingerprint").trim(),
+        result.getTimestamp("source_occurred_at").toInstant(),
+        actor(result, "recorded_by"),
+        result.getTimestamp("recorded_at").toInstant(),
+        TransportDestinationChangeEvidence.Disposition.valueOf(result.getString("disposition")),
+        Optional.ofNullable(result.getString("reason_code")),
+        new org.ayuvahak.platform.core.CorrelationId(result.getString("correlation_id")));
   }
 
   private static ActorReference actor(java.sql.ResultSet result, String prefix)

@@ -1,6 +1,8 @@
 package org.ayuvahak.transfer.application;
 
+import java.util.Optional;
 import org.ayuvahak.platform.core.ActorReference;
+import org.ayuvahak.platform.core.CorrelationId;
 import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.InternalId;
 import org.ayuvahak.platform.executioncontext.ExecutionContext;
@@ -19,5 +21,36 @@ public interface TransportDestinationChangePort {
       String reasonCode,
       ActorReference initiatingActor);
 
+  Optional<OutcomeSnapshot> getOutcome(
+      ExecutionContext initiatingContext,
+      InternalId transportOperationId,
+      InternalId transferDestinationChangeId,
+      InternalId transferId,
+      InternalId transportRequestId,
+      ExternalReference originOrganization,
+      ExternalReference originFacility);
+
   record Result(InternalId operationId, String state, boolean commandReplayed) {}
+
+  record OutcomeSnapshot(
+      InternalId transportOperationId,
+      InternalId transferDestinationChangeId,
+      InternalId transferId,
+      InternalId transportRequestId,
+      OutcomeState state,
+      Optional<Outcome> outcome,
+      Optional<InternalId> resolutionEventId,
+      CorrelationId correlationId) {}
+
+  enum OutcomeState {
+    PENDING,
+    OUTCOME_UNKNOWN,
+    RECONCILIATION_REQUIRED,
+    RESOLVED
+  }
+
+  enum Outcome {
+    ACCEPTED,
+    REJECTED
+  }
 }

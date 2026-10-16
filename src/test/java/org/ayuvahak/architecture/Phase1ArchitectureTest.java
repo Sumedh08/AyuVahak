@@ -197,6 +197,20 @@ class Phase1ArchitectureTest {
     assertThat(result.getFailureReport().toString())
         .contains("Transport must use Transfer owner contracts")
         .contains("org.ayuvahak.transfer.application.TransferStore");
+
+    JavaClasses viewStoreFixtureClasses =
+        new ClassFileImporter()
+            .withImportOption(ImportOption.Predefined.DO_NOT_INCLUDE_JARS)
+            .importClasses(
+                org.ayuvahak.transport.adapter.fixture.TransferViewPersistenceAccessFixture.class);
+    EvaluationResult viewStoreResult =
+        Phase1ArchitectureRules.transportMustNotAccessTransferPersistencePort()
+            .evaluate(viewStoreFixtureClasses);
+
+    assertThat(viewStoreResult.hasViolation()).isTrue();
+    assertThat(viewStoreResult.getFailureReport().toString())
+        .contains("Transport must use Transfer owner contracts")
+        .contains("org.ayuvahak.transfer.application.TransferViewStore");
   }
 
   @Test

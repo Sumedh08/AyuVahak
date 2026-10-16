@@ -19,7 +19,9 @@ import org.ayuvahak.platform.audit.domain.AuditOutcome;
 import org.ayuvahak.platform.audit.domain.AuditTargetContext;
 import org.ayuvahak.platform.authorization.application.AuthorizationService;
 import org.ayuvahak.platform.authorization.domain.AuthorizationDecision;
+import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.InternalId;
+import org.ayuvahak.platform.core.IssuerId;
 import org.ayuvahak.platform.core.OccurredAt;
 import org.ayuvahak.platform.core.RecordedAt;
 import org.ayuvahak.platform.event.AggregatePosition;
@@ -32,6 +34,7 @@ import org.ayuvahak.platform.idempotency.CommandReceiptKey;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
 import org.ayuvahak.transport.domain.TransportAssignmentObservation;
 import org.ayuvahak.transport.domain.TransportAuthorities;
+import org.ayuvahak.transport.domain.TransportDestinationChangeOperation;
 import org.ayuvahak.transport.domain.TransportEtaObservation;
 import org.ayuvahak.transport.domain.TransportRequest;
 import org.ayuvahak.transport.domain.TransportStatusObservation;
@@ -94,6 +97,10 @@ public final class TransportEvidenceCommands {
       String idempotencyKey,
       RequestFingerprint fingerprint) {
     requireContext(context, requestId);
+    if (input.status() == TransportRequest.Status.COMPLETED
+        || input.status() == TransportRequest.Status.UNFULFILLED) {
+      throw invalid("Terminal Transport outcomes must use their dedicated operation.");
+    }
     requireAuthority(context, requestId, TransportAuthorities.status().code());
     TransportEvidenceCommandResult result =
         execute(
@@ -113,6 +120,39 @@ public final class TransportEvidenceCommands {
               ? PlatformErrorCode.TRANSPORT_EVIDENCE_STALE
               : PlatformErrorCode.TRANSPORT_STATE_CONFLICT,
           "Transport retained the status evidence for reconciliation without changing request state.");
+    }
+    return result;
+  }
+
+  public TransportEvidenceCommandResult recordCompletion(
+      ExecutionContext context,
+      InternalId requestId,
+      StatusInput input,
+      String idempotencyKey,
+      RequestFingerprint fingerprint) {
+    requireContext(context, requestId);
+    if (input.status() != TransportRequest.Status.COMPLETED || input.reasonCode().isEmpty()) {
+      throw invalid("Transport completion requires COMPLETED and an explicit closure reason.");
+    }
+    requireAuthority(context, requestId, TransportAuthorities.status().code());
+    TransportEvidenceCommandResult result =
+        execute(
+            context,
+            requestId,
+            input.sourceNamespace(),
+            input.sourceObservationId(),
+            "transport.completion.record",
+            "status-observations",
+            idempotencyKey,
+            fingerprint,
+            (key, at) -> persistStatus(context, requestId, input, fingerprint, key, at));
+    if (!"APPLIED".equals(result.evidenceOutcome())) {
+      throw problem(
+          HttpStatus.CONFLICT,
+          result.evidenceOutcome().equals("FUTURE_SKEWED")
+              ? PlatformErrorCode.TRANSPORT_EVIDENCE_STALE
+              : PlatformErrorCode.TRANSPORT_STATE_CONFLICT,
+          "Transport retained the completion evidence for reconciliation without closing the request.");
     }
     return result;
   }
@@ -277,11 +317,14 @@ public final class TransportEvidenceCommands {
                 : TransportStatusObservation.Outcome.APPLIED;
     TransportRequest.Status resultingStatus =
         outcome == TransportStatusObservation.Outcome.APPLIED ? input.status() : request.status();
+    boolean arrivalRequiresReconciliation =
+        outcome == TransportStatusObservation.Outcome.RECONCILIATION_REQUIRED
+            && input.status() == TransportRequest.Status.ARRIVED_DESTINATION;
     long resultingVersion =
-        outcome == TransportStatusObservation.Outcome.APPLIED
+        outcome == TransportStatusObservation.Outcome.APPLIED || arrivalRequiresReconciliation
             ? request.version() + 1
             : request.version();
-    if (outcome == TransportStatusObservation.Outcome.APPLIED
+    if ((outcome == TransportStatusObservation.Outcome.APPLIED || arrivalRequiresReconciliation)
         && !evidence.updateStatus(
             requestId, request.version(), resultingStatus, resultingVersion, now)) {
       throw problem(
@@ -307,6 +350,7 @@ public final class TransportEvidenceCommands {
         input.status() == TransportRequest.Status.UNFULFILLED
             ? TransportAuthorities.dispatchCoordination().code()
             : TransportAuthorities.status().code();
+    DestinationAtTime destinationAtTime = destinationAt(request, input.occurredAt());
     TransportStatusObservation observation =
         new TransportStatusObservation(
             InternalId.generate(),
@@ -321,6 +365,7 @@ public final class TransportEvidenceCommands {
             authorityCode,
             context.scope().organization().orElseThrow(),
             context.scope().facility().orElseThrow(),
+            destinationAtTime.destinationFacility(),
             context.correlationId(),
             outcome,
             resultingStatus,
@@ -331,9 +376,12 @@ public final class TransportEvidenceCommands {
     }
     auditMutation(
         context, "TRANSPORT_STATUS_OBSERVATION", requestId, outcome.name(), authorityCode, now);
-    if (outcome == TransportStatusObservation.Outcome.APPLIED) {
+    if (outcome == TransportStatusObservation.Outcome.APPLIED
+        || (outcome == TransportStatusObservation.Outcome.RECONCILIATION_REQUIRED
+            && input.status() == TransportRequest.Status.ARRIVED_DESTINATION)) {
       movementEventType(input.status())
-          .ifPresent(type -> recordMovementEvent(context, request, observation, type));
+          .ifPresent(
+              type -> recordMovementEvent(context, request, observation, destinationAtTime, type));
     }
     requests.completeReceipt(receiptKey, requestId, now);
     return new TransportEvidenceCommandResult(
@@ -690,51 +738,28 @@ public final class TransportEvidenceCommands {
       ExecutionContext context,
       TransportRequest request,
       TransportStatusObservation observation,
+      DestinationAtTime destinationAtTime,
       EventType eventType) {
     var payload = mapper.createObjectNode();
     payload.put("transferReference", request.transferId().toString());
     payload.put("transportRequestReference", request.id().toString());
     payload.put("originFacilityReference", request.originFacility().value());
-    List<org.ayuvahak.transport.domain.TransportDestinationChangeOperation> acceptedChanges =
-        destinationChanges.findAcceptedHistoryForRequest(request.id());
-    var relevantChange =
-        acceptedChanges.stream()
-            .filter(
-                operation ->
-                    operation
-                        .sourceOccurredAt()
-                        .filter(acknowledgedAt -> !observation.occurredAt().isAfter(acknowledgedAt))
-                        .isPresent())
-            .findFirst()
-            .or(
-                () ->
-                    acceptedChanges.isEmpty()
-                        ? Optional.empty()
-                        : Optional.of(acceptedChanges.get(acceptedChanges.size() - 1)));
-    String destination =
-        relevantChange
-            .map(
-                operation ->
-                    operation
-                            .sourceOccurredAt()
-                            .filter(
-                                acknowledgedAt -> !observation.occurredAt().isAfter(acknowledgedAt))
-                            .isPresent()
-                        ? operation.oldFacilityId().toString()
-                        : operation.proposedFacilityId().toString())
-            .orElse(request.destinationFacility().value());
-    payload.put("destinationFacilityReference", destination);
-    relevantChange.ifPresent(
-        operation -> {
-          payload.put("destinationChangeOperationReference", operation.id().toString());
-          operation
-              .sourceOccurredAt()
-              .ifPresent(
-                  acknowledgedAt ->
-                      payload.put("destinationChangeAcknowledgedAt", acknowledgedAt.toString()));
-        });
+    payload.put("destinationFacilityReference", observation.destinationFacility().value());
+    destinationAtTime
+        .change()
+        .ifPresent(
+            operation -> {
+              payload.put("destinationChangeOperationReference", operation.id().toString());
+              operation
+                  .sourceOccurredAt()
+                  .ifPresent(
+                      acknowledgedAt ->
+                          payload.put(
+                              "destinationChangeAcknowledgedAt", acknowledgedAt.toString()));
+            });
     payload.put("evidenceReference", observation.id().toString());
     payload.put("evidenceKind", observation.status().name());
+    payload.put("evidenceOutcome", observation.outcome().name());
     payload.put("sourceNamespace", observation.sourceNamespace());
     observation.sourceSequence().ifPresent(value -> payload.put("sourceSequence", value));
     observation.reasonCode().ifPresent(value -> payload.put("reasonCode", value));
@@ -751,6 +776,43 @@ public final class TransportEvidenceCommands {
                     "transport-request/" + request.id(), observation.resultingRequestVersion())),
             payload));
   }
+
+  private DestinationAtTime destinationAt(TransportRequest request, Instant occurredAt) {
+    List<TransportDestinationChangeOperation> acceptedChanges =
+        destinationChanges.findAcceptedHistoryForRequest(request.id());
+    Optional<TransportDestinationChangeOperation> relevantChange =
+        acceptedChanges.stream()
+            .filter(
+                operation ->
+                    operation
+                        .sourceOccurredAt()
+                        .filter(acknowledgedAt -> !occurredAt.isAfter(acknowledgedAt))
+                        .isPresent())
+            .findFirst()
+            .or(
+                () ->
+                    acceptedChanges.isEmpty()
+                        ? Optional.empty()
+                        : Optional.of(acceptedChanges.get(acceptedChanges.size() - 1)));
+    String destination =
+        relevantChange
+            .map(
+                operation ->
+                    operation
+                            .sourceOccurredAt()
+                            .filter(acknowledgedAt -> !occurredAt.isAfter(acknowledgedAt))
+                            .isPresent()
+                        ? operation.oldFacilityId().toString()
+                        : operation.proposedFacilityId().toString())
+            .orElse(request.destinationFacility().value());
+    return new DestinationAtTime(
+        new ExternalReference(new IssuerId("urn:ayuvahak:directory"), "Facility", destination),
+        relevantChange);
+  }
+
+  private record DestinationAtTime(
+      ExternalReference destinationFacility,
+      Optional<TransportDestinationChangeOperation> change) {}
 
   private static Optional<EventType> movementEventType(TransportRequest.Status status) {
     return switch (status) {

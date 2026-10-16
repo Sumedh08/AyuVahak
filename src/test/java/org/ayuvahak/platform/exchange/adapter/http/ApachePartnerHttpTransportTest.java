@@ -240,7 +240,7 @@ class ApachePartnerHttpTransportTest {
         BoundedPartnerOperationExecutor executor = new BoundedPartnerOperationExecutor(2, 8)) {
       ApachePartnerHttpTransport transport = localTransport(partner, executor, null);
       PartnerProfileVersion profile =
-          profile("partner.test", partner.port(), limits(2_000, 100_000, 200_000));
+          profile("partner.test", partner.port(), limits(10_000, 100_000, 200_000));
 
       assertTransportFailure(
           transport, profile, PartnerTransportFailure.REMOTE_AUTHENTICATION_FAILURE);

@@ -1,7 +1,9 @@
 package org.ayuvahak.transport.application;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
+import java.util.Comparator;
 import java.util.Objects;
 import java.util.Optional;
 import org.ayuvahak.platform.api.PlatformErrorCode;
@@ -36,6 +38,7 @@ import org.ayuvahak.platform.executioncontext.ExecutionScope;
 import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
 import org.ayuvahak.transport.domain.TransportAuthorities;
+import org.ayuvahak.transport.domain.TransportDestinationChangeEvidence;
 import org.ayuvahak.transport.domain.TransportDestinationChangeOperation;
 import org.ayuvahak.transport.domain.TransportProviderSubmission;
 import org.ayuvahak.transport.domain.TransportRequest;
@@ -54,6 +57,7 @@ public final class TransportDestinationChangeCommands {
   private static final EventType RESOLVED =
       EventType.parse("transport.destination-change-resolved.v1");
   private static final String ISSUER = "urn:ayuvahak:directory";
+  private static final Duration FUTURE_SOURCE_SKEW = Duration.ofMinutes(5);
   private final TransportRequestStore requests;
   private final TransportDestinationChangeStore changes;
   private final TransportProviderSubmissionStore providerSubmissions;
@@ -178,6 +182,47 @@ public final class TransportDestinationChangeCommands {
     }
   }
 
+  /** Returns only the linked outcome to the configured Transfer service identity. */
+  public Optional<OutcomeSnapshot> getOutcome(
+      ExecutionContext serviceContext,
+      InternalId operationId,
+      InternalId transferDestinationChangeId,
+      InternalId transferId,
+      InternalId transportRequestId) {
+    requireServiceContext(serviceContext);
+    requireConfiguredTransferWorker(serviceContext);
+    authorize(serviceContext, operationId);
+    try {
+      Optional<TransportDestinationChangeOperation> found = changes.find(operationId);
+      if (found.isEmpty()) return Optional.empty();
+      TransportDestinationChangeOperation operation = found.orElseThrow();
+      TransportRequest request =
+          requests
+              .find(operation.transportRequestId())
+              .orElseThrow(TransportDestinationChangeCommands::notFound);
+      if (!operation.transferDestinationChangeId().equals(transferDestinationChangeId)
+          || !operation.transferId().equals(transferId)
+          || !operation.transportRequestId().equals(transportRequestId)
+          || !request.transferId().equals(transferId)
+          || !serviceContext.scope().facility().filter(request.originFacility()::equals).isPresent()
+          || serviceContext.scope().organization().isEmpty()) {
+        throw notFound();
+      }
+      return Optional.of(
+          new OutcomeSnapshot(
+              operation.id(),
+              operation.transferDestinationChangeId(),
+              operation.transferId(),
+              operation.transportRequestId(),
+              operation.state(),
+              operation.outcome(),
+              operation.resolutionEventId(),
+              operation.correlationId()));
+    } catch (DataAccessException unavailable) {
+      throw unavailable();
+    }
+  }
+
   public TransportDestinationChangeResult resolve(
       ExecutionContext operatorContext,
       InternalId operationId,
@@ -196,88 +241,173 @@ public final class TransportDestinationChangeCommands {
     }
     requireSource(sourceNamespace, sourceObservationId, sourceOccurredAt);
     authorize(operatorContext, operationId);
+    TransportDestinationChangeResult result;
     try {
-      return Objects.requireNonNull(
-          transaction.execute(
-              status -> {
-                TransportDestinationChangeOperation current =
-                    changes
-                        .lock(operationId)
-                        .orElseThrow(TransportDestinationChangeCommands::notFound);
-                TransportRequest request =
-                    requests
-                        .find(current.transportRequestId())
-                        .orElseThrow(TransportDestinationChangeCommands::unavailable);
-                if (!request.id().equals(current.transportRequestId())
-                    || !request.transferId().equals(current.transferId())) {
-                  throw conflict(
-                      "The Transport destination-change operation is not linked to its request.");
-                }
-                if (operatorContext
-                    .scope()
-                    .facility()
-                    .filter(request.originFacility()::equals)
-                    .isEmpty()) {
-                  throw invalidScope();
-                }
-                if (current.state() == TransportDestinationChangeOperation.State.RESOLVED) {
-                  if (current.outcome().filter(outcome::equals).isPresent()
-                      && current
-                          .resolutionFingerprint()
-                          .filter(fingerprint.value()::equals)
-                          .isPresent()) {
-                    return new TransportDestinationChangeResult(current, true);
-                  }
-                  throw conflict("A resolved destination-change operation cannot be changed.");
-                }
-                Instant now = clock.instant();
-                InternalId eventId = InternalId.generate();
-                if (!changes.resolve(
-                    current.id(),
-                    current.version(),
-                    outcome,
-                    operatorContext.actor(),
-                    sourceNamespace,
-                    sourceObservationId,
-                    fingerprint.value(),
-                    sourceOccurredAt,
-                    now,
-                    eventId)) {
-                  throw conflict("The Transport destination-change outcome changed concurrently.");
-                }
-                TransportDestinationChangeOperation resolved =
-                    new TransportDestinationChangeOperation(
+      result =
+          Objects.requireNonNull(
+              transaction.execute(
+                  status -> {
+                    TransportDestinationChangeOperation current =
+                        changes
+                            .lock(operationId)
+                            .orElseThrow(TransportDestinationChangeCommands::notFound);
+                    TransportRequest request =
+                        requests
+                            .find(current.transportRequestId())
+                            .orElseThrow(TransportDestinationChangeCommands::unavailable);
+                    if (!request.id().equals(current.transportRequestId())
+                        || !request.transferId().equals(current.transferId())) {
+                      throw conflict(
+                          "The Transport destination-change operation is not linked to its request.");
+                    }
+                    if (operatorContext
+                        .scope()
+                        .facility()
+                        .filter(request.originFacility()::equals)
+                        .isEmpty()) {
+                      throw invalidScope();
+                    }
+                    Optional<TransportDestinationChangeEvidence> existingEvidence =
+                        changes.findEvidence(operationId, sourceNamespace, sourceObservationId);
+                    if (existingEvidence.isPresent()) {
+                      TransportDestinationChangeEvidence evidence = existingEvidence.orElseThrow();
+                      if (evidence.fingerprint().equals(fingerprint.value())) {
+                        return new TransportDestinationChangeResult(
+                            current,
+                            true,
+                            evidence.disposition()
+                                == TransportDestinationChangeEvidence.Disposition
+                                    .RECONCILIATION_REQUIRED);
+                      }
+                      throw conflict(
+                          "A destination-change source identity was reused with new content.");
+                    }
+                    if (current.state() == TransportDestinationChangeOperation.State.RESOLVED) {
+                      if (current.outcome().filter(outcome::equals).isPresent()
+                          && current
+                              .resolutionFingerprint()
+                              .filter(fingerprint.value()::equals)
+                              .isPresent()) {
+                        return new TransportDestinationChangeResult(current, true);
+                      }
+                      throw conflict("A resolved destination-change operation cannot be changed.");
+                    }
+                    Instant now = clock.instant();
+                    Optional<String> chronologyFailure =
+                        sourceChronologyFailure(current, sourceOccurredAt, now);
+                    if (chronologyFailure.isPresent()) {
+                      String reasonCode = chronologyFailure.orElseThrow();
+                      TransportDestinationChangeEvidence evidence =
+                          new TransportDestinationChangeEvidence(
+                              InternalId.generate(),
+                              current.id(),
+                              outcome,
+                              sourceNamespace,
+                              sourceObservationId,
+                              fingerprint.value(),
+                              sourceOccurredAt,
+                              operatorContext.actor(),
+                              now,
+                              TransportDestinationChangeEvidence.Disposition
+                                  .RECONCILIATION_REQUIRED,
+                              Optional.of(reasonCode),
+                              operatorContext.correlationId());
+                      if (!changes.recordEvidence(evidence)) {
+                        throw conflict(
+                            "The destination-change source evidence changed concurrently.");
+                      }
+                      if (!changes.markUncertain(
+                          current.id(),
+                          current.version(),
+                          TransportDestinationChangeOperation.State.RECONCILIATION_REQUIRED,
+                          now)) {
+                        throw conflict("The destination-change operation changed concurrently.");
+                      }
+                      TransportDestinationChangeOperation reconciliationRequired =
+                          changes
+                              .find(current.id())
+                              .orElseThrow(TransportDestinationChangeCommands::unavailable);
+                      auditMutation(
+                          operatorContext,
+                          reconciliationRequired,
+                          "TRANSPORT_DESTINATION_CHANGE_RECONCILIATION_REQUIRED",
+                          Optional.of(reasonCode));
+                      return new TransportDestinationChangeResult(reconciliationRequired, false);
+                    }
+                    TransportDestinationChangeEvidence evidence =
+                        new TransportDestinationChangeEvidence(
+                            InternalId.generate(),
+                            current.id(),
+                            outcome,
+                            sourceNamespace,
+                            sourceObservationId,
+                            fingerprint.value(),
+                            sourceOccurredAt,
+                            operatorContext.actor(),
+                            now,
+                            TransportDestinationChangeEvidence.Disposition.RESOLVED,
+                            Optional.empty(),
+                            operatorContext.correlationId());
+                    if (!changes.recordEvidence(evidence)) {
+                      throw conflict(
+                          "The destination-change source evidence changed concurrently.");
+                    }
+                    InternalId eventId = InternalId.generate();
+                    if (!changes.resolve(
                         current.id(),
-                        current.transferDestinationChangeId(),
-                        current.transferId(),
-                        current.transportRequestId(),
-                        current.oldFacilityId(),
-                        current.proposedFacilityId(),
-                        current.reasonCode(),
-                        TransportDestinationChangeOperation.State.RESOLVED,
-                        Optional.of(outcome),
-                        current.initiatedBy(),
-                        Optional.of(operatorContext.actor()),
-                        Optional.of(sourceNamespace),
-                        Optional.of(sourceObservationId),
-                        Optional.of(fingerprint.value()),
-                        Optional.of(sourceOccurredAt),
-                        Optional.of(now),
-                        Optional.of(eventId),
-                        operatorContext.correlationId(),
-                        current.version() + 1,
-                        current.createdAt(),
-                        now);
-                auditMutation(operatorContext, resolved, "TRANSPORT_DESTINATION_CHANGE_RESOLVED");
-                recordResolvedEvent(operatorContext, request, resolved, now);
-                return new TransportDestinationChangeResult(resolved, false);
-              }),
-          "Transport destination-change result");
+                        current.version(),
+                        outcome,
+                        operatorContext.actor(),
+                        sourceNamespace,
+                        sourceObservationId,
+                        fingerprint.value(),
+                        sourceOccurredAt,
+                        now,
+                        eventId)) {
+                      throw conflict(
+                          "The Transport destination-change outcome changed concurrently.");
+                    }
+                    TransportDestinationChangeOperation resolved =
+                        new TransportDestinationChangeOperation(
+                            current.id(),
+                            current.transferDestinationChangeId(),
+                            current.transferId(),
+                            current.transportRequestId(),
+                            current.oldFacilityId(),
+                            current.proposedFacilityId(),
+                            current.reasonCode(),
+                            TransportDestinationChangeOperation.State.RESOLVED,
+                            Optional.of(outcome),
+                            current.initiatedBy(),
+                            Optional.of(operatorContext.actor()),
+                            Optional.of(sourceNamespace),
+                            Optional.of(sourceObservationId),
+                            Optional.of(fingerprint.value()),
+                            Optional.of(sourceOccurredAt),
+                            Optional.of(now),
+                            Optional.of(eventId),
+                            operatorContext.correlationId(),
+                            current.version() + 1,
+                            current.createdAt(),
+                            now);
+                    auditMutation(
+                        operatorContext, resolved, "TRANSPORT_DESTINATION_CHANGE_RESOLVED");
+                    recordResolvedEvent(operatorContext, request, resolved, now);
+                    return new TransportDestinationChangeResult(resolved, false);
+                  }),
+              "Transport destination-change result");
     } catch (CannotAcquireLockException busy) {
       throw conflict("A matching Transport destination-change command is still processing.");
     } catch (DataAccessException unavailable) {
       throw unavailable();
     }
+    if (result.replayedEvidenceRequiresReconciliation()
+        || result.operation().state()
+            == TransportDestinationChangeOperation.State.RECONCILIATION_REQUIRED) {
+      throw staleSourceTime(
+          "The destination-change acknowledgement was retained for operator reconciliation.");
+    }
+    return result;
   }
 
   /** Resolves an inbound partner outcome only for the partner recorded on its outbound request. */
@@ -390,6 +520,12 @@ public final class TransportDestinationChangeCommands {
     }
   }
 
+  private void requireConfiguredTransferWorker(ExecutionContext context) {
+    if (!authentication.issuer().equals(context.actor().identity().issuer().value())) {
+      throw invalidScope();
+    }
+  }
+
   private void authorize(ExecutionContext context, InternalId operationId) {
     AuthorizationDecision decision =
         authorization.evaluate(context, TransportAuthorities.destinationChange().code());
@@ -430,6 +566,14 @@ public final class TransportDestinationChangeCommands {
 
   private void auditMutation(
       ExecutionContext context, TransportDestinationChangeOperation operation, String action) {
+    auditMutation(context, operation, action, operation.outcome().map(Enum::name));
+  }
+
+  private void auditMutation(
+      ExecutionContext context,
+      TransportDestinationChangeOperation operation,
+      String action,
+      Optional<String> reasonCode) {
     try {
       audit.recordMutation(
           new AuditEvidence(
@@ -441,7 +585,7 @@ public final class TransportDestinationChangeCommands {
               Optional.of(operation.id()),
               clock.instant(),
               AuditOutcome.SUCCEEDED,
-              operation.outcome().map(Enum::name),
+              reasonCode,
               authenticationEvidence(context),
               AuditAuthorizationOutcome.ALLOWED,
               context.correlationId(),
@@ -508,6 +652,29 @@ public final class TransportDestinationChangeCommands {
     }
   }
 
+  private Optional<String> sourceChronologyFailure(
+      TransportDestinationChangeOperation current, Instant sourceOccurredAt, Instant now) {
+    if (sourceOccurredAt.isAfter(now.plus(FUTURE_SOURCE_SKEW))) {
+      return Optional.of("SOURCE_TIME_TOO_FAR_AHEAD");
+    }
+    Optional<Instant> latestResolvedSourceTime =
+        changes.findResolvedHistoryForRequest(current.transportRequestId()).stream()
+            .filter(operation -> !operation.id().equals(current.id()))
+            .map(TransportDestinationChangeOperation::sourceOccurredAt)
+            .flatMap(Optional::stream)
+            .max(Comparator.naturalOrder());
+    if (latestResolvedSourceTime
+        .filter(previous -> !sourceOccurredAt.isAfter(previous))
+        .isPresent()) {
+      return Optional.of("SOURCE_TIME_REGRESSED");
+    }
+    return Optional.empty();
+  }
+
+  private static PlatformProblemException staleSourceTime(String detail) {
+    return problem(HttpStatus.CONFLICT, PlatformErrorCode.TRANSPORT_EVIDENCE_STALE, detail);
+  }
+
   private static void requireFacility(ExternalReference facility) {
     if (facility == null
         || !ISSUER.equals(facility.issuer().value())
@@ -567,6 +734,16 @@ public final class TransportDestinationChangeCommands {
         PlatformErrorCode.TRANSFER_UNAVAILABLE,
         "Transport could not commit the destination-change operation safely.");
   }
+
+  public record OutcomeSnapshot(
+      InternalId operationId,
+      InternalId transferDestinationChangeId,
+      InternalId transferId,
+      InternalId transportRequestId,
+      TransportDestinationChangeOperation.State state,
+      Optional<TransportDestinationChangeOperation.Outcome> outcome,
+      Optional<InternalId> resolutionEventId,
+      org.ayuvahak.platform.core.CorrelationId correlationId) {}
 
   private static PlatformProblemException problem(
       HttpStatus status, PlatformErrorCode code, String detail) {

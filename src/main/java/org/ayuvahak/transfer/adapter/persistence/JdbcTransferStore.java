@@ -493,16 +493,42 @@ public class JdbcTransferStore implements TransferStore {
   }
 
   @Override
-  public List<InternalId> findPendingDestinationChangeReleases(int limit) {
+  public List<InternalId> findPendingDestinationChangeReleases(
+      int limit, Optional<InternalId> afterOperationId) {
     if (limit < 1 || limit > 500) {
       throw new IllegalArgumentException(
           "destination-change recovery limit must be between 1 and 500");
     }
+    java.util.Objects.requireNonNull(afterOperationId, "recovery scan cursor");
+    UUID after = afterOperationId.map(InternalId::value).orElse(null);
     return jdbc.query(
         "SELECT operation_id FROM transfer.destination_change_operation "
             + "WHERE status IN ('OLD_HOLD_RELEASE_PENDING', 'PROPOSED_HOLD_RELEASE_PENDING') "
-            + "ORDER BY updated_at, operation_id LIMIT ?",
+            + "AND (?::uuid IS NULL OR operation_id > ?::uuid) "
+            + "ORDER BY operation_id LIMIT ?",
         (result, row) -> new InternalId(result.getObject("operation_id", UUID.class)),
+        after,
+        after,
+        limit);
+  }
+
+  @Override
+  public List<InternalId> findPendingTransportDestinationChanges(
+      int limit, Optional<InternalId> afterOperationId) {
+    if (limit < 1 || limit > 500) {
+      throw new IllegalArgumentException(
+          "Transport destination-change recovery limit must be between 1 and 500");
+    }
+    java.util.Objects.requireNonNull(afterOperationId, "recovery scan cursor");
+    UUID after = afterOperationId.map(InternalId::value).orElse(null);
+    return jdbc.query(
+        "SELECT operation_id FROM transfer.destination_change_operation "
+            + "WHERE status IN ('TRANSPORT_ACK_PENDING', 'TRANSPORT_OUTCOME_UNKNOWN') "
+            + "AND (?::uuid IS NULL OR operation_id > ?::uuid) "
+            + "ORDER BY operation_id LIMIT ?",
+        (result, row) -> new InternalId(result.getObject("operation_id", UUID.class)),
+        after,
+        after,
         limit);
   }
 

@@ -65,6 +65,7 @@ public record TransferProgressFact(
     INTERRUPTION,
     RESUMPTION,
     ARRIVAL,
+    MOVEMENT_RECONCILIATION,
     HANDOVER,
     COMPLETION,
     CANCELLATION,

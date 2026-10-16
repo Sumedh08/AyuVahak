@@ -24,6 +24,8 @@ public interface TransportRequestReadStore {
 
   List<DestinationChangeRow> destinationChanges(InternalId requestId, int limit);
 
+  List<DestinationChangeEvidenceRow> destinationChangeEvidence(InternalId operationId, int limit);
+
   List<ProviderSubmissionRow> providerSubmissions(InternalId requestId, int limit);
 
   record RequestRow(
@@ -88,7 +90,22 @@ public interface TransportRequestReadStore {
       Optional<String> outcome,
       Instant createdAt,
       Instant updatedAt,
-      long version) {}
+      long version,
+      List<DestinationChangeEvidenceRow> evidence) {
+    public DestinationChangeRow {
+      evidence = List.copyOf(evidence);
+    }
+  }
+
+  record DestinationChangeEvidenceRow(
+      InternalId evidenceId,
+      String reportedOutcome,
+      String sourceNamespace,
+      String sourceObservationId,
+      Instant sourceOccurredAt,
+      Instant recordedAt,
+      String disposition,
+      Optional<String> reasonCode) {}
 
   record ProviderSubmissionRow(
       InternalId operationReference,

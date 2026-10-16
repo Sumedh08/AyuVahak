@@ -266,13 +266,40 @@ public final class TransferTransportMovementEventHandler implements InternalEven
               "OLD_DESTINATION_ARRIVAL_REQUIRES_RECONCILIATION",
               recordedAt);
         } else {
-          completeWithoutTransition(
-              event,
-              transferId,
+          recordProgress(
               context,
+              transferId,
+              TransferProgressFact.Kind.MOVEMENT_RECONCILIATION,
+              occurredAt,
+              Optional.of("OLD_DESTINATION_ARRIVAL_AFTER_REROUTE_ACK"),
+              sourceReference,
+              target.transfer().version(),
+              event,
+              payload);
+          transfers.completeConsumerEvent(
+              event.eventId(),
+              Optional.of(transferId),
               "OLD_DESTINATION_ARRIVAL_REQUIRES_RECONCILIATION",
               recordedAt);
         }
+        return;
+      }
+      if ("RECONCILIATION_REQUIRED".equals(optionalText(payload, "evidenceOutcome").orElse(""))) {
+        recordProgress(
+            context,
+            transferId,
+            TransferProgressFact.Kind.MOVEMENT_RECONCILIATION,
+            occurredAt,
+            Optional.of("TRANSPORT_ARRIVAL_EVIDENCE_REQUIRES_RECONCILIATION"),
+            sourceReference,
+            target.transfer().version(),
+            event,
+            payload);
+        transfers.completeConsumerEvent(
+            event.eventId(),
+            Optional.of(transferId),
+            "TRANSPORT_ARRIVAL_REQUIRES_RECONCILIATION",
+            recordedAt);
         return;
       }
       if (!"ARRIVED_DESTINATION".equals(evidenceKind)
@@ -358,7 +385,10 @@ public final class TransferTransportMovementEventHandler implements InternalEven
             .filter(change -> change.transferId().equals(transferId))
             .filter(
                 change ->
-                    change.status() == TransferDestinationChangeOperation.Status.RESOLVED
+                    (change.status() == TransferDestinationChangeOperation.Status.RESOLVED
+                            || change.status()
+                                == TransferDestinationChangeOperation.Status
+                                    .OLD_HOLD_RELEASE_PENDING)
                         && change
                             .providerOutcome()
                             .filter(

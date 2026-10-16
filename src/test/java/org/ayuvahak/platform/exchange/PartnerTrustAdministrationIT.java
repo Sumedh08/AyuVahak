@@ -972,14 +972,16 @@ class PartnerTrustAdministrationIT {
             + "correlation_id, version, created_at, updated_at) "
             + "VALUES (?, ?, ?, ?, ?, ?, 'REROUTE_REQUIRED', 'PENDING', 'HUMAN', ?, "
             + "'subject', 'synthetic-transfer-operator', 'synthetic-provider-destination-outcome', "
-            + "1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            + "1, ?, ?)",
         operationId.value(),
         InternalId.generate().value(),
         transferId.value(),
         requestId.value(),
         InternalId.generate().value(),
         InternalId.generate().value(),
-        ISSUER);
+        ISSUER,
+        java.sql.Timestamp.from(Instant.parse("2026-10-16T09:58:00Z")),
+        java.sql.Timestamp.from(Instant.parse("2026-10-16T09:58:00Z")));
 
     String body = "{\"outcome\":\"ACCEPTED\",\"occurredAt\":\"2026-10-16T10:00:00Z\"}";
     mockMvc

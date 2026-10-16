@@ -18,11 +18,17 @@ import com.nimbusds.jose.jwk.gen.RSAKeyGenerator;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
 import com.sun.net.httpserver.HttpServer;
+import com.sun.net.httpserver.HttpsConfigurator;
+import com.sun.net.httpserver.HttpsServer;
 import com.zaxxer.hikari.HikariDataSource;
+import java.io.InputStream;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Proxy;
 import java.math.BigDecimal;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.security.KeyStore;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Date;
@@ -31,12 +37,16 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.SSLContext;
 import org.ayuvahak.capacity.application.CapacityEvidenceStore;
 import org.ayuvahak.capacity.application.CapacityReservationCommands;
 import org.ayuvahak.capacity.domain.CapacityObservationFact;
 import org.ayuvahak.capacity.domain.CapacityReadinessOutcome;
 import org.ayuvahak.capacity.domain.CapacityReservationRequest;
+import org.ayuvahak.directory.application.DirectoryMcsdSynchronizationService;
 import org.ayuvahak.directory.application.DirectoryStore;
+import org.ayuvahak.directory.domain.DirectoryExternalIdentifier;
 import org.ayuvahak.matching.application.MatchingEligibilityApplicationService;
 import org.ayuvahak.matching.application.MatchingOwnerEvidenceReader;
 import org.ayuvahak.matching.application.MatchingPolicyCatalog;
@@ -59,6 +69,9 @@ import org.ayuvahak.platform.eventing.application.OutboxDispatcher;
 import org.ayuvahak.platform.executioncontext.ExecutionContext;
 import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
 import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
+import org.ayuvahak.referral.application.PatientContextCategory;
+import org.ayuvahak.referral.application.PatientContextDisclosureDecision;
+import org.ayuvahak.referral.application.PatientContextDisclosurePolicy;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -90,8 +103,9 @@ import org.testcontainers.utility.DockerImageName;
     properties = {
       "management.tracing.sampling.probability=0.0",
       "ayuvahak.authentication.audience=ayuvahak-api",
-      "ayuvahak.authentication.service-client-ids=synthetic-integration-service",
+      "ayuvahak.authentication.service-client-ids=synthetic-integration-service,ayuvahak-transport-worker,ayuvahak-transfer-owner-event-consumer,synthetic-transport-provider,synthetic-mcsd-worker",
       "ayuvahak.authentication.allow-http=true",
+      "ayuvahak.test.partner.enabled=true",
       "ayuvahak.transfer.request-deadline=PT1H",
       "ayuvahak.transfer.reservation-dimension=SYN_TRANSFER_SLOT",
       "ayuvahak.transfer.reservation-unit=slot",
@@ -99,12 +113,17 @@ import org.testcontainers.utility.DockerImageName;
       "ayuvahak.transfer.reservation-duration=PT2H",
       "ayuvahak.transfer.expiry-polling-enabled=false",
       "ayuvahak.transfer.reservation-polling-enabled=false",
-      "ayuvahak.capacity.reservation-lifecycle.enabled=false"
+      "ayuvahak.capacity.reservation-lifecycle.enabled=false",
+      "ayuvahak.transport.provider-partner-key=SYNTHETIC-TRANSPORT-PROVIDER"
     })
 @AutoConfigureMockMvc
 @Testcontainers
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
-@Import(DirectoryCapacityReferralScenarioIT.MatchingTestConfiguration.class)
+@Import({
+  DirectoryCapacityReferralScenarioIT.MatchingTestConfiguration.class,
+  DirectoryCapacityReferralScenarioIT.PatientContextTestConfiguration.class,
+  org.ayuvahak.platform.exchange.adapter.http.LocalPartnerExchangeTestConfiguration.class
+})
 class DirectoryCapacityReferralScenarioIT {
 
   private static final String ISSUER = "https://identity.example.test/realms/cross-phase";
@@ -118,6 +137,23 @@ class DirectoryCapacityReferralScenarioIT {
   private static final String DIMENSION = "COORDINATION_BEDS";
   private static final String TEST_PASSWORD = "local-test-only";
   private static final RSAKey SIGNING_KEY = newSigningKey("cross-phase-fixture");
+  private static final String MCSD_NAMESPACE = "urn:synthetic:mcsd:volume-three";
+  private static final String MCSD_PROFILE =
+      "https://profiles.ihe.net/ITI/mCSD/StructureDefinition/IHE.mCSD.Organization|4.0.0";
+  private static final String IPS_BUNDLE_PROFILE =
+      "http://hl7.org/fhir/uv/ips/StructureDefinition/Bundle-uv-ips|2.0.1";
+  private static final String IPS_PATIENT_PROFILE =
+      "http://hl7.org/fhir/uv/ips/StructureDefinition/Patient-uv-ips|2.0.1";
+  private static final String IPS_COMPOSITION_PROFILE =
+      "http://hl7.org/fhir/uv/ips/StructureDefinition/Composition-uv-ips|2.0.1";
+  private static final String IPS_CONDITION_PROFILE =
+      "http://hl7.org/fhir/uv/ips/StructureDefinition/Condition-uv-ips|2.0.1";
+  private static final java.util.concurrent.atomic.AtomicReference<byte[]> PARTNER_RESPONSE =
+      new java.util.concurrent.atomic.AtomicReference<>(new byte[0]);
+  private static final java.util.concurrent.atomic.AtomicReference<String> PROVIDER_REQUEST_TARGET =
+      new java.util.concurrent.atomic.AtomicReference<>();
+  private static final java.util.concurrent.atomic.AtomicInteger PROVIDER_REQUESTS =
+      new java.util.concurrent.atomic.AtomicInteger();
   private static final PostgreSQLContainer POSTGRES =
       new PostgreSQLContainer(
               DockerImageName.parse(
@@ -129,9 +165,12 @@ class DirectoryCapacityReferralScenarioIT {
 
   @Container private static final PostgreSQLContainer CONTAINER = POSTGRES;
   private static HttpServer jwksServer;
+  private static HttpsServer partnerServer;
 
   @Autowired private MockMvc mockMvc;
   @Autowired private JdbcTemplate jdbc;
+  @Autowired private DirectoryStore directoryStore;
+  @Autowired private DirectoryMcsdSynchronizationService directoryMcsdSynchronization;
   @Autowired private CapacityReservationCommands capacityReservationCommands;
   @Autowired private ExecutionContextFactory executionContextFactory;
   @Autowired private MatchingOwnerEvidenceReader matchingOwnerEvidenceReader;
@@ -151,6 +190,17 @@ class DirectoryCapacityReferralScenarioIT {
     registry.add(
         "ayuvahak.authentication.jwk-set-uri",
         () -> "http://127.0.0.1:" + jwksServer.getAddress().getPort() + "/jwks");
+    registry.add(
+        "ayuvahak.test.partner.port", () -> Integer.toString(partnerServer.getAddress().getPort()));
+    registry.add(
+        "ayuvahak.directory.mcsd.source-bindings[0].source-namespace", () -> MCSD_NAMESPACE);
+    registry.add(
+        "ayuvahak.directory.mcsd.source-bindings[0].partner-key", () -> "synthetic-directory-feed");
+    registry.add(
+        "ayuvahak.referral.ips.source-bindings[0].patient-identifier-system",
+        () -> "urn:synthetic:source-ehr");
+    registry.add(
+        "ayuvahak.referral.ips.source-bindings[0].partner-key", () -> "synthetic-directory-feed");
   }
 
   @BeforeAll
@@ -170,10 +220,52 @@ class DirectoryCapacityReferralScenarioIT {
           }
         });
     jwksServer.start();
+
+    KeyStore keyStore = KeyStore.getInstance("PKCS12");
+    char[] password = "local-test-only".toCharArray();
+    try (InputStream input =
+        DirectoryCapacityReferralScenarioIT.class.getResourceAsStream(
+            "/exchange/synthetic-partner.p12")) {
+      if (input == null) {
+        throw new IllegalStateException("Synthetic local TLS fixture is missing.");
+      }
+      keyStore.load(input, password);
+    }
+    KeyManagerFactory keyManagers =
+        KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+    keyManagers.init(keyStore, password);
+    SSLContext serverContext = SSLContext.getInstance("TLS");
+    serverContext.init(keyManagers.getKeyManagers(), null, null);
+    partnerServer =
+        HttpsServer.create(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), 0), 0);
+    partnerServer.setHttpsConfigurator(new HttpsConfigurator(serverContext));
+    partnerServer.createContext(
+        "/",
+        exchange -> {
+          if ("POST".equals(exchange.getRequestMethod())) {
+            PROVIDER_REQUESTS.incrementAndGet();
+            PROVIDER_REQUEST_TARGET.set(
+                exchange.getRequestMethod() + " " + exchange.getRequestURI());
+            exchange.getRequestBody().readAllBytes();
+            exchange.sendResponseHeaders(202, -1);
+            exchange.close();
+            return;
+          }
+          byte[] response = PARTNER_RESPONSE.get();
+          exchange.getResponseHeaders().set("Content-Type", "application/fhir+json");
+          exchange.sendResponseHeaders(200, response.length);
+          try (var output = exchange.getResponseBody()) {
+            output.write(response);
+          }
+        });
+    partnerServer.start();
   }
 
   @AfterAll
   static void stopLocalJwksServer() {
+    if (partnerServer != null) {
+      partnerServer.stop(0);
+    }
     if (jwksServer != null) {
       jwksServer.stop(0);
     }
@@ -1510,18 +1602,25 @@ class DirectoryCapacityReferralScenarioIT {
   void volumeTwoHappyPathRunsThroughDirectoryCapacityReferralMatchingAndTransfer()
       throws Exception {
     String prefix = "synthetic-volume2-e2e-" + UUID.randomUUID();
+    PROVIDER_REQUESTS.set(0);
+    PROVIDER_REQUEST_TARGET.set(null);
     String curator = prefix + "-curator";
     String capacityAdmin = prefix + "-capacity-admin";
     String reporter = prefix + "-reporter";
     String originator = prefix + "-originator";
+    String mcsdWorker = "synthetic-mcsd-worker";
+    String exchangeAdministrator = prefix + "-exchange-admin";
     String matchingOwner = "ayuvahak-matching-owner-read";
     String referralOutcomeConsumer = "ayuvahak-transfer-outcome-consumer";
     String reservationWorker = "ayuvahak-transfer-reservation-worker";
     grantPlatform(curator, "DirectoryCuration");
     grantPlatform(curator, "DirectoryVocabularyAdministration");
     grantPlatform(capacityAdmin, "CapacityPolicyAdministration");
+    grantPlatform(exchangeAdministrator, "ExchangeTrustAdministration");
+    grantService(mcsdWorker, "DirectoryCuration", "PLATFORM", null, null);
+    configureDirectoryAndIpsPartner(exchangeAdministrator, prefix);
     String originOrganizationId = createOrganization(prefix + "-origin-org", curator);
-    String destinationOrganizationId = createOrganization(prefix + "-destination-org", curator);
+    String destinationOrganizationId = importMcsdDestinationOrganization(mcsdWorker, prefix);
     String originFacilityId =
         createFacility(
             prefix + "-origin-facility", originOrganizationId, "Synthetic origin", curator);
@@ -1727,7 +1826,7 @@ class DirectoryCapacityReferralScenarioIT {
                             + recommendationId
                             + "\",\"candidateFacilityId\":\""
                             + facilityB
-                            + "\"}"))
+                            + "\",\"transportRequired\":true}"))
             .andExpect(status().isCreated())
             .andExpect(jsonPath("$.status").value("PENDING"))
             .andReturn()
@@ -1821,32 +1920,254 @@ class DirectoryCapacityReferralScenarioIT {
                 UUID.fromString(transferId)))
         .isEqualTo("ACTIVE");
 
+    String patientContextMarker = prefix + "-opaque-patient-reference";
+    String receivingParticipant = prefix + "-receiving-participant";
     grantFacility(
-        prefix + "-mover", "TransferProgressAuthority", destinationOrganizationId, facilityB);
+        receivingParticipant,
+        "TransferPatientContextParticipation",
+        destinationOrganizationId,
+        facilityB);
+    grantFacility(
+        receivingParticipant,
+        "ReferralPatientContextDisclosure",
+        destinationOrganizationId,
+        facilityB);
+    PARTNER_RESPONSE.set(syntheticIpsDocument(patientContextMarker));
+    String patientContextBody =
+        mockMvc
+            .perform(
+                get("/api/v1/referrals/{referralId}/patient-context", referralId)
+                    .header("Authorization", bearer(token(receivingParticipant)))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", destinationOrganizationId)
+                    .header("X-AyuVahak-Facility-Id", facilityB)
+                    .param("transferId", transferId)
+                    .param("requestAttemptId", requestAttemptId)
+                    .param("purposeCode", "CARE_COORDINATION"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.status").value("AVAILABLE"))
+            .andExpect(jsonPath("$.sections[0].category").value("PROBLEMS"))
+            .andExpect(jsonPath("$.sections[0].codes[0].code").value("SYN-CODED-PROBLEM-001"))
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+    assertThat(patientContextBody).doesNotContain(patientContextMarker, "SYN-PRIVATE-NARRATIVE");
+    assertThat(PROVIDER_REQUESTS).hasValue(0);
+
+    // Continue the same synthetic Directory → Capacity → Referral → Matching → Transfer
+    // scenario through Referral's authorized IPS disclosure and the Transport owner contract.
+    grantService(
+        "ayuvahak-transport-worker",
+        "TransportRequestAuthority",
+        "FACILITY",
+        originOrganizationId,
+        originFacilityId);
+    grantService(
+        "ayuvahak-transport-worker",
+        "TransferTransportRequestEligibility",
+        "FACILITY",
+        originOrganizationId,
+        originFacilityId);
+    grantService(
+        "ayuvahak-transfer-owner-event-consumer",
+        "TransferProgressAuthority",
+        "FACILITY",
+        originOrganizationId,
+        originFacilityId);
+    activateSyntheticTransportProvider(exchangeAdministrator, prefix);
+    grantService(
+        "synthetic-transport-provider",
+        "TransportStatusAuthority",
+        "FACILITY",
+        originOrganizationId,
+        originFacilityId);
+    String transportOperator = prefix + "-transport-operator";
+    grantFacility(
+        transportOperator, "TransportStatusAuthority", originOrganizationId, originFacilityId);
+    grantFacility(
+        transportOperator,
+        "TransportDispatchCoordinationAuthority",
+        originOrganizationId,
+        originFacilityId);
+    String transportRequestBody =
+        mockMvc
+            .perform(
+                post("/api/v1/transfers/{transferId}/transport-request", transferId)
+                    .header("Authorization", bearer(token(originator)))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", originOrganizationId)
+                    .header("X-AyuVahak-Facility-Id", originFacilityId)
+                    .header("Idempotency-Key", prefix + "-transport-request")
+                    .contentType("application/json")
+                    .content("{}"))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.status").value("REQUESTED"))
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+    String transportRequestId =
+        com.jayway.jsonpath.JsonPath.read(transportRequestBody, "$.transportRequestId");
+    mockMvc
+        .perform(
+            post("/api/v1/transport-requests/{requestId}/provider-dispatch", transportRequestId)
+                .header("Authorization", bearer(token(transportOperator)))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", originOrganizationId)
+                .header("X-AyuVahak-Facility-Id", originFacilityId))
+        .andExpect(status().isAccepted())
+        .andExpect(jsonPath("$.state").value("ACKNOWLEDGED"));
+    assertThat(PROVIDER_REQUEST_TARGET.get())
+        .isEqualTo("POST /api/transport-requests/" + transportRequestId + "/dispatches");
+    assertThat(PROVIDER_REQUESTS).hasValue(1);
+    Instant transportBase = Instant.now().minusSeconds(30);
+    recordIntegratedTransportStatus(
+        transportRequestId,
+        transportOperator,
+        originOrganizationId,
+        originFacilityId,
+        prefix + "-transport-awaiting-assignment",
+        "SYN-INTEGRATED-001",
+        "AWAITING_ASSIGNMENT",
+        transportBase);
+    mockMvc
+        .perform(
+            post("/api/v1/transport-requests/{requestId}/assignments", transportRequestId)
+                .header("Authorization", bearer(token(transportOperator)))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", originOrganizationId)
+                .header("X-AyuVahak-Facility-Id", originFacilityId)
+                .header("Idempotency-Key", prefix + "-transport-assignment")
+                .contentType("application/json")
+                .content(
+                    "{\"sourceNamespace\":\"urn:ayuvahak:synthetic-transport\","
+                        + "\"sourceObservationId\":\"SYN-INTEGRATED-ASSIGNMENT\","
+                        + "\"assignmentReference\":\"SYN-ASSIGNMENT-001\","
+                        + "\"occurredAt\":\""
+                        + transportBase.plusSeconds(1)
+                        + "\"}"))
+        .andExpect(status().isCreated());
+    recordIntegratedTransportStatus(
+        transportRequestId,
+        transportOperator,
+        originOrganizationId,
+        originFacilityId,
+        prefix + "-transport-enroute-origin",
+        "SYN-INTEGRATED-002",
+        "EN_ROUTE_TO_ORIGIN",
+        transportBase.plusSeconds(2));
+    recordIntegratedTransportStatus(
+        transportRequestId,
+        transportOperator,
+        originOrganizationId,
+        originFacilityId,
+        prefix + "-transport-at-origin",
+        "SYN-INTEGRATED-003",
+        "AT_ORIGIN",
+        transportBase.plusSeconds(3));
+    recordIntegratedTransportStatus(
+        transportRequestId,
+        transportOperator,
+        originOrganizationId,
+        originFacilityId,
+        prefix + "-transport-patient-onboard",
+        "SYN-INTEGRATED-004",
+        "PATIENT_ONBOARD",
+        transportBase.plusSeconds(4));
+    String providerDepartureBody =
+        "{\"observationId\":\"SYN-PROVIDER-DEPARTURE-001\",\"sourceSequence\":1,"
+            + "\"status\":\"EN_ROUTE_TO_DESTINATION\",\"occurredAt\":\""
+            + transportBase.plusSeconds(5)
+            + "\"}";
+    var providerDeparture =
+        mockMvc
+            .perform(
+                post(
+                        "/api/v1/transport-provider/evidence/{transportRequestId}/status",
+                        transportRequestId)
+                    .header("Authorization", bearer(serviceToken("synthetic-transport-provider")))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", originOrganizationId)
+                    .header("X-AyuVahak-Facility-Id", originFacilityId)
+                    .header("X-External-Message-ID", prefix + "-provider-departure-message")
+                    .contentType("application/json")
+                    .content(providerDepartureBody))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.requestStatus").value("EN_ROUTE_TO_DESTINATION"))
+            .andReturn();
+    assertThat(providerDeparture.getResponse().getHeader("X-Correlation-ID")).isNotBlank();
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
+                String.class,
+                UUID.fromString(transferId)))
+        .as("Transfer remains READY until provider movement evidence is dispatched")
+        .isEqualTo("READY");
+    var providerDepartureReplay =
+        mockMvc
+            .perform(
+                post(
+                        "/api/v1/transport-provider/evidence/{transportRequestId}/status",
+                        transportRequestId)
+                    .header("Authorization", bearer(serviceToken("synthetic-transport-provider")))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", originOrganizationId)
+                    .header("X-AyuVahak-Facility-Id", originFacilityId)
+                    .header("X-External-Message-ID", prefix + "-provider-departure-message")
+                    .contentType("application/json")
+                    .content(providerDepartureBody))
+            .andExpect(status().isCreated())
+            .andReturn();
+    assertThat(providerDepartureReplay.getResponse().getHeader("Idempotency-Replayed"))
+        .isEqualTo("true");
+    outboxDispatcher.dispatchAvailable(Instant.now().plusSeconds(1));
+    outboxDispatcher.dispatchAvailable(Instant.now().plusSeconds(1));
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
+                String.class,
+                UUID.fromString(transferId)))
+        .isEqualTo("IN_TRANSIT");
+    assertThat(
+            jdbc.queryForList(
+                "SELECT d.state FROM platform_eventing.internal_event e "
+                    + "JOIN platform_eventing.outbox_delivery d USING (event_id) "
+                    + "WHERE e.event_type = 'transport.departure-confirmed.v1' "
+                    + "AND e.envelope -> 'payload' ->> 'transportRequestReference' = ?",
+                transportRequestId))
+        .containsExactly(Map.of("state", "DELIVERED"));
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM transfer.consumer_event_receipt r "
+                    + "JOIN platform_eventing.internal_event e USING (event_id) "
+                    + "WHERE e.event_type = 'transport.departure-confirmed.v1' "
+                    + "AND e.envelope -> 'payload' ->> 'transportRequestReference' = ? "
+                    + "AND r.event_state = 'COMPLETED'",
+                Integer.class,
+                transportRequestId))
+        .isEqualTo(1);
+    recordIntegratedTransportStatus(
+        transportRequestId,
+        transportOperator,
+        originOrganizationId,
+        originFacilityId,
+        prefix + "-transport-arrival",
+        "SYN-INTEGRATED-006",
+        "ARRIVED_DESTINATION",
+        transportBase.plusSeconds(6));
+    outboxDispatcher.dispatchAvailable(Instant.now().plusSeconds(1));
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
+                String.class,
+                UUID.fromString(transferId)))
+        .isEqualTo("ARRIVED");
+
     grantFacility(
         prefix + "-receiver", "TransferProgressAuthority", destinationOrganizationId, facilityB);
     grantFacility(
         prefix + "-receiver", "TransferHandoverAuthority", destinationOrganizationId, facilityB);
     grantFacility(
         prefix + "-receiver", "TransferCompletionAuthority", destinationOrganizationId, facilityB);
-    recordTransferProgress(
-        transferId,
-        "departure",
-        prefix + "-mover",
-        destinationOrganizationId,
-        facilityB,
-        prefix + "-departure",
-        2,
-        "\"sourceReference\":\"synthetic-departure\"");
-    recordTransferProgress(
-        transferId,
-        "arrival",
-        prefix + "-mover",
-        destinationOrganizationId,
-        facilityB,
-        prefix + "-arrival",
-        3,
-        "");
     recordTransferProgress(
         transferId,
         "handover",
@@ -2430,6 +2751,216 @@ class DirectoryCapacityReferralScenarioIT {
         .isZero();
   }
 
+  private void configureDirectoryAndIpsPartner(String administrator, String prefix)
+      throws Exception {
+    String port = Integer.toString(partnerServer.getAddress().getPort());
+    String configuration =
+        "{\"organization\":{\"issuer\":\"urn:synthetic:volume-three-partner\","
+            + "\"identifier\":\"SYN-PARTNER-V3-001\"},"
+            + "\"endpointOrigin\":\"https://partner.test:"
+            + port
+            + "\",\"basePath\":\"/fhir\","
+            + "\"authentication\":{\"method\":\"NONE\"},\"tlsPolicy\":\"SYSTEM_CA\","
+            + "\"limits\":{\"connectTimeoutMillis\":1000,\"responseTimeoutMillis\":2000,"
+            + "\"operationTimeoutMillis\":5000,\"maxResponseBytes\":1000000,"
+            + "\"maxDecompressedBytes\":2000000,\"maxPages\":10,\"maxResources\":500,"
+            + "\"maxNestingDepth\":32,\"maxAttempts\":3},"
+            + "\"retryClass\":\"IDEMPOTENT_READ\",\"allowedOperations\":["
+            + "{\"ownerContext\":\"DIRECTORY\",\"operationCode\":\"mcsd.iti90.search\","
+            + "\"direction\":\"OUTBOUND\",\"protocol\":\"FHIR_R4_JSON\",\"profile\":\"IHE-mCSD\"},"
+            + "{\"ownerContext\":\"REFERRAL\",\"operationCode\":\"ips.patient-context.read\","
+            + "\"direction\":\"OUTBOUND\",\"protocol\":\"FHIR_R4_JSON\",\"profile\":\"IPS-2.0.1\"}]}";
+    String create =
+        "{\"partnerKey\":\"synthetic-directory-feed\","
+            + configuration.substring(1, configuration.length() - 1)
+            + ",\"reasonCode\":\"PARTNER_SETUP\"}";
+    mockMvc
+        .perform(
+            post("/api/v1/platform/exchange-partners")
+                .header("Authorization", bearer(token(administrator)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", prefix + "-directory-partner-create")
+                .contentType("application/json")
+                .content(create))
+        .andExpect(status().isCreated());
+    mockMvc
+        .perform(
+            post("/api/v1/platform/exchange-partners/synthetic-directory-feed/versions/1/activate")
+                .header("Authorization", bearer(token(administrator)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", prefix + "-directory-partner-activate")
+                .contentType("application/json")
+                .content("{\"reasonCode\":\"PARTNER_ACTIVATION\"}"))
+        .andExpect(status().isOk());
+  }
+
+  private String importMcsdDestinationOrganization(String serviceClientId, String prefix) {
+    String sourceId = "SYN-ORG-MCSD-" + prefix.substring(prefix.length() - 8);
+    PARTNER_RESPONSE.set(mcsdOrganizationSearchBundle(sourceId));
+    ExecutionContext context =
+        executionContextFactory.forIntegrationRequest(
+            ActorReference.service(new IssuerId(ISSUER), serviceClientId),
+            RequestedExecutionScope.platform(),
+            new CorrelationId(prefix + "-mcsd-discovery"));
+    var result = directoryMcsdSynchronization.discover(context, new IssuerId(MCSD_NAMESPACE), 1);
+    assertThat(result.status())
+        .isEqualTo(
+            org.ayuvahak.directory.application.DirectoryMcsdSynchronizationResult.Status.COMPLETE);
+    assertThat(result.factsImported()).isEqualTo(1);
+    DirectoryExternalIdentifier identifier =
+        directoryStore
+            .findActiveExternalIdentifier(
+                new ExternalReference(new IssuerId(MCSD_NAMESPACE), "Organization", sourceId))
+            .orElseThrow();
+    assertThat(identifier.conceptType())
+        .isEqualTo(org.ayuvahak.directory.domain.DirectoryConceptType.ORGANIZATION);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = "
+                    + "'DIRECTORY_MCSD_SOURCE_IMPORT' AND target_id = ? AND outcome = 'SUCCEEDED'",
+                Integer.class,
+                identifier.conceptId().value()))
+        .isEqualTo(1);
+    return identifier.conceptId().toString();
+  }
+
+  private static byte[] mcsdOrganizationSearchBundle(String sourceId) {
+    String updatedAt = Instant.now().toString();
+    String json =
+        "{\"resourceType\":\"Bundle\",\"type\":\"searchset\","
+            + "\"timestamp\":\""
+            + updatedAt
+            + "\",\"entry\":[{\"fullUrl\":\"https://partner.test/fhir/Organization/"
+            + sourceId
+            + "\",\"resource\":{\"resourceType\":\"Organization\",\"id\":\""
+            + sourceId
+            + "\",\"meta\":{\"profile\":[\""
+            + MCSD_PROFILE
+            + "\"],\"versionId\":\"1\",\"lastUpdated\":\""
+            + updatedAt
+            + "\"},\"active\":true,\"type\":[{\"coding\":[{"
+            + "\"system\":\"http://terminology.hl7.org/CodeSystem/organization-type\","
+            + "\"code\":\"dept\"}]}],\"name\":\"Synthetic mCSD Destination Authority\"}}]}";
+    return json.getBytes(StandardCharsets.UTF_8);
+  }
+
+  private static byte[] syntheticIpsDocument(String patientIdentifier) {
+    String patientUrl = "urn:uuid:00000000-0000-4000-8000-000000000002";
+    String compositionUrl = "urn:uuid:00000000-0000-4000-8000-000000000001";
+    String conditionUrl = "urn:uuid:00000000-0000-4000-8000-000000000003";
+    Instant timestamp = Instant.parse("2026-10-15T08:00:00Z");
+
+    var bundle = new org.hl7.fhir.r4.model.Bundle();
+    bundle.getMeta().addProfile(IPS_BUNDLE_PROFILE);
+    bundle.setIdentifier(
+        new org.hl7.fhir.r4.model.Identifier()
+            .setSystem("urn:synthetic:ips-documents")
+            .setValue("SYN-IPS-001"));
+    bundle.setType(org.hl7.fhir.r4.model.Bundle.BundleType.DOCUMENT);
+    bundle.setTimestamp(Date.from(timestamp));
+
+    var patient = new org.hl7.fhir.r4.model.Patient();
+    patient.setId("00000000-0000-4000-8000-000000000002");
+    patient.getMeta().addProfile(IPS_PATIENT_PROFILE);
+    patient.addIdentifier(
+        new org.hl7.fhir.r4.model.Identifier()
+            .setSystem("urn:synthetic:source-ehr")
+            .setValue(patientIdentifier));
+    patient.addName().setText("SYNTHETIC PERSON NOT REAL");
+    patient.setBirthDate(Date.from(Instant.parse("2000-01-01T00:00:00Z")));
+
+    var condition = new org.hl7.fhir.r4.model.Condition();
+    condition.setId("00000000-0000-4000-8000-000000000003");
+    condition.setSubject(new org.hl7.fhir.r4.model.Reference(patientUrl));
+    condition.setCode(
+        new org.hl7.fhir.r4.model.CodeableConcept()
+            .addCoding(
+                new org.hl7.fhir.r4.model.Coding(
+                    "urn:synthetic:clinical", "SYN-CODED-PROBLEM-001", "Synthetic problem")));
+
+    var composition = new org.hl7.fhir.r4.model.Composition();
+    composition.getMeta().addProfile(IPS_COMPOSITION_PROFILE);
+    composition.setStatus(org.hl7.fhir.r4.model.Composition.CompositionStatus.FINAL);
+    composition.setType(
+        new org.hl7.fhir.r4.model.CodeableConcept()
+            .addCoding(
+                new org.hl7.fhir.r4.model.Coding(
+                    "http://loinc.org", "60591-5", "Patient summary")));
+    composition.setSubject(new org.hl7.fhir.r4.model.Reference(patientUrl));
+    composition.setDate(Date.from(timestamp));
+    composition
+        .addEvent()
+        .addCode(
+            new org.hl7.fhir.r4.model.CodeableConcept()
+                .addCoding(
+                    new org.hl7.fhir.r4.model.Coding(
+                        "http://terminology.hl7.org/CodeSystem/v3-ActClass",
+                        "PCPR",
+                        "care provision")));
+    composition.addAuthor().setDisplay("Synthetic IPS author");
+    composition.setTitle("Synthetic patient summary");
+    var narrative = new org.hl7.fhir.r4.model.Narrative();
+    narrative.setStatus(org.hl7.fhir.r4.model.Narrative.NarrativeStatus.GENERATED);
+    narrative.setDivAsString(
+        "<div xmlns=\"http://www.w3.org/1999/xhtml\">SYN-PRIVATE-NARRATIVE-CONTENT</div>");
+    composition
+        .addSection()
+        .setTitle("Problems")
+        .setCode(
+            new org.hl7.fhir.r4.model.CodeableConcept()
+                .addCoding(
+                    new org.hl7.fhir.r4.model.Coding(
+                        "http://loinc.org", "11450-4", "Problem list")))
+        .setText(narrative)
+        .addEntry(new org.hl7.fhir.r4.model.Reference(conditionUrl));
+    composition
+        .addSection()
+        .setTitle("Allergies and intolerances")
+        .setCode(
+            new org.hl7.fhir.r4.model.CodeableConcept()
+                .addCoding(
+                    new org.hl7.fhir.r4.model.Coding("http://loinc.org", "48765-2", "Allergies")))
+        .setText(syntheticNarrative("No synthetic allergy records."))
+        .setEmptyReason(
+            new org.hl7.fhir.r4.model.CodeableConcept()
+                .addCoding(
+                    new org.hl7.fhir.r4.model.Coding(
+                        "http://terminology.hl7.org/CodeSystem/list-empty-reason",
+                        "unavailable",
+                        "Unavailable")));
+    composition
+        .addSection()
+        .setTitle("Medication summary")
+        .setCode(
+            new org.hl7.fhir.r4.model.CodeableConcept()
+                .addCoding(
+                    new org.hl7.fhir.r4.model.Coding(
+                        "http://loinc.org", "10160-0", "Medication summary")))
+        .setText(syntheticNarrative("No synthetic medication records."))
+        .setEmptyReason(
+            new org.hl7.fhir.r4.model.CodeableConcept()
+                .addCoding(
+                    new org.hl7.fhir.r4.model.Coding(
+                        "http://terminology.hl7.org/CodeSystem/list-empty-reason",
+                        "unavailable",
+                        "Unavailable")));
+
+    bundle.addEntry().setFullUrl(compositionUrl).setResource(composition);
+    bundle.addEntry().setFullUrl(patientUrl).setResource(patient);
+    bundle.addEntry().setFullUrl(conditionUrl).setResource(condition);
+    return ca.uhn.fhir.context.FhirContext.forR4Cached()
+        .newJsonParser()
+        .encodeResourceToString(bundle)
+        .getBytes(StandardCharsets.UTF_8);
+  }
+
+  private static org.hl7.fhir.r4.model.Narrative syntheticNarrative(String content) {
+    var narrative = new org.hl7.fhir.r4.model.Narrative();
+    narrative.setStatus(org.hl7.fhir.r4.model.Narrative.NarrativeStatus.GENERATED);
+    narrative.setDivAsString("<div xmlns=\"http://www.w3.org/1999/xhtml\">" + content + "</div>");
+    return narrative;
+  }
+
   private String createCareCapability(String code, String key, String actor) throws Exception {
     MvcResult response =
         mockMvc
@@ -2715,6 +3246,41 @@ class DirectoryCapacityReferralScenarioIT {
     return response.getResponse().getContentAsString();
   }
 
+  private void recordIntegratedTransportStatus(
+      String transportRequestId,
+      String actor,
+      String organizationId,
+      String facilityId,
+      String idempotencyKey,
+      String observationId,
+      String transportStatus,
+      Instant occurredAt)
+      throws Exception {
+    mockMvc
+        .perform(
+            post(
+                    "/api/v1/transport-requests/{transportRequestId}/status-observations",
+                    transportRequestId)
+                .header("Authorization", bearer(token(actor)))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", organizationId)
+                .header("X-AyuVahak-Facility-Id", facilityId)
+                .header("Idempotency-Key", idempotencyKey)
+                .contentType("application/json")
+                .content(
+                    "{\"observationId\":\""
+                        + observationId
+                        + "\",\"sourceNamespace\":\"urn:ayuvahak:synthetic-transport\","
+                        + "\"sourceSequence\":"
+                        + Integer.parseInt(observationId.substring(observationId.length() - 3))
+                        + ",\"status\":\""
+                        + transportStatus
+                        + "\",\"occurredAt\":\""
+                        + occurredAt
+                        + "\"}"))
+        .andExpect(status().isCreated());
+  }
+
   private static MatchingRecommendationPolicy activePolicy(String organizationId) {
     return activePolicy(organizationId, 1);
   }
@@ -2883,6 +3449,21 @@ class DirectoryCapacityReferralScenarioIT {
     @Bean
     MutableTravelTimePort matchingTestTravelTimePort() {
       return new MutableTravelTimePort();
+    }
+  }
+
+  @TestConfiguration(proxyBeanMethods = false)
+  static class PatientContextTestConfiguration {
+
+    @Bean
+    PatientContextDisclosurePolicy syntheticPatientContextDisclosurePolicy() {
+      return request ->
+          "CARE_COORDINATION".equals(request.purposeCode())
+              ? new PatientContextDisclosureDecision(
+                  PatientContextDisclosureDecision.Outcome.ALLOWED,
+                  Set.of(PatientContextCategory.PROBLEMS))
+              : new PatientContextDisclosureDecision(
+                  PatientContextDisclosureDecision.Outcome.DENIED, Set.of());
     }
   }
 
@@ -3343,6 +3924,17 @@ class DirectoryCapacityReferralScenarioIT {
 
   private void grantService(
       String clientId, String authority, String scope, String organizationId, String facilityId) {
+    if ("PLATFORM".equals(scope)) {
+      jdbc.update(
+          "INSERT INTO identity_access.authorization_grant (grant_id, principal_kind, "
+              + "principal_issuer, principal_identifier_type, principal_identifier, authority_code, "
+              + "scope_kind, grant_status, created_at) VALUES (gen_random_uuid(), 'SERVICE', ?, "
+              + "'client_id', ?, ?, 'PLATFORM', 'ACTIVE', CURRENT_TIMESTAMP)",
+          ISSUER,
+          clientId,
+          authority);
+      return;
+    }
     if ("ORGANIZATION".equals(scope)) {
       jdbc.update(
           "INSERT INTO identity_access.authorization_grant (grant_id, principal_kind, "
@@ -3396,6 +3988,74 @@ class DirectoryCapacityReferralScenarioIT {
                 .build());
     jwt.sign(new RSASSASigner(SIGNING_KEY));
     return jwt.serialize();
+  }
+
+  private String serviceToken(String clientId) throws Exception {
+    SignedJWT jwt =
+        new SignedJWT(
+            new JWSHeader.Builder(JWSAlgorithm.RS256)
+                .type(JOSEObjectType.JWT)
+                .keyID(SIGNING_KEY.getKeyID())
+                .build(),
+            new JWTClaimsSet.Builder()
+                .issuer(ISSUER)
+                .subject(clientId)
+                .audience(AUDIENCE)
+                .issueTime(Date.from(Instant.now().minusSeconds(5)))
+                .notBeforeTime(Date.from(Instant.now().minusSeconds(1)))
+                .expirationTime(Date.from(Instant.now().plusSeconds(300)))
+                .claim("typ", "Bearer")
+                .claim("client_id", clientId)
+                .build());
+    jwt.sign(new RSASSASigner(SIGNING_KEY));
+    return jwt.serialize();
+  }
+
+  private void activateSyntheticTransportProvider(String administrator, String prefix)
+      throws Exception {
+    String create =
+        "{\"partnerKey\":\"synthetic-transport-provider\","
+            + "\"organization\":{\"issuer\":\"urn:synthetic:transport-provider\","
+            + "\"identifier\":\"SYN-PROVIDER-001\"},"
+            + "\"endpointOrigin\":\"https://partner.test:"
+            + partnerServer.getAddress().getPort()
+            + "\","
+            + "\"basePath\":\"/api\","
+            + "\"authentication\":{\"method\":\"NONE\"},"
+            + "\"tlsPolicy\":\"SYSTEM_CA\",\"limits\":{"
+            + "\"connectTimeoutMillis\":1000,\"responseTimeoutMillis\":2000,"
+            + "\"operationTimeoutMillis\":5000,\"maxResponseBytes\":262144,"
+            + "\"maxDecompressedBytes\":524288,\"maxPages\":1,\"maxResources\":20,"
+            + "\"maxNestingDepth\":16,\"maxAttempts\":1},\"retryClass\":\"NEVER\","
+            + "\"allowedOperations\":[{\"ownerContext\":\"TRANSPORT\","
+            + "\"operationCode\":\"transport.dispatch\",\"direction\":\"OUTBOUND\","
+            + "\"protocol\":\"JSON\",\"profile\":\"AyuVahakTransportProvider-v1\"},{"
+            + "\"ownerContext\":\"TRANSPORT\","
+            + "\"operationCode\":\"transport.provider.evidence\","
+            + "\"direction\":\"INBOUND\",\"protocol\":\"JSON\","
+            + "\"profile\":\"AyuVahakTransportProvider-v1\"}],"
+            + "\"inboundPrincipal\":{\"issuer\":\""
+            + ISSUER
+            + "\",\"clientId\":\"synthetic-transport-provider\"},"
+            + "\"reasonCode\":\"PARTNER_SETUP\"}";
+    mockMvc
+        .perform(
+            post("/api/v1/platform/exchange-partners")
+                .header("Authorization", bearer(token(administrator)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", prefix + "-provider-profile-create")
+                .contentType("application/json")
+                .content(create))
+        .andExpect(status().isCreated());
+    mockMvc
+        .perform(
+            post("/api/v1/platform/exchange-partners/synthetic-transport-provider/versions/1/activate")
+                .header("Authorization", bearer(token(administrator)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .header("Idempotency-Key", prefix + "-provider-profile-activate")
+                .contentType("application/json")
+                .content("{\"reasonCode\":\"PARTNER_ACTIVATION\"}"))
+        .andExpect(status().isOk());
   }
 
   private static String bearer(String token) {

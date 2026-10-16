@@ -267,14 +267,35 @@ final class Phase1ArchitectureRules {
   }
 
   static ArchRule transportMustNotAccessTransferPersistencePort() {
-    return noClasses()
+    return classes()
         .that()
         .resideInAnyPackage("org.ayuvahak.transport..")
-        .should()
-        .dependOnClassesThat()
-        .haveFullyQualifiedName("org.ayuvahak.transfer.application.TransferStore")
-        .as("Transport must use Transfer owner contracts, never Transfer's persistence port")
+        .should(
+            new ArchCondition<>("not depend on Transfer persistence ports or implementation") {
+              @Override
+              public void check(JavaClass item, ConditionEvents events) {
+                for (Dependency dependency : item.getDirectDependenciesFromSelf()) {
+                  JavaClass target = dependency.getTargetClass();
+                  if (isTransferPersistenceType(target)) {
+                    events.add(
+                        SimpleConditionEvent.violated(
+                            item,
+                            item.getName()
+                                + " depends on Transfer persistence instead of an owner contract: "
+                                + target.getName()));
+                  }
+                }
+              }
+            })
+        .as("Transport must use Transfer owner contracts, never Transfer's persistence ports")
         .allowEmptyShould(true);
+  }
+
+  private static boolean isTransferPersistenceType(JavaClass target) {
+    String packageName = target.getPackageName();
+    return packageName.startsWith("org.ayuvahak.transfer.adapter.persistence")
+        || (packageName.equals("org.ayuvahak.transfer.application")
+            && target.getSimpleName().endsWith("Store"));
   }
 
   static ArchRule businessContextsMustNotDependOnAnotherContextsPersistence() {
