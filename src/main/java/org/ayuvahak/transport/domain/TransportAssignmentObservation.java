@@ -21,6 +21,8 @@ public record TransportAssignmentObservation(
     ExternalReference organization,
     ExternalReference facility,
     CorrelationId correlationId,
+    String outcome,
+    TransportRequest.Status requestStatusAfter,
     long resultingRequestVersion) {
 
   public TransportAssignmentObservation {
@@ -36,8 +38,12 @@ public record TransportAssignmentObservation(
     requireDirectoryReference(organization, "Organization");
     requireDirectoryReference(facility, "Facility");
     Objects.requireNonNull(correlationId, "correlation id");
-    if (resultingRequestVersion < 2) {
-      throw new IllegalArgumentException("assignment must advance the request version");
+    if (!"APPLIED".equals(outcome) && !"RECONCILIATION_REQUIRED".equals(outcome)) {
+      throw new IllegalArgumentException("assignment observation outcome is invalid");
+    }
+    Objects.requireNonNull(requestStatusAfter, "request status after");
+    if (resultingRequestVersion < 1 || ("APPLIED".equals(outcome) && resultingRequestVersion < 2)) {
+      throw new IllegalArgumentException("assignment observation version is invalid");
     }
   }
 

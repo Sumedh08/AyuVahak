@@ -93,6 +93,24 @@ public interface TransferStore {
 
   boolean isSelectedTransportRequest(InternalId transferId, InternalId transportRequestId);
 
+  /** Returns only the owner-linked selected Transport request reference, never Transport state. */
+  Optional<InternalId> findSelectedTransportRequest(InternalId transferId);
+
+  boolean recordTransportCancellationOutcome(
+      InternalId transferId,
+      InternalId transportRequestId,
+      InternalId cancellationOperationId,
+      String outcome,
+      InternalId eventId,
+      Instant occurredAt,
+      Instant recordedAt,
+      String correlationId);
+
+  boolean hasConfirmedTransportCancellation(InternalId transferId, InternalId transportRequestId);
+
+  Optional<String> findTransportCancellationOutcome(
+      InternalId transferId, InternalId transportRequestId);
+
   List<TransferProgressFact> findProgressFacts(InternalId transferId);
 
   List<TransferProgressCorrection> findProgressCorrections(InternalId transferId);

@@ -212,6 +212,7 @@ class TransferJourneyCommandsApiIT {
     jdbc.update("DELETE FROM transfer.progress_fact");
     jdbc.update("DELETE FROM transfer.command_receipt");
     jdbc.update("DELETE FROM transfer.capacity_reservation_request");
+    jdbc.update("DELETE FROM transfer.transport_cancellation_outcome");
     jdbc.update("DELETE FROM transfer.request_decision");
     jdbc.update("DELETE FROM transfer.transport_request_link");
     jdbc.update("DELETE FROM transfer.transfer_record");
@@ -222,6 +223,8 @@ class TransferJourneyCommandsApiIT {
     jdbc.update("DELETE FROM transport.eta_observation");
     jdbc.update("DELETE FROM transport.assignment_observation");
     jdbc.update("DELETE FROM transport.status_observation");
+    jdbc.update("DELETE FROM transport.cancellation_command_receipt");
+    jdbc.update("DELETE FROM transport.cancellation_operation");
     jdbc.update("DELETE FROM transport.command_receipt");
     jdbc.update("DELETE FROM transport.transport_request");
     jdbc.update("DELETE FROM audit.audit_record");
@@ -726,6 +729,539 @@ class TransferJourneyCommandsApiIT {
                 Integer.class,
                 UUID.fromString(transferId)))
         .isZero();
+  }
+
+  @Test
+  void transportCancellationIsIdempotentPreservesLateAssignmentAndBlocksReplacement()
+      throws Exception {
+    Scope scope = createOriginAndDestination();
+    String transferId = createReadyTransfer(scope, "transport-cancellation-operation", true);
+    grantTransportWorker(scope);
+    requestTransport(scope, transferId, "transport-cancellation-request", SENDER)
+        .andExpect(status().isCreated());
+    UUID requestId =
+        jdbc.queryForObject(
+            "SELECT transport_request_id FROM transport.transport_request WHERE transfer_id = ?",
+            UUID.class,
+            UUID.fromString(transferId));
+    String operator = "synthetic-transport-cancellation-operator";
+    grantTransportAuthority(scope, operator, "TransportCancellationAuthority");
+    grantTransportAuthority(scope, operator, "TransportDispatchCoordinationAuthority");
+    grantTransportAuthority(scope, operator, "TransportStatusAuthority");
+    grantOwnerEventConsumer(scope, scope.originFacilityId(), "TransferProgressAuthority");
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "status-observations",
+            "transport-cancellation-awaiting-assignment",
+            operator,
+            "{\"observationId\":\"SYN-CANCEL-AWAITING-001\","
+                + "\"sourceNamespace\":\"urn:ayuvahak:manual\","
+                + "\"status\":\"AWAITING_ASSIGNMENT\",\"occurredAt\":\""
+                + Instant.now().minusSeconds(15)
+                + "\",\"reasonCode\":\"DISPATCH_COORDINATION_STARTED\"}")
+        .andExpect(status().isCreated());
+
+    String cancellationUrl = "/api/v1/transport-requests/" + requestId + "/cancellation-operations";
+    var cancellation =
+        mockMvc
+            .perform(
+                post(cancellationUrl)
+                    .header("Authorization", "Bearer " + token(operator))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                    .header("X-AyuVahak-Facility-Id", scope.originFacilityId())
+                    .header("Idempotency-Key", "transport-cancellation-create")
+                    .contentType("application/json")
+                    .content("{\"reasonCode\":\"TRANSFER_CANCELLED\"}"))
+            .andExpect(status().isAccepted())
+            .andExpect(jsonPath("$.state").value("PENDING"))
+            .andReturn();
+    String operationId =
+        com.jayway.jsonpath.JsonPath.read(
+            cancellation.getResponse().getContentAsString(), "$.cancellationOperationId");
+    mockMvc
+        .perform(
+            post(cancellationUrl)
+                .header("Authorization", "Bearer " + token(operator))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                .header("X-AyuVahak-Facility-Id", scope.originFacilityId())
+                .header("Idempotency-Key", "transport-cancellation-create")
+                .contentType("application/json")
+                .content("{\"reasonCode\":\"TRANSFER_CANCELLED\"}"))
+        .andExpect(status().isAccepted())
+        .andExpect(header().string("Idempotency-Replayed", "true"))
+        .andExpect(jsonPath("$.cancellationOperationId").value(operationId));
+
+    Instant assignmentAt = Instant.now().minusSeconds(10);
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "assignments",
+            "cancellation-late-assignment",
+            operator,
+            "{\"sourceNamespace\":\"urn:ayuvahak:manual\","
+                + "\"sourceObservationId\":\"SYN-CANCEL-LATE-ASSIGNMENT\","
+                + "\"assignmentReference\":\"SYN-ASSIGNMENT-CANCEL-RACE\",\"occurredAt\":\""
+                + assignmentAt
+                + "\"}")
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.requestStatus").value("ASSIGNED"));
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT operation_state FROM transport.cancellation_operation "
+                    + "WHERE cancellation_operation_id = ?",
+                String.class,
+                UUID.fromString(operationId)))
+        .isEqualTo("PENDING");
+
+    requestTransport(scope, transferId, "transport-cancellation-replacement-before-outcome", SENDER)
+        .andExpect(status().isConflict());
+
+    Instant resolvedAt = Instant.now().minusSeconds(1);
+    String outcomeUrl = "/api/v1/transport-cancellation-operations/" + operationId + "/outcome";
+    String outcomeBody =
+        "{\"outcome\":\"CANCELLED_BEFORE_MOVEMENT\","
+            + "\"sourceNamespace\":\"urn:ayuvahak:manual\","
+            + "\"sourceObservationId\":\"SYN-CANCEL-OUTCOME-001\","
+            + "\"occurredAt\":\""
+            + resolvedAt
+            + "\"}";
+    mockMvc
+        .perform(
+            post(outcomeUrl)
+                .header("Authorization", "Bearer " + token(operator))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                .header("X-AyuVahak-Facility-Id", scope.originFacilityId())
+                .header("Idempotency-Key", "transport-cancellation-resolve")
+                .contentType("application/json")
+                .content(outcomeBody))
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.outcome").value("CANCELLED_BEFORE_MOVEMENT"));
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT request_status FROM transport.transport_request "
+                    + "WHERE transport_request_id = ?",
+                String.class,
+                requestId))
+        .isEqualTo("CANCELLED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM platform_eventing.internal_event "
+                    + "WHERE event_type = 'transport.cancellation-resolved.v1' "
+                    + "AND envelope #>> '{payload,transportRequestReference}' = ?",
+                Integer.class,
+                requestId.toString()))
+        .isEqualTo(1);
+    outboxDispatcher.dispatchAvailable(Instant.now().plusSeconds(1));
+    assertThat(transferStatus(transferId)).isEqualTo("READY");
+
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "assignments",
+            "cancellation-assignment-after-confirmed-cancel",
+            operator,
+            "{\"sourceNamespace\":\"urn:ayuvahak:manual\","
+                + "\"sourceObservationId\":\"SYN-CANCEL-LATE-ASSIGNMENT-2\","
+                + "\"assignmentReference\":\"SYN-ASSIGNMENT-AFTER-CANCEL\",\"occurredAt\":\""
+                + Instant.now().minusSeconds(1)
+                + "\"}")
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.requestStatus").value("CANCELLED"))
+        .andExpect(jsonPath("$.evidenceOutcome").value("RECONCILIATION_REQUIRED"));
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT observation_outcome FROM transport.assignment_observation "
+                    + "WHERE source_observation_id = 'SYN-CANCEL-LATE-ASSIGNMENT-2'",
+                String.class))
+        .isEqualTo("RECONCILIATION_REQUIRED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT request_status FROM transport.transport_request "
+                    + "WHERE transport_request_id = ?",
+                String.class,
+                requestId))
+        .isEqualTo("CANCELLED");
+
+    requestTransport(scope, transferId, "transport-cancellation-replacement-after-outcome", SENDER)
+        .andExpect(status().isCreated());
+  }
+
+  @Test
+  void concurrentTransportCancellationCommandsCreateOneDurableOperation() throws Exception {
+    Scope scope = createOriginAndDestination();
+    String transferId = createReadyTransfer(scope, "transport-cancellation-concurrent", true);
+    grantTransportWorker(scope);
+    requestTransport(scope, transferId, "transport-cancellation-concurrent-request", SENDER)
+        .andExpect(status().isCreated());
+    UUID requestId =
+        jdbc.queryForObject(
+            "SELECT transport_request_id FROM transport.transport_request WHERE transfer_id = ?",
+            UUID.class,
+            UUID.fromString(transferId));
+    String operator = "synthetic-transport-cancellation-concurrent-operator";
+    grantTransportAuthority(scope, operator, "TransportCancellationAuthority");
+    String requestUrl = "/api/v1/transport-requests/" + requestId + "/cancellation-operations";
+    ExecutorService executor = Executors.newFixedThreadPool(2);
+    CountDownLatch ready = new CountDownLatch(2);
+    CountDownLatch start = new CountDownLatch(1);
+    try (Connection barrierConnection = dataSource.getConnection()) {
+      barrierConnection.setAutoCommit(false);
+      try (var lock =
+          barrierConnection.prepareStatement(
+              "SELECT transport_request_id FROM transport.transport_request "
+                  + "WHERE transport_request_id = ? FOR UPDATE")) {
+        lock.setObject(1, requestId);
+        try (var ignored = lock.executeQuery()) {
+          assertThat(ignored.next()).isTrue();
+        }
+      }
+      Future<MvcResult> first =
+          cancellationRequest(
+              executor,
+              ready,
+              start,
+              scope,
+              requestUrl,
+              operator,
+              "transport-cancellation-concurrent-first");
+      Future<MvcResult> second =
+          cancellationRequest(
+              executor,
+              ready,
+              start,
+              scope,
+              requestUrl,
+              operator,
+              "transport-cancellation-concurrent-second");
+      assertThat(ready.await(5, TimeUnit.SECONDS)).isTrue();
+      start.countDown();
+      awaitTransportRequestLockWaiters(2);
+      barrierConnection.commit();
+
+      MvcResult firstResult = first.get(15, TimeUnit.SECONDS);
+      MvcResult secondResult = second.get(15, TimeUnit.SECONDS);
+      assertThat(
+              java.util.List.of(
+                  firstResult.getResponse().getStatus(), secondResult.getResponse().getStatus()))
+          .containsExactlyInAnyOrder(202, 409);
+      MvcResult accepted =
+          firstResult.getResponse().getStatus() == 202 ? firstResult : secondResult;
+      String firstOperation =
+          com.jayway.jsonpath.JsonPath.read(
+              accepted.getResponse().getContentAsString(), "$.cancellationOperationId");
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT COUNT(*) FROM transport.cancellation_operation "
+                      + "WHERE transport_request_id = ?",
+                  Integer.class,
+                  requestId))
+          .isEqualTo(1);
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT COUNT(*) FROM transport.cancellation_command_receipt", Integer.class))
+          .isEqualTo(1);
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT COUNT(*) FROM audit.audit_record "
+                      + "WHERE action_code = 'TRANSPORT_CANCELLATION_REQUESTED' "
+                      + "AND target_id = ?",
+                  Integer.class,
+                  UUID.fromString(firstOperation)))
+          .isEqualTo(1);
+    } finally {
+      executor.shutdownNow();
+    }
+  }
+
+  @Test
+  void transferCancellationRecoveryQueriesTransportOutcomeWhenEventDeliveryIsDelayed()
+      throws Exception {
+    Scope scope = createOriginAndDestination();
+    String transferId = createReadyTransfer(scope, "transport-cancellation-query-recovery", true);
+    grantTransportWorker(scope);
+    grantFacilityAuthority("synthetic-transfer-mover", "TransferProgressAuthority", scope);
+    grantOwnerEventConsumer(scope, scope.originFacilityId(), "TransferProgressAuthority");
+    requestTransport(scope, transferId, "transport-cancellation-query-request", SENDER)
+        .andExpect(status().isCreated());
+    UUID transferUuid = UUID.fromString(transferId);
+    UUID requestId =
+        jdbc.queryForObject(
+            "SELECT transport_request_id FROM transport.transport_request WHERE transfer_id = ?",
+            UUID.class,
+            transferUuid);
+
+    progressCommand(
+            scope,
+            transferId,
+            "cancellation",
+            "synthetic-transfer-mover",
+            "transport-cancellation-query-transfer-cancel",
+            "{\"expectedVersion\":2,\"occurredAt\":\""
+                + Instant.now().minusSeconds(4)
+                + "\",\"reasonCode\":\"ROUTE_CANCELLED\"}")
+        .andExpect(status().isAccepted())
+        .andExpect(jsonPath("$.status").value("CANCELLATION_PENDING_RELEASE"));
+
+    String operationId =
+        jdbc.queryForObject(
+            "SELECT cancellation_operation_id FROM transport.cancellation_operation "
+                + "WHERE transport_request_id = ?",
+            String.class,
+            requestId);
+    String operator = "synthetic-transport-cancellation-query-operator";
+    grantTransportAuthority(scope, operator, "TransportCancellationAuthority");
+    mockMvc
+        .perform(
+            post("/api/v1/transport-cancellation-operations/{operationId}/uncertainty", operationId)
+                .header("Authorization", "Bearer " + token(operator))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                .header("X-AyuVahak-Facility-Id", scope.originFacilityId())
+                .header("Idempotency-Key", "transport-cancellation-query-unknown")
+                .contentType("application/json")
+                .content("{\"state\":\"OUTCOME_UNKNOWN\",\"reasonCode\":\"RESPONSE_LOST\"}"))
+        .andExpect(status().isAccepted())
+        .andExpect(jsonPath("$.state").value("OUTCOME_UNKNOWN"));
+
+    reservationRecovery.reconcileCancellation(InternalId.parse(transferId));
+    assertThat(transferStatus(transferId)).isEqualTo("CANCELLATION_PENDING_RELEASE");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT reservation_status FROM capacity.coordination_reservation "
+                    + "WHERE transfer_id = ?",
+                String.class,
+                transferUuid))
+        .isEqualTo("ACTIVE");
+
+    mockMvc
+        .perform(
+            post("/api/v1/transport-cancellation-operations/{operationId}/uncertainty", operationId)
+                .header("Authorization", "Bearer " + token(operator))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                .header("X-AyuVahak-Facility-Id", scope.originFacilityId())
+                .header("Idempotency-Key", "transport-cancellation-query-reconciliation")
+                .contentType("application/json")
+                .content(
+                    "{\"state\":\"RECONCILIATION_REQUIRED\","
+                        + "\"reasonCode\":\"MANUAL_RECONCILIATION_REQUIRED\"}"))
+        .andExpect(status().isAccepted())
+        .andExpect(jsonPath("$.state").value("RECONCILIATION_REQUIRED"));
+
+    reservationRecovery.reconcileCancellation(InternalId.parse(transferId));
+    assertThat(transferStatus(transferId)).isEqualTo("CANCELLATION_PENDING_RELEASE");
+
+    mockMvc
+        .perform(
+            post("/api/v1/transport-cancellation-operations/{operationId}/outcome", operationId)
+                .header("Authorization", "Bearer " + token(operator))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                .header("X-AyuVahak-Facility-Id", scope.originFacilityId())
+                .header("Idempotency-Key", "transport-cancellation-query-resolve")
+                .contentType("application/json")
+                .content(
+                    "{\"outcome\":\"CANCELLED_BEFORE_MOVEMENT\","
+                        + "\"sourceNamespace\":\"urn:ayuvahak:manual\","
+                        + "\"sourceObservationId\":\"SYN-CANCEL-QUERY-OUTCOME\","
+                        + "\"occurredAt\":\""
+                        + Instant.now().minusSeconds(1)
+                        + "\"}"))
+        .andExpect(status().isCreated());
+
+    assertThat(transferStatus(transferId)).isEqualTo("CANCELLATION_PENDING_RELEASE");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT reservation_status FROM capacity.coordination_reservation "
+                    + "WHERE transfer_id = ?",
+                String.class,
+                transferUuid))
+        .isEqualTo("ACTIVE");
+
+    reservationRecovery.reconcileCancellation(InternalId.parse(transferId));
+
+    assertThat(transferStatus(transferId)).isEqualTo("CANCELLED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT reservation_status FROM capacity.coordination_reservation "
+                    + "WHERE transfer_id = ?",
+                String.class,
+                transferUuid))
+        .isEqualTo("RELEASED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM transfer.transport_cancellation_outcome "
+                    + "WHERE transfer_id = ? AND outcome = 'CANCELLED_BEFORE_MOVEMENT'",
+                Integer.class,
+                transferUuid))
+        .isEqualTo(1);
+
+    outboxDispatcher.dispatchAvailable(Instant.now().plusSeconds(1));
+    assertThat(transferStatus(transferId)).isEqualTo("CANCELLED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM transfer.progress_fact WHERE transfer_id = ? "
+                    + "AND fact_kind = 'CANCELLATION_RELEASE'",
+                Integer.class,
+                transferUuid))
+        .isEqualTo(1);
+  }
+
+  @Test
+  void departureEvidenceRemainsAuthoritativeWhileTransferCancellationIsPending() throws Exception {
+    Scope scope = createOriginAndDestination();
+    String transferId = createReadyTransfer(scope, "transport-cancel-departure-race", true);
+    grantTransportWorker(scope);
+    requestTransport(scope, transferId, "transport-cancel-departure-request", SENDER)
+        .andExpect(status().isCreated());
+    UUID transferUuid = UUID.fromString(transferId);
+    UUID requestId =
+        jdbc.queryForObject(
+            "SELECT transport_request_id FROM transport.transport_request WHERE transfer_id = ?",
+            UUID.class,
+            transferUuid);
+    String operator = "synthetic-transport-cancel-departure-operator";
+    grantTransportAuthority(scope, operator, "TransportStatusAuthority");
+    grantTransportAuthority(scope, operator, "TransportDispatchCoordinationAuthority");
+    grantTransportAuthority(scope, operator, "TransportCancellationAuthority");
+    grantFacilityAuthority("synthetic-transfer-mover", "TransferProgressAuthority", scope);
+    grantOwnerEventConsumer(scope, scope.originFacilityId(), "TransferProgressAuthority");
+
+    Instant base = Instant.now().minusSeconds(60);
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "status-observations",
+            "cancel-departure-awaiting-assignment",
+            operator,
+            statusBody("SYN-CANCEL-DEPARTURE-001", "AWAITING_ASSIGNMENT", base))
+        .andExpect(status().isCreated());
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "assignments",
+            "cancel-departure-assignment",
+            operator,
+            "{\"sourceNamespace\":\"urn:ayuvahak:manual\","
+                + "\"sourceObservationId\":\"SYN-CANCEL-DEPARTURE-ASSIGNMENT\","
+                + "\"assignmentReference\":\"SYN-ASSIGNMENT-CANCEL-DEPARTURE\","
+                + "\"occurredAt\":\""
+                + base.plusSeconds(1)
+                + "\"}")
+        .andExpect(status().isCreated());
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "status-observations",
+            "cancel-departure-en-route-origin",
+            operator,
+            statusBody("SYN-CANCEL-DEPARTURE-002", "EN_ROUTE_TO_ORIGIN", base.plusSeconds(2)))
+        .andExpect(status().isCreated());
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "status-observations",
+            "cancel-departure-at-origin",
+            operator,
+            statusBody("SYN-CANCEL-DEPARTURE-003", "AT_ORIGIN", base.plusSeconds(3)))
+        .andExpect(status().isCreated());
+    progressCommand(
+            scope,
+            transferId,
+            "cancellation",
+            "synthetic-transfer-mover",
+            "transport-cancel-departure-transfer-cancel",
+            "{\"expectedVersion\":2,\"occurredAt\":\""
+                + base.plusSeconds(5)
+                + "\",\"reasonCode\":\"ROUTE_CANCELLED\"}")
+        .andExpect(status().isAccepted())
+        .andExpect(jsonPath("$.status").value("CANCELLATION_PENDING_RELEASE"));
+    assertThat(transferStatus(transferId)).isEqualTo("CANCELLATION_PENDING_RELEASE");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT operation_state FROM transport.cancellation_operation "
+                    + "WHERE transport_request_id = ?",
+                String.class,
+                requestId))
+        .isEqualTo("PENDING");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT reservation_status FROM capacity.coordination_reservation "
+                    + "WHERE transfer_id = ?",
+                String.class,
+                transferUuid))
+        .isEqualTo("ACTIVE");
+
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "status-observations",
+            "cancel-departure-patient-onboard",
+            operator,
+            statusBody("SYN-CANCEL-DEPARTURE-004", "PATIENT_ONBOARD", base.plusSeconds(6)))
+        .andExpect(status().isCreated());
+    transportEvidenceCommand(
+            scope,
+            requestId,
+            "status-observations",
+            "cancel-departure-in-transit",
+            operator,
+            statusBody("SYN-CANCEL-DEPARTURE-005", "EN_ROUTE_TO_DESTINATION", base.plusSeconds(7)))
+        .andExpect(status().isCreated());
+    String operationId =
+        jdbc.queryForObject(
+            "SELECT cancellation_operation_id FROM transport.cancellation_operation "
+                + "WHERE transport_request_id = ?",
+            String.class,
+            requestId);
+    mockMvc
+        .perform(
+            post("/api/v1/transport-cancellation-operations/{operationId}/outcome", operationId)
+                .header("Authorization", "Bearer " + token(operator))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                .header("X-AyuVahak-Facility-Id", scope.originFacilityId())
+                .header("Idempotency-Key", "transport-cancel-departure-resolve")
+                .contentType("application/json")
+                .content(
+                    "{\"outcome\":\"MOVEMENT_ALREADY_STARTED\","
+                        + "\"sourceNamespace\":\"urn:ayuvahak:manual\","
+                        + "\"sourceObservationId\":\"SYN-CANCEL-DEPARTURE-OUTCOME\","
+                        + "\"occurredAt\":\""
+                        + base.plusSeconds(8)
+                        + "\"}"))
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.outcome").value("MOVEMENT_ALREADY_STARTED"));
+
+    outboxDispatcher.dispatchAvailable(Instant.now().plusSeconds(1));
+
+    assertThat(transferStatus(transferId)).isEqualTo("IN_TRANSIT");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT reservation_status FROM capacity.coordination_reservation "
+                    + "WHERE transfer_id = ?",
+                String.class,
+                transferUuid))
+        .isEqualTo("ACTIVE");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM transfer.progress_fact WHERE transfer_id = ? "
+                    + "AND fact_kind = 'DEPARTURE'",
+                Integer.class,
+                transferUuid))
+        .isEqualTo(1);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT outcome FROM transfer.transport_cancellation_outcome "
+                    + "WHERE transport_request_id = ?",
+                String.class,
+                requestId))
+        .isEqualTo("MOVEMENT_ALREADY_STARTED");
   }
 
   @Test
@@ -6292,6 +6828,48 @@ class TransferJourneyCommandsApiIT {
             + "Journey lock.");
   }
 
+  private void awaitTransportRequestLockWaiters(int expectedWaiters) throws Exception {
+    Instant timeout = Instant.now().plusSeconds(10);
+    while (Instant.now().isBefore(timeout)) {
+      int waiters =
+          count(
+              "SELECT COUNT(*) FROM pg_stat_activity WHERE datname = current_database() "
+                  + "AND wait_event_type = 'Lock' "
+                  + "AND query ILIKE '%FROM transport.transport_request%' "
+                  + "AND query ILIKE '%FOR UPDATE%'");
+      if (waiters >= expectedWaiters) return;
+      Thread.sleep(20);
+    }
+    throw new AssertionError(
+        "Concurrent cancellation commands did not both reach the Transport request lock.");
+  }
+
+  private Future<MvcResult> cancellationRequest(
+      ExecutorService executor,
+      CountDownLatch ready,
+      CountDownLatch start,
+      Scope scope,
+      String requestUrl,
+      String operator,
+      String idempotencyKey) {
+    return executor.submit(
+        () -> {
+          ready.countDown();
+          start.await();
+          return mockMvc
+              .perform(
+                  post(requestUrl)
+                      .header("Authorization", "Bearer " + token(operator))
+                      .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                      .header("X-AyuVahak-Organization-Id", scope.originOrganizationId())
+                      .header("X-AyuVahak-Facility-Id", scope.originFacilityId())
+                      .header("Idempotency-Key", idempotencyKey)
+                      .contentType("application/json")
+                      .content("{\"reasonCode\":\"TRANSFER_CANCELLED\"}"))
+              .andReturn();
+        });
+  }
+
   private org.springframework.test.web.servlet.ResultActions createRequest(
       Scope scope, String idempotencyKey) throws Exception {
     return createRequest(scope, idempotencyKey, SENDER, false);
@@ -6461,7 +7039,11 @@ class TransferJourneyCommandsApiIT {
   }
 
   private void grantTransportWorker(Scope scope) {
-    for (String authority : List.of("TransportRequest", "TransferTransportRequestEligibility")) {
+    for (String authority :
+        List.of(
+            "TransportRequest",
+            "TransferTransportRequestEligibility",
+            "TransportCancellationAuthority")) {
       jdbc.update(
           "INSERT INTO identity_access.authorization_grant (grant_id, principal_kind, "
               + "principal_issuer, principal_identifier_type, principal_identifier, authority_code, "

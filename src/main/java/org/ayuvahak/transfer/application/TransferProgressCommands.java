@@ -353,7 +353,8 @@ public final class TransferProgressCommands {
       TransferProgressFact.Kind kind, CoordinatedTransfer.Status current) {
     return switch (kind) {
       case DEPARTURE -> {
-        if (current != CoordinatedTransfer.Status.READY) {
+        if (current != CoordinatedTransfer.Status.READY
+            && current != CoordinatedTransfer.Status.CANCELLATION_PENDING_RELEASE) {
           throw stateConflict();
         }
         yield new Transition(CoordinatedTransfer.Status.IN_TRANSIT, null);

@@ -21,12 +21,16 @@ import org.ayuvahak.platform.authorization.application.AuthorizationService;
 import org.ayuvahak.platform.core.ActorReference;
 import org.ayuvahak.platform.core.CausationId;
 import org.ayuvahak.platform.core.CorrelationId;
+import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.InternalId;
 import org.ayuvahak.platform.core.IssuerId;
+import org.ayuvahak.platform.event.EventType;
 import org.ayuvahak.platform.executioncontext.ExecutionContext;
 import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
 import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
 import org.ayuvahak.transfer.adapter.configuration.TransferProperties;
+import org.ayuvahak.transfer.application.TransportCancellationPort.CancellationOutcome;
+import org.ayuvahak.transfer.application.TransportCancellationPort.OperationState;
 import org.ayuvahak.transfer.domain.CapacityReservationIntent;
 import org.ayuvahak.transfer.domain.CoordinatedTransfer;
 import org.ayuvahak.transfer.domain.TransferAuthorities;
@@ -47,19 +51,24 @@ public final class TransferCapacityReservationRecovery {
 
   private static final Logger logger =
       LoggerFactory.getLogger(TransferCapacityReservationRecovery.class);
+  private static final EventType TRANSPORT_CANCELLATION_RESOLVED =
+      EventType.parse("transport.cancellation-resolved.v1");
   private final TransferStore transfers;
   private final CapacityReservationPort capacity;
+  private final TransportCancellationPort transportCancellation;
   private final ExecutionContextFactory contexts;
   private final ObjectProvider<AuthorizationService> authorization;
   private final ObjectProvider<AuditWriter> auditWriter;
   private final TransactionTemplate transaction;
   private final TransferProperties properties;
   private final ActorReference worker;
+  private final ActorReference ownerEventWorker;
   private final Clock clock;
 
   public TransferCapacityReservationRecovery(
       @Lazy TransferStore transfers,
       CapacityReservationPort capacity,
+      @Lazy TransportCancellationPort transportCancellation,
       ExecutionContextFactory contexts,
       ObjectProvider<AuthorizationService> authorization,
       ObjectProvider<AuditWriter> auditWriter,
@@ -69,6 +78,8 @@ public final class TransferCapacityReservationRecovery {
       @Qualifier("auditClock") Clock clock) {
     this.transfers = Objects.requireNonNull(transfers, "Transfer store");
     this.capacity = Objects.requireNonNull(capacity, "Capacity reservation port");
+    this.transportCancellation =
+        Objects.requireNonNull(transportCancellation, "Transport cancellation port");
     this.contexts = Objects.requireNonNull(contexts, "execution context factory");
     this.authorization = Objects.requireNonNull(authorization, "authorization service");
     this.auditWriter = Objects.requireNonNull(auditWriter, "audit writer");
@@ -77,6 +88,9 @@ public final class TransferCapacityReservationRecovery {
     this.worker =
         ActorReference.service(
             new IssuerId(authentication.issuer()), properties.getReservationWorkerClientId());
+    this.ownerEventWorker =
+        ActorReference.service(
+            new IssuerId(authentication.issuer()), properties.getOwnerEventConsumerClientId());
     this.clock = Objects.requireNonNull(clock, "audit clock");
   }
 
@@ -161,6 +175,25 @@ public final class TransferCapacityReservationRecovery {
   public void reconcileCancellation(
       InternalId transferId, CorrelationId correlationId, Optional<CausationId> causationId) {
     try {
+      TransferProgressTarget pending = transfers.findProgressTarget(transferId).orElse(null);
+      if (pending == null
+          || pending.transfer().status()
+              != CoordinatedTransfer.Status.CANCELLATION_PENDING_RELEASE) {
+        return;
+      }
+      Optional<InternalId> selectedTransport = transfers.findSelectedTransportRequest(transferId);
+      if (selectedTransport.isPresent()) {
+        String cancellationOutcome =
+            transfers
+                .findTransportCancellationOutcome(transferId, selectedTransport.orElseThrow())
+                .orElseGet(
+                    () ->
+                        recoverCancellationOutcome(pending, transferId, correlationId, causationId)
+                            .orElse(""));
+        if (!"CANCELLED_BEFORE_MOVEMENT".equals(cancellationOutcome)) {
+          return;
+        }
+      }
       CapacityReservationIntent intent = transfers.findReservationIntent(transferId).orElseThrow();
       if (!hasDefinitiveReservationOutcome(intent.outcome())) {
         return;
@@ -181,6 +214,117 @@ public final class TransferCapacityReservationRecovery {
           "Transfer cancellation release remains pending correlationId={} failureType={}",
           correlationId,
           failure.getClass().getSimpleName());
+      return;
+    }
+  }
+
+  private Optional<String> recoverCancellationOutcome(
+      TransferProgressTarget target,
+      InternalId transferId,
+      CorrelationId correlationId,
+      Optional<CausationId> causationId) {
+    ExternalReference originFacility = target.originFacility().orElse(null);
+    if (originFacility == null) return Optional.empty();
+    ExecutionContext context =
+        contexts.forBackgroundWork(
+            ownerEventWorker,
+            RequestedExecutionScope.facility(target.originOrganization(), originFacility),
+            correlationId,
+            causationId);
+    if (!authorizeTransfer(
+        context,
+        transferId,
+        TransferAuthorities.progress().code(),
+        "TRANSFER_PROGRESS_RECONCILIATION_DENIED")) {
+      return Optional.empty();
+    }
+
+    Optional<CancellationOutcome> queried;
+    try {
+      queried = transportCancellation.getOutcomeIfSelected(context, transferId);
+    } catch (RuntimeException unavailable) {
+      logger.warn(
+          "Transfer Transport cancellation outcome query deferred correlationId={} failureType={}",
+          correlationId,
+          unavailable.getClass().getSimpleName());
+      return Optional.empty();
+    }
+    if (queried.isEmpty()) return Optional.empty();
+    CancellationOutcome outcome = queried.orElseThrow();
+    if (!outcome.transferId().equals(transferId)
+        || transfers
+            .findSelectedTransportRequest(transferId)
+            .filter(outcome.transportRequestId()::equals)
+            .isEmpty()
+        || outcome.state() != OperationState.RESOLVED
+        || outcome.outcome().isEmpty()
+        || outcome.resolutionEventId().isEmpty()
+        || outcome.sourceNamespace().isEmpty()
+        || outcome.sourceObservationId().isEmpty()
+        || outcome.sourceOccurredAt().isEmpty()
+        || outcome.resolvedAt().isEmpty()) {
+      return Optional.empty();
+    }
+
+    InternalId eventId = outcome.resolutionEventId().orElseThrow();
+    String resolvedOutcome = outcome.outcome().orElseThrow().name();
+    Instant recordedAt = clock.instant();
+    try {
+      return transaction.execute(
+          status -> {
+            if (!transfers.claimConsumerEvent(
+                eventId, TRANSPORT_CANCELLATION_RESOLVED, recordedAt)) {
+              return transfers.findTransportCancellationOutcome(
+                  transferId, outcome.transportRequestId());
+            }
+            boolean recorded =
+                transfers.recordTransportCancellationOutcome(
+                    transferId,
+                    outcome.transportRequestId(),
+                    outcome.cancellationOperationId(),
+                    resolvedOutcome,
+                    eventId,
+                    outcome.sourceOccurredAt().orElseThrow(),
+                    outcome.resolvedAt().orElseThrow(),
+                    outcome.correlationId().value());
+            if (!recorded
+                && transfers
+                    .findTransportCancellationOutcome(transferId, outcome.transportRequestId())
+                    .filter(resolvedOutcome::equals)
+                    .isEmpty()) {
+              throw new IllegalStateException(
+                  "Transport cancellation outcome conflicts with Transfer evidence");
+            }
+            auditWriter
+                .getObject()
+                .recordMutation(
+                    new AuditEvidence(
+                        AuditActionKind.PROTECTED_MUTATION,
+                        Optional.of(context.actor()),
+                        Optional.of(context.scope()),
+                        "TRANSFER_TRANSPORT_CANCELLATION_QUERY_RECOVERED",
+                        "TransferCancellationOutcome",
+                        Optional.of(outcome.cancellationOperationId()),
+                        recordedAt,
+                        AuditOutcome.SUCCEEDED,
+                        Optional.of(resolvedOutcome),
+                        AuditAuthenticationEvidence.CONFIGURED_SERVICE_IDENTITY,
+                        AuditAuthorizationOutcome.ALLOWED,
+                        outcome.correlationId(),
+                        Optional.of(targetContext(context))));
+            transfers.completeConsumerEvent(
+                eventId,
+                Optional.of(transferId),
+                "TRANSPORT_CANCELLATION_" + resolvedOutcome,
+                recordedAt);
+            return Optional.of(resolvedOutcome);
+          });
+    } catch (RuntimeException failure) {
+      logger.warn(
+          "Transfer Transport cancellation outcome remains recoverable correlationId={} failureType={}",
+          correlationId,
+          failure.getClass().getSimpleName());
+      return Optional.empty();
     }
   }
 
@@ -453,10 +597,16 @@ public final class TransferCapacityReservationRecovery {
   }
 
   private boolean authorizeTransfer(ExecutionContext context, InternalId operationId) {
-    var decision =
-        authorization
-            .getObject()
-            .evaluate(context, TransferAuthorities.reservationReconciliation().code());
+    return authorizeTransfer(
+        context,
+        operationId,
+        TransferAuthorities.reservationReconciliation().code(),
+        "TRANSFER_RESERVATION_RECONCILIATION_DENIED");
+  }
+
+  private boolean authorizeTransfer(
+      ExecutionContext context, InternalId operationId, String authority, String denialAction) {
+    var decision = authorization.getObject().evaluate(context, authority);
     if (decision.isAllowed()) {
       return true;
     }
@@ -472,8 +622,8 @@ public final class TransferCapacityReservationRecovery {
                   AuditActionKind.SECURITY_OUTCOME,
                   Optional.of(context.actor()),
                   Optional.of(context.scope()),
-                  "TRANSFER_RESERVATION_RECONCILIATION_DENIED",
-                  "CapacityReservationOperation",
+                  denialAction,
+                  "TransferOperation",
                   Optional.of(operationId),
                   clock.instant(),
                   AuditOutcome.DENIED,
@@ -488,7 +638,7 @@ public final class TransferCapacityReservationRecovery {
           context.correlationId());
     }
     logger.warn(
-        "Transfer Capacity reservation reconciliation denied correlationId={} code={}",
+        "Transfer reconciliation authority denied correlationId={} code={}",
         context.correlationId(),
         unavailable ? "AUTHORIZATION_UNAVAILABLE" : "AUTHORIZATION_DENIED");
     return false;

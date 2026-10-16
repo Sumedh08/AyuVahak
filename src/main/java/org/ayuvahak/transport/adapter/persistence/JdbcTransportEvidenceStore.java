@@ -42,8 +42,8 @@ public class JdbcTransportEvidenceStore implements TransportEvidenceStore {
   public Optional<EvidenceReplay> findAssignment(
       InternalId requestId, String sourceNamespace, String sourceObservationId) {
     return find(
-        "SELECT assignment_observation_id, fingerprint, 'APPLIED' AS observation_outcome, "
-            + "'ASSIGNED' AS request_status_after, NULL::timestamptz AS valid_until "
+        "SELECT assignment_observation_id, fingerprint, observation_outcome, "
+            + "request_status_after, NULL::timestamptz AS valid_until "
             + "FROM transport.assignment_observation "
             + "WHERE transport_request_id = ? AND source_namespace = ? AND source_observation_id = ?",
         requestId,
@@ -96,6 +96,18 @@ public class JdbcTransportEvidenceStore implements TransportEvidenceStore {
         },
         requestId.value(),
         sourceNamespace);
+  }
+
+  @Override
+  public boolean hasConfirmedPatientMovement(InternalId requestId) {
+    Boolean movementRecorded =
+        jdbc.queryForObject(
+            "SELECT EXISTS (SELECT 1 FROM transport.status_observation "
+                + "WHERE transport_request_id = ? AND observation_outcome = 'APPLIED' "
+                + "AND status_code IN ('EN_ROUTE_TO_DESTINATION', 'ARRIVED_DESTINATION'))",
+            Boolean.class,
+            requestId.value());
+    return Boolean.TRUE.equals(movementRecorded);
   }
 
   @Override
@@ -172,8 +184,9 @@ public class JdbcTransportEvidenceStore implements TransportEvidenceStore {
             "INSERT INTO transport.assignment_observation (assignment_observation_id, transport_request_id, "
                 + "source_namespace, source_observation_id, assignment_reference, occurred_at, recorded_at, "
                 + "recorded_by_kind, recorded_by_issuer, recorded_by_identifier_type, recorded_by_identifier, "
-                + "authority_code, organization_id, facility_id, correlation_id, resulting_request_version, fingerprint) "
-                + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                + "authority_code, organization_id, facility_id, correlation_id, observation_outcome, "
+                + "request_status_after, resulting_request_version, fingerprint) "
+                + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ",
             observation.id().value(),
             observation.transportRequestId().value(),
             observation.sourceNamespace(),
@@ -189,6 +202,8 @@ public class JdbcTransportEvidenceStore implements TransportEvidenceStore {
             uuid(observation.organization()),
             uuid(observation.facility()),
             observation.correlationId().value(),
+            observation.outcome(),
+            observation.requestStatusAfter().name(),
             observation.resultingRequestVersion(),
             fingerprint)
         == 1;

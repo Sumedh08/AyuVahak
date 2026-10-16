@@ -358,6 +358,45 @@ public final class TransportEvidenceCommands {
           PlatformErrorCode.TRANSPORT_EVIDENCE_STALE,
           "Transport rejected assignment evidence with a future source time.");
     }
+    if (request.status() == TransportRequest.Status.CANCELLED) {
+      long currentVersion = request.version();
+      TransportAssignmentObservation observation =
+          new TransportAssignmentObservation(
+              InternalId.generate(),
+              requestId,
+              input.sourceNamespace(),
+              input.sourceObservationId(),
+              input.assignmentReference(),
+              input.occurredAt(),
+              now,
+              context.actor(),
+              TransportAuthorities.dispatchCoordination().code(),
+              context.scope().organization().orElseThrow(),
+              context.scope().facility().orElseThrow(),
+              context.correlationId(),
+              "RECONCILIATION_REQUIRED",
+              request.status(),
+              currentVersion);
+      if (!evidence.insertAssignment(observation, fingerprint.value())) {
+        throw unavailable();
+      }
+      auditMutation(
+          context,
+          "TRANSPORT_ASSIGNMENT_RECORDED",
+          requestId,
+          "ASSIGNMENT_AFTER_CONFIRMED_CANCELLATION",
+          TransportAuthorities.dispatchCoordination().code(),
+          now);
+      requests.completeReceipt(receiptKey, requestId, now);
+      return new TransportEvidenceCommandResult(
+          observation.id(),
+          requestId,
+          request.status().name(),
+          "RECONCILIATION_REQUIRED",
+          Optional.empty(),
+          false,
+          false);
+    }
     if (request.status() != TransportRequest.Status.AWAITING_ASSIGNMENT) {
       throw stateConflict("An assignment is accepted only while the request awaits assignment.");
     }
@@ -383,6 +422,8 @@ public final class TransportEvidenceCommands {
             context.scope().organization().orElseThrow(),
             context.scope().facility().orElseThrow(),
             context.correlationId(),
+            "APPLIED",
+            TransportRequest.Status.ASSIGNED,
             nextVersion);
     if (!evidence.insertAssignment(observation, fingerprint.value())) {
       throw unavailable();

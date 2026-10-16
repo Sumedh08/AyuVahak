@@ -658,6 +658,68 @@ public class JdbcTransferStore implements TransferStore {
             transportRequestId.value()));
   }
 
+  @Override
+  public Optional<InternalId> findSelectedTransportRequest(InternalId transferId) {
+    return jdbc.query(
+        "SELECT transport_request_id FROM transfer.transport_request_link "
+            + "WHERE transfer_id = ? AND selected",
+        result ->
+            result.next()
+                ? Optional.of(internalId(result, "transport_request_id"))
+                : Optional.empty(),
+        transferId.value());
+  }
+
+  @Override
+  public boolean recordTransportCancellationOutcome(
+      InternalId transferId,
+      InternalId transportRequestId,
+      InternalId cancellationOperationId,
+      String outcome,
+      InternalId eventId,
+      Instant occurredAt,
+      Instant recordedAt,
+      String correlationId) {
+    return jdbc.update(
+            "INSERT INTO transfer.transport_cancellation_outcome (cancellation_operation_id, "
+                + "transfer_id, transport_request_id, outcome, event_id, occurred_at, recorded_at, correlation_id) "
+                + "VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (cancellation_operation_id) DO NOTHING",
+            cancellationOperationId.value(),
+            transferId.value(),
+            transportRequestId.value(),
+            outcome,
+            eventId.value(),
+            Timestamp.from(occurredAt),
+            Timestamp.from(recordedAt),
+            correlationId)
+        == 1;
+  }
+
+  @Override
+  public boolean hasConfirmedTransportCancellation(
+      InternalId transferId, InternalId transportRequestId) {
+    return Boolean.TRUE.equals(
+        jdbc.queryForObject(
+            "SELECT EXISTS (SELECT 1 FROM transfer.transport_cancellation_outcome "
+                + "WHERE transfer_id = ? AND transport_request_id = ? "
+                + "AND outcome = 'CANCELLED_BEFORE_MOVEMENT')",
+            Boolean.class,
+            transferId.value(),
+            transportRequestId.value()));
+  }
+
+  @Override
+  public Optional<String> findTransportCancellationOutcome(
+      InternalId transferId, InternalId transportRequestId) {
+    return jdbc.query(
+        "SELECT outcome FROM transfer.transport_cancellation_outcome "
+            + "WHERE transfer_id = ? AND transport_request_id = ? "
+            + "ORDER BY recorded_at DESC, cancellation_operation_id DESC LIMIT 1",
+        result -> result.next() ? Optional.of(result.getString("outcome")) : Optional.empty(),
+        transferId.value(),
+        transportRequestId.value());
+  }
+
   private Optional<TransferProgressTarget> progressTarget(InternalId transferId, boolean lock) {
     String sql =
         "SELECT t.transfer_id, t.journey_id, t.request_attempt_id, t.transfer_status, "

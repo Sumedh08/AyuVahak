@@ -25,6 +25,7 @@ import org.ayuvahak.transfer.application.TransferProgressCommandResult;
 import org.ayuvahak.transfer.application.TransferProgressCommands;
 import org.ayuvahak.transfer.application.TransferProgressCorrectionResult;
 import org.ayuvahak.transfer.application.TransferProgressHistory;
+import org.ayuvahak.transfer.application.TransportCancellationPort;
 import org.ayuvahak.transfer.domain.TransferProgressCorrection;
 import org.ayuvahak.transfer.domain.TransferProgressFact;
 import org.slf4j.MDC;
@@ -66,16 +67,19 @@ public final class TransferProgressController {
   private final ExecutionContextFactory contextFactory;
   private final ObjectMapper objectMapper;
   private final TransferCapacityReservationRecovery reservationRecovery;
+  private final TransportCancellationPort transportCancellation;
 
   public TransferProgressController(
       TransferProgressCommands commands,
       ExecutionContextFactory contextFactory,
       ObjectMapper objectMapper,
-      TransferCapacityReservationRecovery reservationRecovery) {
+      TransferCapacityReservationRecovery reservationRecovery,
+      TransportCancellationPort transportCancellation) {
     this.commands = commands;
     this.contextFactory = contextFactory;
     this.objectMapper = objectMapper;
     this.reservationRecovery = reservationRecovery;
+    this.transportCancellation = transportCancellation;
   }
 
   @PostMapping("/cancellation")
@@ -366,7 +370,16 @@ public final class TransferProgressController {
             content.expectedVersion(),
             idempotencyKey,
             RequestFingerprint.from(content.normalized()));
-    reservationRecovery.reconcileCancellation(id);
+    boolean transportLinked =
+        transportCancellation.requestIfSelected(
+            context,
+            id,
+            actor,
+            command.fact().id(),
+            content.reasonCode().orElse("TRANSFER_CANCELLED"));
+    if (!transportLinked) {
+      reservationRecovery.reconcileCancellation(id);
+    }
     TransferProgressHistory history = commands.history(context, id);
     TransferProgressFact latest = history.facts().getLast();
     HttpHeaders headers = new HttpHeaders();

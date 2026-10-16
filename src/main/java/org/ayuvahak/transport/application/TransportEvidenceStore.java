@@ -24,6 +24,8 @@ public interface TransportEvidenceStore {
 
   Optional<Instant> latestAppliedStatusTime(InternalId requestId, String sourceNamespace);
 
+  boolean hasConfirmedPatientMovement(InternalId requestId);
+
   Optional<Instant> latestEtaTime(InternalId requestId, String sourceNamespace);
 
   boolean updateStatus(

@@ -49,10 +49,13 @@ public final class TransferTransportMovementEventHandler implements InternalEven
   private static final EventType ARRIVAL = EventType.parse("transport.arrival-reported.v1");
   private static final EventType INTERRUPTION = EventType.parse("transport.interrupted.v1");
   private static final EventType UNFULFILLED = EventType.parse("transport.unfulfilled.v1");
+  private static final EventType CANCELLATION_RESOLVED =
+      EventType.parse("transport.cancellation-resolved.v1");
 
   private final TransferStore transfers;
   private final ObjectProvider<TransferProgressCommands> progress;
   private final ObjectProvider<AuthorizationService> authorization;
+  private final ObjectProvider<TransferCapacityReservationRecovery> reservationRecovery;
   private final AuditWriter audit;
   private final ExecutionContextFactory contexts;
   private final TransactionTemplate transaction;
@@ -64,6 +67,7 @@ public final class TransferTransportMovementEventHandler implements InternalEven
       @Lazy TransferStore transfers,
       ObjectProvider<TransferProgressCommands> progress,
       ObjectProvider<AuthorizationService> authorization,
+      ObjectProvider<TransferCapacityReservationRecovery> reservationRecovery,
       AuditWriter audit,
       ExecutionContextFactory contexts,
       @Lazy PlatformTransactionManager transactionManager,
@@ -74,6 +78,7 @@ public final class TransferTransportMovementEventHandler implements InternalEven
     this.transfers = transfers;
     this.progress = progress;
     this.authorization = authorization;
+    this.reservationRecovery = reservationRecovery;
     this.audit = audit;
     this.contexts = contexts;
     this.transaction = new TransactionTemplate(transactionManager);
@@ -86,7 +91,7 @@ public final class TransferTransportMovementEventHandler implements InternalEven
 
   @Override
   public Set<EventType> supportedEventTypes() {
-    return Set.of(DEPARTURE, ARRIVAL, INTERRUPTION, UNFULFILLED);
+    return Set.of(DEPARTURE, ARRIVAL, INTERRUPTION, UNFULFILLED, CANCELLATION_RESOLVED);
   }
 
   @Override
@@ -108,8 +113,76 @@ public final class TransferTransportMovementEventHandler implements InternalEven
       auditDenied(context, transferId, decision);
       throw new IllegalStateException("Transfer movement event consumer is not authorized");
     }
+    if (event.eventType().equals(CANCELLATION_RESOLVED)) {
+      boolean[] releaseCapacity = {false};
+      transaction.executeWithoutResult(
+          status ->
+              releaseCapacity[0] =
+                  processCancellation(
+                      event, envelope, payload, transferId, transportRequestId, context));
+      if (releaseCapacity[0]) {
+        reservationRecovery
+            .getObject()
+            .reconcileCancellation(
+                transferId,
+                context.correlationId(),
+                Optional.of(new CausationId(event.eventId().toString())));
+      }
+      return;
+    }
     transaction.executeWithoutResult(
         status -> process(event, envelope, payload, transferId, transportRequestId, context));
+  }
+
+  private boolean processCancellation(
+      InternalEvent event,
+      JsonNode envelope,
+      JsonNode payload,
+      InternalId transferId,
+      InternalId transportRequestId,
+      ExecutionContext context) {
+    Instant recordedAt = clock.instant();
+    if (!transfers.claimConsumerEvent(event.eventId(), event.eventType(), recordedAt)) {
+      return false;
+    }
+    TransferProgressTarget target =
+        transfers.lockProgressTarget(transferId).orElseThrow(TransferNotFound::new);
+    if (!transfers.isSelectedTransportRequest(transferId, transportRequestId)) {
+      completeWithoutTransition(event, transferId, context, "STALE_TRANSPORT_REQUEST", recordedAt);
+      return false;
+    }
+    if (!text(payload, "originFacilityReference")
+            .equals(target.originFacility().map(ExternalReference::value).orElse(""))
+        || !text(payload, "destinationFacilityReference")
+            .equals(target.receivingFacility().value())) {
+      completeWithoutTransition(
+          event, transferId, context, "CANCELLATION_SCOPE_MISMATCH", recordedAt);
+      return false;
+    }
+    String outcome = text(payload, "outcome");
+    if (!Set.of("CANCELLED_BEFORE_MOVEMENT", "CANCEL_REJECTED_ACTIVE", "MOVEMENT_ALREADY_STARTED")
+        .contains(outcome)) {
+      throw new IllegalArgumentException("Transport cancellation outcome is unsupported");
+    }
+    InternalId operationId = InternalId.parse(text(payload, "cancellationOperationReference"));
+    Instant occurredAt = Instant.parse(text(envelope, "occurredAt"));
+    if (!transfers.recordTransportCancellationOutcome(
+        transferId,
+        transportRequestId,
+        operationId,
+        outcome,
+        event.eventId(),
+        occurredAt,
+        recordedAt,
+        text(envelope, "correlationId"))) {
+      completeWithoutTransition(
+          event, transferId, context, "CANCELLATION_OPERATION_ALREADY_RECONCILED", recordedAt);
+      return false;
+    }
+    completeWithoutTransition(
+        event, transferId, context, "TRANSPORT_CANCELLATION_" + outcome, recordedAt);
+    return outcome.equals("CANCELLED_BEFORE_MOVEMENT")
+        && target.transfer().status() == CoordinatedTransfer.Status.CANCELLATION_PENDING_RELEASE;
   }
 
   private void process(
@@ -144,7 +217,9 @@ public final class TransferTransportMovementEventHandler implements InternalEven
       if (!"EN_ROUTE_TO_DESTINATION".equals(evidenceKind)) {
         completeWithoutTransition(
             event, transferId, context, "INVALID_DEPARTURE_EVIDENCE", recordedAt);
-      } else if (target.transfer().status() == CoordinatedTransfer.Status.READY) {
+      } else if (target.transfer().status() == CoordinatedTransfer.Status.READY
+          || target.transfer().status()
+              == CoordinatedTransfer.Status.CANCELLATION_PENDING_RELEASE) {
         recordProgress(
             context,
             transferId,

@@ -24,4 +24,9 @@ class TransportAuthorityConfiguration {
   FunctionalAuthority transportStatusAuthority() {
     return TransportAuthorities.status();
   }
+
+  @Bean
+  FunctionalAuthority transportCancellationAuthority() {
+    return TransportAuthorities.cancellation();
+  }
 }
