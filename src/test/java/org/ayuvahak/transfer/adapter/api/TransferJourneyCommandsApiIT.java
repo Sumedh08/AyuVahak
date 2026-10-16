@@ -807,7 +807,8 @@ class TransferJourneyCommandsApiIT {
         "ARRIVAL_AFTER_INTERRUPTION_BEFORE_ACK",
         "OLD_ARRIVAL_EVENT_AFTER_ACK",
         "ARRIVAL_EVENT_BEFORE_RESOLUTION_EVENT",
-        "ACCEPTED_NEW_DESTINATION_ARRIVAL"
+        "ACCEPTED_NEW_DESTINATION_ARRIVAL",
+        "LATE_OLD_ARRIVAL_AFTER_ACK"
       })
   void postMovementDestinationChangeKeepsCurrentDestinationUntilTransportAcknowledges(
       String providerOutcome) throws Exception {
@@ -1068,7 +1069,8 @@ class TransferJourneyCommandsApiIT {
               "ARRIVAL_AFTER_INTERRUPTION_BEFORE_ACK",
               "OLD_ARRIVAL_EVENT_AFTER_ACK",
               "ARRIVAL_EVENT_BEFORE_RESOLUTION_EVENT",
-              "ACCEPTED_NEW_DESTINATION_ARRIVAL" ->
+              "ACCEPTED_NEW_DESTINATION_ARRIVAL",
+              "LATE_OLD_ARRIVAL_AFTER_ACK" ->
               "ACCEPTED";
           case "REJECTED_RELEASE_UNKNOWN" -> "REJECTED";
           default -> providerOutcome;
@@ -1077,6 +1079,7 @@ class TransferJourneyCommandsApiIT {
         providerOutcome.equals("ARRIVAL_BEFORE_ACK")
             || providerOutcome.equals("ARRIVAL_AFTER_INTERRUPTION_BEFORE_ACK");
     boolean oldArrivalEventAfterAck = providerOutcome.equals("OLD_ARRIVAL_EVENT_AFTER_ACK");
+    boolean lateOldArrivalAfterAck = providerOutcome.equals("LATE_OLD_ARRIVAL_AFTER_ACK");
     if (arrivalBeforeAck) {
       grantFacilityAuthority("synthetic-reroute-operator", "TransferProgressAuthority", scope);
       long currentTransferVersion =
@@ -1208,6 +1211,7 @@ class TransferJourneyCommandsApiIT {
     }
     grantTransportAuthority(
         scope, "synthetic-reroute-operator", "TransportDestinationChangeAuthority");
+    Instant acknowledgmentOccurredAt = Instant.now();
     mockMvc
         .perform(
             post(
@@ -1225,10 +1229,81 @@ class TransferJourneyCommandsApiIT {
                         + "\"sourceNamespace\":\"urn:ayuvahak:manual\","
                         + "\"sourceObservationId\":\"SYN-REROUTE-ACK-001\","
                         + "\"occurredAt\":\""
-                        + Instant.now()
+                        + acknowledgmentOccurredAt
                         + "\"}"))
         .andExpect(status().isCreated())
         .andExpect(jsonPath("$.outcome").value(transportOutcome));
+    if (lateOldArrivalAfterAck) {
+      UUID resolutionEventId =
+          jdbc.queryForObject(
+              "SELECT resolution_event_id FROM transport.destination_change_operation "
+                  + "WHERE operation_id = ?",
+              UUID.class,
+              transportDestinationChangeId);
+      destinationChangeRecovery.handle(internalEvent(resolutionEventId));
+      assertThat(transferStatus(transferId)).isEqualTo("IN_TRANSIT");
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT facility_id FROM transfer.active_destination WHERE transfer_id = ?",
+                  UUID.class,
+                  UUID.fromString(transferId)))
+          .isEqualTo(UUID.fromString(proposed.facilityId()));
+
+      transportEvidenceCommand(
+              scope,
+              transportRequestId,
+              "status-observations",
+              "reroute-late-old-arrival-after-ack",
+              "synthetic-reroute-operator",
+              statusBody(
+                  "SYN-REROUTE-LATE-OLD-ARRIVAL",
+                  "ARRIVED_DESTINATION",
+                  acknowledgmentOccurredAt.minusSeconds(1)))
+          .andExpect(status().isCreated());
+      UUID lateArrivalEventId =
+          jdbc.queryForObject(
+              "SELECT event_id FROM platform_eventing.internal_event "
+                  + "WHERE event_type = 'transport.arrival-reported.v1' "
+                  + "AND envelope #>> '{payload,evidenceReference}' = "
+                  + "(SELECT status_observation_id::text FROM transport.status_observation "
+                  + "WHERE transport_request_id = ? AND source_observation_id = ?)",
+              UUID.class,
+              transportRequestId,
+              "SYN-REROUTE-LATE-OLD-ARRIVAL");
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT envelope #>> '{payload,destinationFacilityReference}' "
+                      + "FROM platform_eventing.internal_event WHERE event_id = ?",
+                  String.class,
+                  lateArrivalEventId))
+          .as(
+              "an arrival observed before the provider acknowledgement remains at the old destination")
+          .isEqualTo(scope.destinationFacilityId());
+      transportMovementEventHandler.handle(internalEvent(lateArrivalEventId));
+
+      assertThat(transferStatus(transferId)).isEqualTo("INTERRUPTED");
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT COUNT(*) FROM transfer.progress_fact WHERE transfer_id = ? "
+                      + "AND fact_kind = 'ARRIVAL'",
+                  Integer.class,
+                  UUID.fromString(transferId)))
+          .isZero();
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT reason_code FROM transfer.progress_fact WHERE transfer_id = ? "
+                      + "AND fact_kind = 'INTERRUPTION' ORDER BY aggregate_sequence DESC LIMIT 1",
+                  String.class,
+                  UUID.fromString(transferId)))
+          .isEqualTo("OLD_DESTINATION_ARRIVAL_AFTER_REROUTE_ACK");
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT outcome FROM transfer.consumer_event_receipt WHERE event_id = ?",
+                  String.class,
+                  lateArrivalEventId))
+          .isEqualTo("OLD_DESTINATION_ARRIVAL_REQUIRES_RECONCILIATION");
+      return;
+    }
     if (oldArrivalEventAfterAck) {
       UUID resolutionEventId =
           jdbc.queryForObject(
@@ -1297,7 +1372,7 @@ class TransferJourneyCommandsApiIT {
               statusBody(
                   "SYN-REROUTE-ARRIVAL-BEFORE-RESOLUTION",
                   "ARRIVED_DESTINATION",
-                  base.plusSeconds(5)))
+                  acknowledgmentOccurredAt.plusMillis(1)))
           .andExpect(status().isCreated());
       UUID arrivalEventId =
           jdbc.queryForObject(
@@ -1635,7 +1710,7 @@ class TransferJourneyCommandsApiIT {
               statusBody(
                   "SYN-REROUTE-NEW-DESTINATION-ARRIVAL",
                   "ARRIVED_DESTINATION",
-                  base.plusSeconds(5)))
+                  acknowledgmentOccurredAt.plusMillis(1)))
           .andExpect(status().isCreated());
       var arrivalDispatch = outboxDispatcher.dispatchAvailable(Instant.now().plusSeconds(1));
       assertThat(arrivalDispatch.delivered())

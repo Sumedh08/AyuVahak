@@ -433,6 +433,18 @@ public class JdbcTransferStore implements TransferStore {
   }
 
   @Override
+  public Optional<TransferDestinationChangeOperation> findDestinationChangeByTransportOperation(
+      InternalId transportOperationId) {
+    return jdbc
+        .query(
+            "SELECT * FROM transfer.destination_change_operation WHERE transport_operation_id = ?",
+            JdbcTransferStore::destinationChange,
+            transportOperationId.value())
+        .stream()
+        .findFirst();
+  }
+
+  @Override
   public Optional<ActiveDestination> findActiveDestination(InternalId transferId) {
     return jdbc
         .query(

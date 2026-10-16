@@ -72,6 +72,9 @@ public interface TransferStore {
 
   Optional<TransferDestinationChangeOperation> findDestinationChange(InternalId operationId);
 
+  Optional<TransferDestinationChangeOperation> findDestinationChangeByTransportOperation(
+      InternalId transportOperationId);
+
   Optional<ActiveDestination> findActiveDestination(InternalId transferId);
 
   Optional<TransferDestinationChangeOperation> lockDestinationChange(InternalId operationId);

@@ -2,6 +2,7 @@ package org.ayuvahak.transport.adapter.persistence;
 
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.ayuvahak.platform.core.ActorKind;
@@ -89,6 +90,17 @@ public class JdbcTransportDestinationChangeStore implements TransportDestination
             transportRequestId.value())
         .stream()
         .findFirst();
+  }
+
+  @Override
+  public List<TransportDestinationChangeOperation> findAcceptedHistoryForRequest(
+      InternalId transportRequestId) {
+    return jdbc.query(
+        "SELECT * FROM transport.destination_change_operation "
+            + "WHERE transport_request_id = ? AND operation_state = 'RESOLVED' "
+            + "AND outcome = 'ACCEPTED' ORDER BY source_occurred_at, operation_id",
+        JdbcTransportDestinationChangeStore::map,
+        transportRequestId.value());
   }
 
   @Override

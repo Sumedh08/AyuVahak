@@ -243,6 +243,38 @@ public final class TransferTransportMovementEventHandler implements InternalEven
     }
 
     if (event.eventType().equals(ARRIVAL)) {
+      if (isLateAcceptedDestinationArrival(
+          evidenceKind,
+          text(payload, "destinationFacilityReference"),
+          payload,
+          occurredAt,
+          transferId)) {
+        if (target.transfer().status() == CoordinatedTransfer.Status.IN_TRANSIT) {
+          recordProgress(
+              context,
+              transferId,
+              TransferProgressFact.Kind.INTERRUPTION,
+              occurredAt,
+              Optional.of("OLD_DESTINATION_ARRIVAL_AFTER_REROUTE_ACK"),
+              sourceReference,
+              target.transfer().version(),
+              event,
+              payload);
+          transfers.completeConsumerEvent(
+              event.eventId(),
+              Optional.of(transferId),
+              "OLD_DESTINATION_ARRIVAL_REQUIRES_RECONCILIATION",
+              recordedAt);
+        } else {
+          completeWithoutTransition(
+              event,
+              transferId,
+              context,
+              "OLD_DESTINATION_ARRIVAL_REQUIRES_RECONCILIATION",
+              recordedAt);
+        }
+        return;
+      }
       if (!"ARRIVED_DESTINATION".equals(evidenceKind)
           || !text(payload, "destinationFacilityReference")
               .equals(target.receivingFacility().value())) {
@@ -305,6 +337,38 @@ public final class TransferTransportMovementEventHandler implements InternalEven
       outcome = "TRANSPORT_INTERRUPTION_REQUIRES_RECONCILIATION";
     }
     completeWithoutTransition(event, transferId, context, outcome, recordedAt);
+  }
+
+  private boolean isLateAcceptedDestinationArrival(
+      String evidenceKind,
+      String destinationReference,
+      JsonNode payload,
+      Instant occurredAt,
+      InternalId transferId) {
+    if (!"ARRIVED_DESTINATION".equals(evidenceKind)) return false;
+    Optional<String> transportOperationReference =
+        optionalText(payload, "destinationChangeOperationReference");
+    Optional<String> acknowledgementTime = optionalText(payload, "destinationChangeAcknowledgedAt");
+    if (transportOperationReference.isEmpty() || acknowledgementTime.isEmpty()) return false;
+    InternalId transportOperationId = InternalId.parse(transportOperationReference.orElseThrow());
+    Instant acknowledgedAt = Instant.parse(acknowledgementTime.orElseThrow());
+    return !occurredAt.isAfter(acknowledgedAt)
+        && transfers
+            .findDestinationChangeByTransportOperation(transportOperationId)
+            .filter(change -> change.transferId().equals(transferId))
+            .filter(
+                change ->
+                    change.status() == TransferDestinationChangeOperation.Status.RESOLVED
+                        && change
+                            .providerOutcome()
+                            .filter(
+                                outcome ->
+                                    outcome
+                                        == TransferDestinationChangeOperation.ProviderOutcome
+                                            .ACCEPTED)
+                            .isPresent())
+            .filter(change -> change.oldFacility().value().equals(destinationReference))
+            .isPresent();
   }
 
   private boolean isPendingDestinationChangeArrival(
@@ -403,6 +467,14 @@ public final class TransferTransportMovementEventHandler implements InternalEven
         eventType.equals(ARRIVAL)
             && isPendingDestinationChangeArrival(
                 text(payload, "evidenceKind"), suppliedDestination, target, transferId);
+    boolean lateAcceptedDestinationArrival =
+        eventType.equals(ARRIVAL)
+            && isLateAcceptedDestinationArrival(
+                text(payload, "evidenceKind"),
+                suppliedDestination,
+                payload,
+                Instant.parse(text(envelope, "occurredAt")),
+                transferId);
     if (organization == null
         || facility == null
         || !text(organization, "issuer").equals(DIRECTORY_ISSUER)
@@ -412,7 +484,7 @@ public final class TransferTransportMovementEventHandler implements InternalEven
         || !text(facility, "resourceType").equals("Facility")
         || !text(facility, "value").equals(expectedFacility)
         || !text(payload, "originFacilityReference").equals(expectedFacility)
-        || (!currentDestination && !pendingRerouteArrival)) {
+        || (!currentDestination && !pendingRerouteArrival && !lateAcceptedDestinationArrival)) {
       throw new IllegalArgumentException(
           "Transport movement event scope does not match Transfer origin");
     }

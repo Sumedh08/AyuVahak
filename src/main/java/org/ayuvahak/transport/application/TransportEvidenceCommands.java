@@ -3,6 +3,7 @@ package org.ayuvahak.transport.application;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalLong;
@@ -694,12 +695,44 @@ public final class TransportEvidenceCommands {
     payload.put("transferReference", request.transferId().toString());
     payload.put("transportRequestReference", request.id().toString());
     payload.put("originFacilityReference", request.originFacility().value());
-    String currentDestination =
-        destinationChanges
-            .findLatestAcceptedForRequest(request.id())
-            .map(operation -> operation.proposedFacilityId().toString())
+    List<org.ayuvahak.transport.domain.TransportDestinationChangeOperation> acceptedChanges =
+        destinationChanges.findAcceptedHistoryForRequest(request.id());
+    var relevantChange =
+        acceptedChanges.stream()
+            .filter(
+                operation ->
+                    operation
+                        .sourceOccurredAt()
+                        .filter(acknowledgedAt -> !observation.occurredAt().isAfter(acknowledgedAt))
+                        .isPresent())
+            .findFirst()
+            .or(
+                () ->
+                    acceptedChanges.isEmpty()
+                        ? Optional.empty()
+                        : Optional.of(acceptedChanges.get(acceptedChanges.size() - 1)));
+    String destination =
+        relevantChange
+            .map(
+                operation ->
+                    operation
+                            .sourceOccurredAt()
+                            .filter(
+                                acknowledgedAt -> !observation.occurredAt().isAfter(acknowledgedAt))
+                            .isPresent()
+                        ? operation.oldFacilityId().toString()
+                        : operation.proposedFacilityId().toString())
             .orElse(request.destinationFacility().value());
-    payload.put("destinationFacilityReference", currentDestination);
+    payload.put("destinationFacilityReference", destination);
+    relevantChange.ifPresent(
+        operation -> {
+          payload.put("destinationChangeOperationReference", operation.id().toString());
+          operation
+              .sourceOccurredAt()
+              .ifPresent(
+                  acknowledgedAt ->
+                      payload.put("destinationChangeAcknowledgedAt", acknowledgedAt.toString()));
+        });
     payload.put("evidenceReference", observation.id().toString());
     payload.put("evidenceKind", observation.status().name());
     payload.put("sourceNamespace", observation.sourceNamespace());

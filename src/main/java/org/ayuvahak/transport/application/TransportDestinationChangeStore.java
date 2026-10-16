@@ -1,6 +1,7 @@
 package org.ayuvahak.transport.application;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import org.ayuvahak.platform.core.ActorReference;
 import org.ayuvahak.platform.core.InternalId;
@@ -22,6 +23,9 @@ public interface TransportDestinationChangeStore {
       InternalId transferOperationId);
 
   Optional<TransportDestinationChangeOperation> findLatestAcceptedForRequest(
+      InternalId transportRequestId);
+
+  List<TransportDestinationChangeOperation> findAcceptedHistoryForRequest(
       InternalId transportRequestId);
 
   boolean markUncertain(
