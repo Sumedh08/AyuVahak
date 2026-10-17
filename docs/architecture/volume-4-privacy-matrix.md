@@ -1,0 +1,25 @@
+# Volume IV Privacy and Disclosure Matrix
+
+This matrix applies to the Phase 11/12 design. `Allowed` means only when the row's purpose and owner contract authorize it; it is not a general permission. Patient and clinical data never enter Phase 11 federation or Phase 12 Analytics/DHIS2.
+
+| Information | Referral | Matching | Transfer | Transport | Phase 11 federation | Phase 12 Analytics / DHIS2 | Events | Audit | Logs / metrics / traces |
+|---|---|---|---|---|---|---|---|---|---|
+| PatientReference | Referral-owned opaque source reference only | Forbidden | Forbidden | Forbidden | Forbidden | Forbidden | Forbidden | Not copied into generic audit | Forbidden |
+| Origin / destination facility and organization | Allowed coordination references | Allowed as candidate dimensions | Allowed as journey coordination references | Allowed when needed for movement | Namespaced refs and authorized scope only | Approved organizational attribution/mapping only | Minimal refs where consumer requires | Scope refs as needed | No high-cardinality IDs as metric labels; logs use bounded/redacted references |
+| Care capabilities / requirement categories | Allowed structured coordination need | Allowed for deterministic eligibility | Minimum required coordination category only | Only approved operational requirements; no narrative | Bounded codes only if operation requires; never full clinical requirement | Only preapproved low-risk dimensions | Minimal bounded codes only | Purpose/decision metadata, not clinical narrative | No free text; low cardinality only |
+| Capacity state / readiness | No ownership | Evidence summary with source/freshness | Reservation outcome reference and coordination state | No direct Capacity facts | Sourced status/version/validity; stale or unknown explicit | Approved aggregate coverage/quality measure only | Minimal sourced state if consumer named | Outcome/provenance | Bounded result class only |
+| Clinical summary / IPS | Transient purpose-limited Referral-owned disclosure | Forbidden | Not persisted; selected participant reads only via Referral path | Forbidden | Forbidden in federation | Forbidden | Forbidden | Audit access metadata only, never content | Forbidden |
+| Transport assignment/provider reference | No | No | Minimal linkage if care transition needs it | Transport-owned, scoped provider reference | Only named operation and origin/destination refs | Approved aggregate category only | Minimal if justified consumer exists | Operation and actor/source | Bounded partner/result classes; never raw provider payload |
+| Vehicle/crew reference | No | No | No by default | Operational provider reference only where necessary | Excluded unless specifically required by an approved operation | Excluded by default | Excluded | Minimal operation attribution only | Excluded |
+| Location / ETA | No patient location | No | Facility/location refs; ETA is not arrival truth | Minimum operational observation with source, observed/received time, validity | No continuous GPS; only facility refs/approved movement fact | No point-level tracking; at most approved aggregate delay band | No GPS trail; minimal movement fact | Source/actor/time outcome | No precise coordinates or tracking; bounded delay category only |
+| Indicator / aggregate value | No | No | No | No | Only compatible aggregate if future named reporting peer contract exists | Allowed after completeness, version, attribution and privacy policy | Aggregate-only, explicit version and status if consumer justified | Indicator version, purpose, period/scope, export outcome | Bounded value class/latency; no raw cell if sensitive/high cardinality |
+| Credentials, tokens, private keys | Never | Never | Never | Never | Never in messages | Never | Never | Never | Never |
+
+## Disclosure rules
+
+1. Phase 11 notification payloads are resource/version hints with no PatientReference, clinical payload or full aggregate.
+2. Federated coordination uses opaque deployment-scoped resource references and minimum operational facts. The existing Referral → Transfer participation → Referral disclosure pathway remains the only path for authorized patient-context retrieval; it is not embedded in peer messages.
+3. Transport receives only operational coordination facts; it does not receive diagnosis, IPS, or a patient GPS trail.
+4. Analytics and DHIS2 receive only approved aggregate measures and bounded non-free-text dimensions. Suppressed cells are not represented as zero.
+5. Audit records identify actor/service, scope, purpose, operation and outcome without copying sensitive payloads. Required audit failure follows existing fail-closed policy.
+6. Logs, metrics, traces and Problem Details exclude PatientReference, clinical content, auth headers, tokens, private-key material, raw aggregate payloads, and high-cardinality patient/referral/transfer identifiers.

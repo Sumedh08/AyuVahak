@@ -6,7 +6,7 @@ FHIR, IPS, SMART, mCSD, DHIS2, HAPI, Spring, PostgreSQL/PostGIS, a routing provi
 
 ## Context definitions
 
-Volume II's implemented business contexts are Directory, Capacity, Referral, Matching, and Transfer. They were implemented sequentially in Phases 3–7. Volume III adds standards/exchange adapters and Transport as a distinct business context. Phases 8–10 are implemented and frozen. Notifications and Analytics remain outside Volume III's Phase 8–10 scope. The [Volume II context map](volume-2-core-care-coordination.md#context-model) shows the frozen five-context collaboration; [Volume III architecture](volume-3-interoperability-security-transport.md) defines the approved extension.
+Volume II's implemented business contexts are Directory, Capacity, Referral, Matching, and Transfer. They were implemented sequentially in Phases 3–7. Volume III adds standards/exchange adapters and Transport as a distinct business context. Phases 8–10 are implemented and frozen. Volume IV design now covers a technical realtime notification capability and formalizes Analytics as a bounded context for Phase 12; neither Phase 11 nor Phase 12 is implemented. The [Volume II context map](volume-2-core-care-coordination.md#context-model) shows the frozen five-context collaboration; [Volume III architecture](volume-3-interoperability-security-transport.md) and [Volume IV architecture](volume-4-resilient-operations-federation-public-health.md) define the approved extensions.
 
 ### Directory
 
@@ -58,7 +58,7 @@ Volume II's implemented business contexts are Directory, Capacity, Referral, Mat
 - **Owns:** TransferJourney and ordered request attempts, separate receiving assessments and Acceptance, its own Transfer lifecycle/event history, and the referenced outcome of Capacity-owned Reservation.
 - **Does not own:** Referral/clinical source data, Capacity ledger or reservation state, actual bed/admission, transport dispatch/fleet, or subsequent treatment.
 - **Upstream dependencies:** Referral revision/state, current Matching snapshot, Directory destination facts, Capacity reservation application contract, and locally mapped receiving authorities.
-- **Downstream consumers:** Referral (only completion/unfulfilled/cancellation reactions); Transport, Notifications, and Analytics are later-volume consumers.
+- **Downstream consumers:** Referral (only completion/unfulfilled/cancellation reactions); Transport and Analytics have separately governed contracts.
 - **Allowed communication:** Create one active request at a time, record authority functions separately, invoke Capacity command, reconcile outcomes, preserve reroute and late factual reports.
 - **Events:** Receives `referral.cancelled.v1`, `capacity.reservation-expired.v1`, `capacity.reservation-at-risk.v1`, and `capacity.reservation-recovered.v1`; publishes `transfer.completed.v1` and `transfer.unfulfilled.v1` to Referral. A recovery event restores the recorded Capacity outcome; when Transfer has progressed beyond `COORDINATION_EXCEPTION`, Transfer progress is preserved.
 - **Prohibited coupling:** Acceptance is not Reservation; Reservation is not admission; no direct Capacity tables; no message delivery changes a receiving decision; no two active destination commitments.
@@ -71,23 +71,23 @@ Volume II's implemented business contexts are Directory, Capacity, Referral, Mat
 - **Owns:** A separate TransportRequest, provider-scoped assignment reference, attributed ETA/status/movement observations, cancellation/reconciliation outcome, provider/manual destination-change operation, and transport coordination exceptions. Provider systems remain authoritative for vehicles, crews, and dispatch algorithms. Transfer remains owner of destination-change intent and final active destination.
 - **Does not own:** Fleet inventory, call taking, dispatch authority, vehicle tracking infrastructure, or medical control.
 - **Upstream dependencies:** Transfer owner contracts; an optional DispatchPort implemented by a partner adapter or a human/manual reporting path. Phase 9 supplies technical trust safeguards for any external adapter.
-- **Downstream consumers:** Transfer, Notifications, authorized referring/receiving teams, and Audit.
+- **Downstream consumers:** Transfer, authorized referring/receiving teams, realtime notification hints, and Audit.
 - **Allowed communication:** Receive purpose-limited request/cancel/destination-change commands from Transfer after independent service-grant validation and the named Transfer-owned eligibility query. Use a configured DispatchPort only where a deployment authorizes it; otherwise record authorized manual coordination. Transport maps provider responses and owns status reconciliation. Transfer records its own movement and applies its own destination change only through validated owner contracts/events.
 - **Events potentially published:** `transport.cancellation-resolved.v1`, `transport.destination-change-resolved.v1`, `transport.departure-confirmed.v1`, `transport.arrival-reported.v1`, `transport.interrupted.v1`, and `transport.unfulfilled.v1`, each only for a named Transfer consumer and purpose. No event-per-state stream.
 - **Prohibited coupling:** No Transfer persistence access; no patient clinical context; no implicit dispatch authority; assignment, ETA, and vehicle arrival do not imply Transfer departure, Arrival, Handover, or Completion; transport failure does not silently cancel or reroute Transfer.
 
-### Notifications
+### Realtime notification feed
 
-**Volume II status:** Later-volume capability; no notification business logic/provider is implemented or required by Phases 3–7.
+**Classification:** Phase 11 platform capability, not a business bounded context. It is not implemented.
 
-- **Purpose:** Deliver coordination alerts and capture channel delivery outcomes.
-- **Owns:** Recipient/channel choice allowed by policy, minimal message envelope, delivery attempts, and delivery/failure status.
-- **Does not own:** Referral/transfer truth, user authorization, or proof that a human read/acted.
-- **Upstream dependencies:** Events from Referral, Transfer, Transport, Identity & Access; NotificationPort implementations for configured gateways.
-- **Downstream consumers:** Authorized users through approved channels; source contexts receive delivery outcome.
-- **Allowed communication:** Consume an event; send a minimal notification; report attempt/failure via an explicit interface. Notifications owns its delivery port and delivery-outcome semantics.
-- **Events potentially published:** NotificationSent, NotificationDeliveryFailed, NotificationExpired.
-- **Prohibited coupling:** No clinical payload in generic push/email/SMS by default; delivery cannot change acceptance or reservation state.
+- **Purpose:** Tell an authorized client that a scoped owner resource may have changed.
+- **Owns:** Only a bounded cursor/replay projection if needed. It owns no business state and no general SMS/email/push delivery lifecycle.
+- **Does not own:** Referral/Transfer truth, authorization grants, resource state, or proof that a human read/acted.
+- **Upstream dependencies:** Eligible committed owner events through the internal outbox; current scope authorization is delegated to Identity & Access.
+- **Downstream consumers:** Authenticated clients over optional SSE; clients fetch current owner state through ordinary APIs.
+- **Allowed communication:** Publish minimal resource/version/sequence hints. A cursor outside the replay window or reset epoch requires full refresh.
+- **Events potentially published:** None required; a hint is not a new domain event.
+- **Prohibited coupling:** No PatientReference/clinical payload, permanent UI event history, external provider delivery, blocking owner/outbox worker, or state transition based on delivery/receipt.
 
 ### Identity & Access
 
@@ -115,16 +115,16 @@ Volume II's implemented business contexts are Directory, Capacity, Referral, Mat
 
 ### Analytics
 
-**Volume II status:** Later-volume capability; no analytics context, export, DHIS2 integration, or business metrics are implemented or required by Phases 3–7.
+**Volume IV status:** Analytics is formally designed for Phase 12, but not implemented. No analytics context, export, DHIS2 integration, or business metrics are implemented or required by Phases 3–10.
 
-- **Purpose:** Provide coordination-specific operational summaries and governed aggregate exports.
-- **Owns:** Derived, minimized operational measures and aggregation definitions.
-- **Does not own:** Patient-level operational workflow, public-health indicator definitions, generic BI, or clinical outcomes.
-- **Upstream dependencies:** Approved Referral, Transfer, Capacity, Transport, and Directory events/views.
-- **Downstream consumers:** Authorized facility/district coordinators, public-health reporting, DHIS2, and approved analytics tools.
-- **Allowed communication:** Consume explicit, minimized facts; aggregate by governed dimensions; export approved indicators with quality/provenance metadata.
-- **Events potentially published:** CoordinationIndicatorProduced, AggregateExportReady, AggregateExportFailed.
-- **Prohibited coupling:** No direct reads across private context storage, no default patient-level case feed, and no feedback loop that changes safety-critical matching from analytics.
+- **Purpose:** Compute reproducible, minimized aggregate operational reporting and deliver approved values to configured DHIS2 targets.
+- **Owns:** Immutable indicator versions, derived aggregate snapshots/revisions, source completeness, privacy/suppression decisions, target mapping versions, and export-operation outcomes.
+- **Does not own:** Referral/Transfer/Capacity/Transport facts, patient records, clinical outcomes, generic BI, or DHIS2 metadata.
+- **Upstream dependencies:** Bounded reporting snapshot contracts produced by each approved owner; Phase 9 technical exchange for outbound DHIS2 delivery.
+- **Downstream consumers:** Authorized reporting operators and configured DHIS2 partner only.
+- **Allowed communication:** Request approved owner measures for explicit period/scope; aggregate compatible complete snapshots; export aggregate DataValueSets through Phase 9.
+- **Events potentially published:** Only explicitly justified reporting/export events once a consumer is named; the design does not require generic event-per-snapshot publication.
+- **Prohibited coupling:** No private schema/repository access, no patient/case IDs, no Tracker/Event export, no implicit zero, no target metadata mutation by default, no operational feedback loop, and no DHIS2 source-of-truth role.
 
 ## Platform capabilities (distinct from healthcare business contexts)
 
@@ -136,10 +136,14 @@ The consuming business context owns its port, the meaning of the data or action 
 
 - Directory owns its directory-source port and mCSD or registry mappings.
 - Referral owns its patient-context port and mapping/extraction of a scoped FHIR or IPS exchange into the minimum context it uses.
+
+## Volume IV design boundary
+
+Phase 11 keeps owner databases authoritative, uses optional bounded SSE hints with authorized refresh, and federates named owner operations through Phase 9 without shared storage or multi-master replication. Phase 12 introduces Analytics as a derived aggregate context with owner-produced reporting snapshots and a downstream DHIS2 DataValueSet adapter. Missing/partial facts are never zero, aggregate privacy requires configured policy, and public DHIS2 is never a test dependency. See [Volume IV architecture](volume-4-resilient-operations-federation-public-health.md), [contracts](volume-4-context-contracts.md), [state machines](volume-4-state-machines.md), and [data ownership](volume-4-data-ownership.md). Both phases remain design-only; see the [Phase 11](../specs/phase-11-real-time-resilience-federation-spec.md) and [Phase 12](../specs/phase-12-public-health-analytics-dhis2-spec.md) specifications.
 - Capacity owns its source-to-CapacityDimension mappings and reservation semantics. Matching owns CareCapability-to-CapacityDimension operational-requirement policy; Capacity does not infer CareCapability meaning.
 - Matching owns its travel-time port and interpretation of any route estimate as advisory evidence.
 - Transfer owns reservation requests and their business reconciliation; Transport owns dispatch requests and reported assignment/status.
-- Notifications owns the notification-delivery port and the meaning of delivery outcomes.
+- Phase 11's notification feed owns only bounded client hints; it does not own channel delivery or business meaning.
 - Identity & Access owns its identity-provider port and application authorization; shared protocol libraries do not authorize case actions.
 - Analytics owns its governed aggregate export port and DHIS2 mapping.
 
@@ -151,7 +155,7 @@ Transport-level retries may be supplied by shared infrastructure only when dupli
 
 ## Context map
 
-This diagram shows the longer-term context map, including Volume III design. It does not represent implementation status or authorize implementation. The frozen Volume II phase order and event catalog remain in the [Volume II architecture](volume-2-core-care-coordination.md) and [context contracts](volume-2-context-contracts.md); Volume III boundaries are detailed in its [architecture](volume-3-interoperability-security-transport.md), [contracts](volume-3-context-contracts.md), and specifications.
+This diagram shows the context map for Volumes I–IV. It does not represent implementation status or authorize implementation. The frozen Volume II phase order and event catalog remain in the [Volume II architecture](volume-2-core-care-coordination.md) and [context contracts](volume-2-context-contracts.md); Volume III and IV boundaries are detailed in their architecture, contracts and specifications.
 
 ```mermaid
 flowchart LR
@@ -162,7 +166,6 @@ flowchart LR
     Matching["Matching"]
     Transfer["Transfer"]
     Transport["Transport"]
-    Notifications["Notifications"]
     Analytics["Analytics"]
   end
 
@@ -178,7 +181,6 @@ flowchart LR
     ReservationAdapter["Transfer: reservation adapter"]
     TravelAdapter["Matching: travel-time adapter"]
     DispatchAdapter["Transport: dispatch adapter"]
-    NotifyAdapter["Notifications: delivery adapter"]
     IdentityAdapter["Identity & Access: IdP adapter"]
     DHISAdapter["Analytics: aggregate export adapter"]
   end
@@ -191,6 +193,7 @@ flowchart LR
     Reliability["Internal outbox plus bounded transport mechanics"]
     Idempotency["Owner-local command idempotency and consumer dedup"]
     Validation["Payload bounds, conformance plumbing, safe telemetry"]
+    NotificationFeed["Bounded realtime hint feed"]
   end
 
   subgraph External["External actors and systems — optional by deployment unless noted"]
@@ -205,7 +208,6 @@ flowchart LR
     HIE["HIE / OpenHIM mediation (optional route)"]
     DHIS["DHIS2 (optional aggregate receiver)"]
     Route["Routing / travel-time provider"]
-    Gateway["SMS / email / push provider"]
     LMIS["LMIS / OpenLMIS (outside initial workflow)"]
   end
 
@@ -220,9 +222,10 @@ flowchart LR
   Transfer --> Capacity
   Transfer --> Matching
   Transfer --> Transport
-  Referral --> Notifications
-  Transfer --> Notifications
-  Transport --> Notifications
+  Referral -. "eligible owner events" .-> NotificationFeed
+  Transfer -. "eligible owner events" .-> NotificationFeed
+  Transport -. "eligible owner events" .-> NotificationFeed
+  NotificationFeed -->|authorized SSE hints| Users
   Referral --> Audit
   Transfer --> Audit
   Capacity --> Audit
@@ -246,8 +249,6 @@ flowchart LR
   TravelAdapter --> Route
   Transport -->|DispatchPort| DispatchAdapter
   DispatchAdapter <--> EMS
-  Notifications -->|NotificationPort| NotifyAdapter
-  NotifyAdapter <--> Gateway
   IAM -->|IdentityProviderPort| IdentityAdapter
   IdentityAdapter -.->|trusted issuer/key metadata| IdP
   Analytics -->|AggregateExportPort| DHISAdapter
@@ -264,11 +265,11 @@ flowchart LR
   classDef adapter fill:#fff2cc,stroke:#997300,stroke-width:1.5px
   classDef platform fill:#e8e8e8,stroke:#555,stroke-dasharray:5 3
   classDef external fill:#fce8e6,stroke:#9b3c32
-  class Referral,Directory,Capacity,Matching,Transfer,Transport,Notifications,Analytics business
+  class Referral,Directory,Capacity,Matching,Transfer,Transport,Analytics business
   class IAM,Audit platformContext
-  class PatientAdapter,DirectoryAdapter,CapacityAdapter,ReservationAdapter,TravelAdapter,DispatchAdapter,NotifyAdapter,IdentityAdapter,DHISAdapter adapter
-  class FHIR,Auth,Terminology,Provenance,Reliability,Idempotency,Validation platform
-  class Users,EHR,FReg,PReg,MPI,CapSrc,IdP,EMS,HIE,DHIS,Route,Gateway,LMIS external
+  class PatientAdapter,DirectoryAdapter,CapacityAdapter,ReservationAdapter,TravelAdapter,DispatchAdapter,IdentityAdapter,DHISAdapter adapter
+  class FHIR,Auth,Terminology,Provenance,Reliability,Idempotency,Validation,NotificationFeed platform
+  class Users,EHR,FReg,PReg,MPI,CapSrc,IdP,EMS,HIE,DHIS,Route,LMIS external
 ```
 
 The diagram distinguishes business ownership, platform capability, adapter, and external system; it does not prescribe network topology. Each external adapter is logically owned by the context whose need it satisfies. Shared trust enforcement may be common, but every adapter calls it with a preconfigured partner/operation reference and keeps its own meaning and outcome. There is no universal `InteropService`. An HIE/OpenHIM may carry a particular exchange where deployed; it is not mandatory. LMIS remains outside this volume's coordination workflow.

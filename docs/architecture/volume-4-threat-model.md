@@ -1,0 +1,35 @@
+# Volume IV Threat and Failure Model
+
+This model extends the frozen security/trust architecture. All peer and external content is untrusted, including authenticated or standards-valid input. Tests use synthetic local fixtures and controlled local endpoints only.
+
+| Threat / failure | Boundary and impact | Mitigation | Residual risk and local test |
+|---|---|---|---|
+| Unauthorized realtime subscription or scope expansion | Client → notification API; discloses existence/change metadata | Reauthorize each requested scope, no wildcard bypass, short-lived streams, ordinary resource API rechecks | Authorized user can still infer permitted activity; test cross-org/facility and revoked grant |
+| Grant revoked during long-lived SSE | Authorization changes while stream remains open | Bound connection lifetime/reauthorization interval; close on revocation; reconnect reauthorizes | Revocation takes at most configured interval; test grant revocation and reconnect |
+| Slow-client/backpressure exhaustion | Client consumes unbounded queues/threads | Per-client queue/replay caps, coalesce same resource, refresh-required then disconnect, separate bounded executor | Reconnect storms still consume bounded resources; test many slow local clients and queue saturation |
+| Notification loss/duplicate/restart | Process, DB wakeup, or SSE disconnect | Owner state remains truth; durable outbox/projection, bounded cursor, full refresh; `NOTIFY` is wake-up only | Client may observe delay; test crash/restart, dropped wakeups, cursor expiration |
+| Malicious or compromised federation peer | Peer trust boundary; requests overreach scope or forge facts | Explicit peer/operation/context/direction/scope/version allowlist; Phase 9 authentication; owner semantic validation; audit | Trusted peer may send false but authorized facts; test wrong scope, malformed, stale, conflicting message |
+| Federation replay or changed content under same ID | Inbound message boundary; duplicate operation or tampering | Peer-scoped message identity, fingerprint, dedup receipt, sequence/version, bounded replay window | A peer can replay within authorized scope; exact duplicate returns prior result, changed fingerprint conflicts; test both |
+| Lost remote response after acceptance/reservation | Network partition creates ambiguous cross-system state | Stable operation ID/status query, explicit `OUTCOME_UNKNOWN`, block conflicting replacement; no 2PC | Peer status may remain unavailable; test commit-then-drop-response and recovery |
+| Stale remote Capacity presented as ready | Remote evidence may be delayed, revoked, or incompatible | Persist source/observed/received/validUntil/policy version; stale/unavailable becomes UNKNOWN/STALE; no optimism | Freshness thresholds are deployment policy; test expiry, peer outage and policy mismatch |
+| Remote identity collision or clock skew | Namespaced resource IDs or timestamps mislead ordering | `(deploymentId, context, resourceId)`, owner version/sequence, record source and local timestamps; do not order only by wall clock | Misconfigured deployment IDs require governance; test duplicate UUIDs across peers and out-of-order source version |
+| Unauthorized or contradictory owner fact from federation | Peer is authenticated but may not own the fact | Receiving owner checks operation authority, source ownership, scope, state transition and provenance | Semantic disputes require operator reconciliation; test invalid transition and revoked trust |
+| Cross-deployment double counting | Same Transfer appears in origin and destination feeds | Versioned indicator attribution (origin/destination/separate dimensions), source deployment identity, dedup of compatible source snapshots | Incorrect deployment mapping can still misattribute; test one transfer represented at both sides |
+| Private cross-schema analytics query | Analytics shortcuts owner boundary and leaks records | Owner-produced bounded reporting contract; architecture rule forbids private persistence imports/SQL | Owner metric design can still over-disclose; test static architecture plus contract privacy cases |
+| Small-number aggregate re-identification | Analytics/DHIS2 disclosure boundary | Per-indicator sensitivity and configurable suppression/coarsening; fail closed if required policy absent; no free-text dimensions | External recipient may combine aggregates; test threshold edge and absent-policy denial |
+| Indicator/formula/mapping manipulation or drift | Analytics → DHIS2; unauthorized change, wrong interpretation or silent historical rewrite | Restrict and audit definition/mapping changes under deployment policy; immutable indicator and mapping versions, snapshots with source cutoffs, explicit revision and audit | An authorized deployment can still approve a poor formula; review each version and test reproducibility |
+| Missing/partial source exported as zero | Analytics reporting pipeline | Explicit completeness states; numeric zero only from complete evidence; missing never zero | Incorrect source completeness assertion remains possible; test unavailable/partial owner snapshot |
+| Wrong DHIS2 metadata/period/dimension | Analytics adapter → DHIS2; misdirected aggregate | Preapproved versioned mappings, validate target metadata/profile and period/category tuple before send; no auto-create | Target metadata can change; test missing dataElement/orgUnit, invalid period/COC |
+| DHIS2 partial import or response loss | External exchange can commit some values or lose acknowledgment | Small deterministic batches, parse per-value summary, stable local revision identity, unknown/reconciliation state, no blind retry | No universal remote idempotency/status lookup; test mixed result and commit-then-drop |
+| DHIS2 misconfiguration SSRF | Admin endpoint/config to Phase 9 | Reuse Phase 9 endpoint/egress validation; callers cannot provide URLs; TLS hostname and peer checks | Deployment egress policy remains defense in depth; test forbidden local address, redirect and revocation |
+| Credential/token leakage | Phase 9 secret/token boundary | Secret references only; redact auth material; bounded token cache; no credentials in logs/audit/metrics | Memory exposure remains operational risk; synthetic marker search across outputs |
+| Public system/real data used during testing | Developer/CI boundary | Acceptance requires local mock/synthetic fixtures; test fail-fast if endpoint is not controlled local allowlist | Misconfigured environment could bypass tests; CI/local tests inspect target host and run offline |
+
+## Failure behavior invariants
+
+- A database or owner commit failure cannot be reported as success.
+- A notification failure does not roll back a committed owner fact.
+- A federation timeout cannot be translated to acceptance or rejection without evidence.
+- External DHIS2 success does not imply analytical correctness; partial and unknown outcomes remain visible.
+- No failure path fabricates Capacity, Transfer, Transport, Referral, or public-health facts.
+- Peer revocation stops queued attempts and new inbound work but does not erase history.

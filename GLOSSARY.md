@@ -218,6 +218,38 @@ A restricted record of who or what acted, within which organization/context, on 
 
 A notification that an owning context committed a fact for another AyuVahak context to consume. The producer owns the fact's meaning; delivery does not itself constitute a receiving party's business decision or a publication to an external health system.
 
+**Deployment Identity**
+
+A stable identifier for one independently operated AyuVahak deployment. It is distinct from the identity of an organization, facility, user, or external partner and scopes remote resource references and peer trust.
+
+**Federation Peer**
+
+An independently administered deployment with an explicit, versioned, revocable trust relationship that permits named operations, contexts, directions, and scopes. Authentication identifies the peer; owner policy separately authorizes each business operation.
+
+**Remote Reference**
+
+A reference namespaced by deployment, context, and resource identifier. A matching UUID in another deployment does not establish that the resources are the same or share authority.
+
+**Notification Hint**
+
+A bounded message that tells an authorized client an owner resource may have changed. It is not the resource state; the client retrieves current data through an authorized owner query.
+
+**Reporting Snapshot**
+
+A bounded, owner-produced set of approved aggregate measures for an explicit scope and period, accompanied by source cutoff/version, completeness, provenance, and generation time. It contains no patient or case identifier.
+
+**Aggregate Snapshot**
+
+An immutable Analytics result for one indicator version, reporting period, organizational scope, allowed dimensions, source cutoff, completeness status, and revision. A correction creates a linked later revision.
+
+**Reporting Completeness**
+
+Evidence that all required owner inputs for a defined indicator, scope, and period are available and fresh. Missing, partial, or stale inputs are distinct from a complete numeric zero.
+
+**Suppression**
+
+A governed decision to withhold or coarsen an aggregate cell because the approved privacy policy finds it too revealing. Suppression is not a zero value and is retained as an explicit quality outcome.
+
 ## Ambiguous words resolved
 
 - “Referral” means the request to coordinate care; “Transfer” means the resulting patient movement.

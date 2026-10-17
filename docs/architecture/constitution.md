@@ -34,6 +34,10 @@ Volume III extends the frozen core only at owner-defined ports. [Volume III arch
 
 Phases 3–7 are designed as five business contexts in the sequence Directory → Capacity → Referral → Matching → Transfer. Their authority, application contracts, state machines, stale-evidence rules, recommendation policy, and reservation boundary are defined in the [Volume II core architecture](volume-2-core-care-coordination.md), [context contracts](volume-2-context-contracts.md), [state machines](volume-2-state-machines.md), [Capacity policy](capacity-readiness-policy-v1.md), and [Matching policy](matching-policy-v1.md). The implementation-ready phase boundaries are in the [Phase 3–7 specifications](../specs/). These documents do not authorize implementation by themselves; the owning phase must be separately started and frozen under its execution gate.
 
+## Volume IV design boundary
+
+Volume IV's [architecture](volume-4-resilient-operations-federation-public-health.md), [contracts](volume-4-context-contracts.md), [state machines](volume-4-state-machines.md), [data ownership](volume-4-data-ownership.md), and [threat model](volume-4-threat-model.md) define Phase 11 realtime hints/resilience/federation and Phase 12 aggregate Analytics/DHIS2 design. Owner state remains authoritative; notifications are hints; federation uses explicit peers and named operations without shared databases; Analytics uses owner-produced versioned measures without cross-context SQL; DHIS2 is a downstream aggregate target through Phase 9. Both specifications require local-only synthetic acceptance. The design freeze does not authorize implementation.
+
 ## Agent safety
 
 The permanent external-mutation policy in [AGENTS.md](../../AGENTS.md) applies in every phase. Public/shared healthcare systems and upstream repositories are not test targets; default integration verification uses local containers, deterministic fixtures, mocks, and disposable infrastructure controlled by developers. The rationale and safe test-environment expectations are in [agent safety policy](../governance/agent-safety-policy.md).
@@ -42,5 +46,5 @@ The permanent external-mutation policy in [AGENTS.md](../../AGENTS.md) applies i
 
 [System context](system-context.md) shows AyuVahak as one optional system interacting with people and external authorities. It is distinct from the internal [context map](bounded-contexts.md). Deployment-specific law, authorization mapping, terminology, retention, partner profiles, and federation agreements are explicit configuration/governance questions; they do not change the core ownership boundary.
 
-The current program status is maintained in root [AGENTS.md](../../AGENTS.md). The Volume III design freeze does not authorize Phase 8, 9, or 10 implementation; each requires a separate human-authorized execution prompt.
+The current program status is maintained in root [AGENTS.md](../../AGENTS.md). Volume III is implemented and frozen. Volume IV design is frozen, while Phase 11/12 implementation remains unauthorized until a separate human-authorized prompt.
 

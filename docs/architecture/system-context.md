@@ -36,7 +36,7 @@ flowchart LR
     Notify["Notification provider\nSMS / email / push"]
     DHIS2["DHIS2 / public-health HMIS"]
     LMIS["LMIS / OpenLMIS"]
-    Federation["Regional / national coordination environment"]
+    Federation["Trusted AyuVahak federation peer"]
   end
 
   Referrer <-->|"create/coordinate case; request and status"| AV
@@ -62,7 +62,7 @@ flowchart LR
   AV -->|"facility locations only; optional estimate"| Route
   AV <-->|"minimal alert and delivery outcome"| Notify
   AV -->|"governed aggregate export only"| DHIS2
-  Federation <-->|"future governed discovery and coordination exchange"| AV
+  Federation <-->|"named, scoped operations under Phase 11 design"| AV
 
   classDef product fill:#e7f0ff,stroke:#315a8a,stroke-width:2px
   classDef people fill:#eaf4e4,stroke:#4e7b3d
@@ -96,7 +96,7 @@ Solid arrows show a potential interaction; dotted arrows show a deliberate exclu
 | Notification provider | Delivers a minimal alert and returns delivery status. | Asynchronous delivery and receipt/failure outcome. | Provider is authoritative only for its delivery attempt; receipt does not prove a human read it. Optional. | No patient-level detail by default; use only if channel is approved for minimal content. | Delivery metadata and correlation, not a clinical payload. |
 | DHIS2 / public-health HMIS | Receives approved coordination indicators/aggregates for reporting. | One-way asynchronous export; delivery may be scheduled. | Public-health authority/HMIS owns official indicator definitions and records. Optional downstream integration. | No patient-level case feed in the baseline. | Temporary approved aggregate export and delivery outcome only. |
 | LMIS / OpenLMIS | No routine exchange in the initial baseline; any later stock signal needs a separate decision. | None initially; future query only if justified and authorized. | Authoritative for commodity supply-chain state. Excluded from current workflow dependencies. | No patient-level information. | None by default. |
-| Regional/national coordination or federation environment | Future exchange of governed discovery, references, and coordination status between independently operated deployments. | Future asynchronous exchange; exact protocol and consistency model remain unspecified. | Authority is category- and jurisdiction-dependent; no single national authority is presumed. Future optional. | Case-level data only when an explicit workflow/purpose and legal basis require it. | References and minimum bounded exchange context; no central clinical warehouse. |
+| Independently operated AyuVahak federation peer | Phase 11 design allows named, scoped Directory, Capacity and receiving-Transfer operations between explicit deployment identities. | Phase 9 secure exchange with stable operation IDs, at-least-once delivery and status reconciliation. Optional; implementation not started. | Each peer remains authoritative only for its own owner facts. Peer authentication does not confer business authority. | No PatientReference/IPS in federation messages; separate Referral disclosure contract if a selected participant needs clinical context. | Namespaced opaque references, bounded source facts and operation outcomes only; no shared database or replicated private tables. |
 | System operator / administrator | Operates the deployment and configures organizations, roles, adapter settings, and service health. | Interactive administration and technical telemetry. | Deployment operator/health authority; privileges are individually attributed and scoped. Required operational actors. | No patient content by default; exceptional access is separately authorized and audited. | Configuration and operational state, not clinical content. |
 | Auditor | Reviews access, decisions, provenance, and chronology for a permitted purpose. | Restricted read-only audit view. | Authorized governance or audit authority. Optional role per deployment. | Case references may appear; summary content requires a separate approved need. | Audit chronology and access record; no copied clinical payload. |
 | Public-health analyst | Reviews approved coordination indicators and quality metadata. | Aggregate read-only view/export. | Public-health authority defines its use. Optional. | No patient-level data by default. | Aggregates only, with disclosure review. |
@@ -125,3 +125,18 @@ These relationships extend the system view for Phases 8–10. They are logical s
 The exchange is always mediated by an owner-context adapter and the technical trust controls described in [Volume III architecture](volume-3-interoperability-security-transport.md). An inbound partner message is authenticated as a partner, bounded and profile-checked, then delivered as an owner command; no partner or adapter writes private owner persistence directly. A provider acknowledgement, valid FHIR profile, or accepted HTTP status is transport evidence only, not an AyuVahak business outcome.
 
 Every Phase 8–10 conformance and integration test uses local mocks, static synthetic fixtures, local credentials/certificates, and disposable infrastructure. There is no public test endpoint in the system context or acceptance path.
+
+## Volume IV designed boundary relationships
+
+The following optional edges are designed for Phases 11–12 and remain unimplemented. They do not introduce public or shared acceptance targets.
+
+| Boundary | Direction and purpose | Mode and authority | Data/persistence limit |
+|---|---|---|---|
+| Authenticated client ↔ realtime notification capability | Phase 11 sends a resource/version hint; client reads current state from the owner API | Optional SSE plus conditional polling; the owner query rechecks current authorization and is authoritative | No full aggregate, patient or clinical payload; bounded scope cursor and replay window |
+| AyuVahak deployment ↔ federation peer | Named Directory discovery, remote Capacity evidence/reservation, receiving coordination and attributed movement facts | Explicitly configured, revocable Phase 9 peer profile; owner context decides meaning | Deployment-namespaced references and minimal operational facts; no shared DB, multi-master replication, or PatientReference |
+| Owner reporting contract → Analytics | Approved source owner computes a bounded measure snapshot for a requested interval and scope | Local application contract; owner remains authoritative; asynchronous computation | Aggregate-only, bounded dimensions, completeness, immutable source cutoff; no patient/case identifiers |
+| Analytics → configured DHIS2 | Deliver approved versioned aggregate DataValueSets | One-way downstream exchange through Phase 9; partial/unknown import remains explicit | Approved aggregate values only; no Tracker/Event, PatientReference, raw clinical record, or automatic target metadata creation |
+
+Although the broader system context shows optional SMS/email/push providers for possible deployment needs, Phase 11 selects only authenticated client hints and does not design or add an external notification-provider integration.
+
+All Phase 11/12 development and acceptance must use synthetic fixtures and controlled local mocks. Public/demo DHIS2 and any external peer are never required or permitted as test targets.

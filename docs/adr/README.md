@@ -40,6 +40,10 @@ ADRs record durable AyuVahak architecture decisions, their context, and the rati
 | [0023](0023-referral-owned-transient-patient-context-exchange.md) | Referral owns authorized, transient patient-context exchange | Accepted |
 | [0024](0024-partner-trust-and-exchange-lifecycle.md) | Shared partner trust enforcement; owner-owned exchange meaning | Accepted |
 | [0025](0025-transport-separate-from-transfer.md) | Transport is a separate context from Transfer | Accepted |
+| [0026](0026-client-updates-are-bounded-non-authoritative-hints.md) | Client updates are bounded, non-authoritative hints | Accepted |
+| [0027](0027-federation-uses-explicit-peers-and-home-authority.md) | Federation uses explicit peers and home authority | Accepted |
+| [0028](0028-analytics-uses-versioned-owner-produced-aggregates.md) | Analytics uses versioned owner-produced aggregates | Accepted |
+| [0029](0029-dhis2-is-a-downstream-aggregate-export.md) | DHIS2 is a downstream aggregate export | Accepted |
 
 ADR 0005 and ADR 0007 have dated amendments for the Phase 2 identity/token boundary and at-least-once/per-aggregate event delivery semantics. These amendments clarify the existing decisions; they do not change the Phase 1 baseline or begin Phase 2 implementation.
 
@@ -54,4 +58,6 @@ ADR 0022 separates the human authority to request a recommendation from the mach
 ADR 0010 was clarified on 2026-10-15: owner adapters own mapping/operation configuration, while Phase 9 may centralize a narrow technical trust envelope for consistent endpoint and credential enforcement. This does not create a connector registry or alter domain ownership.
 
 ADRs 0023–0025 record the Volume III design decisions: Referral controls and transiently processes optional IPS context; a shared platform capability enforces partner trust without owning exchange semantics; and Transport owns movement coordination separately from Transfer. They freeze design only. Phases 8–10 implementation requires separate authorization.
+
+ADRs 0026–0029 record the Volume IV design decisions: realtime client delivery is a bounded hint channel; federation uses explicit revocable peers and home authority; Analytics consumes owner-produced versioned aggregates; and DHIS2 receives downstream aggregate DataValueSets through Phase 9. They freeze design only and do not authorize Phase 11/12 implementation. Volume V remains unauthorized.
 

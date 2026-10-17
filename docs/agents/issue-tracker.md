@@ -12,6 +12,6 @@ AyuVahak planning issues and Wayfinder decision records live as Markdown under `
 - Record resolution under `## Answer`, then add a named context pointer to the map's `Decisions so far`.
 - Do not create GitHub/GitLab issues or use any external tracker during Phase 0. If a future phase changes trackers, update this file only after explicit project-owner direction.
 
-## Phase 0 limit
+## Phase-aware use
 
-The Phase 0 effort may create and resolve local decision/research records and architecture documentation. It must not create implementation tickets or proceed to `/to-spec`, `/to-tickets`, `/implement`, or `/implement-spec`.
+The Phase 0 restriction above is historical and applies only to Phase 0 work. For later phases, the active human-authorized master prompt and root `AGENTS.md` determine which local planning/specification workflows may run. Keep planning artifacts in `.scratch/`; do not create an external tracker item unless the human explicitly authorizes that exact external mutation. A specification-completeness marker never authorizes implementation; the implementation phase still requires its own explicit human authorization and acceptance gate.
