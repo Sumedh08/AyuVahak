@@ -25,7 +25,8 @@ public record PartnerTrustConfiguration(
     Limits limits,
     RetryClass retryClass,
     List<AllowedOperation> allowedOperations,
-    Optional<ActorReference> inboundPrincipal) {
+    Optional<ActorReference> inboundPrincipal,
+    Optional<FederationPeerConfiguration> federationPeer) {
 
   private static final Pattern SAFE_REFERENCE =
       Pattern.compile("[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,255}");
@@ -51,6 +52,7 @@ public record PartnerTrustConfiguration(
     Objects.requireNonNull(limits, "limits");
     Objects.requireNonNull(retryClass, "retryClass");
     inboundPrincipal = Objects.requireNonNull(inboundPrincipal, "inboundPrincipal");
+    federationPeer = Objects.requireNonNull(federationPeer, "federationPeer");
     allowedOperations =
         Objects.requireNonNull(allowedOperations, "allowedOperations").stream()
             .sorted(
@@ -88,12 +90,65 @@ public record PartnerTrustConfiguration(
             .anyMatch(operation -> operation.direction() != Direction.OUTBOUND)) {
       throw new IllegalArgumentException("automatic retries are limited to outbound reads");
     }
+    if (federationPeer.isPresent()) {
+      FederationPeerConfiguration peer = federationPeer.orElseThrow();
+      if (!peer.organization().equals(organization)) {
+        throw new IllegalArgumentException(
+            "federation peer organization must match the partner organization");
+      }
+      if (authentication.method() == AuthenticationMethod.NONE) {
+        throw new IllegalArgumentException(
+            "federation peer profiles require authenticated partner trust");
+      }
+      if (retryClass != RetryClass.NEVER || limits.maxAttempts() != 1) {
+        throw new IllegalArgumentException(
+            "federated operations require owner-controlled retry with one exchange attempt");
+      }
+      if (allowedOperations.stream()
+          .anyMatch(
+              operation ->
+                  operation.ownerContext() == OwnerContext.REFERRAL
+                      || operation.ownerContext() == OwnerContext.TRANSPORT
+                      || operation.protocol() != Protocol.JSON
+                      || !peer.protocolProfile().equals(operation.profile()))) {
+        throw new IllegalArgumentException(
+            "federation peer profiles allow only scoped JSON owner operations");
+      }
+    }
     if (allowedOperations.stream()
             .anyMatch(operation -> operation.ownerContext() == OwnerContext.TRANSPORT)
         && retryClass != RetryClass.NEVER) {
       throw new IllegalArgumentException(
           "Transport provider operations must not be automatically retried by Exchange");
     }
+  }
+
+  /** Compatibility constructor for profiles without federation peer identity. */
+  public PartnerTrustConfiguration(
+      PartnerKey partnerKey,
+      ExternalReference organization,
+      String endpointOrigin,
+      String basePath,
+      Authentication authentication,
+      TlsPolicy tlsPolicy,
+      Optional<String> tlsTrustReference,
+      Limits limits,
+      RetryClass retryClass,
+      List<AllowedOperation> allowedOperations,
+      Optional<ActorReference> inboundPrincipal) {
+    this(
+        partnerKey,
+        organization,
+        endpointOrigin,
+        basePath,
+        authentication,
+        tlsPolicy,
+        tlsTrustReference,
+        limits,
+        retryClass,
+        allowedOperations,
+        inboundPrincipal,
+        Optional.empty());
   }
 
   /** Compatibility constructor for outbound-only profiles. */
@@ -119,6 +174,7 @@ public record PartnerTrustConfiguration(
         limits,
         retryClass,
         allowedOperations,
+        Optional.empty(),
         Optional.empty());
   }
 
@@ -211,7 +267,10 @@ public record PartnerTrustConfiguration(
   public enum OwnerContext {
     DIRECTORY,
     REFERRAL,
-    TRANSPORT
+    TRANSPORT,
+    CAPACITY,
+    MATCHING,
+    TRANSFER
   }
 
   public enum Protocol {
@@ -250,9 +309,16 @@ public record PartnerTrustConfiguration(
       }
       Objects.requireNonNull(direction, "direction");
       Objects.requireNonNull(protocol, "protocol");
-      if ((ownerContext == OwnerContext.TRANSPORT) != (protocol == Protocol.JSON)) {
+      if ((ownerContext == OwnerContext.TRANSPORT
+              || ownerContext == OwnerContext.CAPACITY
+              || ownerContext == OwnerContext.MATCHING
+              || ownerContext == OwnerContext.TRANSFER)
+          && protocol != Protocol.JSON) {
         throw new IllegalArgumentException(
-            "Transport operations use bounded JSON and other owner operations use their declared standards protocol");
+            "Transport and federation owner operations use bounded JSON");
+      }
+      if (ownerContext == OwnerContext.REFERRAL && protocol != Protocol.FHIR_R4_JSON) {
+        throw new IllegalArgumentException("Referral clinical-context operations use FHIR R4 JSON");
       }
       if (profile == null || !SAFE_PROFILE.matcher(profile).matches()) {
         throw new IllegalArgumentException("profile must be a bounded identifier");

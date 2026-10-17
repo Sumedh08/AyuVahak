@@ -352,6 +352,24 @@ class PartnerOutboundReadServiceTest {
     }
 
     @Override
+    public Optional<PartnerProfileVersion> findActivePeer(
+        PartnerKey partnerKey,
+        org.ayuvahak.platform.federation.domain.DeploymentId peerDeploymentId,
+        PartnerTrustConfiguration.AllowedOperation operation,
+        org.ayuvahak.platform.core.ExternalReference requestedScope) {
+      throw unexpected();
+    }
+
+    @Override
+    public Optional<PartnerProfileVersion> findActiveInboundPeer(
+        org.ayuvahak.platform.core.ActorReference principal,
+        org.ayuvahak.platform.federation.domain.DeploymentId peerDeploymentId,
+        PartnerTrustConfiguration.AllowedOperation operation,
+        org.ayuvahak.platform.core.ExternalReference requestedScope) {
+      throw unexpected();
+    }
+
+    @Override
     public void configureBoundedReceiptWait() {
       throw unexpected();
     }

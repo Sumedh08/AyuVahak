@@ -17,6 +17,7 @@ import org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.OwnerCont
 import org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.Protocol;
 import org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.RetryClass;
 import org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.TlsPolicy;
+import org.ayuvahak.platform.federation.domain.DeploymentId;
 import org.junit.jupiter.api.Test;
 
 class PartnerTrustConfigurationTest {
@@ -186,6 +187,161 @@ class PartnerTrustConfigurationTest {
     assertThatThrownBy(() -> profile(outbound, RetryClass.IDEMPOTENT_READ, 2))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("must not be automatically retried");
+  }
+
+  @Test
+  void federationPeerProfileUsesAuthenticatedScopedJsonOperations() {
+    ExternalReference organization =
+        new ExternalReference(
+            new IssuerId("urn:synthetic:authority"), "Organization", "SYN-ORG-001");
+    ExternalReference facility =
+        new ExternalReference(
+            new IssuerId("urn:synthetic:authority"), "Facility", "SYN-FACILITY-A");
+    FederationPeerConfiguration peer =
+        new FederationPeerConfiguration(
+            new DeploymentId("SYN-DEPLOYMENT-B"),
+            organization,
+            FederationPeerConfiguration.supportedProtocolProfile(),
+            List.of(facility));
+    AllowedOperation operation =
+        new AllowedOperation(
+            OwnerContext.TRANSFER,
+            "transfer.remote-receiving-request",
+            Direction.OUTBOUND,
+            Protocol.JSON,
+            FederationPeerConfiguration.supportedProtocolProfile());
+
+    PartnerTrustConfiguration profile =
+        new PartnerTrustConfiguration(
+            new PartnerKey("synthetic-peer-b"),
+            organization,
+            "https://peer.example.test",
+            "/api/federation",
+            new Authentication(
+                AuthenticationMethod.MUTUAL_TLS,
+                Optional.of("secret-ref:SYN-PEER-CERT"),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty()),
+            TlsPolicy.SYSTEM_CA,
+            Optional.empty(),
+            new Limits(1_000, 2_000, 5_000, 1_000_000, 2_000_000, 10, 500, 32, 1),
+            RetryClass.NEVER,
+            List.of(operation),
+            Optional.empty(),
+            Optional.of(peer));
+
+    assertThat(profile.federationPeer()).contains(peer);
+    assertThat(peer.permits(organization, organization)).isTrue();
+    assertThat(peer.permits(organization, facility)).isTrue();
+    assertThat(
+            peer.permits(
+                organization,
+                new ExternalReference(
+                    new IssuerId("urn:synthetic:authority"), "Facility", "SYN-FACILITY-B")))
+        .isFalse();
+  }
+
+  @Test
+  void federationProfilesRejectUnauthenticatedOrPatientContextOperations() {
+    ExternalReference organization =
+        new ExternalReference(
+            new IssuerId("urn:synthetic:authority"), "Organization", "SYN-ORG-001");
+    FederationPeerConfiguration peer =
+        new FederationPeerConfiguration(
+            new DeploymentId("SYN-DEPLOYMENT-B"),
+            organization,
+            FederationPeerConfiguration.supportedProtocolProfile(),
+            List.of());
+    AllowedOperation operation =
+        new AllowedOperation(
+            OwnerContext.TRANSFER,
+            "transfer.remote-receiving-request",
+            Direction.OUTBOUND,
+            Protocol.JSON,
+            FederationPeerConfiguration.supportedProtocolProfile());
+
+    assertThatThrownBy(
+            () -> federationProfile(organization, Authentication.none(), List.of(operation), peer))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("authenticated");
+
+    AllowedOperation referral =
+        new AllowedOperation(
+            OwnerContext.REFERRAL,
+            "referral.remote-context",
+            Direction.OUTBOUND,
+            Protocol.FHIR_R4_JSON,
+            "IHE-IPS");
+    assertThatThrownBy(
+            () -> federationProfile(organization, peerAuthentication(), List.of(referral), peer))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("owner operations");
+  }
+
+  @Test
+  void federationProfileMustBindToTheConfiguredPartnerOrganization() {
+    ExternalReference partnerOrganization =
+        new ExternalReference(
+            new IssuerId("urn:synthetic:authority"), "Organization", "SYN-ORG-001");
+    ExternalReference otherOrganization =
+        new ExternalReference(
+            new IssuerId("urn:synthetic:authority"), "Organization", "SYN-ORG-002");
+    FederationPeerConfiguration peer =
+        new FederationPeerConfiguration(
+            new DeploymentId("SYN-DEPLOYMENT-B"),
+            otherOrganization,
+            FederationPeerConfiguration.supportedProtocolProfile(),
+            List.of());
+    AllowedOperation operation =
+        new AllowedOperation(
+            OwnerContext.DIRECTORY,
+            "directory.remote-query",
+            Direction.OUTBOUND,
+            Protocol.JSON,
+            FederationPeerConfiguration.supportedProtocolProfile());
+
+    assertThatThrownBy(
+            () ->
+                federationProfile(
+                    partnerOrganization, peerAuthentication(), List.of(operation), peer))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("partner organization");
+  }
+
+  private static PartnerTrustConfiguration federationProfile(
+      ExternalReference organization,
+      Authentication authentication,
+      List<AllowedOperation> operations,
+      FederationPeerConfiguration peer) {
+    return new PartnerTrustConfiguration(
+        new PartnerKey("synthetic-peer-b"),
+        organization,
+        "https://peer.example.test",
+        "/api/federation",
+        authentication,
+        TlsPolicy.SYSTEM_CA,
+        Optional.empty(),
+        new Limits(1_000, 2_000, 5_000, 1_000_000, 2_000_000, 10, 500, 32, 1),
+        RetryClass.NEVER,
+        operations,
+        Optional.empty(),
+        Optional.of(peer));
+  }
+
+  private static Authentication peerAuthentication() {
+    return new Authentication(
+        AuthenticationMethod.MUTUAL_TLS,
+        Optional.of("secret-ref:SYN-PEER-CERT"),
+        Optional.empty(),
+        Optional.empty(),
+        Optional.empty(),
+        Optional.empty(),
+        Optional.empty(),
+        Optional.empty());
   }
 
   private static PartnerTrustConfiguration profile(

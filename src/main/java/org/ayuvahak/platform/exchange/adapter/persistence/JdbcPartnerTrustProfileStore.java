@@ -17,10 +17,13 @@ import org.ayuvahak.platform.exchange.application.PartnerProfileConflictExceptio
 import org.ayuvahak.platform.exchange.application.PartnerProfileNotFoundException;
 import org.ayuvahak.platform.exchange.application.PartnerProfileStateConflictException;
 import org.ayuvahak.platform.exchange.application.PartnerTrustProfileStore;
+import org.ayuvahak.platform.exchange.domain.FederationPeerConfiguration;
 import org.ayuvahak.platform.exchange.domain.PartnerKey;
 import org.ayuvahak.platform.exchange.domain.PartnerProfileState;
 import org.ayuvahak.platform.exchange.domain.PartnerProfileVersion;
 import org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration;
+import org.ayuvahak.platform.federation.application.DeploymentIdentityRegistrationService;
+import org.ayuvahak.platform.federation.domain.DeploymentId;
 import org.ayuvahak.platform.idempotency.CommandReceiptKey;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
 import org.ayuvahak.platform.idempotency.configuration.CommandIdempotencyProperties;
@@ -43,16 +46,21 @@ public class JdbcPartnerTrustProfileStore implements PartnerTrustProfileStore {
           + "v.tls_trust_reference, v.connect_timeout_millis, v.response_timeout_millis, "
           + "v.operation_timeout_millis, v.max_response_bytes, v.max_decompressed_bytes, "
           + "v.max_pages, v.max_resources, v.max_nesting_depth, v.max_attempts, v.retry_class, "
+          + "v.peer_deployment_id, v.federation_protocol_profile, "
           + "v.created_at, v.updated_at";
 
   private final JdbcTemplate jdbc;
   private final CommandIdempotencyProperties idempotencyProperties;
+  private final DeploymentIdentityRegistrationService deploymentIdentity;
 
   public JdbcPartnerTrustProfileStore(
-      JdbcTemplate jdbc, CommandIdempotencyProperties idempotencyProperties) {
+      JdbcTemplate jdbc,
+      CommandIdempotencyProperties idempotencyProperties,
+      DeploymentIdentityRegistrationService deploymentIdentity) {
     this.jdbc = Objects.requireNonNull(jdbc, "jdbc");
     this.idempotencyProperties =
         Objects.requireNonNull(idempotencyProperties, "idempotencyProperties");
+    this.deploymentIdentity = Objects.requireNonNull(deploymentIdentity, "deploymentIdentity");
   }
 
   @Override
@@ -247,6 +255,89 @@ public class JdbcPartnerTrustProfileStore implements PartnerTrustProfileStore {
   }
 
   @Override
+  public Optional<PartnerProfileVersion> findActivePeer(
+      PartnerKey partnerKey,
+      DeploymentId peerDeploymentId,
+      PartnerTrustConfiguration.AllowedOperation operation,
+      ExternalReference requestedScope) {
+    Objects.requireNonNull(partnerKey, "partnerKey");
+    Objects.requireNonNull(peerDeploymentId, "peerDeploymentId");
+    Objects.requireNonNull(operation, "operation");
+    Objects.requireNonNull(requestedScope, "requestedScope");
+    if (deploymentIdentity.current().isEmpty()
+        || operation.direction() != PartnerTrustConfiguration.Direction.OUTBOUND) {
+      return Optional.empty();
+    }
+    return jdbc
+        .query(
+            "SELECT "
+                + VERSION_COLUMNS
+                + " FROM platform_exchange.partner_profile_version v "
+                + "JOIN platform_exchange.partner_profile p ON p.partner_id = v.partner_id "
+                + "JOIN platform_exchange.partner_profile_operation o "
+                + "ON o.profile_version_id = v.profile_version_id "
+                + "WHERE p.partner_key = ? AND v.peer_deployment_id = ? AND v.state = 'ACTIVE' "
+                + "AND o.owner_context = ? AND o.operation_code = ? AND o.direction = ? "
+                + "AND o.protocol = ? AND o.profile = ?",
+            this::mapVersion,
+            partnerKey.value(),
+            peerDeploymentId.value(),
+            operation.ownerContext().name(),
+            operation.operationCode(),
+            operation.direction().name(),
+            operation.protocol().name(),
+            operation.profile())
+        .stream()
+        .filter(
+            profile ->
+                profile.configuration().federationPeer().orElseThrow().permits(requestedScope))
+        .findFirst();
+  }
+
+  @Override
+  public Optional<PartnerProfileVersion> findActiveInboundPeer(
+      ActorReference principal,
+      DeploymentId peerDeploymentId,
+      PartnerTrustConfiguration.AllowedOperation operation,
+      ExternalReference requestedScope) {
+    Objects.requireNonNull(principal, "principal");
+    Objects.requireNonNull(peerDeploymentId, "peerDeploymentId");
+    Objects.requireNonNull(operation, "operation");
+    Objects.requireNonNull(requestedScope, "requestedScope");
+    if (deploymentIdentity.current().isEmpty()
+        || principal.kind() != ActorKind.SERVICE
+        || operation.direction() != PartnerTrustConfiguration.Direction.INBOUND) {
+      return Optional.empty();
+    }
+    return jdbc
+        .query(
+            "SELECT "
+                + VERSION_COLUMNS
+                + " FROM platform_exchange.partner_profile_version v "
+                + "JOIN platform_exchange.partner_profile p ON p.partner_id = v.partner_id "
+                + "JOIN platform_exchange.partner_profile_operation o "
+                + "ON o.profile_version_id = v.profile_version_id "
+                + "WHERE v.peer_deployment_id = ? AND v.state = 'ACTIVE' "
+                + "AND v.inbound_principal_issuer = ? AND v.inbound_principal_client_id = ? "
+                + "AND o.owner_context = ? AND o.operation_code = ? AND o.direction = ? "
+                + "AND o.protocol = ? AND o.profile = ?",
+            this::mapVersion,
+            peerDeploymentId.value(),
+            principal.identity().issuer().value(),
+            principal.identity().value(),
+            operation.ownerContext().name(),
+            operation.operationCode(),
+            operation.direction().name(),
+            operation.protocol().name(),
+            operation.profile())
+        .stream()
+        .filter(
+            profile ->
+                profile.configuration().federationPeer().orElseThrow().permits(requestedScope))
+        .findFirst();
+  }
+
+  @Override
   public ReceiptClaim claimReceipt(
       CommandReceiptKey key, RequestFingerprint fingerprint, Instant now) {
     int inserted =
@@ -313,8 +404,8 @@ public class JdbcPartnerTrustProfileStore implements PartnerTrustProfileStore {
             + "inbound_principal_client_id, tls_policy, tls_trust_reference, "
             + "connect_timeout_millis, response_timeout_millis, operation_timeout_millis, "
             + "max_response_bytes, max_decompressed_bytes, max_pages, max_resources, max_nesting_depth, "
-            + "max_attempts, retry_class, created_at, updated_at) "
-            + "VALUES (?, ?, ?, 'DRAFT', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            + "max_attempts, retry_class, peer_deployment_id, federation_protocol_profile, created_at, updated_at) "
+            + "VALUES (?, ?, ?, 'DRAFT', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         versionId.value(),
         partnerId,
         version,
@@ -347,6 +438,11 @@ public class JdbcPartnerTrustProfileStore implements PartnerTrustProfileStore {
         limits.maxNestingDepth(),
         limits.maxAttempts(),
         configuration.retryClass().name(),
+        configuration.federationPeer().map(peer -> peer.deploymentId().value()).orElse(null),
+        configuration
+            .federationPeer()
+            .map(FederationPeerConfiguration::protocolProfile)
+            .orElse(null),
         Timestamp.from(now),
         Timestamp.from(now));
     jdbc.update(
@@ -365,6 +461,21 @@ public class JdbcPartnerTrustProfileStore implements PartnerTrustProfileStore {
           operation.protocol().name(),
           operation.profile());
     }
+    configuration
+        .federationPeer()
+        .ifPresent(
+            peer ->
+                peer.facilityScopes()
+                    .forEach(
+                        scope ->
+                            jdbc.update(
+                                "INSERT INTO platform_exchange.partner_profile_peer_facility_scope "
+                                    + "(profile_version_id, peer_deployment_id, scope_issuer, facility_identifier) "
+                                    + "VALUES (?, ?, ?, ?)",
+                                versionId.value(),
+                                peer.deploymentId().value(),
+                                scope.issuer().value(),
+                                scope.value())));
     return requireVersion(configuration.partnerKey(), version);
   }
 
@@ -387,13 +498,26 @@ public class JdbcPartnerTrustProfileStore implements PartnerTrustProfileStore {
         Optional.ofNullable(inboundPrincipalClientId)
             .map(
                 clientId -> ActorReference.service(new IssuerId(inboundPrincipalIssuer), clientId));
+    ExternalReference organization =
+        new ExternalReference(
+            new IssuerId(row.getString("organization_issuer")),
+            "Organization",
+            row.getString("organization_identifier"));
+    String peerDeploymentId = row.getString("peer_deployment_id");
+    String federationProtocolProfile = row.getString("federation_protocol_profile");
+    Optional<FederationPeerConfiguration> federationPeer =
+        Optional.ofNullable(peerDeploymentId)
+            .map(
+                peerId ->
+                    new FederationPeerConfiguration(
+                        new DeploymentId(peerId),
+                        organization,
+                        federationProtocolProfile,
+                        peerFacilityScopes(versionId, peerId)));
     PartnerTrustConfiguration configuration =
         new PartnerTrustConfiguration(
             new PartnerKey(row.getString("partner_key")),
-            new ExternalReference(
-                new IssuerId(row.getString("organization_issuer")),
-                "Organization",
-                row.getString("organization_identifier")),
+            organization,
             row.getString("endpoint_origin"),
             row.getString("base_path"),
             authentication,
@@ -411,7 +535,8 @@ public class JdbcPartnerTrustProfileStore implements PartnerTrustProfileStore {
                 row.getInt("max_attempts")),
             PartnerTrustConfiguration.RetryClass.valueOf(row.getString("retry_class")),
             operations(new InternalId(versionId)),
-            inboundPrincipal);
+            inboundPrincipal,
+            federationPeer);
     return new PartnerProfileVersion(
         new InternalId(versionId),
         row.getInt("version_number"),
@@ -419,6 +544,21 @@ public class JdbcPartnerTrustProfileStore implements PartnerTrustProfileStore {
         configuration,
         row.getTimestamp("created_at").toInstant(),
         row.getTimestamp("updated_at").toInstant());
+  }
+
+  private List<ExternalReference> peerFacilityScopes(UUID versionId, String peerDeploymentId) {
+    return jdbc.query(
+        "SELECT scope_issuer, facility_identifier "
+            + "FROM platform_exchange.partner_profile_peer_facility_scope "
+            + "WHERE profile_version_id = ? AND peer_deployment_id = ? "
+            + "ORDER BY scope_issuer, facility_identifier",
+        (row, rowNumber) ->
+            new ExternalReference(
+                new IssuerId(row.getString("scope_issuer")),
+                "Facility",
+                row.getString("facility_identifier")),
+        versionId,
+        peerDeploymentId);
   }
 
   private List<PartnerTrustConfiguration.AllowedOperation> operations(InternalId versionId) {

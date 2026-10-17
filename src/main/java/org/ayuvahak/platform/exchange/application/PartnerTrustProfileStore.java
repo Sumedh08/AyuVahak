@@ -4,10 +4,12 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import org.ayuvahak.platform.core.ActorReference;
+import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.InternalId;
 import org.ayuvahak.platform.exchange.domain.PartnerKey;
 import org.ayuvahak.platform.exchange.domain.PartnerProfileVersion;
 import org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration;
+import org.ayuvahak.platform.federation.domain.DeploymentId;
 import org.ayuvahak.platform.idempotency.CommandReceiptKey;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
 
@@ -38,6 +40,18 @@ public interface PartnerTrustProfileStore {
 
   Optional<PartnerProfileVersion> findActiveInbound(
       ActorReference principal, PartnerTrustConfiguration.AllowedOperation operation);
+
+  Optional<PartnerProfileVersion> findActivePeer(
+      PartnerKey partnerKey,
+      DeploymentId peerDeploymentId,
+      PartnerTrustConfiguration.AllowedOperation operation,
+      ExternalReference requestedScope);
+
+  Optional<PartnerProfileVersion> findActiveInboundPeer(
+      ActorReference principal,
+      DeploymentId peerDeploymentId,
+      PartnerTrustConfiguration.AllowedOperation operation,
+      ExternalReference requestedScope);
 
   ReceiptClaim claimReceipt(CommandReceiptKey key, RequestFingerprint fingerprint, Instant now);
 

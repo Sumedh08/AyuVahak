@@ -22,6 +22,8 @@ import org.ayuvahak.platform.exchange.domain.PartnerProfileVersion;
 import org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration;
 import org.ayuvahak.platform.executioncontext.AuthenticationMechanism;
 import org.ayuvahak.platform.executioncontext.ExecutionContext;
+import org.ayuvahak.platform.federation.application.DeploymentIdentityRegistrationService;
+import org.ayuvahak.platform.federation.domain.DeploymentIdentity;
 import org.ayuvahak.platform.idempotency.CommandReceiptKey;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
 import org.springframework.beans.factory.ObjectProvider;
@@ -50,19 +52,22 @@ public final class PartnerTrustAdministration {
   private final ObjectProvider<AuditWriter> auditWriter;
   private final TransactionTemplate transaction;
   private final Clock clock;
+  private final DeploymentIdentityRegistrationService deploymentIdentity;
 
   public PartnerTrustAdministration(
       @Lazy PartnerTrustProfileStore store,
       ObjectProvider<AuthorizationService> authorization,
       ObjectProvider<AuditWriter> auditWriter,
       @Lazy PlatformTransactionManager transactionManager,
-      @Qualifier("auditClock") Clock clock) {
+      @Qualifier("auditClock") Clock clock,
+      DeploymentIdentityRegistrationService deploymentIdentity) {
     this.store = Objects.requireNonNull(store, "store");
     this.authorization = Objects.requireNonNull(authorization, "authorization");
     this.auditWriter = Objects.requireNonNull(auditWriter, "auditWriter");
     this.transaction =
         new TransactionTemplate(Objects.requireNonNull(transactionManager, "transactionManager"));
     this.clock = Objects.requireNonNull(clock, "clock");
+    this.deploymentIdentity = Objects.requireNonNull(deploymentIdentity, "deploymentIdentity");
   }
 
   public PartnerProfileCommandResult create(
@@ -73,6 +78,7 @@ public final class PartnerTrustAdministration {
       RequestFingerprint fingerprint) {
     requireAuthority(context, "EXCHANGE_PARTNER_CREATE", Optional.empty());
     validateReason(reasonCode);
+    validateFederationIdentity(configuration);
     return execute(
         context,
         "exchange.partner.create",
@@ -101,6 +107,7 @@ public final class PartnerTrustAdministration {
           PlatformErrorCode.VALIDATION_FAILED,
           "The partner key in the path must match the profile configuration.");
     }
+    validateFederationIdentity(configuration);
     return execute(
         context,
         "exchange.partner.version-create",
@@ -122,6 +129,7 @@ public final class PartnerTrustAdministration {
       RequestFingerprint fingerprint) {
     requireAuthority(context, "EXCHANGE_PARTNER_ACTIVATE", Optional.empty());
     validateReason(reasonCode);
+    validateFederationActivation(partnerKey, version);
     return execute(
         context,
         "exchange.partner.activate",
@@ -280,6 +288,40 @@ public final class PartnerTrustAdministration {
         HttpStatus.FORBIDDEN,
         PlatformErrorCode.AUTHORIZATION_DENIED,
         "The authenticated principal is not authorized for partner trust administration.");
+  }
+
+  private void validateFederationIdentity(PartnerTrustConfiguration configuration) {
+    configuration
+        .federationPeer()
+        .ifPresent(
+            peer -> {
+              validateFederationPeerIdentity(peer.deploymentId());
+            });
+  }
+
+  private void validateFederationActivation(PartnerKey partnerKey, int version) {
+    try {
+      store.versions(partnerKey).stream()
+          .filter(candidate -> candidate.version() == version)
+          .findFirst()
+          .flatMap(candidate -> candidate.configuration().federationPeer())
+          .ifPresent(peer -> validateFederationPeerIdentity(peer.deploymentId()));
+    } catch (DataAccessException failure) {
+      throw unavailable();
+    }
+  }
+
+  private void validateFederationPeerIdentity(
+      org.ayuvahak.platform.federation.domain.DeploymentId peerDeploymentId) {
+    DeploymentIdentity local;
+    try {
+      local = deploymentIdentity.current().orElseThrow(PartnerTrustAdministration::unavailable);
+    } catch (DataAccessException failure) {
+      throw unavailable();
+    }
+    if (local.deploymentId().equals(peerDeploymentId)) {
+      throw conflict();
+    }
   }
 
   private void auditMutation(

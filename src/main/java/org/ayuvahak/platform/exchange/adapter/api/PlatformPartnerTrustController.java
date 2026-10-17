@@ -6,6 +6,7 @@ import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 import java.net.URI;
 import java.util.List;
 import java.util.Optional;
@@ -20,6 +21,7 @@ import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.IssuerId;
 import org.ayuvahak.platform.exchange.application.PartnerProfileCommandResult;
 import org.ayuvahak.platform.exchange.application.PartnerTrustAdministration;
+import org.ayuvahak.platform.exchange.domain.FederationPeerConfiguration;
 import org.ayuvahak.platform.exchange.domain.PartnerKey;
 import org.ayuvahak.platform.exchange.domain.PartnerProfileVersion;
 import org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration;
@@ -35,6 +37,7 @@ import org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.TlsPolicy
 import org.ayuvahak.platform.executioncontext.ExecutionContext;
 import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
 import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
+import org.ayuvahak.platform.federation.domain.DeploymentId;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
 import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
@@ -283,6 +286,25 @@ public class PlatformPartnerTrustController {
     normalized.put("maxNestingDepth", request.limits().maxNestingDepth());
     normalized.put("maxAttempts", request.limits().maxAttempts());
     normalized.put("retryClass", request.retryClass());
+    FederationPeerRequest federationPeer = request.federationPeer();
+    if (federationPeer != null) {
+      ObjectNode peer = normalized.putObject("federationPeer");
+      peer.put("deploymentId", federationPeer.deploymentId());
+      peer.put("protocolProfile", federationPeer.protocolProfile());
+      ArrayNode scopes = peer.putArray("facilityScopes");
+      federationPeer.facilityScopes().stream()
+          .sorted(
+              java.util.Comparator.comparing(FederationFacilityScopeRequest::issuer)
+                  .thenComparing(FederationFacilityScopeRequest::identifier))
+          .forEach(
+              scope -> {
+                ObjectNode item = scopes.addObject();
+                item.put("issuer", scope.issuer());
+                item.put("identifier", scope.identifier());
+              });
+    } else {
+      normalized.putNull("federationPeer");
+    }
     ArrayNode operations = normalized.putArray("allowedOperations");
     request.allowedOperations().stream()
         .sorted(
@@ -330,7 +352,8 @@ public class PlatformPartnerTrustController {
       @NotBlank String retryClass,
       @NotEmpty List<@Valid OperationRequest> allowedOperations,
       @Valid InboundPrincipalRequest inboundPrincipal,
-      @NotBlank String reasonCode) {
+      @NotBlank String reasonCode,
+      @Valid FederationPeerRequest federationPeer) {
 
     PartnerTrustConfiguration toConfiguration(AuthenticationProperties authenticationProperties) {
       return configuration()
@@ -348,7 +371,8 @@ public class PlatformPartnerTrustController {
           limits,
           retryClass,
           allowedOperations,
-          inboundPrincipal);
+          inboundPrincipal,
+          federationPeer);
     }
   }
 
@@ -367,7 +391,33 @@ public class PlatformPartnerTrustController {
       @Valid @NotNull LimitsRequest limits,
       @NotBlank String retryClass,
       @NotEmpty List<@Valid OperationRequest> allowedOperations,
-      @Valid InboundPrincipalRequest inboundPrincipal) {
+      @Valid InboundPrincipalRequest inboundPrincipal,
+      @Valid FederationPeerRequest federationPeer) {
+
+    public PartnerConfigurationRequest(
+        OrganizationReferenceRequest organization,
+        String endpointOrigin,
+        String basePath,
+        AuthenticationRequest authentication,
+        String tlsPolicy,
+        String tlsTrustReference,
+        LimitsRequest limits,
+        String retryClass,
+        List<OperationRequest> allowedOperations,
+        InboundPrincipalRequest inboundPrincipal) {
+      this(
+          organization,
+          endpointOrigin,
+          basePath,
+          authentication,
+          tlsPolicy,
+          tlsTrustReference,
+          limits,
+          retryClass,
+          allowedOperations,
+          inboundPrincipal,
+          null);
+    }
 
     PartnerTrustConfiguration toConfiguration(
         PartnerKey partnerKey, AuthenticationProperties authenticationProperties) {
@@ -392,7 +442,9 @@ public class PlatformPartnerTrustController {
             limits.toDomain(),
             RetryClass.valueOf(retryClass),
             allowedOperations.stream().map(OperationRequest::toDomain).toList(),
-            Optional.ofNullable(inboundPrincipal).map(InboundPrincipalRequest::toDomain));
+            Optional.ofNullable(inboundPrincipal).map(InboundPrincipalRequest::toDomain),
+            Optional.ofNullable(federationPeer)
+                .map(value -> value.toDomain(organization.issuer(), organization.identifier())));
       } catch (IllegalArgumentException exception) {
         throw new PlatformProblemException(
             HttpStatus.BAD_REQUEST,
@@ -411,6 +463,29 @@ public class PlatformPartnerTrustController {
       return ActorReference.service(new IssuerId(issuer), clientId);
     }
   }
+
+  public record FederationPeerRequest(
+      @NotBlank String deploymentId,
+      @NotBlank String protocolProfile,
+      @NotNull @Size(max = 100) List<@Valid FederationFacilityScopeRequest> facilityScopes) {
+
+    FederationPeerConfiguration toDomain(String organizationIssuer, String organizationIdentifier) {
+      return new FederationPeerConfiguration(
+          new DeploymentId(deploymentId),
+          new ExternalReference(
+              new IssuerId(organizationIssuer), "Organization", organizationIdentifier),
+          protocolProfile,
+          facilityScopes.stream()
+              .map(
+                  scope ->
+                      new ExternalReference(
+                          new IssuerId(scope.issuer()), "Facility", scope.identifier()))
+              .toList());
+    }
+  }
+
+  public record FederationFacilityScopeRequest(
+      @NotBlank String issuer, @NotBlank String identifier) {}
 
   public record AuthenticationRequest(
       @NotBlank String method,
@@ -521,6 +596,7 @@ public class PlatformPartnerTrustController {
       int maxAttempts,
       String retryClass,
       List<OperationRequest> allowedOperations,
+      FederationPeerRepresentation federationPeer,
       java.time.Instant createdAt,
       java.time.Instant updatedAt) {
 
@@ -569,8 +645,30 @@ public class PlatformPartnerTrustController {
                           operation.protocol().name(),
                           operation.profile()))
               .toList(),
+          configuration.federationPeer().map(FederationPeerRepresentation::from).orElse(null),
           profile.createdAt(),
           profile.updatedAt());
+    }
+  }
+
+  public record FederationPeerRepresentation(
+      String deploymentId,
+      String organizationIssuer,
+      String organizationIdentifier,
+      String protocolProfile,
+      List<FederationFacilityScopeRequest> facilityScopes) {
+
+    static FederationPeerRepresentation from(FederationPeerConfiguration peer) {
+      return new FederationPeerRepresentation(
+          peer.deploymentId().value(),
+          peer.organization().issuer().value(),
+          peer.organization().value(),
+          peer.protocolProfile(),
+          peer.facilityScopes().stream()
+              .map(
+                  scope ->
+                      new FederationFacilityScopeRequest(scope.issuer().value(), scope.value()))
+              .toList());
     }
   }
 
