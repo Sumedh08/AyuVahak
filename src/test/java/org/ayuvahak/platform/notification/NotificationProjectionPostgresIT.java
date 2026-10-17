@@ -39,8 +39,10 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
+import org.springframework.context.annotation.Profile;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.annotation.DirtiesContext;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -67,6 +69,7 @@ import tools.jackson.databind.ObjectMapper;
       "ayuvahak.notifications.projection.maximum-replay-bytes=16384"
     })
 @Testcontainers
+@ActiveProfiles("notification-projection-postgres")
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class NotificationProjectionPostgresIT {
 
@@ -325,6 +328,7 @@ class NotificationProjectionPostgresIT {
   }
 
   @TestConfiguration(proxyBeanMethods = false)
+  @Profile("notification-projection-postgres")
   static class TestBeans {
 
     @Bean
