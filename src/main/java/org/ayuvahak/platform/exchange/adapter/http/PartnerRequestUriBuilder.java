@@ -8,8 +8,10 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
+import org.ayuvahak.platform.exchange.application.FederationPeerOperationRequest;
 import org.ayuvahak.platform.exchange.application.PartnerOutboundOperationRequest;
 import org.ayuvahak.platform.exchange.application.PartnerOutboundReadRequest;
+import org.ayuvahak.platform.exchange.domain.FederationPeerOperations;
 import org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration;
 
 /** Builds a relative owner-selected FHIR read under the configured partner origin and base path. */
@@ -72,6 +74,43 @@ final class PartnerRequestUriBuilder {
       return uri;
     } catch (IllegalArgumentException exception) {
       throw new IllegalArgumentException("Partner operation URI is invalid.");
+    }
+  }
+
+  static URI build(
+      PartnerTrustConfiguration configuration, FederationPeerOperationRequest request) {
+    Objects.requireNonNull(configuration, "configuration");
+    Objects.requireNonNull(request, "request");
+    if (!configuration.partnerKey().equals(request.partnerKey())
+        || !configuration.allowedOperations().contains(request.operation())
+        || configuration.federationPeer().isEmpty()
+        || !configuration
+            .federationPeer()
+            .orElseThrow()
+            .deploymentId()
+            .equals(request.peerDeployment())
+        || !FederationPeerOperations.supportsOutbound(request.operation())) {
+      throw new IllegalArgumentException(
+          "Requested federation operation is not allowed by this peer profile.");
+    }
+    try {
+      URI uri =
+          URI.create(
+              configuration.endpointOrigin()
+                  + configuration.basePath()
+                  + "/operations/"
+                  + request.operation().operationCode());
+      if (!"https".equals(uri.getScheme())
+          || uri.getHost() == null
+          || uri.getRawUserInfo() != null
+          || uri.getRawQuery() != null
+          || uri.getRawFragment() != null) {
+        throw new IllegalArgumentException(
+            "Federation operation URI is not a safe configured HTTPS URI.");
+      }
+      return uri;
+    } catch (IllegalArgumentException exception) {
+      throw new IllegalArgumentException("Federation operation URI is invalid.");
     }
   }
 

@@ -39,6 +39,8 @@ import org.apache.hc.core5.http.io.entity.ByteArrayEntity;
 import org.apache.hc.core5.http.io.entity.StringEntity;
 import org.apache.hc.core5.util.Timeout;
 import org.ayuvahak.platform.api.CorrelationIdFilter;
+import org.ayuvahak.platform.exchange.application.FederationPeerOperationRequest;
+import org.ayuvahak.platform.exchange.application.FederationPeerOperationTransportPort;
 import org.ayuvahak.platform.exchange.application.PartnerBearerToken;
 import org.ayuvahak.platform.exchange.application.PartnerHttpOperationTransportPort;
 import org.ayuvahak.platform.exchange.application.PartnerHttpTransportPort;
@@ -52,6 +54,7 @@ import org.ayuvahak.platform.exchange.application.PartnerTokenEndpointRequest;
 import org.ayuvahak.platform.exchange.application.PartnerTokenEndpointResponse;
 import org.ayuvahak.platform.exchange.application.PartnerTransportException;
 import org.ayuvahak.platform.exchange.application.PartnerTransportFailure;
+import org.ayuvahak.platform.exchange.domain.FederationPeerOperations;
 import org.ayuvahak.platform.exchange.domain.PartnerProfileState;
 import org.ayuvahak.platform.exchange.domain.PartnerProfileVersion;
 import org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration;
@@ -62,6 +65,7 @@ import org.springframework.stereotype.Component;
 final class ApachePartnerHttpTransport
     implements PartnerHttpTransportPort,
         PartnerHttpOperationTransportPort,
+        FederationPeerOperationTransportPort,
         PartnerTokenEndpointPort {
 
   private final OutboundAddressPolicy addressPolicy;
@@ -143,6 +147,126 @@ final class ApachePartnerHttpTransport
     outbound.setHeader("Accept-Encoding", "identity");
     outbound.setHeader("Content-Type", "application/json");
     outbound.setHeader("X-AyuVahak-Operation-Reference", request.operationReference());
+    outbound.setEntity(
+        new ByteArrayEntity(
+            request.body(),
+            ContentType.APPLICATION_JSON.withCharset(java.nio.charset.StandardCharsets.UTF_8)));
+    request
+        .correlationId()
+        .ifPresent(
+            correlationId ->
+                outbound.setHeader(CorrelationIdFilter.HEADER_NAME, correlationId.value()));
+    bearerToken.ifPresent(
+        token -> outbound.setHeader("Authorization", token.authorizationHeader()));
+    HttpClientContext context = HttpClientContext.create();
+    Duration operationTimeout = Duration.ofMillis(configuration.limits().operationTimeoutMillis());
+    PoolingHttpClientConnectionManager manager =
+        buildConnectionManager(configuration, resolver, sslContext);
+    try (manager;
+        CloseableHttpClient client =
+            HttpClients.custom()
+                .setConnectionManager(manager)
+                .disableAutomaticRetries()
+                .disableRedirectHandling()
+                .disableCookieManagement()
+                .disableAuthCaching()
+                .disableContentCompression()
+                .disableDefaultUserAgent()
+                .setDefaultRequestConfig(requestConfig(configuration))
+                .build()) {
+      return operations.execute(
+          () -> {
+            beforeAttempt.run();
+            return client.execute(
+                outbound,
+                context,
+                response ->
+                    handleOperationResponse(
+                        response, context, resolver, activeProfile, configuration));
+          },
+          operationTimeout,
+          () -> {
+            outbound.cancel();
+            try {
+              client.close();
+            } catch (IOException ignored) {
+              // Cancellation already fails closed; transport diagnostics remain sanitized.
+            }
+          });
+    } catch (PartnerTransportException exception) {
+      throw exception;
+    } catch (Exception exception) {
+      throw classify(exception);
+    }
+  }
+
+  @Override
+  public PartnerOutboundOperationResponse execute(
+      PartnerProfileVersion activeProfile,
+      FederationPeerOperationRequest request,
+      Optional<PartnerBearerToken> bearerToken,
+      Runnable beforeAttempt) {
+    Objects.requireNonNull(activeProfile, "activeProfile");
+    Objects.requireNonNull(request, "request");
+    Objects.requireNonNull(bearerToken, "bearerToken");
+    Objects.requireNonNull(beforeAttempt, "beforeAttempt");
+    PartnerTrustConfiguration configuration = activeProfile.configuration();
+    if (activeProfile.state() != PartnerProfileState.ACTIVE
+        || activeProfile.version() != request.expectedConfigurationVersion()
+        || !configuration.partnerKey().equals(request.partnerKey())
+        || !configuration.allowedOperations().contains(request.operation())
+        || !FederationPeerOperations.supportsOutbound(request.operation())
+        || configuration.federationPeer().isEmpty()
+        || !configuration
+            .federationPeer()
+            .orElseThrow()
+            .deploymentId()
+            .equals(request.peerDeployment())
+        || configuration.retryClass() != PartnerTrustConfiguration.RetryClass.NEVER) {
+      throw new PartnerTransportException(PartnerTransportFailure.PROFILE_NOT_ACTIVE);
+    }
+    PartnerTrustConfiguration.AuthenticationMethod authenticationMethod =
+        configuration.authentication().method();
+    if (authenticationMethod == PartnerTrustConfiguration.AuthenticationMethod.MUTUAL_TLS
+        || (authenticationMethod == PartnerTrustConfiguration.AuthenticationMethod.NONE
+            && bearerToken.isPresent())
+        || (authenticationMethod != PartnerTrustConfiguration.AuthenticationMethod.NONE
+            && bearerToken.isEmpty())) {
+      throw new PartnerTransportException(PartnerTransportFailure.AUTHENTICATION_NOT_SUPPORTED);
+    }
+
+    URI uri;
+    try {
+      uri = PartnerRequestUriBuilder.build(configuration, request);
+    } catch (IllegalArgumentException exception) {
+      throw new PartnerTransportException(PartnerTransportFailure.DESTINATION_REJECTED);
+    }
+    int port = uri.getPort() < 0 ? 443 : uri.getPort();
+    VettedDnsResolver resolver =
+        new VettedDnsResolver(
+            uri.getHost(),
+            configuration.partnerKey(),
+            port,
+            Duration.ofMillis(configuration.limits().connectTimeoutMillis()),
+            addressPolicy,
+            addressLookup);
+    SSLContext sslContext = tlsContexts.resolve(configuration);
+    if (sslContext == null) {
+      throw new PartnerTransportException(PartnerTransportFailure.TLS_FAILURE);
+    }
+
+    HttpPost outbound = new HttpPost(uri);
+    outbound.setHeader("Accept", "application/json");
+    outbound.setHeader("Accept-Encoding", "identity");
+    outbound.setHeader("Content-Type", "application/json");
+    outbound.setHeader("X-AyuVahak-Federation-Source", request.sourceDeployment().value());
+    outbound.setHeader("X-AyuVahak-Federation-Peer", request.peerDeployment().value());
+    outbound.setHeader("X-AyuVahak-Federation-Operation", request.operation().operationCode());
+    outbound.setHeader("X-AyuVahak-Operation-Id", request.operationId().toString());
+    outbound.setHeader("X-AyuVahak-Operation-Fingerprint", request.fingerprint().value());
+    outbound.setHeader(
+        "X-AyuVahak-Partner-Configuration-Version",
+        Integer.toString(request.expectedConfigurationVersion()));
     outbound.setEntity(
         new ByteArrayEntity(
             request.body(),

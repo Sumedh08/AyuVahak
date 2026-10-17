@@ -366,6 +366,49 @@ public record PartnerTrustConfiguration(
       return transportOutbound("transport.destination-change");
     }
 
+    /** Named federated movement fact operation received by the remote Transfer owner. */
+    public static AllowedOperation transferMovementFact() {
+      return transferMovementFact(Direction.OUTBOUND);
+    }
+
+    /** The same named operation as received by the remote Transfer owner. */
+    public static AllowedOperation transferMovementFact(Direction direction) {
+      return new AllowedOperation(
+          OwnerContext.TRANSFER,
+          "transfer.movement-fact",
+          Objects.requireNonNull(direction, "direction"),
+          Protocol.JSON,
+          FederationPeerConfiguration.supportedProtocolProfile());
+    }
+
+    public static AllowedOperation directoryRemoteDiscovery(Direction direction) {
+      return federationOperation(OwnerContext.DIRECTORY, "directory.remote-discovery", direction);
+    }
+
+    public static AllowedOperation capacityRemoteEvidence(Direction direction) {
+      return federationOperation(OwnerContext.CAPACITY, "capacity.remote-evidence", direction);
+    }
+
+    public static AllowedOperation transferRemoteReceivingRequest(Direction direction) {
+      return federationOperation(
+          OwnerContext.TRANSFER, "transfer.remote-receiving-request", direction);
+    }
+
+    public static AllowedOperation transferRemoteReservationStatus(Direction direction) {
+      return federationOperation(
+          OwnerContext.TRANSFER, "transfer.remote-reservation-status", direction);
+    }
+
+    private static AllowedOperation federationOperation(
+        OwnerContext ownerContext, String operationCode, Direction direction) {
+      return new AllowedOperation(
+          ownerContext,
+          operationCode,
+          Objects.requireNonNull(direction, "direction"),
+          Protocol.JSON,
+          FederationPeerConfiguration.supportedProtocolProfile());
+    }
+
     private static AllowedOperation transportOutbound(String operationCode) {
       return new AllowedOperation(
           OwnerContext.TRANSPORT,

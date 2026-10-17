@@ -25,15 +25,20 @@ import org.ayuvahak.platform.core.CorrelationId;
 import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.InternalId;
 import org.ayuvahak.platform.core.IssuerId;
+import org.ayuvahak.platform.exchange.application.FederationOperationFingerprint;
+import org.ayuvahak.platform.exchange.application.FederationPeerOperationRequest;
+import org.ayuvahak.platform.exchange.application.PartnerBearerToken;
 import org.ayuvahak.platform.exchange.application.PartnerOutboundOperationRequest;
 import org.ayuvahak.platform.exchange.application.PartnerOutboundReadRequest;
 import org.ayuvahak.platform.exchange.application.PartnerTokenEndpointRequest;
 import org.ayuvahak.platform.exchange.application.PartnerTransportException;
 import org.ayuvahak.platform.exchange.application.PartnerTransportFailure;
+import org.ayuvahak.platform.exchange.domain.FederationPeerConfiguration;
 import org.ayuvahak.platform.exchange.domain.PartnerKey;
 import org.ayuvahak.platform.exchange.domain.PartnerProfileState;
 import org.ayuvahak.platform.exchange.domain.PartnerProfileVersion;
 import org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration;
+import org.ayuvahak.platform.federation.domain.DeploymentId;
 import org.junit.jupiter.api.Test;
 
 class ApachePartnerHttpTransportTest {
@@ -124,6 +129,74 @@ class ApachePartnerHttpTransportTest {
       assertThat(response.status()).isEqualTo(202);
       assertThat(response.contentType()).isEmpty();
       assertThat(response.body()).isEmpty();
+      assertThat(partner.requests()).hasValue(1);
+    }
+  }
+
+  @Test
+  void sendsNamedFederationOperationToFixedConfiguredPathWithStableIdentityHeaders()
+      throws Exception {
+    AtomicReference<String> path = new AtomicReference<>();
+    AtomicReference<String> source = new AtomicReference<>();
+    AtomicReference<String> peer = new AtomicReference<>();
+    AtomicReference<String> operationCode = new AtomicReference<>();
+    AtomicReference<String> operationId = new AtomicReference<>();
+    AtomicReference<String> fingerprint = new AtomicReference<>();
+    try (LocalPartner partner =
+            LocalPartner.start(
+                exchange -> {
+                  path.set(exchange.getRequestURI().toASCIIString());
+                  source.set(exchange.getRequestHeaders().getFirst("X-AyuVahak-Federation-Source"));
+                  peer.set(exchange.getRequestHeaders().getFirst("X-AyuVahak-Federation-Peer"));
+                  operationCode.set(
+                      exchange.getRequestHeaders().getFirst("X-AyuVahak-Federation-Operation"));
+                  operationId.set(exchange.getRequestHeaders().getFirst("X-AyuVahak-Operation-Id"));
+                  fingerprint.set(
+                      exchange.getRequestHeaders().getFirst("X-AyuVahak-Operation-Fingerprint"));
+                  return new LocalResponse(
+                      202,
+                      "application/json",
+                      "{\"received\":true}".getBytes(StandardCharsets.UTF_8));
+                });
+        BoundedPartnerOperationExecutor executor = new BoundedPartnerOperationExecutor(2, 8)) {
+      ApachePartnerHttpTransport transport = localTransport(partner, executor, null);
+      PartnerProfileVersion profile = federationProfile("partner.test", partner.port());
+      byte[] body = "{\"movement\":\"ARRIVED\"}".getBytes(StandardCharsets.UTF_8);
+      DeploymentId sourceId = new DeploymentId("SYN-DEPLOYMENT-A");
+      DeploymentId peerId = new DeploymentId("SYN-DEPLOYMENT-B");
+      ExternalReference facility =
+          new ExternalReference(
+              new IssuerId("urn:synthetic:directory"), "Facility", "SYN-FACILITY-B");
+      var operation = PartnerTrustConfiguration.AllowedOperation.transferMovementFact();
+      InternalId id = InternalId.generate();
+      var request =
+          new FederationPeerOperationRequest(
+              PARTNER,
+              sourceId,
+              peerId,
+              facility,
+              operation,
+              id,
+              profile.version(),
+              body,
+              FederationOperationFingerprint.calculate(sourceId, peerId, facility, operation, body),
+              Optional.empty());
+
+      var response =
+          transport.execute(
+              profile,
+              request,
+              Optional.of(
+                  new PartnerBearerToken("synthetic-local-token", Instant.now().plusSeconds(60))),
+              () -> {});
+
+      assertThat(path).hasValue("/api/federation/operations/transfer.movement-fact");
+      assertThat(source).hasValue(sourceId.value());
+      assertThat(peer).hasValue(peerId.value());
+      assertThat(operationCode).hasValue(operation.operationCode());
+      assertThat(operationId).hasValue(id.toString());
+      assertThat(fingerprint).hasValue(request.fingerprint().value());
+      assertThat(response.status()).isEqualTo(202);
       assertThat(partner.requests()).hasValue(1);
     }
   }
@@ -542,6 +615,45 @@ class ApachePartnerHttpTransportTest {
             limits(2_000, 100_000, 200_000),
             PartnerTrustConfiguration.RetryClass.NEVER,
             List.of(TRANSPORT_DISPATCH));
+    Instant now = Instant.now();
+    return new PartnerProfileVersion(
+        InternalId.generate(), 1, PartnerProfileState.ACTIVE, configuration, now, now);
+  }
+
+  private static PartnerProfileVersion federationProfile(String hostname, int port) {
+    ExternalReference organization =
+        new ExternalReference(
+            new IssuerId("urn:synthetic:directory"), "Organization", "SYN-ORG-001");
+    ExternalReference facility =
+        new ExternalReference(
+            new IssuerId("urn:synthetic:directory"), "Facility", "SYN-FACILITY-B");
+    PartnerTrustConfiguration configuration =
+        new PartnerTrustConfiguration(
+            PARTNER,
+            organization,
+            "https://" + hostname + ":" + port,
+            "/api/federation",
+            new PartnerTrustConfiguration.Authentication(
+                PartnerTrustConfiguration.AuthenticationMethod.OAUTH_CLIENT_CREDENTIALS,
+                Optional.of("env:SYNTHETIC-CLIENT-CREDENTIAL"),
+                Optional.of("env:SYNTHETIC-TOKEN-KEYS"),
+                Optional.of("https://identity.example.test"),
+                Optional.of("/oauth/token"),
+                Optional.of("https://identity.example.test/issuer"),
+                Optional.of("SYNTHETIC-AUDIENCE"),
+                Optional.of("SYNTHETIC-CLIENT")),
+            PartnerTrustConfiguration.TlsPolicy.SYSTEM_CA,
+            Optional.empty(),
+            limits(2_000, 100_000, 200_000),
+            PartnerTrustConfiguration.RetryClass.NEVER,
+            List.of(PartnerTrustConfiguration.AllowedOperation.transferMovementFact()),
+            Optional.empty(),
+            Optional.of(
+                new FederationPeerConfiguration(
+                    new DeploymentId("SYN-DEPLOYMENT-B"),
+                    organization,
+                    FederationPeerConfiguration.supportedProtocolProfile(),
+                    List.of(facility))));
     Instant now = Instant.now();
     return new PartnerProfileVersion(
         InternalId.generate(), 1, PartnerProfileState.ACTIVE, configuration, now, now);

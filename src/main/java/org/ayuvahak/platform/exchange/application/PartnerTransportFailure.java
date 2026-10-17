@@ -1,8 +1,9 @@
 package org.ayuvahak.platform.exchange.application;
 
-/** Sanitized technical outcome categories for configured partner reads. */
+/** Sanitized technical outcome categories for configured partner exchanges. */
 public enum PartnerTransportFailure {
   PROFILE_NOT_ACTIVE,
+  TRUST_UNAVAILABLE,
   AUTHENTICATION_NOT_SUPPORTED,
   AUTHENTICATION_FAILURE,
   DNS_FAILURE,
