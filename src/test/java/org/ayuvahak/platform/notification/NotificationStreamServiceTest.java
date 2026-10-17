@@ -94,6 +94,64 @@ class NotificationStreamServiceTest {
   }
 
   @Test
+  void federatedReceivingNotificationIsAReadHintNotAReceivingPayload() throws Exception {
+    ExecutionScope scope = organizationScope("SYN-ORG-001");
+    String startCursor = cursor(1);
+    String nextCursor = cursor(2);
+    FakeReader reader = new FakeReader(startCursor);
+    Instant now = Instant.now();
+    reader.pages.add(
+        new NotificationProjectionPage(
+            List.of(
+                new NotificationHint(
+                    "transfer.federated-receiving-request-changed.v1",
+                    "federated-receiving-request",
+                    UUID.fromString("00000000-0000-0000-0000-000000000011"),
+                    4,
+                    2,
+                    nextCursor,
+                    "federated-receiving-correlation",
+                    now,
+                    now,
+                    now)),
+            Optional.of(nextCursor),
+            false));
+    reader.pages.add(emptyPage(nextCursor));
+    FakeAuthorizer authorizer = new FakeAuthorizer(scope);
+    service = new NotificationStreamService(reader, authorizer, properties(), Clock.systemUTC());
+    RecordingSink sink = new RecordingSink();
+
+    service.subscribe(
+        actor(),
+        RequestedExecutionScope.organization(scope.organization().orElseThrow()),
+        new CorrelationId("federated-receiving-sse-subscription"),
+        Optional.empty(),
+        sink);
+
+    assertThat(sink.awaitHint()).isTrue();
+    NotificationHintMessage message = sink.hints.getFirst();
+    assertThat(message.notificationType()).isEqualTo("transfer.changed");
+    assertThat(message.resourceType()).isEqualTo("federated-receiving-request");
+    assertThat(message.resourceId())
+        .isEqualTo(UUID.fromString("00000000-0000-0000-0000-000000000011"));
+    assertThat(message.ownerVersion()).isEqualTo(4);
+    assertThat(message.cursor()).isEqualTo(nextCursor);
+    assertThat(message.correlationId()).isEqualTo("federated-receiving-correlation");
+    assertThat(
+            Arrays.stream(NotificationHintMessage.class.getRecordComponents())
+                .map(component -> component.getName()))
+        .containsExactly(
+            "notificationType",
+            "resourceType",
+            "resourceId",
+            "ownerVersion",
+            "cursor",
+            "correlationId");
+    assertThat(reader.requestedScopes).containsOnly(scope, scope);
+    sink.close();
+  }
+
+  @Test
   void reauthorizesAnOpenStreamAndClosesItAfterGrantRevocation() throws Exception {
     ExecutionScope scope = organizationScope("SYN-ORG-001");
     FakeReader reader = new FakeReader(cursor(1));

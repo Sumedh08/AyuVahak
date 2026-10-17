@@ -16,7 +16,8 @@ public record CapacityReservationRequest(
     BigDecimal quantity,
     Instant intervalStart,
     Instant intervalEnd,
-    Instant expiresAt) {
+    Instant expiresAt)
+    implements CapacityReservationIntent {
 
   public CapacityReservationRequest {
     Objects.requireNonNull(operationId, "operation id");
@@ -43,5 +44,10 @@ public record CapacityReservationRequest(
     if (!intervalEnd.isAfter(intervalStart) || !expiresAt.equals(intervalEnd)) {
       throw new IllegalArgumentException("reservation interval and expiry are inconsistent");
     }
+  }
+
+  @Override
+  public CapacityReservationSubject subject() {
+    return CapacityReservationSubject.transfer(transferId);
   }
 }

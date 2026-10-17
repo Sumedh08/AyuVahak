@@ -4,9 +4,12 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import org.ayuvahak.capacity.domain.CapacityReservationIntent;
 import org.ayuvahak.capacity.domain.CapacityReservationOutcome;
 import org.ayuvahak.capacity.domain.CapacityReservationRequest;
 import org.ayuvahak.capacity.domain.CapacityReservationResult;
+import org.ayuvahak.capacity.domain.CapacityReservationSubject;
+import org.ayuvahak.capacity.domain.FederatedReceivingCapacityReservationOutcome;
 import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.InternalId;
 import org.ayuvahak.platform.idempotency.CommandReceiptKey;
@@ -29,9 +32,18 @@ public interface CapacityReservationStore {
 
   OperationClaim lockOperation(
       InternalId operationId,
-      InternalId transferId,
+      CapacityReservationSubject subject,
       RequestFingerprint fingerprint,
       Instant recordedAt);
+
+  default OperationClaim lockOperation(
+      InternalId operationId,
+      InternalId transferId,
+      RequestFingerprint fingerprint,
+      Instant recordedAt) {
+    return lockOperation(
+        operationId, CapacityReservationSubject.transfer(transferId), fingerprint, recordedAt);
+  }
 
   BigDecimal sumActiveReservations(
       String facilityIssuer,
@@ -43,12 +55,28 @@ public interface CapacityReservationStore {
       Instant at);
 
   void createReservation(
-      CapacityReservationRequest request,
+      CapacityReservationIntent request,
       long dimensionVersion,
       long policyVersion,
       java.util.List<InternalId> evidenceIds,
       InternalId reservationId,
       Instant createdAt);
+
+  default void createReservation(
+      CapacityReservationRequest request,
+      long dimensionVersion,
+      long policyVersion,
+      java.util.List<InternalId> evidenceIds,
+      InternalId reservationId,
+      Instant createdAt) {
+    createReservation(
+        (CapacityReservationIntent) request,
+        dimensionVersion,
+        policyVersion,
+        evidenceIds,
+        reservationId,
+        createdAt);
+  }
 
   void recordOutcome(
       InternalId operationId,
@@ -62,21 +90,50 @@ public interface CapacityReservationStore {
   CapacityReservationOutcome findReservationOutcome(
       InternalId operationId, InternalId transferId, String facilityIdentifier, Instant at);
 
+  FederatedReceivingCapacityReservationOutcome findFederatedReceivingReservationOutcome(
+      InternalId operationId, InternalId receivingRequestId, String facilityIdentifier, Instant at);
+
   ReleaseOperationClaim lockReleaseOperation(
+      InternalId releaseOperationId,
+      InternalId reservationOperationId,
+      CapacityReservationSubject subject,
+      RequestFingerprint fingerprint,
+      Instant recordedAt);
+
+  default ReleaseOperationClaim lockReleaseOperation(
       InternalId releaseOperationId,
       InternalId reservationOperationId,
       InternalId transferId,
       RequestFingerprint fingerprint,
-      Instant recordedAt);
+      Instant recordedAt) {
+    return lockReleaseOperation(
+        releaseOperationId,
+        reservationOperationId,
+        CapacityReservationSubject.transfer(transferId),
+        fingerprint,
+        recordedAt);
+  }
 
   void completeReleaseOperation(
       InternalId releaseOperationId, ReleaseResult result, Instant recordedAt);
 
   ReleaseResult releaseReservation(
       InternalId reservationOperationId,
-      InternalId transferId,
+      CapacityReservationSubject subject,
       String facilityIdentifier,
       Instant releasedAt);
+
+  default ReleaseResult releaseReservation(
+      InternalId reservationOperationId,
+      InternalId transferId,
+      String facilityIdentifier,
+      Instant releasedAt) {
+    return releaseReservation(
+        reservationOperationId,
+        CapacityReservationSubject.transfer(transferId),
+        facilityIdentifier,
+        releasedAt);
+  }
 
   ReleaseResult release(InternalId transferId, String facilityIdentifier, Instant releasedAt);
 
@@ -91,7 +148,8 @@ public interface CapacityReservationStore {
 
   record LifecycleCandidate(
       InternalId reservationId,
-      InternalId transferId,
+      InternalId operationId,
+      CapacityReservationSubject subject,
       ExternalReference facility,
       String dimensionCode,
       String unit,
@@ -103,7 +161,8 @@ public interface CapacityReservationStore {
       long sequence) {
     public LifecycleCandidate {
       java.util.Objects.requireNonNull(reservationId, "reservation id");
-      java.util.Objects.requireNonNull(transferId, "transfer id");
+      java.util.Objects.requireNonNull(operationId, "operation id");
+      java.util.Objects.requireNonNull(subject, "reservation subject");
       java.util.Objects.requireNonNull(facility, "facility");
       java.util.Objects.requireNonNull(dimensionCode, "dimension code");
       java.util.Objects.requireNonNull(unit, "unit");
@@ -115,6 +174,13 @@ public interface CapacityReservationStore {
       if (sequence < 1) {
         throw new IllegalArgumentException("reservation sequence must be positive");
       }
+    }
+
+    public InternalId transferId() {
+      if (subject.kind() != CapacityReservationSubject.Kind.TRANSFER) {
+        throw new IllegalStateException("federated receiving reservation has no Transfer id");
+      }
+      return subject.id();
     }
   }
 

@@ -145,6 +145,9 @@ public final class TransferNextRequestCommands {
                     .findLatestRequest(journeyId)
                     .orElseThrow(TransferNextRequestCommands::unavailable);
             requirePriorAttemptReconciled(latest);
+            if (store.hasBlockingFederatedDestinationAttempt(journeyId)) {
+              throw activeAttemptExists();
+            }
             var deadline = properties.getRequestDeadline();
             if (deadline == null || deadline.isNegative() || deadline.isZero()) {
               throw problem(

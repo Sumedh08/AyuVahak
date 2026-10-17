@@ -12,10 +12,14 @@ import org.ayuvahak.capacity.domain.CapacityEvidenceProjection;
 import org.ayuvahak.capacity.domain.CapacityEvidenceProjector;
 import org.ayuvahak.capacity.domain.CapacityObservationFact;
 import org.ayuvahak.capacity.domain.CapacityReleaseResult;
+import org.ayuvahak.capacity.domain.CapacityReservationIntent;
 import org.ayuvahak.capacity.domain.CapacityReservationOutcome;
 import org.ayuvahak.capacity.domain.CapacityReservationRequest;
 import org.ayuvahak.capacity.domain.CapacityReservationResult;
+import org.ayuvahak.capacity.domain.CapacityReservationSubject;
 import org.ayuvahak.capacity.domain.CapacityValueKind;
+import org.ayuvahak.capacity.domain.FederatedReceivingCapacityReservationOutcome;
+import org.ayuvahak.capacity.domain.FederatedReceivingCapacityReservationRequest;
 import org.ayuvahak.directory.application.DirectoryCapacityLifecycleOrganizationLookup;
 import org.ayuvahak.platform.api.PlatformErrorCode;
 import org.ayuvahak.platform.api.PlatformProblemException;
@@ -154,7 +158,7 @@ public final class CapacityReservationCommands {
             RequestedExecutionScope.facility(organization.orElseThrow(), candidate.facility()),
             correlation,
             Optional.empty());
-    requireReservationAuthority(context, candidate.transferId());
+    requireReservationAuthority(context, candidate.subject().id());
     return Boolean.TRUE.equals(
         transaction.execute(
             status -> {
@@ -180,7 +184,7 @@ public final class CapacityReservationCommands {
                         expired -> {
                           auditRelease(
                               context,
-                              expired.transferId(),
+                              expired.subject().id(),
                               "CAPACITY_RESERVATION_EXPIRE",
                               "EXPIRED",
                               true);
@@ -209,7 +213,7 @@ public final class CapacityReservationCommands {
                           recovered -> {
                             auditRelease(
                                 context,
-                                recovered.transferId(),
+                                recovered.subject().id(),
                                 "CAPACITY_RESERVATION_RECOVER",
                                 "CAPACITY_EVIDENCE_SUPPORTS_HOLD",
                                 true);
@@ -235,7 +239,7 @@ public final class CapacityReservationCommands {
                         atRisk -> {
                           auditRelease(
                               context,
-                              atRisk.transferId(),
+                              atRisk.subject().id(),
                               "CAPACITY_RESERVATION_AT_RISK",
                               "AT_RISK",
                               true);
@@ -290,7 +294,21 @@ public final class CapacityReservationCommands {
       EventType eventType,
       Instant occurredAt) {
     var payload = objectMapper.createObjectNode();
-    payload.put("transferReference", reservation.transferId().toString());
+    EventType recordedEventType = eventType;
+    if (reservation.subject().kind() == CapacityReservationSubject.Kind.TRANSFER) {
+      payload.put("transferReference", reservation.subject().id().toString());
+    } else {
+      payload.put("subjectType", reservation.subject().kind().name());
+      payload.put("receivingRequestReference", reservation.subject().id().toString());
+      payload.put("operationReference", reservation.operationId().toString());
+      recordedEventType =
+          EventType.parse(
+              eventType.equals(EventType.parse("capacity.reservation-expired.v1"))
+                  ? "capacity.federated-receiving-reservation-expired.v1"
+                  : eventType.equals(EventType.parse("capacity.reservation-recovered.v1"))
+                      ? "capacity.federated-receiving-reservation-recovered.v1"
+                      : "capacity.federated-receiving-reservation-at-risk.v1");
+    }
     payload.put("reservationReference", reservation.reservationId().toString());
     if (eventType.equals(EventType.parse("capacity.reservation-expired.v1"))) {
       payload.put("expiresAt", reservation.expiresAt().toString());
@@ -320,7 +338,7 @@ public final class CapacityReservationCommands {
         .record(
             new EventEnvelope(
                 InternalId.generate(),
-                eventType,
+                recordedEventType,
                 "capacity",
                 new OccurredAt(occurredAt),
                 new RecordedAt(clock.instant()),
@@ -464,11 +482,105 @@ public final class CapacityReservationCommands {
     }
   }
 
+  /** Releases only the reservation belonging to this receiving deployment's typed request. */
+  public CapacityReleaseResult releaseFederatedReceiving(
+      ExecutionContext context,
+      InternalId releaseOperationId,
+      InternalId reservationOperationId,
+      InternalId receivingRequestId) {
+    Objects.requireNonNull(context, "execution context");
+    Objects.requireNonNull(releaseOperationId, "release operation id");
+    Objects.requireNonNull(reservationOperationId, "reservation operation id");
+    Objects.requireNonNull(receivingRequestId, "federated receiving request id");
+    requireFacilityScope(context);
+    requireReservationAuthority(context, releaseOperationId);
+    CapacityReservationSubject subject =
+        CapacityReservationSubject.federatedReceivingRequest(receivingRequestId);
+    RequestFingerprint fingerprint = releaseFingerprint(reservationOperationId, subject, context);
+    try {
+      return Objects.requireNonNull(
+          transaction.execute(
+              status -> {
+                Instant now = clock.instant();
+                CapacityReservationStore.ReleaseOperationClaim claim =
+                    reservations.lockReleaseOperation(
+                        releaseOperationId, reservationOperationId, subject, fingerprint, now);
+                if (!claim.fingerprintMatches()) {
+                  throw problem(
+                      HttpStatus.CONFLICT,
+                      PlatformErrorCode.IDEMPOTENCY_KEY_REUSED,
+                      "The Capacity release operation identifier is already bound to different inputs.");
+                }
+                if (claim.current().isPresent()) {
+                  CapacityReservationStore.ReleaseResult replay = claim.current().orElseThrow();
+                  return capacityReleaseResult(replay);
+                }
+                CapacityReservationStore.ReleaseResult result =
+                    reservations.releaseReservation(
+                        reservationOperationId,
+                        subject,
+                        context.scope().facility().orElseThrow().value(),
+                        now);
+                if (result.outcome() == CapacityReservationStore.ReleaseOutcome.SCOPE_MISMATCH) {
+                  throw problem(
+                      HttpStatus.FORBIDDEN,
+                      PlatformErrorCode.INVALID_EXECUTION_SCOPE,
+                      "Capacity release requires the reservation's validated Facility scope.");
+                }
+                reservations.completeReleaseOperation(releaseOperationId, result, now);
+                if (result.changed()) {
+                  auditRelease(
+                      context,
+                      receivingRequestId,
+                      "CAPACITY_FEDERATED_RECEIVING_RESERVATION_RELEASE",
+                      result.outcome().name(),
+                      result.outcome() == CapacityReservationStore.ReleaseOutcome.RELEASED);
+                  if (result.outcome() == CapacityReservationStore.ReleaseOutcome.EXPIRED) {
+                    recordFederatedReceivingExpiryEvent(
+                        context, receivingRequestId, reservationOperationId, result, now);
+                  }
+                }
+                return capacityReleaseResult(result);
+              }),
+          "Capacity federated-receiving release result");
+    } catch (AuditPersistenceUnavailableException unavailable) {
+      throw problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          PlatformErrorCode.AUDIT_UNAVAILABLE,
+          "The Capacity release and required audit evidence could not be committed.");
+    } catch (DataAccessException unavailable) {
+      throw problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          PlatformErrorCode.CAPACITY_UNAVAILABLE,
+          "Capacity could not confirm reservation release safely.");
+    }
+  }
+
+  private static CapacityReleaseResult capacityReleaseResult(
+      CapacityReservationStore.ReleaseResult result) {
+    return new CapacityReleaseResult(
+        CapacityReleaseResult.Outcome.valueOf(result.outcome().name()),
+        result.reservationId(),
+        result.sequence());
+  }
+
   private RequestFingerprint releaseFingerprint(
       InternalId reservationOperationId, InternalId transferId, ExecutionContext context) {
     var json = objectMapper.createObjectNode();
     json.put("reservationOperationId", reservationOperationId.toString());
     json.put("transferId", transferId.toString());
+    json.put("facility", context.scope().facility().orElseThrow().value());
+    return RequestFingerprint.from(json);
+  }
+
+  private RequestFingerprint releaseFingerprint(
+      InternalId reservationOperationId,
+      CapacityReservationSubject subject,
+      ExecutionContext context) {
+    var json = objectMapper.createObjectNode();
+    json.put("reservationOperationId", reservationOperationId.toString());
+    json.put("subjectType", subject.kind().name());
+    json.put("subjectId", subject.id().toString());
     json.put("facility", context.scope().facility().orElseThrow().value());
     return RequestFingerprint.from(json);
   }
@@ -488,6 +600,35 @@ public final class CapacityReservationCommands {
             new EventEnvelope(
                 InternalId.generate(),
                 EventType.parse("capacity.reservation-expired.v1"),
+                "capacity",
+                new OccurredAt(result.expiresAt().orElse(recordedAt)),
+                new RecordedAt(recordedAt),
+                context,
+                Optional.of(
+                    new AggregatePosition(
+                        "capacity-reservation/" + result.reservationId().orElseThrow(),
+                        result.sequence())),
+                payload));
+  }
+
+  private void recordFederatedReceivingExpiryEvent(
+      ExecutionContext context,
+      InternalId receivingRequestId,
+      InternalId reservationOperationId,
+      CapacityReservationStore.ReleaseResult result,
+      Instant recordedAt) {
+    var payload = objectMapper.createObjectNode();
+    payload.put("subjectType", CapacityReservationSubject.Kind.FEDERATED_RECEIVING_REQUEST.name());
+    payload.put("receivingRequestReference", receivingRequestId.toString());
+    payload.put("operationReference", reservationOperationId.toString());
+    payload.put("reservationReference", result.reservationId().orElseThrow().toString());
+    result.expiresAt().ifPresent(value -> payload.put("expiresAt", value.toString()));
+    outboxWriter
+        .getObject()
+        .record(
+            new EventEnvelope(
+                InternalId.generate(),
+                EventType.parse("capacity.federated-receiving-reservation-expired.v1"),
                 "capacity",
                 new OccurredAt(result.expiresAt().orElse(recordedAt)),
                 new RecordedAt(recordedAt),
@@ -561,6 +702,75 @@ public final class CapacityReservationCommands {
     }
   }
 
+  /** Capacity-owner entry point reserved for the receiving Transfer application contract. */
+  public CapacityReservationResult reserveFederatedReceiving(
+      ExecutionContext context,
+      FederatedReceivingCapacityReservationRequest request,
+      String idempotencyKey) {
+    Objects.requireNonNull(context, "execution context");
+    Objects.requireNonNull(request, "federated receiving reservation request");
+    if (request.subject().kind() != CapacityReservationSubject.Kind.FEDERATED_RECEIVING_REQUEST) {
+      throw new IllegalArgumentException("federated receiving Capacity subject is required");
+    }
+    requireFacilityScope(context, request);
+    requireReservationAuthority(context, request.operationId());
+    RequestFingerprint fingerprint = fingerprint(request);
+    CommandReceiptKey receiptKey = receiptKey(context, request, idempotencyKey);
+    try {
+      return Objects.requireNonNull(
+          transaction.execute(
+              status -> reserveInTransaction(context, request, receiptKey, fingerprint)),
+          "Capacity reservation result");
+    } catch (CannotAcquireLockException busy) {
+      throw problem(HttpStatus.CONFLICT, PlatformErrorCode.IDEMPOTENCY_IN_PROGRESS, BUSY_DETAIL);
+    } catch (DuplicateKeyException conflict) {
+      throw problem(
+          HttpStatus.CONFLICT,
+          PlatformErrorCode.CAPACITY_RESERVATION_CONFLICT,
+          "A federated receiving request already has a Capacity reservation operation.");
+    } catch (AuditPersistenceUnavailableException unavailable) {
+      throw problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          PlatformErrorCode.AUDIT_UNAVAILABLE,
+          "The reservation outcome and its required audit evidence could not be committed.");
+    } catch (DataAccessException unavailable) {
+      throw problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          PlatformErrorCode.CAPACITY_UNAVAILABLE,
+          "Capacity could not evaluate or commit the reservation safely.");
+    }
+  }
+
+  /** Returns the current lifecycle for the typed receiver-local Capacity subject. */
+  public FederatedReceivingCapacityReservationOutcome getFederatedReceivingReservationOutcome(
+      ExecutionContext context, InternalId operationId, InternalId receivingRequestId) {
+    Objects.requireNonNull(context, "execution context");
+    Objects.requireNonNull(operationId, "operation id");
+    Objects.requireNonNull(receivingRequestId, "federated receiving request id");
+    requireFacilityScope(context);
+    requireReservationAuthority(context, operationId);
+    try {
+      FederatedReceivingCapacityReservationOutcome outcome =
+          reservations.findFederatedReceivingReservationOutcome(
+              operationId,
+              receivingRequestId,
+              context.scope().facility().orElseThrow().value(),
+              clock.instant());
+      auditReservationOutcomeRead(context, operationId, outcome.status());
+      return outcome;
+    } catch (AuditPersistenceUnavailableException unavailable) {
+      throw problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          PlatformErrorCode.AUDIT_UNAVAILABLE,
+          "The Capacity reservation outcome and required read audit could not be recorded.");
+    } catch (DataAccessException unavailable) {
+      throw problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          PlatformErrorCode.CAPACITY_UNAVAILABLE,
+          "Capacity could not confirm the reservation lifecycle safely.");
+    }
+  }
+
   /** Returns the current owner lifecycle for a reservation without replaying a stale result. */
   public CapacityReservationOutcome getReservationOutcome(
       ExecutionContext context, InternalId operationId, InternalId transferId) {
@@ -618,7 +828,7 @@ public final class CapacityReservationCommands {
 
   private CapacityReservationResult reserveInTransaction(
       ExecutionContext context,
-      CapacityReservationRequest request,
+      CapacityReservationIntent request,
       CommandReceiptKey receiptKey,
       RequestFingerprint fingerprint) {
     Instant now = clock.instant();
@@ -642,7 +852,7 @@ public final class CapacityReservationCommands {
     }
 
     CapacityReservationStore.OperationClaim operation =
-        reservations.lockOperation(request.operationId(), request.transferId(), fingerprint, now);
+        reservations.lockOperation(request.operationId(), request.subject(), fingerprint, now);
     if (!operation.fingerprintMatches()) {
       throw problem(
           HttpStatus.CONFLICT,
@@ -674,7 +884,7 @@ public final class CapacityReservationCommands {
   }
 
   private CapacityReservationResult evaluateAndRecord(
-      ExecutionContext context, CapacityReservationRequest request, Instant now) {
+      ExecutionContext context, CapacityReservationIntent request, Instant now) {
     var dimension = configuration.lockCurrentDimension(request.dimensionCode());
     if (dimension.isEmpty()) {
       return recordNonPositive(
@@ -769,7 +979,7 @@ public final class CapacityReservationCommands {
 
   private CapacityReservationResult recordNonPositive(
       ExecutionContext context,
-      CapacityReservationRequest request,
+      CapacityReservationIntent request,
       Instant now,
       CapacityReservationResult.Outcome outcome,
       String reasonCode) {
@@ -785,7 +995,7 @@ public final class CapacityReservationCommands {
 
   private void audit(
       ExecutionContext context,
-      CapacityReservationRequest request,
+      CapacityReservationIntent request,
       InternalId target,
       String action,
       String reason,
@@ -860,7 +1070,7 @@ public final class CapacityReservationCommands {
   }
 
   private static void requireFacilityScope(
-      ExecutionContext context, CapacityReservationRequest request) {
+      ExecutionContext context, CapacityReservationIntent request) {
     if (context.scope().kind() != ExecutionScope.Kind.FACILITY
         || context.scope().organization().isEmpty()
         || context.scope().facility().isEmpty()
@@ -899,6 +1109,22 @@ public final class CapacityReservationCommands {
     reservations.completeReceipt(receiptKey, fingerprint, result, recordedAt);
   }
 
+  private RequestFingerprint fingerprint(CapacityReservationIntent request) {
+    var json = objectMapper.createObjectNode();
+    json.put("operationId", request.operationId().toString());
+    json.put("subjectType", request.subject().kind().name());
+    json.put("subjectId", request.subject().id().toString());
+    json.put("facilityIssuer", request.facility().issuer().value());
+    json.put("facilityId", request.facility().value());
+    json.put("dimensionCode", request.dimensionCode());
+    json.put("unit", request.unit());
+    json.put("quantity", request.quantity());
+    json.put("intervalStart", request.intervalStart().toString());
+    json.put("intervalEnd", request.intervalEnd().toString());
+    json.put("expiresAt", request.expiresAt().toString());
+    return RequestFingerprint.from(json);
+  }
+
   private RequestFingerprint fingerprint(CapacityReservationRequest request) {
     var json = objectMapper.createObjectNode();
     json.put("operationId", request.operationId().toString());
@@ -921,6 +1147,24 @@ public final class CapacityReservationCommands {
           context,
           "capacity.reservation.create",
           "transfers/" + request.transferId(),
+          idempotencyKey);
+    } catch (IllegalArgumentException invalid) {
+      throw problem(
+          HttpStatus.BAD_REQUEST,
+          PlatformErrorCode.CAPACITY_VALUE_INVALID,
+          "A valid Idempotency-Key is required for the Capacity reservation.");
+    }
+  }
+
+  private static CommandReceiptKey receiptKey(
+      ExecutionContext context,
+      FederatedReceivingCapacityReservationRequest request,
+      String idempotencyKey) {
+    try {
+      return CommandReceiptKey.from(
+          context,
+          "capacity.federated-receiving-reservation.create",
+          "federated-receiving-requests/" + request.receivingRequestId(),
           idempotencyKey);
     } catch (IllegalArgumentException invalid) {
       throw problem(

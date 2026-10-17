@@ -161,6 +161,84 @@ class NotificationProjectionPostgresIT {
   }
 
   @Test
+  void projectsFederatedReceivingChangeAsOnlyAnOwnerHint() throws Exception {
+    ExecutionScope scope = organizationScope("SYN-ORG-001");
+    String startingCursor = query.currentCursor(scope);
+    String privateMarker = "SYN-PATIENT-FEDERATION-PRIVATE-4B71";
+    String requestId = "00000000-0000-0000-0000-000000000011";
+    EventEnvelope event =
+        event(
+            "transfer.federated-receiving-request-changed.v1",
+            "federated-receiving-request/" + requestId,
+            4,
+            scope,
+            privateMarker);
+
+    handler.handle(internalEvent(event));
+
+    NotificationProjectionPage replay = query.listAfter(scope, Optional.of(startingCursor), 20);
+    assertThat(replay.refreshRequired()).isFalse();
+    assertThat(replay.hints())
+        .singleElement()
+        .satisfies(
+            hint -> {
+              assertThat(hint.eventType())
+                  .isEqualTo("transfer.federated-receiving-request-changed.v1");
+              assertThat(hint.resourceType()).isEqualTo("federated-receiving-request");
+              assertThat(hint.resourceId()).isEqualTo(java.util.UUID.fromString(requestId));
+              assertThat(hint.ownerVersion()).isEqualTo(4);
+              assertThat(hint.sequence()).isEqualTo(1);
+            });
+    assertThat(objectMapper.writeValueAsString(replay)).doesNotContain(privateMarker);
+    assertThat(
+            jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM platform_notification.notification_projection "
+                    + "WHERE resource_type = 'federated-receiving-request' AND "
+                    + "CAST(resource_id AS TEXT) = ?",
+                Integer.class,
+                requestId))
+        .isEqualTo(1);
+  }
+
+  @Test
+  void projectsFederatedOriginAttemptChangeAsTransferJourneyHint() throws Exception {
+    ExecutionScope scope = organizationScope("SYN-ORG-001");
+    String startingCursor = query.currentCursor(scope);
+    String journeyId = "00000000-0000-0000-0000-000000000012";
+    String privateMarker = "SYN-PATIENT-FEDERATION-PRIVATE-4B71";
+    EventEnvelope event =
+        event(
+            "transfer.federated-origin-receiving-attempt-changed.v1",
+            "transfer-journey/" + journeyId,
+            2,
+            scope,
+            privateMarker);
+
+    handler.handle(internalEvent(event));
+
+    NotificationProjectionPage replay = query.listAfter(scope, Optional.of(startingCursor), 20);
+    assertThat(replay.refreshRequired()).isFalse();
+    assertThat(replay.hints())
+        .singleElement()
+        .satisfies(
+            hint -> {
+              assertThat(hint.eventType())
+                  .isEqualTo("transfer.federated-origin-receiving-attempt-changed.v1");
+              assertThat(hint.resourceType()).isEqualTo("transfer");
+              assertThat(hint.resourceId()).isEqualTo(java.util.UUID.fromString(journeyId));
+              assertThat(hint.ownerVersion()).isEqualTo(2);
+            });
+    assertThat(objectMapper.writeValueAsString(replay)).doesNotContain(privateMarker);
+    assertThat(
+            jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM platform_notification.notification_projection "
+                    + "WHERE resource_type = 'transfer' AND CAST(resource_id AS TEXT) = ?",
+                Integer.class,
+                journeyId))
+        .isEqualTo(1);
+  }
+
+  @Test
   void deduplicatesRedeliveryAndSequencesConcurrentEventsInPostgres() throws Exception {
     ExecutionScope scope = organizationScope("SYN-ORG-001");
     String start = query.currentCursor(scope);

@@ -7,9 +7,11 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.ayuvahak.capacity.application.CapacityReservationStore;
+import org.ayuvahak.capacity.domain.CapacityReservationIntent;
 import org.ayuvahak.capacity.domain.CapacityReservationOutcome;
-import org.ayuvahak.capacity.domain.CapacityReservationRequest;
 import org.ayuvahak.capacity.domain.CapacityReservationResult;
+import org.ayuvahak.capacity.domain.CapacityReservationSubject;
+import org.ayuvahak.capacity.domain.FederatedReceivingCapacityReservationOutcome;
 import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.InternalId;
 import org.ayuvahak.platform.core.IssuerId;
@@ -112,31 +114,38 @@ public class JdbcCapacityReservationStore implements CapacityReservationStore {
   @Override
   public OperationClaim lockOperation(
       InternalId operationId,
-      InternalId transferId,
+      CapacityReservationSubject subject,
       RequestFingerprint fingerprint,
       Instant recordedAt) {
     jdbc.update(
-        "INSERT INTO capacity.reservation_operation (operation_id, transfer_id, "
-            + "request_fingerprint, outcome, recorded_at) VALUES (?, ?, ?, 'PENDING', ?) "
+        "INSERT INTO capacity.reservation_operation (operation_id, transfer_id, subject_type, "
+            + "subject_id, request_fingerprint, outcome, recorded_at) "
+            + "VALUES (?, ?, ?, ?, ?, 'PENDING', ?) "
             + "ON CONFLICT (operation_id) DO NOTHING",
         operationId.value(),
-        transferId.value(),
+        transferId(subject).map(InternalId::value).orElse(null),
+        subject.kind().name(),
+        subject.id().value(),
         fingerprint.value(),
         Timestamp.from(recordedAt));
     OperationRow row =
         jdbc.queryForObject(
-            "SELECT transfer_id, request_fingerprint, outcome, reservation_id, reason_code "
+            "SELECT transfer_id, subject_type, subject_id, request_fingerprint, outcome, "
+                + "reservation_id, reason_code "
                 + "FROM capacity.reservation_operation WHERE operation_id = ? FOR UPDATE",
             (result, rowNumber) ->
                 new OperationRow(
                     result.getObject("transfer_id", UUID.class),
+                    result.getString("subject_type"),
+                    result.getObject("subject_id", UUID.class),
                     result.getString("request_fingerprint"),
                     result.getString("outcome"),
                     result.getObject("reservation_id", UUID.class),
                     result.getString("reason_code")),
             operationId.value());
     boolean matches =
-        transferId.value().equals(row.transferId())
+        subject.kind().name().equals(row.subjectType())
+            && subject.id().value().equals(row.subjectId())
             && fingerprint.value().equals(row.fingerprint());
     Optional<CapacityReservationResult> current =
         matches && !"PENDING".equals(row.outcome())
@@ -172,7 +181,7 @@ public class JdbcCapacityReservationStore implements CapacityReservationStore {
 
   @Override
   public void createReservation(
-      CapacityReservationRequest request,
+      CapacityReservationIntent request,
       long dimensionVersion,
       long policyVersion,
       List<InternalId> evidenceIds,
@@ -184,13 +193,16 @@ public class JdbcCapacityReservationStore implements CapacityReservationStore {
             .collect(java.util.stream.Collectors.joining(",", "[", "]"));
     jdbc.update(
         "INSERT INTO capacity.coordination_reservation (reservation_id, operation_id, "
-            + "transfer_id, facility_issuer, facility_identifier_type, facility_identifier, "
+            + "transfer_id, subject_type, subject_id, facility_issuer, "
+            + "facility_identifier_type, facility_identifier, "
             + "dimension_code, dimension_version, policy_version, unit_code, quantity, "
             + "interval_start, interval_end, expires_at, basis_observation_ids, created_at) "
-            + "VALUES (?, ?, ?, ?, ?, ?::uuid, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?)",
+            + "VALUES (?, ?, ?, ?, ?, ?, ?, ?::uuid, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?)",
         reservationId.value(),
         request.operationId().value(),
-        request.transferId().value(),
+        transferId(request.subject()).map(InternalId::value).orElse(null),
+        request.subject().kind().name(),
+        request.subject().id().value(),
         request.facility().issuer().value(),
         request.facility().resourceType(),
         request.facility().value(),
@@ -231,11 +243,13 @@ public class JdbcCapacityReservationStore implements CapacityReservationStore {
   public Optional<CapacityReservationResult> findOperation(InternalId operationId) {
     return jdbc
         .query(
-            "SELECT request_fingerprint, outcome, reservation_id, reason_code "
+            "SELECT subject_type, subject_id, request_fingerprint, outcome, reservation_id, reason_code "
                 + "FROM capacity.reservation_operation WHERE operation_id = ?",
             (result, rowNumber) ->
                 new OperationRow(
                     null,
+                    result.getString("subject_type"),
+                    result.getObject("subject_id", UUID.class),
                     result.getString("request_fingerprint"),
                     result.getString("outcome"),
                     result.getObject("reservation_id", UUID.class),
@@ -255,7 +269,8 @@ public class JdbcCapacityReservationStore implements CapacityReservationStore {
             "SELECT o.outcome AS operation_outcome, r.reservation_id, r.reservation_status, "
                 + "r.expires_at, r.lifecycle_sequence FROM capacity.reservation_operation o "
                 + "LEFT JOIN capacity.coordination_reservation r ON r.operation_id = o.operation_id "
-                + "AND r.transfer_id = o.transfer_id AND r.facility_issuer = 'urn:ayuvahak:directory' "
+                + "AND r.subject_type = o.subject_type AND r.subject_id = o.subject_id "
+                + "AND r.facility_issuer = 'urn:ayuvahak:directory' "
                 + "AND r.facility_identifier_type = 'Facility' AND r.facility_identifier = ? "
                 + "WHERE o.operation_id = ? AND o.transfer_id = ?",
             (result, rowNumber) ->
@@ -308,6 +323,74 @@ public class JdbcCapacityReservationStore implements CapacityReservationStore {
         row.lifecycleSequence());
   }
 
+  @Override
+  public FederatedReceivingCapacityReservationOutcome findFederatedReceivingReservationOutcome(
+      InternalId operationId,
+      InternalId receivingRequestId,
+      String facilityIdentifier,
+      Instant at) {
+    List<ReservationOutcomeRow> rows =
+        jdbc.query(
+            "SELECT o.outcome AS operation_outcome, r.reservation_id, r.reservation_status, "
+                + "r.expires_at, r.lifecycle_sequence FROM capacity.reservation_operation o "
+                + "LEFT JOIN capacity.coordination_reservation r ON r.operation_id = o.operation_id "
+                + "AND r.subject_type = o.subject_type AND r.subject_id = o.subject_id "
+                + "AND r.facility_issuer = 'urn:ayuvahak:directory' "
+                + "AND r.facility_identifier_type = 'Facility' AND r.facility_identifier = ? "
+                + "WHERE o.operation_id = ? AND o.subject_type = 'FEDERATED_RECEIVING_REQUEST' "
+                + "AND o.subject_id = ?",
+            (result, rowNumber) ->
+                new ReservationOutcomeRow(
+                    result.getString("operation_outcome"),
+                    result.getObject("reservation_id", UUID.class),
+                    result.getString("reservation_status"),
+                    result.getTimestamp("expires_at") == null
+                        ? null
+                        : result.getTimestamp("expires_at").toInstant(),
+                    result.getObject("lifecycle_sequence", Long.class)),
+            UUID.fromString(facilityIdentifier),
+            operationId.value(),
+            receivingRequestId.value());
+    ReservationOutcomeRow row = rows.stream().findFirst().orElse(null);
+    CapacityReservationOutcome.Status status = currentStatus(row, at);
+    return new FederatedReceivingCapacityReservationOutcome(
+        operationId,
+        receivingRequestId,
+        status,
+        row == null || row.reservationId() == null
+            ? Optional.empty()
+            : Optional.of(new InternalId(row.reservationId())),
+        status == CapacityReservationOutcome.Status.RESERVED
+            ? Optional.empty()
+            : Optional.of("CAPACITY_RESERVATION_" + status.name()),
+        row == null || row.expiresAt() == null ? Optional.empty() : Optional.of(row.expiresAt()),
+        row == null || row.lifecycleSequence() == null ? 0 : row.lifecycleSequence());
+  }
+
+  private static CapacityReservationOutcome.Status currentStatus(
+      ReservationOutcomeRow row, Instant at) {
+    if (row == null
+        || !"RESERVED".equals(row.operationOutcome())
+        || row.reservationId() == null
+        || row.reservationStatus() == null
+        || row.expiresAt() == null
+        || row.lifecycleSequence() == null) {
+      return CapacityReservationOutcome.Status.UNKNOWN;
+    }
+    if ("RELEASED".equals(row.reservationStatus())) {
+      return CapacityReservationOutcome.Status.RELEASED;
+    }
+    if (!row.expiresAt().isAfter(at) || "EXPIRED".equals(row.reservationStatus())) {
+      return CapacityReservationOutcome.Status.EXPIRED;
+    }
+    return switch (row.reservationStatus()) {
+      case "ACTIVE" -> CapacityReservationOutcome.Status.RESERVED;
+      case "AT_RISK" -> CapacityReservationOutcome.Status.AT_RISK;
+      case "RELEASED" -> CapacityReservationOutcome.Status.RELEASED;
+      default -> CapacityReservationOutcome.Status.UNKNOWN;
+    };
+  }
+
   private static CapacityReservationOutcome unknownReservationOutcome(
       InternalId operationId, InternalId transferId) {
     return new CapacityReservationOutcome(
@@ -324,27 +407,33 @@ public class JdbcCapacityReservationStore implements CapacityReservationStore {
   public ReleaseOperationClaim lockReleaseOperation(
       InternalId releaseOperationId,
       InternalId reservationOperationId,
-      InternalId transferId,
+      CapacityReservationSubject subject,
       RequestFingerprint fingerprint,
       Instant recordedAt) {
     jdbc.update(
         "INSERT INTO capacity.reservation_release_operation (release_operation_id, "
-            + "reservation_operation_id, transfer_id, request_fingerprint, recorded_at) "
-            + "VALUES (?, ?, ?, ?, ?) ON CONFLICT (release_operation_id) DO NOTHING",
+            + "reservation_operation_id, transfer_id, subject_type, subject_id, "
+            + "request_fingerprint, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?) "
+            + "ON CONFLICT (release_operation_id) DO NOTHING",
         releaseOperationId.value(),
         reservationOperationId.value(),
-        transferId.value(),
+        transferId(subject).map(InternalId::value).orElse(null),
+        subject.kind().name(),
+        subject.id().value(),
         fingerprint.value(),
         Timestamp.from(recordedAt));
     ReleaseOperationRow row =
         jdbc.queryForObject(
-            "SELECT reservation_operation_id, transfer_id, request_fingerprint, outcome, "
+            "SELECT reservation_operation_id, transfer_id, subject_type, subject_id, "
+                + "request_fingerprint, outcome, "
                 + "reservation_id, lifecycle_sequence FROM capacity.reservation_release_operation "
                 + "WHERE release_operation_id = ? FOR UPDATE",
             (result, rowNumber) ->
                 new ReleaseOperationRow(
                     result.getObject("reservation_operation_id", UUID.class),
                     result.getObject("transfer_id", UUID.class),
+                    result.getString("subject_type"),
+                    result.getObject("subject_id", UUID.class),
                     result.getString("request_fingerprint"),
                     result.getString("outcome"),
                     result.getObject("reservation_id", UUID.class),
@@ -352,7 +441,8 @@ public class JdbcCapacityReservationStore implements CapacityReservationStore {
             releaseOperationId.value());
     boolean matches =
         reservationOperationId.value().equals(row.reservationOperationId())
-            && transferId.value().equals(row.transferId())
+            && subject.kind().name().equals(row.subjectType())
+            && subject.id().value().equals(row.subjectId())
             && fingerprint.value().equals(row.fingerprint());
     Optional<ReleaseResult> current =
         matches && row.outcome() != null
@@ -388,7 +478,7 @@ public class JdbcCapacityReservationStore implements CapacityReservationStore {
   @Override
   public ReleaseResult releaseReservation(
       InternalId reservationOperationId,
-      InternalId transferId,
+      CapacityReservationSubject subject,
       String facilityIdentifier,
       Instant releasedAt) {
     List<ReservationLifecycleRow> rows =
@@ -396,8 +486,9 @@ public class JdbcCapacityReservationStore implements CapacityReservationStore {
             "SELECT r.reservation_id, r.reservation_status, r.lifecycle_sequence, r.expires_at, "
                 + "r.facility_identifier FROM capacity.reservation_operation o "
                 + "JOIN capacity.coordination_reservation r ON r.operation_id = o.operation_id "
-                + "AND r.transfer_id = o.transfer_id WHERE o.operation_id = ? "
-                + "AND o.transfer_id = ? AND o.outcome = 'RESERVED' FOR UPDATE OF o, r",
+                + "AND r.subject_type = o.subject_type AND r.subject_id = o.subject_id "
+                + "WHERE o.operation_id = ? AND o.subject_type = ? AND o.subject_id = ? "
+                + "AND o.outcome = 'RESERVED' FOR UPDATE OF o, r",
             (result, rowNumber) ->
                 new ReservationLifecycleRow(
                     result.getObject("reservation_id", UUID.class),
@@ -406,7 +497,8 @@ public class JdbcCapacityReservationStore implements CapacityReservationStore {
                     result.getTimestamp("expires_at").toInstant(),
                     result.getObject("facility_identifier", UUID.class)),
             reservationOperationId.value(),
-            transferId.value());
+            subject.kind().name(),
+            subject.id().value());
     if (rows.isEmpty()) {
       return new ReleaseResult(
           ReleaseOutcome.NOT_RESERVED, Optional.empty(), 0, false, Optional.empty());
@@ -519,7 +611,7 @@ public class JdbcCapacityReservationStore implements CapacityReservationStore {
   @Override
   public List<LifecycleCandidate> findLifecycleCandidates(Instant at, int limit) {
     return jdbc.query(
-        "SELECT reservation_id, transfer_id, facility_identifier, dimension_code, unit_code, "
+        "SELECT reservation_id, operation_id, subject_type, subject_id, facility_identifier, dimension_code, unit_code, "
             + "quantity, interval_start, interval_end, expires_at, reservation_status, "
             + "lifecycle_sequence FROM capacity.coordination_reservation "
             + "WHERE reservation_status IN ('ACTIVE', 'AT_RISK') "
@@ -536,7 +628,7 @@ public class JdbcCapacityReservationStore implements CapacityReservationStore {
   public Optional<LifecycleCandidate> lockLifecycleCandidate(InternalId reservationId) {
     return jdbc
         .query(
-            "SELECT reservation_id, transfer_id, facility_identifier, dimension_code, unit_code, "
+            "SELECT reservation_id, operation_id, subject_type, subject_id, facility_identifier, dimension_code, unit_code, "
                 + "quantity, interval_start, interval_end, expires_at, reservation_status, "
                 + "lifecycle_sequence FROM capacity.coordination_reservation "
                 + "WHERE reservation_id = ? FOR UPDATE",
@@ -557,7 +649,7 @@ public class JdbcCapacityReservationStore implements CapacityReservationStore {
             "UPDATE capacity.coordination_reservation SET reservation_status = ?, "
                 + "lifecycle_sequence = lifecycle_sequence + 1, status_recorded_at = ?, "
                 + "lifecycle_checked_at = ? WHERE reservation_id = ? AND reservation_status = ? "
-                + "RETURNING reservation_id, transfer_id, facility_identifier, dimension_code, "
+                + "RETURNING reservation_id, operation_id, subject_type, subject_id, facility_identifier, dimension_code, "
                 + "unit_code, quantity, interval_start, interval_end, expires_at, "
                 + "reservation_status, lifecycle_sequence",
             JdbcCapacityReservationStore::lifecycleCandidate,
@@ -583,7 +675,10 @@ public class JdbcCapacityReservationStore implements CapacityReservationStore {
       throws java.sql.SQLException {
     return new LifecycleCandidate(
         new InternalId(result.getObject("reservation_id", UUID.class)),
-        new InternalId(result.getObject("transfer_id", UUID.class)),
+        new InternalId(result.getObject("operation_id", UUID.class)),
+        new CapacityReservationSubject(
+            CapacityReservationSubject.Kind.valueOf(result.getString("subject_type")),
+            new InternalId(result.getObject("subject_id", UUID.class))),
         new ExternalReference(
             new IssuerId("urn:ayuvahak:directory"),
             "Facility",
@@ -609,7 +704,13 @@ public class JdbcCapacityReservationStore implements CapacityReservationStore {
   }
 
   private record OperationRow(
-      UUID transferId, String fingerprint, String outcome, UUID reservationId, String reasonCode) {}
+      UUID transferId,
+      String subjectType,
+      UUID subjectId,
+      String fingerprint,
+      String outcome,
+      UUID reservationId,
+      String reasonCode) {}
 
   private record ReservationOutcomeRow(
       String operationOutcome,
@@ -636,8 +737,16 @@ public class JdbcCapacityReservationStore implements CapacityReservationStore {
   private record ReleaseOperationRow(
       UUID reservationOperationId,
       UUID transferId,
+      String subjectType,
+      UUID subjectId,
       String fingerprint,
       String outcome,
       UUID reservationId,
       Long sequence) {}
+
+  private static Optional<InternalId> transferId(CapacityReservationSubject subject) {
+    return subject.kind() == CapacityReservationSubject.Kind.TRANSFER
+        ? Optional.of(subject.id())
+        : Optional.empty();
+  }
 }

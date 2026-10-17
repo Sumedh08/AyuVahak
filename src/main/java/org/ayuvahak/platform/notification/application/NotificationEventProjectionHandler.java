@@ -28,6 +28,10 @@ public class NotificationEventProjectionHandler implements InternalEventHandler 
   private static final EventType REFERRAL_CANCELLED = EventType.parse("referral.cancelled.v1");
   private static final EventType TRANSFER_COMPLETED = EventType.parse("transfer.completed.v1");
   private static final EventType TRANSFER_UNFULFILLED = EventType.parse("transfer.unfulfilled.v1");
+  private static final EventType FEDERATED_RECEIVING_REQUEST_CHANGED =
+      EventType.parse("transfer.federated-receiving-request-changed.v1");
+  private static final EventType FEDERATED_ORIGIN_RECEIVING_ATTEMPT_CHANGED =
+      EventType.parse("transfer.federated-origin-receiving-attempt-changed.v1");
   private static final EventType CAPACITY_EXPIRED =
       EventType.parse("capacity.reservation-expired.v1");
   private static final EventType CAPACITY_AT_RISK =
@@ -52,6 +56,12 @@ public class NotificationEventProjectionHandler implements InternalEventHandler 
           Map.entry(REFERRAL_CANCELLED, new ResourceMapping("referral", "referral")),
           Map.entry(TRANSFER_COMPLETED, new ResourceMapping("transfer", "transfer-journey")),
           Map.entry(TRANSFER_UNFULFILLED, new ResourceMapping("transfer", "transfer-journey")),
+          Map.entry(
+              FEDERATED_RECEIVING_REQUEST_CHANGED,
+              new ResourceMapping("federated-receiving-request", "federated-receiving-request")),
+          Map.entry(
+              FEDERATED_ORIGIN_RECEIVING_ATTEMPT_CHANGED,
+              new ResourceMapping("transfer", "transfer-journey")),
           Map.entry(
               CAPACITY_EXPIRED,
               new ResourceMapping("capacity-reservation", "capacity-reservation")),

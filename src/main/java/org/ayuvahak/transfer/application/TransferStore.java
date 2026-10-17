@@ -52,6 +52,9 @@ public interface TransferStore {
 
   Optional<TransferJourney> lockJourney(InternalId journeyId);
 
+  /** Advances the Journey version for a committed origin-owned federated destination attempt. */
+  boolean advanceJourneyVersion(InternalId journeyId, long expectedJourneyVersion);
+
   Optional<TransferJourney> findJourneyByReferral(InternalId referralId);
 
   Optional<TransferJourneyClosure> findJourneyClosure(InternalId journeyId);
@@ -125,6 +128,9 @@ public interface TransferStore {
   Optional<TransferRequestAttempt> findFirstRequest(InternalId journeyId);
 
   Optional<TransferRequestAttempt> findLatestRequest(InternalId journeyId);
+
+  /** Whether a federated destination attempt currently blocks another journey destination. */
+  boolean hasBlockingFederatedDestinationAttempt(InternalId journeyId);
 
   Optional<TransferRequestAttempt> findRequestAttempt(InternalId journeyId, int attemptNumber);
 

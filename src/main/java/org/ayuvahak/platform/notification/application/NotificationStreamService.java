@@ -330,6 +330,7 @@ public final class NotificationStreamService implements AutoCloseable {
     return switch (resourceType) {
       case "referral" -> "referral.changed";
       case "transfer" -> "transfer.changed";
+      case "federated-receiving-request" -> "transfer.changed";
       case "capacity-reservation" -> "capacity.changed";
       case "transport", "transport-cancellation", "transport-destination-change" ->
           "transport.changed";

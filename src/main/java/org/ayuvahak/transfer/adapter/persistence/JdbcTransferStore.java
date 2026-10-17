@@ -299,6 +299,16 @@ public class JdbcTransferStore implements TransferStore {
   }
 
   @Override
+  public boolean advanceJourneyVersion(InternalId journeyId, long expectedJourneyVersion) {
+    return jdbc.update(
+            "UPDATE transfer.journey SET version = version + 1 "
+                + "WHERE journey_id = ? AND version = ?",
+            journeyId.value(),
+            expectedJourneyVersion)
+        == 1;
+  }
+
+  @Override
   public Optional<TransferJourney> findJourneyByReferral(InternalId referralId) {
     return findJourney("referral_id", referralId);
   }
@@ -771,6 +781,20 @@ public class JdbcTransferStore implements TransferStore {
             journeyId.value())
         .stream()
         .findFirst();
+  }
+
+  @Override
+  public boolean hasBlockingFederatedDestinationAttempt(InternalId journeyId) {
+    Boolean blocking =
+        jdbc.queryForObject(
+            "SELECT EXISTS (SELECT 1 FROM transfer.federated_origin_receiving_attempt "
+                + "WHERE journey_id = ? AND (operation_state IN "
+                + "('PENDING', 'SENT', 'OUTCOME_UNKNOWN', 'RECONCILIATION_REQUIRED') "
+                + "OR remote_outcome IN ('RECEIVED', 'ACCEPTED_RESERVED', "
+                + "'ACCEPTED_UNRESERVED'))) ",
+            Boolean.class,
+            journeyId.value());
+    return Boolean.TRUE.equals(blocking);
   }
 
   @Override

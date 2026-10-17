@@ -33,6 +33,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Date;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -43,7 +44,12 @@ import org.ayuvahak.capacity.application.CapacityEvidenceStore;
 import org.ayuvahak.capacity.application.CapacityReservationCommands;
 import org.ayuvahak.capacity.domain.CapacityObservationFact;
 import org.ayuvahak.capacity.domain.CapacityReadinessOutcome;
+import org.ayuvahak.capacity.domain.CapacityReleaseResult;
+import org.ayuvahak.capacity.domain.CapacityReservationOutcome;
 import org.ayuvahak.capacity.domain.CapacityReservationRequest;
+import org.ayuvahak.capacity.domain.CapacityReservationResult;
+import org.ayuvahak.capacity.domain.FederatedReceivingCapacityReservationOutcome;
+import org.ayuvahak.capacity.domain.FederatedReceivingCapacityReservationRequest;
 import org.ayuvahak.directory.application.DirectoryMcsdSynchronizationService;
 import org.ayuvahak.directory.application.DirectoryStore;
 import org.ayuvahak.directory.domain.DirectoryExternalIdentifier;
@@ -76,6 +82,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -90,6 +97,8 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
@@ -103,7 +112,7 @@ import org.testcontainers.utility.DockerImageName;
     properties = {
       "management.tracing.sampling.probability=0.0",
       "ayuvahak.authentication.audience=ayuvahak-api",
-      "ayuvahak.authentication.service-client-ids=synthetic-integration-service,ayuvahak-transport-worker,ayuvahak-transfer-owner-event-consumer,synthetic-transport-provider,synthetic-mcsd-worker",
+      "ayuvahak.authentication.service-client-ids=synthetic-integration-service,synthetic-federated-origin-peer,ayuvahak-transport-worker,ayuvahak-transfer-owner-event-consumer,synthetic-transport-provider,synthetic-mcsd-worker",
       "ayuvahak.authentication.allow-http=true",
       "ayuvahak.test.partner.enabled=true",
       "ayuvahak.transfer.request-deadline=PT1H",
@@ -163,7 +172,17 @@ class DirectoryCapacityReferralScenarioIT {
           .withUsername("ayuvahak")
           .withPassword(TEST_PASSWORD);
 
+  private static final PostgreSQLContainer ORIGIN_POSTGRES =
+      new PostgreSQLContainer(
+              DockerImageName.parse(
+                      "postgis/postgis:18-3.6@sha256:60f6ad1d21ea86a67d47780b9a0d1e1d200500f62b19293fa834d0dea80b8677")
+                  .asCompatibleSubstituteFor("postgres"))
+          .withDatabaseName("ayuvahak_origin")
+          .withUsername("ayuvahak")
+          .withPassword(TEST_PASSWORD);
+
   @Container private static final PostgreSQLContainer CONTAINER = POSTGRES;
+  @Container private static final PostgreSQLContainer ORIGIN_CONTAINER = ORIGIN_POSTGRES;
   private static HttpServer jwksServer;
   private static HttpsServer partnerServer;
 
@@ -172,11 +191,27 @@ class DirectoryCapacityReferralScenarioIT {
   @Autowired private DirectoryStore directoryStore;
   @Autowired private DirectoryMcsdSynchronizationService directoryMcsdSynchronization;
   @Autowired private CapacityReservationCommands capacityReservationCommands;
+
+  @Autowired
+  private org.ayuvahak.platform.exchange.application.PartnerTrustProfileStore
+      partnerTrustProfileStore;
+
+  @Autowired
+  private org.ayuvahak.platform.exchange.application.FederationPeerInboundAuthorizationService
+      federationPeerInboundAuthorizationService;
+
+  @Autowired private PlatformTransactionManager transactionManager;
+
+  @Autowired
+  private org.ayuvahak.transfer.application.FederatedReceivingCoordinationCommands
+      federatedReceivingCommands;
+
   @Autowired private ExecutionContextFactory executionContextFactory;
   @Autowired private MatchingOwnerEvidenceReader matchingOwnerEvidenceReader;
   @Autowired private MatchingEligibilityApplicationService matchingEligibility;
   @Autowired private MutableMatchingPolicyCatalog testPolicies;
   @Autowired private CapacityIsolationProbe capacityIsolationProbe;
+  @Autowired private FederatedReceivingCapacityFailureProbe federatedReceivingCapacityFailureProbe;
   @Autowired private DirectoryIsolationProbe directoryIsolationProbe;
   @Autowired private MutableTravelTimePort testTravelTimePort;
   @Autowired private OutboxDispatcher outboxDispatcher;
@@ -187,6 +222,10 @@ class DirectoryCapacityReferralScenarioIT {
     registry.add("AYUVAHAK_DATABASE_USERNAME", POSTGRES::getUsername);
     registry.add("AYUVAHAK_DATABASE_PASSWORD", POSTGRES::getPassword);
     registry.add("ayuvahak.authentication.issuer", () -> ISSUER);
+    registry.add("ayuvahak.federation.identity.deployment-id", () -> "SYN-DEPLOYMENT-RECEIVER");
+    registry.add(
+        "ayuvahak.federation.identity.installation-binding",
+        () -> "SYNTHETIC-LOCAL-TEST-BINDING-ONLY-DO-NOT-USE-PRODUCTION-001");
     registry.add(
         "ayuvahak.authentication.jwk-set-uri",
         () -> "http://127.0.0.1:" + jwksServer.getAddress().getPort() + "/jwks");
@@ -277,6 +316,7 @@ class DirectoryCapacityReferralScenarioIT {
     testTravelTimePort.setEstimates(List.of());
     capacityIsolationProbe.clear();
     directoryIsolationProbe.clear();
+    federatedReceivingCapacityFailureProbe.reset();
   }
 
   @Test
@@ -1523,6 +1563,1516 @@ class DirectoryCapacityReferralScenarioIT {
         .andExpect(jsonPath("$.code").value("MATCHING_REQUEST_INVALID"));
   }
 
+  @Test
+  void federatedReceivingCapacityUsesTypedLocalSubjectAndSharesCapacityAccounting()
+      throws Exception {
+    grantPlatform(CURATOR, "DirectoryCuration");
+    grantPlatform(CURATOR, "DirectoryVocabularyAdministration");
+    grantPlatform(CAPACITY_ADMIN, "CapacityPolicyAdministration");
+    String organizationId = createOrganization("synthetic-federated-capacity-organization");
+    String facilityId =
+        createFacility(
+            "synthetic-federated-capacity-facility", organizationId, "Synthetic Receiver");
+    grantFacility(CAPACITY_REPORTER, "CapacityReporting", organizationId, facilityId);
+    grantFacility(CAPACITY_REPORTER, "CapacityEvidenceReview", organizationId, facilityId);
+    defineReservableCapacityDimension("SYN_FEDERATED_COORDINATION_SLOT");
+    configureReservableCapacityPolicy("SYN_FEDERATED_COORDINATION_SLOT");
+    recordReservableCapacityObservation(
+        organizationId, facilityId, "SYN_FEDERATED_COORDINATION_SLOT", 4);
+
+    String serviceClient = "synthetic-federated-receiving-worker";
+    grantService(serviceClient, "CapacityReservation", "FACILITY", organizationId, facilityId);
+    var scope =
+        RequestedExecutionScope.facility(
+            new ExternalReference(new IssuerId(DIRECTORY_ISSUER), "Organization", organizationId),
+            new ExternalReference(new IssuerId(DIRECTORY_ISSUER), "Facility", facilityId));
+    var serviceContext =
+        executionContextFactory.forIntegrationRequest(
+            ActorReference.service(new IssuerId(ISSUER), serviceClient),
+            scope,
+            new CorrelationId("synthetic-federated-capacity-correlation"));
+    InternalId localReceivingRequest = InternalId.generate();
+    InternalId capacityOperation = InternalId.generate();
+    Instant intervalStart = Instant.now().plusSeconds(60);
+    Instant intervalEnd = intervalStart.plusSeconds(1800);
+    var request =
+        new FederatedReceivingCapacityReservationRequest(
+            capacityOperation,
+            localReceivingRequest,
+            new ExternalReference(new IssuerId(DIRECTORY_ISSUER), "Facility", facilityId),
+            "SYN_FEDERATED_COORDINATION_SLOT",
+            "slot",
+            new BigDecimal("4"),
+            intervalStart,
+            intervalEnd,
+            intervalEnd);
+
+    var reserved =
+        capacityReservationCommands.reserveFederatedReceiving(
+            serviceContext, request, "synthetic-federated-capacity-reserve");
+    assertThat(reserved.outcome()).isEqualTo(CapacityReservationResult.Outcome.RESERVED);
+    assertThat(reserved.reservationId()).isPresent();
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT request_fingerprint FROM capacity.reservation_operation "
+                    + "WHERE operation_id = ?",
+                String.class,
+                capacityOperation.value()))
+        .matches("[0-9a-f]{64}");
+    var replayed =
+        capacityReservationCommands.reserveFederatedReceiving(
+            serviceContext, request, "synthetic-federated-capacity-reserve");
+    assertThat(replayed.replayed()).isTrue();
+    assertThat(replayed.reservationId()).isEqualTo(reserved.reservationId());
+    assertThat(
+            jdbc.queryForMap(
+                "SELECT subject_type, subject_id, transfer_id FROM capacity.coordination_reservation "
+                    + "WHERE operation_id = ?",
+                capacityOperation.value()))
+        .containsEntry("subject_type", "FEDERATED_RECEIVING_REQUEST")
+        .containsEntry("subject_id", localReceivingRequest.value())
+        .containsEntry("transfer_id", null);
+
+    var outcome =
+        capacityReservationCommands.getFederatedReceivingReservationOutcome(
+            serviceContext, capacityOperation, localReceivingRequest);
+    assertThat(outcome.status()).isEqualTo(CapacityReservationOutcome.Status.RESERVED);
+    assertThat(outcome.reservationId()).isEqualTo(reserved.reservationId());
+
+    InternalId releaseOperation = InternalId.generate();
+    var released =
+        capacityReservationCommands.releaseFederatedReceiving(
+            serviceContext, releaseOperation, capacityOperation, localReceivingRequest);
+    assertThat(released.outcome()).isEqualTo(CapacityReleaseResult.Outcome.RELEASED);
+    assertThat(
+            capacityReservationCommands
+                .getFederatedReceivingReservationOutcome(
+                    serviceContext, capacityOperation, localReceivingRequest)
+                .status())
+        .isEqualTo(CapacityReservationOutcome.Status.RELEASED);
+
+    var changedFederatedRequest =
+        new FederatedReceivingCapacityReservationRequest(
+            capacityOperation,
+            localReceivingRequest,
+            request.facility(),
+            request.dimensionCode(),
+            request.unit(),
+            new BigDecimal("3"),
+            intervalStart,
+            intervalEnd,
+            intervalEnd);
+    assertThatThrownBy(
+            () ->
+                capacityReservationCommands.reserveFederatedReceiving(
+                    serviceContext,
+                    changedFederatedRequest,
+                    "synthetic-federated-capacity-changed-input"))
+        .isInstanceOf(PlatformProblemException.class)
+        .satisfies(
+            failure ->
+                assertThat(((PlatformProblemException) failure).code().name())
+                    .isEqualTo("IDEMPOTENCY_KEY_REUSED"));
+
+    InternalId transferSubject = InternalId.generate();
+    InternalId transferOperation = InternalId.generate();
+    var transferRequest =
+        new CapacityReservationRequest(
+            transferOperation,
+            transferSubject,
+            request.facility(),
+            request.dimensionCode(),
+            request.unit(),
+            BigDecimal.ONE,
+            intervalStart,
+            intervalEnd,
+            intervalEnd);
+    var transferReservation =
+        capacityReservationCommands.reserve(
+            serviceContext, transferRequest, "synthetic-transfer-capacity-reserve");
+    assertThat(transferReservation.outcome()).isEqualTo(CapacityReservationResult.Outcome.RESERVED);
+    assertThat(
+            jdbc.queryForMap(
+                "SELECT subject_type, subject_id, transfer_id FROM "
+                    + "capacity.coordination_reservation WHERE operation_id = ?",
+                transferOperation.value()))
+        .containsEntry("subject_type", "TRANSFER")
+        .containsEntry("subject_id", transferSubject.value())
+        .containsEntry("transfer_id", transferSubject.value());
+    assertThat(
+            capacityReservationCommands
+                .getReservationOutcome(serviceContext, transferOperation, transferSubject)
+                .status())
+        .isEqualTo(CapacityReservationOutcome.Status.RESERVED);
+    var transferReleased =
+        capacityReservationCommands.release(
+            serviceContext, InternalId.generate(), transferOperation, transferSubject);
+    assertThat(transferReleased.outcome()).isEqualTo(CapacityReleaseResult.Outcome.RELEASED);
+    assertThat(
+            capacityReservationCommands
+                .getReservationOutcome(serviceContext, transferOperation, transferSubject)
+                .status())
+        .isEqualTo(CapacityReservationOutcome.Status.RELEASED);
+
+    assertThat(
+            jdbc.queryForList(
+                "SELECT subject_type, subject_id, transfer_id FROM "
+                    + "capacity.coordination_reservation WHERE subject_id IN (?, ?) "
+                    + "ORDER BY subject_type",
+                localReceivingRequest.value(),
+                transferSubject.value()))
+        .hasSize(2);
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM capacity.coordination_reservation WHERE subject_type = ? "
+                    + "AND subject_id = ?",
+                Integer.class,
+                "FEDERATED_RECEIVING_REQUEST",
+                localReceivingRequest.value()))
+        .isEqualTo(1);
+  }
+
+  @Test
+  void namedFederatedReceivingHttpOperationsAuthorizePeerAndRecoverStatus() throws Exception {
+    grantPlatform(CURATOR, "DirectoryCuration");
+    grantPlatform(CURATOR, "DirectoryVocabularyAdministration");
+    String organizationId = createOrganization("synthetic-federated-http-organization");
+    String facilityId =
+        createFacility(
+            "synthetic-federated-http-facility", organizationId, "Synthetic HTTP Receiver");
+
+    var receiver =
+        new org.ayuvahak.platform.federation.domain.DeploymentId("SYN-DEPLOYMENT-RECEIVER");
+    var origin =
+        new org.ayuvahak.platform.federation.domain.DeploymentId(
+            "SYN-DEPLOYMENT-HTTP-ORIGIN-" + UUID.randomUUID());
+    String remoteDirectoryIssuer = "urn:ayuvahak:deployment:" + receiver.value() + ":directory";
+    var localOrganization =
+        new ExternalReference(new IssuerId(DIRECTORY_ISSUER), "Organization", organizationId);
+    var localFacility =
+        new ExternalReference(new IssuerId(DIRECTORY_ISSUER), "Facility", facilityId);
+    var remoteOrganization =
+        new ExternalReference(new IssuerId(remoteDirectoryIssuer), "Organization", organizationId);
+    var remoteFacility =
+        new ExternalReference(new IssuerId(remoteDirectoryIssuer), "Facility", facilityId);
+    var requestOperation =
+        org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.AllowedOperation
+            .transferRemoteReceivingRequest(
+                org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.Direction.INBOUND);
+    var statusOperation =
+        org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.AllowedOperation
+            .transferRemoteReservationStatus(
+                org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.Direction.INBOUND);
+    String serviceClient = "synthetic-integration-service";
+    var principal = ActorReference.service(new IssuerId(ISSUER), serviceClient);
+    var partnerKey =
+        new org.ayuvahak.platform.exchange.domain.PartnerKey(
+            "synthetic-http-peer-" + UUID.randomUUID());
+    var configuration =
+        new org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration(
+            partnerKey,
+            localOrganization,
+            "https://synthetic-federation-peer.example.test",
+            "/federation",
+            new org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.Authentication(
+                org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.AuthenticationMethod
+                    .MUTUAL_TLS,
+                Optional.of("secretref:SYNTHETIC-PEER-CERTIFICATE"),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty()),
+            org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.TlsPolicy.SYSTEM_CA,
+            Optional.empty(),
+            new org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.Limits(
+                1_000, 2_000, 5_000, 100_000, 200_000, 1, 100, 16, 1),
+            org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.RetryClass.NEVER,
+            List.of(requestOperation, statusOperation),
+            Optional.of(principal),
+            Optional.of(
+                new org.ayuvahak.platform.exchange.domain.FederationPeerConfiguration(
+                    origin,
+                    localOrganization,
+                    org.ayuvahak.platform.exchange.domain.FederationPeerConfiguration
+                        .supportedProtocolProfile(),
+                    List.of(localFacility))));
+    new TransactionTemplate(transactionManager)
+        .execute(
+            ignored -> {
+              partnerTrustProfileStore.createInitial(configuration, Instant.now());
+              partnerTrustProfileStore.activate(partnerKey, 1, Instant.now());
+              return null;
+            });
+
+    InternalId originJourneyId = InternalId.generate();
+    InternalId operationId = InternalId.generate();
+    String requestJson =
+        "{\"protocolProfile\":\"AyuVahak-Federation-v1\","
+            + "\"sourceDeploymentId\":\""
+            + origin.value()
+            + "\","
+            + "\"originContext\":\"transfer\",\"originResourceType\":\"TransferJourney\","
+            + "\"originJourneyId\":\""
+            + originJourneyId
+            + "\","
+            + "\"originFacilityId\":\"SYN-FACILITY-ORIGIN\","
+            + "\"destinationOrganization\":{\"issuer\":\""
+            + remoteDirectoryIssuer
+            + "\",\"resourceType\":\"Organization\",\"value\":\""
+            + organizationId
+            + "\"},\"destinationFacility\":{\"issuer\":\""
+            + remoteDirectoryIssuer
+            + "\",\"resourceType\":\"Facility\",\"value\":\""
+            + facilityId
+            + "\"},\"capacityDimensionCode\":\"SYN_FEDERATED_HTTP_SLOT\","
+            + "\"capacityUnit\":\"slot\",\"capacityQuantity\":1,"
+            + "\"capacityIntervalStart\":\"2026-10-18T12:00:00Z\","
+            + "\"capacityIntervalEnd\":\"2026-10-18T12:30:00Z\"}";
+    byte[] requestBody = requestJson.getBytes(StandardCharsets.UTF_8);
+    var requestFingerprint =
+        org.ayuvahak.platform.exchange.application.FederationOperationFingerprint.calculate(
+            origin, receiver, remoteFacility, requestOperation, requestBody);
+
+    mockMvc
+        .perform(
+            post("/api/federation/operations/transfer.remote-receiving-request")
+                .header("Authorization", bearer(serviceToken(serviceClient)))
+                .header("X-AyuVahak-Federation-Source", origin.value())
+                .header("X-AyuVahak-Federation-Peer", receiver.value())
+                .header("X-AyuVahak-Federation-Operation", requestOperation.operationCode())
+                .header("X-AyuVahak-Operation-Id", operationId)
+                .header("X-AyuVahak-Operation-Fingerprint", requestFingerprint.value())
+                .contentType("application/json")
+                .content(requestBody))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.protocolProfile").value("AyuVahak-Federation-v1"))
+        .andExpect(jsonPath("$.sourceDeploymentId").value(receiver.value()))
+        .andExpect(jsonPath("$.operationId").value(operationId.toString()))
+        .andExpect(jsonPath("$.requestFingerprint").value(requestFingerprint.value()))
+        .andExpect(jsonPath("$.outcome").value("RECEIVED"));
+
+    var untrustedOrigin =
+        new org.ayuvahak.platform.federation.domain.DeploymentId(
+            "SYN-DEPLOYMENT-UNTRUSTED-" + UUID.randomUUID());
+    byte[] untrustedBody =
+        requestJson
+            .replace(origin.value(), untrustedOrigin.value())
+            .getBytes(StandardCharsets.UTF_8);
+    var untrustedFingerprint =
+        org.ayuvahak.platform.exchange.application.FederationOperationFingerprint.calculate(
+            untrustedOrigin, receiver, remoteFacility, requestOperation, untrustedBody);
+    mockMvc
+        .perform(
+            post("/api/federation/operations/transfer.remote-receiving-request")
+                .header("Authorization", bearer(serviceToken(serviceClient)))
+                .header("X-AyuVahak-Federation-Source", untrustedOrigin.value())
+                .header("X-AyuVahak-Federation-Peer", receiver.value())
+                .header("X-AyuVahak-Federation-Operation", requestOperation.operationCode())
+                .header("X-AyuVahak-Operation-Id", InternalId.generate())
+                .header("X-AyuVahak-Operation-Fingerprint", untrustedFingerprint.value())
+                .contentType("application/json")
+                .content(untrustedBody))
+        .andExpect(status().isForbidden());
+
+    String statusJson =
+        "{\"protocolProfile\":\"AyuVahak-Federation-v1\","
+            + "\"sourceDeploymentId\":\""
+            + origin.value()
+            + "\","
+            + "\"operationId\":\""
+            + operationId
+            + "\","
+            + "\"requestFingerprint\":\""
+            + requestFingerprint.value()
+            + "\","
+            + "\"destinationOrganization\":{\"issuer\":\""
+            + remoteDirectoryIssuer
+            + "\",\"resourceType\":\"Organization\",\"value\":\""
+            + organizationId
+            + "\"},\"destinationFacility\":{\"issuer\":\""
+            + remoteDirectoryIssuer
+            + "\",\"resourceType\":\"Facility\",\"value\":\""
+            + facilityId
+            + "\"}}";
+    byte[] statusBody = statusJson.getBytes(StandardCharsets.UTF_8);
+    var statusFingerprint =
+        org.ayuvahak.platform.exchange.application.FederationOperationFingerprint.calculate(
+            origin, receiver, remoteFacility, statusOperation, statusBody);
+    mockMvc
+        .perform(
+            post("/api/federation/operations/transfer.remote-reservation-status")
+                .header("Authorization", bearer(serviceToken(serviceClient)))
+                .header("X-AyuVahak-Federation-Source", origin.value())
+                .header("X-AyuVahak-Federation-Peer", receiver.value())
+                .header("X-AyuVahak-Federation-Operation", statusOperation.operationCode())
+                .header("X-AyuVahak-Operation-Id", operationId)
+                .header("X-AyuVahak-Operation-Fingerprint", statusFingerprint.value())
+                .contentType("application/json")
+                .content(statusBody))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.outcome").value("RECEIVED"))
+        .andExpect(jsonPath("$.receivingVersion").value(1));
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM transfer.federated_receiving_request "
+                    + "WHERE origin_deployment_id = ? AND request_operation_id = ?",
+                Integer.class,
+                origin.value(),
+                operationId.value()))
+        .isEqualTo(1);
+  }
+
+  @Test
+  void originAttemptRecoversSameReceiverReservationAcrossIndependentDatabases() throws Exception {
+    grantPlatform(CURATOR, "DirectoryCuration");
+    grantPlatform(CURATOR, "DirectoryVocabularyAdministration");
+    String dimension =
+        "SYN_FEDERATED_PEER_RECOVERY_"
+            + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT)
+            + "_SLOT";
+    grantPlatform(CAPACITY_ADMIN, "CapacityPolicyAdministration");
+    String organizationId = createOrganization("synthetic-peer-recovery-organization");
+    String facilityId =
+        createFacility(
+            "synthetic-peer-recovery-facility", organizationId, "Synthetic Peer Receiver");
+    grantFacility(CAPACITY_REPORTER, "CapacityReporting", organizationId, facilityId);
+    grantFacility(CAPACITY_REPORTER, "CapacityEvidenceReview", organizationId, facilityId);
+    defineReservableCapacityDimension(dimension);
+    configureReservableCapacityPolicy(dimension);
+    recordReservableCapacityObservation(organizationId, facilityId, dimension, 3);
+    grantService(
+        "ayuvahak-transfer-reservation-worker",
+        "CapacityReservation",
+        "FACILITY",
+        organizationId,
+        facilityId);
+    grantService(
+        "ayuvahak-transfer-reservation-worker",
+        "TransferReservationReconciliation",
+        "FACILITY",
+        organizationId,
+        facilityId);
+    grantFacility(
+        "synthetic-peer-recovery-clinical",
+        "ClinicalSuitabilityAuthority",
+        organizationId,
+        facilityId);
+    grantFacility(
+        "synthetic-peer-recovery-operational",
+        "OperationalReadinessAuthority",
+        organizationId,
+        facilityId);
+    grantFacility(
+        "synthetic-peer-recovery-acceptance", "AcceptanceAuthority", organizationId, facilityId);
+
+    var receiver =
+        new org.ayuvahak.platform.federation.domain.DeploymentId("SYN-DEPLOYMENT-RECEIVER");
+    var origin =
+        new org.ayuvahak.platform.federation.domain.DeploymentId(
+            "SYN-DEPLOYMENT-ORIGIN-"
+                + UUID.randomUUID().toString().replace("-", "").substring(0, 12));
+    var localOrganization =
+        new ExternalReference(new IssuerId(DIRECTORY_ISSUER), "Organization", organizationId);
+    var localFacility =
+        new ExternalReference(new IssuerId(DIRECTORY_ISSUER), "Facility", facilityId);
+    String remoteDirectoryIssuer = "urn:ayuvahak:deployment:" + receiver.value() + ":directory";
+    var remoteOrganization =
+        new ExternalReference(new IssuerId(remoteDirectoryIssuer), "Organization", organizationId);
+    var remoteFacility =
+        new ExternalReference(new IssuerId(remoteDirectoryIssuer), "Facility", facilityId);
+    var partnerKey =
+        new org.ayuvahak.platform.exchange.domain.PartnerKey(
+            "synthetic-origin-peer-" + origin.value().substring(origin.value().length() - 8));
+    String serviceClient = "synthetic-federated-origin-peer";
+    var inboundPrincipal = ActorReference.service(new IssuerId(ISSUER), serviceClient);
+    var inboundRequest =
+        org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.AllowedOperation
+            .transferRemoteReceivingRequest(
+                org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.Direction.INBOUND);
+    var inboundStatus =
+        org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.AllowedOperation
+            .transferRemoteReservationStatus(
+                org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.Direction.INBOUND);
+    configureFederationProfile(
+        partnerKey,
+        origin,
+        localOrganization,
+        localFacility,
+        inboundPrincipal,
+        List.of(inboundRequest, inboundStatus));
+
+    String originDatabaseUrl = ORIGIN_POSTGRES.getJdbcUrl();
+    assertThat(originDatabaseUrl).isNotEqualTo(POSTGRES.getJdbcUrl());
+    try (com.zaxxer.hikari.HikariDataSource originDataSource =
+        new com.zaxxer.hikari.HikariDataSource()) {
+      originDataSource.setJdbcUrl(originDatabaseUrl);
+      originDataSource.setUsername(ORIGIN_POSTGRES.getUsername());
+      originDataSource.setPassword(ORIGIN_POSTGRES.getPassword());
+      org.flywaydb.core.Flyway.configure()
+          .dataSource(originDataSource)
+          .locations("classpath:db/migration")
+          .load()
+          .migrate();
+      JdbcTemplate originJdbc = new JdbcTemplate(originDataSource);
+      var originTransactionManager =
+          new org.springframework.jdbc.datasource.DataSourceTransactionManager(originDataSource);
+      Instant now = Instant.now();
+      InternalId journeyId = InternalId.generate();
+      InternalId referralId = InternalId.generate();
+      InternalId originOrganizationId = InternalId.generate();
+      InternalId originFacilityId = InternalId.generate();
+      ActorReference originActor =
+          ActorReference.human(new IssuerId("urn:synthetic:identity"), "SYN-ORIGIN-OPERATOR");
+      originJdbc.update(
+          "INSERT INTO transfer.journey (journey_id, referral_id, origin_organization_id, origin_facility_id, "
+              + "created_by_kind, created_by_issuer, created_by_identifier_type, created_by_identifier, "
+              + "created_at, transport_required, version) VALUES (?, ?, ?, ?, 'HUMAN', ?, 'subject', ?, ?, false, 1)",
+          journeyId.value(),
+          referralId.value(),
+          originOrganizationId.value(),
+          originFacilityId.value(),
+          originActor.identity().issuer().value(),
+          originActor.identity().value(),
+          java.sql.Timestamp.from(now));
+      originJdbc.update(
+          "INSERT INTO transfer.request_attempt (request_attempt_id, journey_id, attempt_number, referral_id, "
+              + "referral_revision, recommendation_id, destination_facility_id, request_status, requested_by_kind, "
+              + "requested_by_issuer, requested_by_identifier_type, requested_by_identifier, requested_at, expires_at, "
+              + "terminal_occurred_at, terminal_recorded_at, version) VALUES (?, ?, 1, ?, 1, ?, ?, 'REJECTED', "
+              + "'HUMAN', ?, 'subject', ?, ?, ?, NULL, NULL, 2)",
+          InternalId.generate().value(),
+          journeyId.value(),
+          referralId.value(),
+          InternalId.generate().value(),
+          InternalId.generate().value(),
+          originActor.identity().issuer().value(),
+          originActor.identity().value(),
+          java.sql.Timestamp.from(now.minusSeconds(120)),
+          java.sql.Timestamp.from(now.minusSeconds(60)));
+
+      var originReferences =
+          new org.ayuvahak.transfer.domain.TransferJourney(
+              journeyId,
+              referralId,
+              new ExternalReference(
+                  new IssuerId(DIRECTORY_ISSUER), "Organization", originOrganizationId.toString()),
+              Optional.of(
+                  new ExternalReference(
+                      new IssuerId(DIRECTORY_ISSUER), "Facility", originFacilityId.toString())),
+              originActor,
+              now,
+              false,
+              1);
+      var idempotencyProperties =
+          new org.ayuvahak.platform.idempotency.configuration.CommandIdempotencyProperties();
+      var originTransferStore =
+          new org.ayuvahak.transfer.adapter.persistence.JdbcTransferStore(
+              originJdbc, originDataSource, idempotencyProperties);
+      var originAttemptStore =
+          new org.ayuvahak.transfer.adapter.persistence.JdbcFederatedOriginReceivingAttemptStore(
+              originJdbc);
+      org.ayuvahak.matching.application.FederationLocalDeploymentIdentity originIdentity =
+          () -> Optional.of(origin);
+      var outboundRequest =
+          org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.AllowedOperation
+              .transferRemoteReceivingRequest(
+                  org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.Direction
+                      .OUTBOUND);
+      var outboundStatus =
+          org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.AllowedOperation
+              .transferRemoteReservationStatus(
+                  org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.Direction
+                      .OUTBOUND);
+      var outboundProfile =
+          outboundFederationProfile(
+              partnerKey,
+              receiver,
+              remoteOrganization,
+              remoteFacility,
+              List.of(outboundRequest, outboundStatus));
+      var originProfileStore = outboundProfileStore(outboundProfile);
+      var originIdentityStore =
+          new org.ayuvahak.platform.federation.application.DeploymentIdentityStore() {
+            private org.ayuvahak.platform.federation.domain.DeploymentIdentity registered;
+
+            @Override
+            public org.ayuvahak.platform.federation.domain.DeploymentIdentity registerOrVerify(
+                org.ayuvahak.platform.federation.domain.DeploymentId deploymentId,
+                String binding,
+                Instant registeredAt) {
+              registered =
+                  new org.ayuvahak.platform.federation.domain.DeploymentIdentity(
+                      deploymentId, 1, registeredAt, registeredAt);
+              return registered;
+            }
+
+            @Override
+            public Optional<org.ayuvahak.platform.federation.domain.DeploymentIdentity>
+                findCurrent() {
+              return Optional.ofNullable(registered);
+            }
+          };
+      var originRegistration =
+          new org.ayuvahak.platform.federation.application.DeploymentIdentityRegistrationService(
+              originIdentityStore);
+      originRegistration.register(origin, "SYNTHETIC-ORIGIN-INSTALLATION-BINDING-0000001", now);
+      var originAuthorization =
+          new org.ayuvahak.platform.exchange.application.PartnerAuthorizationPort() {
+            @Override
+            public Optional<org.ayuvahak.platform.exchange.application.PartnerBearerToken>
+                bearerToken(org.ayuvahak.platform.exchange.domain.PartnerProfileVersion ignored) {
+              return Optional.empty();
+            }
+
+            @Override
+            public void invalidate(org.ayuvahak.platform.exchange.domain.PartnerKey ignored) {}
+          };
+      int[] peerRequests = {0};
+      org.ayuvahak.platform.exchange.application.FederationPeerOperationTransportPort
+          controlledPeer =
+              (profile, peerRequest, token, beforeAttempt) -> {
+                beforeAttempt.run();
+                var inboundOperation =
+                    peerRequest.operation().operationCode().equals(outboundRequest.operationCode())
+                        ? inboundRequest
+                        : inboundStatus;
+                String route =
+                    inboundOperation.equals(inboundRequest)
+                        ? "/api/federation/operations/transfer.remote-receiving-request"
+                        : "/api/federation/operations/transfer.remote-reservation-status";
+                try {
+                  var response =
+                      mockMvc
+                          .perform(
+                              post(route)
+                                  .header("Authorization", bearer(serviceToken(serviceClient)))
+                                  .header("X-AyuVahak-Federation-Source", origin.value())
+                                  .header("X-AyuVahak-Federation-Peer", receiver.value())
+                                  .header(
+                                      "X-AyuVahak-Federation-Operation",
+                                      inboundOperation.operationCode())
+                                  .header(
+                                      "X-AyuVahak-Operation-Id",
+                                      peerRequest.operationId().toString())
+                                  .header(
+                                      "X-AyuVahak-Operation-Fingerprint",
+                                      peerRequest.fingerprint().value())
+                                  .contentType("application/json")
+                                  .content(peerRequest.body()))
+                          .andReturn();
+                  if (response.getResponse().getStatus() != 200) {
+                    throw new AssertionError(
+                        "local receiving peer returned " + response.getResponse().getStatus());
+                  }
+                  byte[] responseBody = response.getResponse().getContentAsByteArray();
+                  if (inboundOperation.equals(inboundRequest) && peerRequests[0]++ == 0) {
+                    var result = new tools.jackson.databind.ObjectMapper().readTree(responseBody);
+                    InternalId receivingRequestId =
+                        InternalId.parse(result.get("receivingRequestId").asString());
+                    acceptFederatedReceivingForPeerRecovery(
+                        receivingRequestId,
+                        peerRequest.operationId(),
+                        localOrganization,
+                        localFacility,
+                        dimension,
+                        now,
+                        java.util.UUID.fromString(organizationId),
+                        java.util.UUID.fromString(facilityId));
+                    throw new org.ayuvahak.platform.exchange.application.PartnerTransportException(
+                        org.ayuvahak.platform.exchange.application.PartnerTransportFailure
+                            .READ_TIMEOUT);
+                  }
+                  return new org.ayuvahak.platform.exchange.application
+                      .PartnerOutboundOperationResponse(
+                      response.getResponse().getStatus(),
+                      Optional.of("application/json"),
+                      responseBody,
+                      profile.version());
+                } catch (
+                    org.ayuvahak.platform.exchange.application.PartnerTransportException failure) {
+                  throw failure;
+                } catch (Exception failure) {
+                  throw new AssertionError("controlled local peer exchange failed", failure);
+                }
+              };
+      var operationService =
+          new org.ayuvahak.platform.exchange.application.FederationPeerOperationService(
+              originProfileStore, originRegistration, originAuthorization, controlledPeer);
+      var originExchange =
+          new org.ayuvahak.transfer.adapter.federation.Phase9FederatedReceivingOriginExchange(
+              operationService, originIdentity, new tools.jackson.databind.ObjectMapper());
+      var applicability =
+          (org.ayuvahak.transfer.application.MatchingApplicabilityPort)
+              (context, referral, recommendation, candidate, revision) ->
+                  new org.ayuvahak.matching.application.RecommendationApplicabilityResult(
+                      recommendation,
+                      candidate,
+                      org.ayuvahak.matching.application.RecommendationApplicabilityResult.Status
+                          .APPLICABLE,
+                      List.of(),
+                      Instant.now());
+      var peerPolicy =
+          (org.ayuvahak.matching.application.FederatedCapacityPeerPolicy)
+              (facility, ignoredDimension) ->
+                  Optional.of(
+                      new org.ayuvahak.matching.application.RemoteCapacityPeerTarget(
+                          partnerKey,
+                          receiver,
+                          outboundProfile.version(),
+                          new org.ayuvahak.matching.domain.RemoteCapacityEvidenceCompatibility(
+                              "SYNTHETIC-V1", 1, 1)));
+      var authorityCatalog =
+          new org.ayuvahak.platform.authorization.domain.FunctionalAuthorityCatalog(
+              List.of(org.ayuvahak.transfer.domain.TransferAuthorities.request()));
+      var originAuthorizationService =
+          new org.ayuvahak.platform.authorization.application.AuthorizationService(
+              (actor, authority, scope) -> true, authorityCatalog);
+      var originAudit =
+          new org.ayuvahak.platform.audit.application.AuditWriter(
+              new org.ayuvahak.platform.audit.adapter.persistence.JdbcAuditRecordAppender(
+                  originJdbc, originTransactionManager),
+              java.time.Clock.systemUTC());
+      var originOutboxStore =
+          new org.ayuvahak.platform.eventing.adapter.persistence.PostgresOutboxStore(
+              originJdbc,
+              new org.ayuvahak.platform.event.EventEnvelopeJsonCodec(
+                  new tools.jackson.databind.ObjectMapper()),
+              java.time.Clock.systemUTC(),
+              originTransactionManager);
+      var originOutbox =
+          new org.ayuvahak.platform.eventing.application.OutboxWriter(originOutboxStore);
+      var coordinator =
+          new org.ayuvahak.transfer.application.FederatedReceivingOriginOperationCoordinator(
+              originAttemptStore,
+              originExchange,
+              originTransactionManager,
+              java.time.Clock.systemUTC());
+      var originCommand =
+          new org.ayuvahak.transfer.application.FederatedReceivingOriginCommands(
+              originTransferStore,
+              originAttemptStore,
+              applicability,
+              peerPolicy,
+              originIdentity,
+              originAuthorizationService,
+              originAudit,
+              originOutbox,
+              coordinator,
+              new tools.jackson.databind.ObjectMapper(),
+              originTransactionManager,
+              java.time.Clock.systemUTC());
+      var originContext =
+          new ExecutionContextFactory((actor, scope) -> true)
+              .forInteractiveRequest(
+                  originActor,
+                  RequestedExecutionScope.facility(
+                      originReferences.originOrganization(),
+                      originReferences.originFacility().orElseThrow()),
+                  CorrelationId.generate());
+      var originCommandInput =
+          new org.ayuvahak.transfer.application.FederatedReceivingOriginCommand(
+              1,
+              1,
+              InternalId.generate(),
+              remoteOrganization,
+              new org.ayuvahak.matching.domain.RemoteFacilityReference(
+                  receiver, "directory", InternalId.parse(facilityId)),
+              dimension,
+              "slot",
+              BigDecimal.ONE,
+              now.plusSeconds(300),
+              now.plusSeconds(2100));
+
+      var first =
+          originCommand.request(
+              originContext, journeyId, originCommandInput, "synthetic-peer-recovery-key");
+      assertThat(first.attempt().state())
+          .isEqualTo(
+              org.ayuvahak.transfer.domain.FederatedOriginReceivingAttempt.State.OUTCOME_UNKNOWN);
+      var recovered =
+          originCommand.request(
+              originContext, journeyId, originCommandInput, "synthetic-peer-recovery-key");
+      assertThat(recovered.replayed()).isTrue();
+      assertThat(recovered.attempt().state())
+          .isEqualTo(org.ayuvahak.transfer.domain.FederatedOriginReceivingAttempt.State.RESOLVED);
+      assertThat(recovered.attempt().operationId()).isEqualTo(first.attempt().operationId());
+      assertThat(recovered.attempt().remoteCapacityReservationId()).isPresent();
+      java.util.UUID committedReservationId =
+          jdbc.queryForObject(
+              "SELECT reservation_id FROM capacity.coordination_reservation "
+                  + "WHERE subject_type = 'FEDERATED_RECEIVING_REQUEST' AND subject_id = ?",
+              java.util.UUID.class,
+              receivingRequestIdForOperation(origin, first.attempt().operationId()).value());
+      assertThat(recovered.attempt().remoteCapacityReservationId().orElseThrow().value())
+          .isEqualTo(committedReservationId);
+      assertThat(
+              originJdbc.queryForObject(
+                  "SELECT COUNT(*) FROM transfer.journey WHERE journey_id = ?",
+                  Integer.class,
+                  journeyId.value()))
+          .isEqualTo(1);
+      assertThat(
+              originJdbc.queryForObject(
+                  "SELECT COUNT(*) FROM transfer.federated_origin_receiving_attempt WHERE journey_id = ?",
+                  Integer.class,
+                  journeyId.value()))
+          .isEqualTo(1);
+      assertThat(
+              originJdbc.queryForObject(
+                  "SELECT COUNT(*) FROM transfer.federated_origin_receiving_receipt",
+                  Integer.class))
+          .isEqualTo(1);
+      Integer receiverRequestCount =
+          jdbc.queryForObject(
+              "SELECT COUNT(*) FROM transfer.federated_receiving_request "
+                  + "WHERE origin_deployment_id = ? AND request_operation_id = ?",
+              Integer.class,
+              new Object[] {origin.value(), first.attempt().operationId().value()});
+      Integer reservationCount =
+          jdbc.queryForObject(
+              "SELECT COUNT(*) FROM capacity.coordination_reservation "
+                  + "WHERE subject_type = 'FEDERATED_RECEIVING_REQUEST' AND subject_id = ?",
+              Integer.class,
+              new Object[] {
+                receivingRequestIdForOperation(origin, first.attempt().operationId()).value()
+              });
+      assertThat(receiverRequestCount).isEqualTo(1);
+      assertThat(reservationCount).isEqualTo(1);
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT COUNT(*) FROM transfer.journey WHERE journey_id = ?",
+                  Integer.class,
+                  journeyId.value()))
+          .isZero();
+    }
+  }
+
+  private void configureFederationProfile(
+      org.ayuvahak.platform.exchange.domain.PartnerKey partnerKey,
+      org.ayuvahak.platform.federation.domain.DeploymentId peer,
+      ExternalReference organization,
+      ExternalReference facility,
+      ActorReference inboundPrincipal,
+      List<org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.AllowedOperation>
+          operations) {
+    var configuration =
+        new org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration(
+            partnerKey,
+            organization,
+            "https://synthetic-federation-peer.example.test",
+            "/federation",
+            new org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.Authentication(
+                org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.AuthenticationMethod
+                    .MUTUAL_TLS,
+                Optional.of("secretref:SYNTHETIC-PEER-CERTIFICATE"),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty()),
+            org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.TlsPolicy.SYSTEM_CA,
+            Optional.empty(),
+            new org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.Limits(
+                1_000, 2_000, 5_000, 100_000, 200_000, 1, 100, 16, 1),
+            org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.RetryClass.NEVER,
+            operations,
+            Optional.of(inboundPrincipal),
+            Optional.of(
+                new org.ayuvahak.platform.exchange.domain.FederationPeerConfiguration(
+                    peer,
+                    organization,
+                    org.ayuvahak.platform.exchange.domain.FederationPeerConfiguration
+                        .supportedProtocolProfile(),
+                    List.of(facility))));
+    new TransactionTemplate(transactionManager)
+        .execute(
+            ignored -> {
+              partnerTrustProfileStore.createInitial(configuration, Instant.now());
+              partnerTrustProfileStore.activate(partnerKey, 1, Instant.now());
+              return null;
+            });
+  }
+
+  private static org.ayuvahak.platform.exchange.domain.PartnerProfileVersion
+      outboundFederationProfile(
+          org.ayuvahak.platform.exchange.domain.PartnerKey partnerKey,
+          org.ayuvahak.platform.federation.domain.DeploymentId peer,
+          ExternalReference organization,
+          ExternalReference facility,
+          List<org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.AllowedOperation>
+              operations) {
+    Instant now = Instant.now();
+    var configuration =
+        new org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration(
+            partnerKey,
+            organization,
+            "https://synthetic-federation-peer.example.test",
+            "/federation",
+            new org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.Authentication(
+                org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.AuthenticationMethod
+                    .MUTUAL_TLS,
+                Optional.of("secret-ref:SYN-PEER-CERT"),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty()),
+            org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.TlsPolicy.SYSTEM_CA,
+            Optional.empty(),
+            new org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.Limits(
+                1_000, 2_000, 5_000, 100_000, 200_000, 1, 100, 16, 1),
+            org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.RetryClass.NEVER,
+            operations,
+            Optional.empty(),
+            Optional.of(
+                new org.ayuvahak.platform.exchange.domain.FederationPeerConfiguration(
+                    peer,
+                    organization,
+                    org.ayuvahak.platform.exchange.domain.FederationPeerConfiguration
+                        .supportedProtocolProfile(),
+                    List.of(facility))));
+    return new org.ayuvahak.platform.exchange.domain.PartnerProfileVersion(
+        InternalId.generate(),
+        1,
+        org.ayuvahak.platform.exchange.domain.PartnerProfileState.ACTIVE,
+        configuration,
+        now,
+        now);
+  }
+
+  private static org.ayuvahak.platform.exchange.application.PartnerTrustProfileStore
+      outboundProfileStore(
+          org.ayuvahak.platform.exchange.domain.PartnerProfileVersion activeProfile) {
+    return (org.ayuvahak.platform.exchange.application.PartnerTrustProfileStore)
+        Proxy.newProxyInstance(
+            org.ayuvahak.platform.exchange.application.PartnerTrustProfileStore.class
+                .getClassLoader(),
+            new Class<?>[] {
+              org.ayuvahak.platform.exchange.application.PartnerTrustProfileStore.class
+            },
+            (proxy, method, arguments) -> {
+              if (method.getName().equals("findActivePeer")) {
+                return Optional.of(activeProfile)
+                    .filter(
+                        profile ->
+                            profile.configuration().partnerKey().equals(arguments[0])
+                                && profile
+                                    .configuration()
+                                    .allowedOperations()
+                                    .contains(arguments[2])
+                                && profile.configuration().federationPeer().stream()
+                                    .anyMatch(
+                                        peer ->
+                                            peer.deploymentId().equals(arguments[1])
+                                                && peer.permits(
+                                                    profile.configuration().organization(),
+                                                    (ExternalReference) arguments[3])));
+              }
+              if (method.getName().equals("toString")) {
+                return "SyntheticOutboundFederationProfileStore";
+              }
+              throw new UnsupportedOperationException(
+                  "unexpected profile-store operation in local peer test: " + method.getName());
+            });
+  }
+
+  private void acceptFederatedReceivingForPeerRecovery(
+      InternalId receivingRequestId,
+      InternalId originOperationId,
+      ExternalReference organization,
+      ExternalReference facility,
+      String dimension,
+      Instant requestTime,
+      java.util.UUID organizationId,
+      java.util.UUID facilityId) {
+    var clinicalContext =
+        executionContextFactory.forInteractiveRequest(
+            ActorReference.human(new IssuerId(ISSUER), "synthetic-peer-recovery-clinical"),
+            RequestedExecutionScope.facility(organization, facility),
+            CorrelationId.generate());
+    var operationalContext =
+        executionContextFactory.forInteractiveRequest(
+            ActorReference.human(new IssuerId(ISSUER), "synthetic-peer-recovery-operational"),
+            RequestedExecutionScope.facility(organization, facility),
+            CorrelationId.generate());
+    var acceptanceContext =
+        executionContextFactory.forInteractiveRequest(
+            ActorReference.human(new IssuerId(ISSUER), "synthetic-peer-recovery-acceptance"),
+            RequestedExecutionScope.facility(organization, facility),
+            CorrelationId.generate());
+    var clinical =
+        federatedReceivingCommands.recordAssessment(
+            clinicalContext,
+            receivingRequestId,
+            org.ayuvahak.transfer.domain.FederatedReceivingRequest.AssessmentKind.CLINICAL,
+            org.ayuvahak.transfer.domain.FederatedReceivingRequest.Outcome.SUPPORTS,
+            "SYNTHETIC_CLINICAL_REVIEW",
+            requestTime,
+            1);
+    var operational =
+        federatedReceivingCommands.recordAssessment(
+            operationalContext,
+            receivingRequestId,
+            org.ayuvahak.transfer.domain.FederatedReceivingRequest.AssessmentKind.OPERATIONAL,
+            org.ayuvahak.transfer.domain.FederatedReceivingRequest.Outcome.SUPPORTS,
+            "SYNTHETIC_OPERATIONAL_REVIEW",
+            requestTime,
+            clinical.version());
+    federatedReceivingCapacityFailureProbe.loseNextResponseAfterReservationCommit();
+    var accepted =
+        federatedReceivingCommands.accept(
+            acceptanceContext, receivingRequestId, requestTime, operational.version());
+    assertThat(accepted.status())
+        .isEqualTo(
+            org.ayuvahak.transfer.domain.FederatedReceivingRequest.Status.ACCEPTED_UNRESERVED);
+    assertThat(accepted.reservationStatus())
+        .isEqualTo(
+            org.ayuvahak.transfer.domain.FederatedReceivingRequest.ReservationStatus
+                .OUTCOME_UNKNOWN);
+    assertThat(accepted.capacityOperationId()).get().isNotEqualTo(originOperationId);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM capacity.coordination_reservation WHERE subject_type = "
+                    + "'FEDERATED_RECEIVING_REQUEST' AND subject_id = ?",
+                Integer.class,
+                receivingRequestId.value()))
+        .isEqualTo(1);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM capacity.coordination_reservation WHERE facility_identifier = ? "
+                    + "AND dimension_code = ?",
+                Integer.class,
+                facilityId,
+                dimension))
+        .isEqualTo(1);
+  }
+
+  private InternalId receivingRequestIdForOperation(
+      org.ayuvahak.platform.federation.domain.DeploymentId origin, InternalId operationId) {
+    java.util.UUID value =
+        jdbc.queryForObject(
+            "SELECT receiving_request_id FROM transfer.federated_receiving_request "
+                + "WHERE origin_deployment_id = ? AND request_operation_id = ?",
+            java.util.UUID.class,
+            origin.value(),
+            operationId.value());
+    return new InternalId(value);
+  }
+
+  @Test
+  void federatedReceivingRequestReceiptIsPeerScopedAndReplaysWithoutCreatingLocalTransfer()
+      throws Exception {
+    grantPlatform(CURATOR, "DirectoryCuration");
+    grantPlatform(CURATOR, "DirectoryVocabularyAdministration");
+    String organizationId = createOrganization("synthetic-federated-receiving-organization");
+    String facilityId =
+        createFacility(
+            "synthetic-federated-receiving-facility", organizationId, "Synthetic Receiver");
+    InternalId remoteTransferId = InternalId.generate();
+    InternalId requestOperationId = InternalId.generate();
+    var destinationOrganization =
+        new ExternalReference(new IssuerId(DIRECTORY_ISSUER), "Organization", organizationId);
+    var destinationFacility =
+        new ExternalReference(new IssuerId(DIRECTORY_ISSUER), "Facility", facilityId);
+    var operation =
+        org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.AllowedOperation
+            .transferRemoteReceivingRequest(
+                org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.Direction.INBOUND);
+    var peer =
+        new org.ayuvahak.platform.federation.domain.DeploymentId(
+            "SYN-DEPLOYMENT-ORIGIN-" + UUID.randomUUID());
+    var authorization =
+        configureAndAuthorizeSyntheticFederationPeer(
+            "synthetic-origin-receipt-" + UUID.randomUUID(),
+            peer,
+            destinationOrganization,
+            destinationFacility,
+            operation);
+    assertThat(authorization.profileVersion()).isEqualTo(1);
+    assertThatThrownBy(
+            () ->
+                federationPeerInboundAuthorizationService.authorize(
+                    authorization.authenticatedPeerPrincipal(),
+                    peer,
+                    operation,
+                    new ExternalReference(
+                        new IssuerId(DIRECTORY_ISSUER), "Facility", UUID.randomUUID().toString())))
+        .isInstanceOf(
+            org.ayuvahak.platform.exchange.application.FederationPeerInboundAuthorizationException
+                .class);
+    assertThatThrownBy(
+            () ->
+                federationPeerInboundAuthorizationService.authorize(
+                    authorization.authenticatedPeerPrincipal(),
+                    peer,
+                    org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.AllowedOperation
+                        .transferMovementFact(
+                            org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration
+                                .Direction.INBOUND),
+                    destinationFacility))
+        .isInstanceOf(
+            org.ayuvahak.platform.exchange.application.FederationPeerInboundAuthorizationException
+                .class);
+    byte[] body = "synthetic-receiving-request-v1".getBytes(StandardCharsets.UTF_8);
+    var fingerprint =
+        org.ayuvahak.platform.exchange.application.FederationOperationFingerprint.calculate(
+            peer,
+            new org.ayuvahak.platform.federation.domain.DeploymentId("SYN-DEPLOYMENT-RECEIVER"),
+            destinationFacility,
+            operation,
+            body);
+    var request =
+        new org.ayuvahak.transfer.application.FederatedReceivingRequestInput(
+            remoteTransferId,
+            "SYN-FACILITY-ORIGIN",
+            destinationOrganization,
+            destinationFacility,
+            "SYN_FEDERATED_COORDINATION_SLOT",
+            "slot",
+            BigDecimal.ONE,
+            Instant.parse("2026-10-18T12:00:00Z"),
+            Instant.parse("2026-10-18T12:30:00Z"));
+
+    var created =
+        federatedReceivingCommands.receive(authorization, requestOperationId, fingerprint, request);
+    var replayed =
+        federatedReceivingCommands.receive(authorization, requestOperationId, fingerprint, request);
+
+    assertThat(created.request().id()).isEqualTo(replayed.request().id());
+    assertThat(created.replayed()).isFalse();
+    assertThat(replayed.replayed()).isTrue();
+    assertThat(created.request().originDeployment()).isEqualTo(peer);
+    assertThat(created.request().originJourneyId()).isEqualTo(remoteTransferId);
+    assertThat(created.request().status().name()).isEqualTo("RECEIVED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM transfer.transfer_record WHERE transfer_id = ?",
+                Integer.class,
+                remoteTransferId.value()))
+        .isZero();
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM transfer.federated_receiving_request "
+                    + "WHERE origin_deployment_id = ? AND request_operation_id = ?",
+                Integer.class,
+                peer.value(),
+                requestOperationId.value()))
+        .isEqualTo(1);
+
+    byte[] changedBody = "changed-synthetic-receiving-request-v1".getBytes(StandardCharsets.UTF_8);
+    var changedFingerprint =
+        org.ayuvahak.platform.exchange.application.FederationOperationFingerprint.calculate(
+            peer,
+            new org.ayuvahak.platform.federation.domain.DeploymentId("SYN-DEPLOYMENT-RECEIVER"),
+            destinationFacility,
+            operation,
+            changedBody);
+    assertThatThrownBy(
+            () ->
+                federatedReceivingCommands.receive(
+                    authorization, requestOperationId, changedFingerprint, request))
+        .isInstanceOf(PlatformProblemException.class)
+        .satisfies(
+            failure ->
+                assertThat(((PlatformProblemException) failure).code().name())
+                    .isEqualTo("EXCHANGE_REPLAY_CONFLICT"));
+  }
+
+  @Test
+  void federatedReceivingAcceptancePersistsDistinctCapacityOperationAndReservesLocally()
+      throws Exception {
+    String dimension = "SYN_FEDERATED_ACCEPTANCE_SLOT";
+    grantPlatform(CURATOR, "DirectoryCuration");
+    grantPlatform(CURATOR, "DirectoryVocabularyAdministration");
+    grantPlatform(CAPACITY_ADMIN, "CapacityPolicyAdministration");
+    String organizationId = createOrganization("synthetic-federated-acceptance-organization");
+    String facilityId =
+        createFacility(
+            "synthetic-federated-acceptance-facility", organizationId, "Synthetic Receiver");
+    grantFacility(CAPACITY_REPORTER, "CapacityReporting", organizationId, facilityId);
+    grantFacility(CAPACITY_REPORTER, "CapacityEvidenceReview", organizationId, facilityId);
+    defineReservableCapacityDimension(dimension);
+    configureReservableCapacityPolicy(dimension);
+    recordReservableCapacityObservation(organizationId, facilityId, dimension, 4);
+    String worker = "ayuvahak-transfer-reservation-worker";
+    grantService(worker, "CapacityReservation", "FACILITY", organizationId, facilityId);
+    grantService(
+        worker, "TransferReservationReconciliation", "FACILITY", organizationId, facilityId);
+
+    grantFacility(
+        "synthetic-receiver-clinical", "ClinicalSuitabilityAuthority", organizationId, facilityId);
+    grantFacility(
+        "synthetic-receiver-operational",
+        "OperationalReadinessAuthority",
+        organizationId,
+        facilityId);
+    grantFacility(
+        "synthetic-receiver-acceptance", "AcceptanceAuthority", organizationId, facilityId);
+    ExternalReference destinationOrganization =
+        new ExternalReference(new IssuerId(DIRECTORY_ISSUER), "Organization", organizationId);
+    ExternalReference destinationFacility =
+        new ExternalReference(new IssuerId(DIRECTORY_ISSUER), "Facility", facilityId);
+    var peer =
+        new org.ayuvahak.platform.federation.domain.DeploymentId(
+            "SYN-DEPLOYMENT-ORIGIN-" + UUID.randomUUID());
+    InternalId originTransferId = InternalId.generate();
+    InternalId operationId = InternalId.generate();
+    var inboundOperation =
+        org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.AllowedOperation
+            .transferRemoteReceivingRequest(
+                org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.Direction.INBOUND);
+    var peerAuthorization =
+        configureAndAuthorizeSyntheticFederationPeer(
+            "synthetic-origin-accept-" + UUID.randomUUID(),
+            peer,
+            destinationOrganization,
+            destinationFacility,
+            inboundOperation);
+    Instant intervalStart = Instant.now().plusSeconds(60);
+    Instant intervalEnd = intervalStart.plusSeconds(1800);
+    var request =
+        new org.ayuvahak.transfer.application.FederatedReceivingRequestInput(
+            originTransferId,
+            "SYN-FACILITY-ORIGIN",
+            destinationOrganization,
+            destinationFacility,
+            dimension,
+            "slot",
+            BigDecimal.ONE,
+            intervalStart,
+            intervalEnd);
+    byte[] body = "synthetic-receiver-acceptance-v1".getBytes(StandardCharsets.UTF_8);
+    var fingerprint =
+        org.ayuvahak.platform.exchange.application.FederationOperationFingerprint.calculate(
+            peer,
+            new org.ayuvahak.platform.federation.domain.DeploymentId("SYN-DEPLOYMENT-RECEIVER"),
+            destinationFacility,
+            inboundOperation,
+            body);
+    var received =
+        federatedReceivingCommands.receive(peerAuthorization, operationId, fingerprint, request);
+
+    var clinicalContext =
+        executionContextFactory.forInteractiveRequest(
+            ActorReference.human(new IssuerId(ISSUER), "synthetic-receiver-clinical"),
+            RequestedExecutionScope.facility(destinationOrganization, destinationFacility),
+            new CorrelationId("synthetic-receiver-clinical-assessment"));
+    var operationalContext =
+        executionContextFactory.forInteractiveRequest(
+            ActorReference.human(new IssuerId(ISSUER), "synthetic-receiver-operational"),
+            RequestedExecutionScope.facility(destinationOrganization, destinationFacility),
+            new CorrelationId("synthetic-receiver-operational-assessment"));
+    var acceptanceContext =
+        executionContextFactory.forInteractiveRequest(
+            ActorReference.human(new IssuerId(ISSUER), "synthetic-receiver-acceptance"),
+            RequestedExecutionScope.facility(destinationOrganization, destinationFacility),
+            new CorrelationId("synthetic-receiver-acceptance"));
+    jdbc.execute(
+        "CREATE FUNCTION public.p11_test_fail_federated_receiving_event() RETURNS trigger "
+            + "LANGUAGE plpgsql AS $$ BEGIN IF NEW.event_type = "
+            + "'transfer.federated-receiving-request-changed.v1' THEN "
+            + "RAISE EXCEPTION 'synthetic outbox failure'; END IF; RETURN NEW; END; $$");
+    jdbc.execute(
+        "CREATE TRIGGER p11_test_fail_federated_receiving_event BEFORE INSERT ON "
+            + "platform_eventing.internal_event FOR EACH ROW EXECUTE FUNCTION "
+            + "public.p11_test_fail_federated_receiving_event()");
+    try {
+      assertThatThrownBy(
+              () ->
+                  federatedReceivingCommands.recordAssessment(
+                      clinicalContext,
+                      received.request().id(),
+                      org.ayuvahak.transfer.domain.FederatedReceivingRequest.AssessmentKind
+                          .CLINICAL,
+                      org.ayuvahak.transfer.domain.FederatedReceivingRequest.Outcome.SUPPORTS,
+                      "SYNTHETIC_CLINICAL_REVIEW",
+                      Instant.now(),
+                      received.request().version()))
+          .isInstanceOf(PlatformProblemException.class)
+          .satisfies(
+              failure ->
+                  assertThat(((PlatformProblemException) failure).code().name())
+                      .isEqualTo("TRANSFER_UNAVAILABLE"));
+    } finally {
+      jdbc.execute(
+          "DROP TRIGGER p11_test_fail_federated_receiving_event ON "
+              + "platform_eventing.internal_event");
+      jdbc.execute("DROP FUNCTION public.p11_test_fail_federated_receiving_event()");
+    }
+    assertThat(
+            jdbc.queryForMap(
+                "SELECT request_state, request_version, clinical_outcome FROM "
+                    + "transfer.federated_receiving_request WHERE receiving_request_id = ?",
+                received.request().id().value()))
+        .containsEntry("request_state", "RECEIVED")
+        .containsEntry("request_version", 1L)
+        .containsEntry("clinical_outcome", null);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM transfer.federated_receiving_assessment "
+                    + "WHERE receiving_request_id = ?",
+                Integer.class,
+                received.request().id().value()))
+        .isZero();
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE target_type = "
+                    + "'FederatedReceivingRequest' AND target_id = ? AND action_code = "
+                    + "'TRANSFER_FEDERATED_CLINICAL_ASSESSMENT'",
+                Integer.class,
+                received.request().id().value()))
+        .isZero();
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM platform_eventing.internal_event WHERE event_type = "
+                    + "'transfer.federated-receiving-request-changed.v1' AND aggregate_ref = ?",
+                Integer.class,
+                "federated-receiving-request/" + received.request().id()))
+        .isEqualTo(1);
+
+    var clinical =
+        federatedReceivingCommands.recordAssessment(
+            clinicalContext,
+            received.request().id(),
+            org.ayuvahak.transfer.domain.FederatedReceivingRequest.AssessmentKind.CLINICAL,
+            org.ayuvahak.transfer.domain.FederatedReceivingRequest.Outcome.SUPPORTS,
+            "SYNTHETIC_CLINICAL_REVIEW",
+            Instant.now(),
+            received.request().version());
+    var operational =
+        federatedReceivingCommands.recordAssessment(
+            operationalContext,
+            received.request().id(),
+            org.ayuvahak.transfer.domain.FederatedReceivingRequest.AssessmentKind.OPERATIONAL,
+            org.ayuvahak.transfer.domain.FederatedReceivingRequest.Outcome.SUPPORTS,
+            "SYNTHETIC_OPERATIONAL_REVIEW",
+            Instant.now(),
+            clinical.version());
+    federatedReceivingCapacityFailureProbe.loseNextResponseAfterReservationCommit();
+    var accepted =
+        federatedReceivingCommands.accept(
+            acceptanceContext, received.request().id(), Instant.now(), operational.version());
+
+    assertThat(accepted.status())
+        .isEqualTo(
+            org.ayuvahak.transfer.domain.FederatedReceivingRequest.Status.ACCEPTED_UNRESERVED);
+    assertThat(accepted.reservationStatus())
+        .isEqualTo(
+            org.ayuvahak.transfer.domain.FederatedReceivingRequest.ReservationStatus
+                .OUTCOME_UNKNOWN);
+    InternalId capacityOperationId = accepted.capacityOperationId().orElseThrow();
+    assertThat(capacityOperationId).isNotEqualTo(operationId).isNotEqualTo(originTransferId);
+    assertThat(
+            jdbc.queryForMap(
+                "SELECT request_state, capacity_operation_id, capacity_reservation_status "
+                    + "FROM transfer.federated_receiving_request WHERE receiving_request_id = ?",
+                received.request().id().value()))
+        .containsEntry("request_state", "ACCEPTED_UNRESERVED")
+        .containsEntry("capacity_operation_id", capacityOperationId.value())
+        .containsEntry("capacity_reservation_status", "OUTCOME_UNKNOWN");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM transfer.federated_receiving_assessment "
+                    + "WHERE receiving_request_id = ?",
+                Integer.class,
+                received.request().id().value()))
+        .isEqualTo(2);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE target_type = "
+                    + "'FederatedReceivingRequest' AND target_id = ? AND action_code IN ("
+                    + "'TRANSFER_FEDERATED_RECEIVING_REQUEST_RECEIVE', "
+                    + "'TRANSFER_FEDERATED_CLINICAL_ASSESSMENT', "
+                    + "'TRANSFER_FEDERATED_OPERATIONAL_ASSESSMENT', "
+                    + "'TRANSFER_FEDERATED_RECEIVING_ACCEPT') AND outcome = 'SUCCEEDED' "
+                    + "AND authorization_outcome = 'ALLOWED'",
+                Integer.class,
+                received.request().id().value()))
+        .isEqualTo(4);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE target_type = "
+                    + "'FederatedReceivingRequest' AND target_id = ? AND action_code = "
+                    + "'TRANSFER_FEDERATED_CAPACITY_RECONCILE' AND outcome = 'FAILED' "
+                    + "AND reason_code = 'CAPACITY_OUTCOME_UNCONFIRMED'",
+                Integer.class,
+                received.request().id().value()))
+        .isEqualTo(1);
+    assertThat(federatedReceivingCapacityFailureProbe.reservationOperationIds())
+        .containsExactly(capacityOperationId);
+    assertThat(
+            jdbc.queryForMap(
+                "SELECT subject_type, subject_id, transfer_id FROM capacity.coordination_reservation "
+                    + "WHERE operation_id = ?",
+                capacityOperationId.value()))
+        .containsEntry("subject_type", "FEDERATED_RECEIVING_REQUEST")
+        .containsEntry("subject_id", received.request().id().value())
+        .containsEntry("transfer_id", null);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM capacity.coordination_reservation WHERE subject_type = ? "
+                    + "AND subject_id = ?",
+                Integer.class,
+                "FEDERATED_RECEIVING_REQUEST",
+                received.request().id().value()))
+        .isEqualTo(1);
+
+    var statusOperation =
+        org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.AllowedOperation
+            .transferRemoteReservationStatus(
+                org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.Direction.INBOUND);
+    var statusAuthorization =
+        federationPeerInboundAuthorizationService.authorize(
+            peerAuthorization.authenticatedPeerPrincipal(),
+            peer,
+            statusOperation,
+            destinationFacility);
+    var recovered =
+        federatedReceivingCommands
+            .reservationStatus(
+                statusAuthorization,
+                operationId,
+                new org.ayuvahak.platform.exchange.application.FederationOperationFingerprint(
+                    received.request().requestFingerprint()),
+                destinationOrganization,
+                destinationFacility)
+            .request();
+    assertThat(recovered.status())
+        .isEqualTo(org.ayuvahak.transfer.domain.FederatedReceivingRequest.Status.ACCEPTED_RESERVED);
+    assertThat(recovered.reservationStatus())
+        .isEqualTo(
+            org.ayuvahak.transfer.domain.FederatedReceivingRequest.ReservationStatus.RESERVED);
+    assertThat(recovered.capacityOperationId()).contains(capacityOperationId);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE target_type = "
+                    + "'FederatedReceivingRequest' AND target_id = ? AND action_code = "
+                    + "'TRANSFER_FEDERATED_CAPACITY_RECONCILE' AND outcome = 'SUCCEEDED'",
+                Integer.class,
+                received.request().id().value()))
+        .isEqualTo(1);
+    assertThat(federatedReceivingCapacityFailureProbe.reservationOperationIds())
+        .containsExactly(capacityOperationId);
+    assertThat(federatedReceivingCapacityFailureProbe.outcomeOperationIds())
+        .containsExactly(capacityOperationId, capacityOperationId);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM capacity.coordination_reservation WHERE subject_type = ? "
+                    + "AND subject_id = ?",
+                Integer.class,
+                "FEDERATED_RECEIVING_REQUEST",
+                received.request().id().value()))
+        .isEqualTo(1);
+    String receivingAggregateRef = "federated-receiving-request/" + received.request().id();
+    assertThat(
+            jdbc.queryForList(
+                "SELECT aggregate_sequence FROM platform_eventing.internal_event "
+                    + "WHERE event_type = 'transfer.federated-receiving-request-changed.v1' "
+                    + "AND aggregate_ref = ? ORDER BY aggregate_sequence",
+                Long.class,
+                receivingAggregateRef))
+        .containsExactly(1L, 2L, 3L, 4L, 5L, 6L);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM platform_eventing.internal_event WHERE event_type = "
+                    + "'transfer.federated-receiving-request-changed.v1' AND aggregate_ref = ? "
+                    + "AND (SELECT COUNT(*) FROM jsonb_object_keys(envelope -> 'payload')) = 4 "
+                    + "AND jsonb_exists(envelope -> 'payload', 'receivingRequestReference') "
+                    + "AND jsonb_exists(envelope -> 'payload', 'requestVersion') "
+                    + "AND jsonb_exists(envelope -> 'payload', 'requestState') "
+                    + "AND jsonb_exists(envelope -> 'payload', 'capacityReservationStatus') "
+                    + "AND NOT jsonb_exists(envelope -> 'payload', 'clinicalOutcome') "
+                    + "AND NOT jsonb_exists(envelope -> 'payload', 'operationalOutcome') "
+                    + "AND NOT jsonb_exists(envelope -> 'payload', 'reasonCode') "
+                    + "AND envelope::text NOT LIKE '%SYN-PATIENT%'",
+                Integer.class, receivingAggregateRef))
+        .isEqualTo(6);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM transfer.transfer_record WHERE transfer_id = ?",
+                Integer.class,
+                originTransferId.value()))
+        .isZero();
+    new TransactionTemplate(transactionManager)
+        .execute(
+            ignored -> {
+              partnerTrustProfileStore.revoke(peerAuthorization.partnerKey(), Instant.now());
+              return null;
+            });
+    assertThatThrownBy(
+            () ->
+                federationPeerInboundAuthorizationService.authorize(
+                    peerAuthorization.authenticatedPeerPrincipal(),
+                    peer,
+                    statusOperation,
+                    destinationFacility))
+        .isInstanceOf(
+            org.ayuvahak.platform.exchange.application.FederationPeerInboundAuthorizationException
+                .class);
+  }
+
+  private org.ayuvahak.platform.exchange.application.FederationPeerInboundAuthorization
+      configureAndAuthorizeSyntheticFederationPeer(
+          String partnerName,
+          org.ayuvahak.platform.federation.domain.DeploymentId peer,
+          ExternalReference organization,
+          ExternalReference facility,
+          org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.AllowedOperation
+              requestOperation) {
+    var partnerKey = new org.ayuvahak.platform.exchange.domain.PartnerKey(partnerName);
+    var principal =
+        ActorReference.service(new IssuerId(ISSUER), "synthetic-origin-peer-" + UUID.randomUUID());
+    var statusOperation =
+        org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.AllowedOperation
+            .transferRemoteReservationStatus(
+                org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.Direction.INBOUND);
+    var configuration =
+        new org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration(
+            partnerKey,
+            organization,
+            "https://synthetic-federation-peer.example.test",
+            "/federation",
+            new org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.Authentication(
+                org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.AuthenticationMethod
+                    .MUTUAL_TLS,
+                Optional.of("secretref:SYNTHETIC-PEER-CERTIFICATE"),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty()),
+            org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.TlsPolicy.SYSTEM_CA,
+            Optional.empty(),
+            new org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.Limits(
+                1_000, 2_000, 5_000, 100_000, 200_000, 1, 100, 16, 1),
+            org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.RetryClass.NEVER,
+            List.of(requestOperation, statusOperation),
+            Optional.of(principal),
+            Optional.of(
+                new org.ayuvahak.platform.exchange.domain.FederationPeerConfiguration(
+                    peer,
+                    organization,
+                    org.ayuvahak.platform.exchange.domain.FederationPeerConfiguration
+                        .supportedProtocolProfile(),
+                    List.of(facility))));
+    new TransactionTemplate(transactionManager)
+        .execute(
+            ignored -> {
+              partnerTrustProfileStore.createInitial(configuration, Instant.now());
+              partnerTrustProfileStore.activate(partnerKey, 1, Instant.now());
+              return null;
+            });
+    return federationPeerInboundAuthorizationService.authorize(
+        principal, peer, requestOperation, facility);
+  }
+
   private void assertMatchingApplicabilityOwnerAudit(
       String correlationId,
       String matchingOwner,
@@ -1907,11 +3457,30 @@ class DirectoryCapacityReferralScenarioIT {
                     .contentType("application/json")
                     .content("{\"expectedVersion\":3,\"occurredAt\":\"" + Instant.now() + "\"}"))
             .andExpect(status().isCreated())
-            .andExpect(jsonPath("$.status").value("READY"))
+            .andExpect(status().isCreated())
             .andReturn();
     String transferId =
         com.jayway.jsonpath.JsonPath.read(
             acceptance.getResponse().getContentAsString(), "$.transferId");
+    var reservationDebug =
+        jdbc.queryForMap(
+            "SELECT operation_id, outcome, reason_code, attempt_count FROM "
+                + "transfer.capacity_reservation_request WHERE transfer_id = ?",
+            UUID.fromString(transferId));
+    var capacityDebug =
+        jdbc.queryForList(
+            "SELECT operation_id, transfer_id, subject_type, subject_id, outcome, reason_code "
+                + "FROM capacity.reservation_operation WHERE operation_id = ?",
+            UUID.fromString(transferId));
+    assertThat(reservationDebug.get("outcome"))
+        .as(
+            "transfer reservation intent %s; Capacity operations %s",
+            reservationDebug, capacityDebug)
+        .isEqualTo("RESERVED");
+    String acceptanceStatus =
+        com.jayway.jsonpath.JsonPath.read(
+            acceptance.getResponse().getContentAsString(), "$.status");
+    assertThat(acceptanceStatus).isEqualTo("READY");
     assertThat(
             jdbc.queryForObject(
                 "SELECT reservation_status FROM capacity.coordination_reservation "
@@ -3044,6 +4613,32 @@ class DirectoryCapacityReferralScenarioIT {
         .andExpect(status().isCreated());
   }
 
+  private void defineReservableCapacityDimension(String dimension) throws Exception {
+    defineCapacityDimension(
+        dimension,
+        "synthetic-federated-dimension-" + UUID.randomUUID(),
+        CAPACITY_ADMIN,
+        true,
+        "slot");
+  }
+
+  private void configureReservableCapacityPolicy(String dimension) throws Exception {
+    configureCapacityPolicy(
+        dimension, "synthetic-federated-policy-" + UUID.randomUUID(), CAPACITY_ADMIN, 600);
+  }
+
+  private void recordReservableCapacityObservation(
+      String organizationId, String facilityId, String dimension, int quantity) throws Exception {
+    recordCapacityObservation(
+        CAPACITY_REPORTER,
+        organizationId,
+        facilityId,
+        dimension,
+        "synthetic-federated-observation-" + UUID.randomUUID(),
+        quantity,
+        Instant.now().minusSeconds(1));
+  }
+
   private void configureCapacityPolicy(String dimension, String key, String actor, int maximumAge)
       throws Exception {
     mockMvc
@@ -3096,7 +4691,7 @@ class DirectoryCapacityReferralScenarioIT {
                         + "\"valueKind\":\"QUANTITY\",\"quantity\":"
                         + quantity
                         + ",\"state\":null,\"unit\":\""
-                        + (dimension.equals("SYN_TRANSFER_SLOT") ? "slot" : "unit")
+                        + (dimension.endsWith("_SLOT") ? "slot" : "unit")
                         + "\",\"observedAt\":\""
                         + observedAt
                         + "\",\"validUntil\":null,\"reportingMethod\":\"MANUAL_ENTRY\","
@@ -3338,6 +4933,43 @@ class DirectoryCapacityReferralScenarioIT {
   static class MatchingTestConfiguration {
 
     @Bean
+    FederatedReceivingCapacityFailureProbe federatedReceivingCapacityFailureProbe() {
+      return new FederatedReceivingCapacityFailureProbe();
+    }
+
+    @Bean
+    @Primary
+    org.ayuvahak.transfer.application.FederatedReceivingCapacityPort
+        federatedReceivingCapacityFailurePort(
+            ObjectProvider<CapacityReservationCommands> commands,
+            FederatedReceivingCapacityFailureProbe probe) {
+      return new org.ayuvahak.transfer.application.FederatedReceivingCapacityPort() {
+        @Override
+        public CapacityReservationResult reserve(
+            ExecutionContext context,
+            FederatedReceivingCapacityReservationRequest request,
+            String idempotencyKey) {
+          CapacityReservationResult result =
+              commands.getObject().reserveFederatedReceiving(context, request, idempotencyKey);
+          probe.recordReservation(request.operationId());
+          if (probe.consumeLostResponse()) {
+            throw new IllegalStateException("synthetic lost response after local Capacity commit");
+          }
+          return result;
+        }
+
+        @Override
+        public FederatedReceivingCapacityReservationOutcome currentOutcome(
+            ExecutionContext context, InternalId operationId, InternalId receivingRequestId) {
+          probe.recordOutcomeLookup(operationId);
+          return commands
+              .getObject()
+              .getFederatedReceivingReservationOutcome(context, operationId, receivingRequestId);
+        }
+      };
+    }
+
+    @Bean
     DirectoryIsolationProbe directoryIsolationProbe() {
       return new DirectoryIsolationProbe();
     }
@@ -3449,6 +5081,46 @@ class DirectoryCapacityReferralScenarioIT {
     @Bean
     MutableTravelTimePort matchingTestTravelTimePort() {
       return new MutableTravelTimePort();
+    }
+  }
+
+  static final class FederatedReceivingCapacityFailureProbe {
+
+    private final java.util.concurrent.atomic.AtomicBoolean loseNextResponse =
+        new java.util.concurrent.atomic.AtomicBoolean();
+    private final java.util.concurrent.CopyOnWriteArrayList<InternalId> reservationOperationIds =
+        new java.util.concurrent.CopyOnWriteArrayList<>();
+    private final java.util.concurrent.CopyOnWriteArrayList<InternalId> outcomeOperationIds =
+        new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    void loseNextResponseAfterReservationCommit() {
+      loseNextResponse.set(true);
+    }
+
+    void reset() {
+      loseNextResponse.set(false);
+      reservationOperationIds.clear();
+      outcomeOperationIds.clear();
+    }
+
+    boolean consumeLostResponse() {
+      return loseNextResponse.compareAndSet(true, false);
+    }
+
+    void recordReservation(InternalId operationId) {
+      reservationOperationIds.add(operationId);
+    }
+
+    void recordOutcomeLookup(InternalId operationId) {
+      outcomeOperationIds.add(operationId);
+    }
+
+    List<InternalId> reservationOperationIds() {
+      return List.copyOf(reservationOperationIds);
+    }
+
+    List<InternalId> outcomeOperationIds() {
+      return List.copyOf(outcomeOperationIds);
     }
   }
 
@@ -3897,7 +5569,7 @@ class DirectoryCapacityReferralScenarioIT {
         "INSERT INTO identity_access.authorization_grant (grant_id, principal_kind, "
             + "principal_issuer, principal_identifier_type, principal_identifier, authority_code, "
             + "scope_kind, grant_status, created_at) VALUES (gen_random_uuid(), 'HUMAN', ?, "
-            + "'subject', ?, ?, 'PLATFORM', 'ACTIVE', CURRENT_TIMESTAMP)",
+            + "'subject', ?, ?, 'PLATFORM', 'ACTIVE', CURRENT_TIMESTAMP) ON CONFLICT DO NOTHING",
         ISSUER,
         subject,
         authority);
