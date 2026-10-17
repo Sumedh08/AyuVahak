@@ -11,7 +11,7 @@ import org.springframework.stereotype.Service;
 
 /** Scope-bound application queries for opening and replaying a bounded notification window. */
 @Service
-public final class NotificationProjectionQuery {
+public final class NotificationProjectionQuery implements NotificationHintReader {
 
   private final NotificationProjectionStore store;
   private final NotificationProjectionProperties properties;
@@ -27,12 +27,14 @@ public final class NotificationProjectionQuery {
   }
 
   /** Establish a baseline cursor at current scope sequence; it does not replay old hints. */
+  @Override
   public String currentCursor(ExecutionScope authorizedScope) {
     NotificationScope scope = NotificationScope.from(authorizedScope);
     return store.currentCursor(scope, clock.instant());
   }
 
   /** Return only events after a cursor that belongs to this exact authorized scope and epoch. */
+  @Override
   public NotificationProjectionPage listAfter(
       ExecutionScope authorizedScope, Optional<String> cursor, int requestedLimit) {
     Objects.requireNonNull(cursor, "cursor");

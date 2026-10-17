@@ -6,7 +6,10 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 @Configuration(proxyBeanMethods = false)
-@EnableConfigurationProperties(NotificationProjectionProperties.class)
+@EnableConfigurationProperties({
+  NotificationProjectionProperties.class,
+  NotificationStreamProperties.class
+})
 public class NotificationConfiguration {
 
   @Bean

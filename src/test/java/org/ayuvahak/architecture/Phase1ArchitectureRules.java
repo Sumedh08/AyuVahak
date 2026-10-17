@@ -125,6 +125,31 @@ final class Phase1ArchitectureRules {
                 + " owner-context adapter; never in domains, application contracts, APIs, or persistence");
   }
 
+  static ArchRule notificationHintsMustNotDependOnSseTypes() {
+    return noClasses()
+        .that()
+        .resideInAnyPackage(
+            "org.ayuvahak.platform.notification.domain..",
+            "org.ayuvahak.platform.notification.application..")
+        .should()
+        .dependOnClassesThat()
+        .resideInAnyPackage("org.springframework.web.servlet.mvc.method.annotation..")
+        .as(
+            "Notification application contracts stay transport-neutral and do not depend on SSE framework types")
+        .allowEmptyShould(true);
+  }
+
+  static ArchRule notificationHintsMustNotDependOnPatientReference() {
+    return noClasses()
+        .that()
+        .resideInAnyPackage("org.ayuvahak.platform.notification..")
+        .should()
+        .dependOnClassesThat()
+        .haveFullyQualifiedName("org.ayuvahak.referral.domain.PatientReference")
+        .as("Notification hints must never carry a patient reference")
+        .allowEmptyShould(true);
+  }
+
   static ArchRule coreCodeMustNotDependOnOuterLayers() {
     return noClasses()
         .that()
