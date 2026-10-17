@@ -36,7 +36,7 @@ Phases 3â€“7 are designed as five business contexts in the sequence Directory â†
 
 ## Volume IV design boundary
 
-Volume IV's [architecture](volume-4-resilient-operations-federation-public-health.md), [contracts](volume-4-context-contracts.md), [state machines](volume-4-state-machines.md), [data ownership](volume-4-data-ownership.md), and [threat model](volume-4-threat-model.md) define Phase 11 realtime hints/resilience/federation and Phase 12 aggregate Analytics/DHIS2 design. Owner state remains authoritative; notifications are hints; federation uses explicit peers and named operations without shared databases; Analytics uses owner-produced versioned measures without cross-context SQL; DHIS2 is a downstream aggregate target through Phase 9. Both specifications require local-only synthetic acceptance. The design freeze does not authorize implementation.
+Volume IV's [architecture](volume-4-resilient-operations-federation-public-health.md), [contracts](volume-4-context-contracts.md), [state machines](volume-4-state-machines.md), [data ownership](volume-4-data-ownership.md), and [threat model](volume-4-threat-model.md) define frozen Phase 11 realtime hints/resilience/federation and Phase 12 aggregate Analytics/DHIS2 boundaries. Owner state remains authoritative; notifications are hints; federation uses explicit peers and named operations without shared databases; Analytics uses owner-produced versioned measures without cross-context SQL; DHIS2 is a downstream aggregate target through Phase 9. Both specifications require local-only synthetic acceptance. Phase implementation requires separate human authorization.
 
 ## Agent safety
 
@@ -46,5 +46,5 @@ The permanent external-mutation policy in [AGENTS.md](../../AGENTS.md) applies i
 
 [System context](system-context.md) shows AyuVahak as one optional system interacting with people and external authorities. It is distinct from the internal [context map](bounded-contexts.md). Deployment-specific law, authorization mapping, terminology, retention, partner profiles, and federation agreements are explicit configuration/governance questions; they do not change the core ownership boundary.
 
-The current program status is maintained in root [AGENTS.md](../../AGENTS.md). Volume III is implemented and frozen. Volume IV design is frozen, while Phase 11/12 implementation remains unauthorized until a separate human-authorized prompt.
+The current program status is maintained in root [AGENTS.md](../../AGENTS.md). Volume III is implemented and frozen. Volume IV design is frozen; Phase 11/12 implementation has not started and requires separate human authorization.
 

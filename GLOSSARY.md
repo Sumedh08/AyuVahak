@@ -248,7 +248,7 @@ Evidence that all required owner inputs for a defined indicator, scope, and peri
 
 **Suppression**
 
-A governed decision to withhold or coarsen an aggregate cell because the approved privacy policy finds it too revealing. Suppression is not a zero value and is retained as an explicit quality outcome.
+A governed release-set decision to withhold or coarsen one or more related aggregate cells because the approved privacy policy finds them too revealing alone or by differencing with totals, dimensions, periods, revisions, prior outputs, or known external releases. Suppression is not a zero value and is retained as an explicit quality outcome.
 
 ## Ambiguous words resolved
 

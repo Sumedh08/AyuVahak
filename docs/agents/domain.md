@@ -10,5 +10,5 @@ AyuVahak is initially documented as one product domain. The root `GLOSSARY.md` i
 - Use glossary terms consistently; do not treat standards, frameworks, vendors, or infrastructure as business bounded contexts.
 - Keep system context distinct from short definitions and from implementation plans.
 - Surface any conflict with an accepted ADR or project-owner working decision before changing direction.
-- Phase 0 artifacts are architecture constitution only, not a specification or implementation ticket set.
+- Treat frozen phase artifacts as authoritative for their phase. Create or change specifications, local tickets, or implementation only when the active master prompt and root `AGENTS.md` authorize that phase and workflow; do not use a Phase 0 restriction to override later authorized phase gates.
 

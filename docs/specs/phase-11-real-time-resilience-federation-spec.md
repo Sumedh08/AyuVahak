@@ -2,7 +2,7 @@
 
 ## Status and objective
 
-**Design status:** canonical specification frozen only after Volume IV design review. **Implementation status:** not started and not authorized by this design document.
+**Design status:** specification frozen in the Volume IV design freeze. **Implementation status:** not started; a separate human-authorized master prompt is required.
 
 Phase 11 improves timely operational updates, failure recovery and cooperation between independently administered AyuVahak deployments. It preserves the existing owner contexts and keeps each deployment autonomous. The committed owner database state remains the business source of truth.
 

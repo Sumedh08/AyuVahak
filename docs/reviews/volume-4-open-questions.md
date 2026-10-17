@@ -1,8 +1,14 @@
-# Volume IV Open Questions
+# Volume IV Design Question Disposition Register
 
 **Design disposition:** no mandatory pre-implementation design question remains unanswered. The choices below are explicit safe defaults; deployment choices are configuration, not blockers to the architecture or specifications. Implementation may still uncover bounded technical details, but it must not reopen these ownership/safety decisions without a separately authorized design change.
 
+The questions below are a resolved design register, not outstanding blockers. “Must resolve before implementation” is intentionally empty; dispositions document the choices future implementation must preserve.
+
 ## Must resolve before implementation
+
+None. The questions below are answered design decisions and are retained as a traceable disposition register.
+
+## Resolved design questions
 
 | ID | Question | Disposition |
 |---|---|---|
@@ -32,16 +38,22 @@
 | Q24 | Missing versus zero? | Explicit completeness states; missing/partial/stale is not zero. Numeric zero only from complete sources and approved semantics. |
 | Q25 | Late data/correction? | New linked revision; explicit finalization/correction with cause/audit; never rewrite exported history silently. |
 | Q26 | Organization attribution? | Indicator version states source attribution: origin, destination, or named distinct dimensions; mapping is versioned. |
-| Q27 | Prevent federated double-count? | Stable source deployment and explicit attribution; combine only compatible source snapshots/versions and deduplicate by source identity. |
-| Q28 | Small-cell privacy? | Per-indicator policy hook for minimum-cell suppression/coarsening; no universal threshold; required-but-unconfigured policy blocks export. |
+| Q27 | Prevent federated double-count? | Optional Phase 12 aggregate-to-aggregate exchange uses a named Phase 9 peer Analytics operation, authenticated source deployment, stable source snapshot ID/content fingerprint, explicit attribution, exact approved semantic compatibility, completeness and source provenance; incompatible versions do not combine. |
+| Q28 | Small-cell privacy? | Release-set policy evaluates complementary cells, totals, dimensions, overlapping periods, revisions, prior AyuVahak releases and known external baselines; suppress/coarsen/withhold related outputs; if an external baseline is unknown, require conservative coarsening/review or block; no universal threshold. |
 | Q29 | DHIS2 aggregate target? | Configured aggregate DataValueSet profile, researched against current official Core 2.43 docs; version capability is partner configuration, not a hard-coded universal release. |
 | Q30 | Mapping versioning? | Effective-dated versioned mappings for target partner, dataElement, orgUnit, period, COC/AOC/dataset as applicable. |
 | Q31 | Create target metadata? | No. Metadata is preconfigured and approved by deployment; automatic creation is out of scope. |
 | Q32 | Export idempotency? | Stable local operation per partner + immutable snapshot revision + indicator/mapping version + canonical target tuple; remote exact replacement only when approved safe. |
 | Q33 | Correction representation? | New local aggregate revision and linked export operation replacing only the exact approved tuple; explicit delete is outside default export. |
-| Q34 | Partial import? | Parse structured value-level results; record each outcome; partial batch is not acknowledged. |
+| Q34 | Partial import? | Initial profile sends exactly one DataValue per DataValueSet request because documented aggregate summary counts do not guarantee per-value attribution for multi-value imports. Each tuple has a separate operation; `imported=1`/`updated=1` acknowledges that tuple, while `ignored=1` remains unresolved pending authorized read-back or operator reconciliation. A release across operations may be partial. |
 | Q35 | Lost response? | OUTCOME_UNKNOWN unless an approved read-back/reconciliation proves target state; never blindly retry/overwrite. |
 | Q36 | Local DHIS2 acceptance? | Synthetic local mock is mandatory; optional disposable local DHIS2 container only if justified. Public/demo systems are prohibited as acceptance dependencies. |
+| Q37 | Who owns official indicator meaning? | Analytics owns the AyuVahak calculation/version; the authorized public-health authority owns official interpretation and target metadata. Store its approved identifier/version as provenance when applicable. |
+| Q38 | May peer aggregates be combined? | Yes, only through a named authorized Analytics peer contract with exact semantic compatibility, release-set privacy review, immutable provenance and duplicate/fingerprint conflict handling; no raw histories. |
+| Q39 | Can concurrent releases bypass complementary suppression? | No. DHIS2 and peer outputs share one Analytics reservation gate. Every output that can be jointly recombined across target/channel/period/revision/dimensions shares a versioned policy domain; default to the broader policy/release scope, and use narrower domains only with proven non-overlap. A local transaction serializes all affected keys, evaluates current plus in-flight releases and reserves before network I/O; unknown results remain potentially disclosed. Incomplete mapping fails closed. PostgreSQL race acceptance is required. |
+| Q40 | Can a disclosure policy revision reset history or create a new lock namespace? | No. Disclosure lineage IDs remain stable across policy versions. Mapping activation locks the old/new lineage union and carries old/in-flight reservations forward; merges preserve all lineage associations, and splits retain common historical lineage while outputs can still be recombined. Ambiguous continuity uses a broader lineage or fails closed. Acceptance races a release across policy rollover. |
+| Q41 | Can a newer DHIS2 correction overtake an older in-flight/unknown value for the same tuple? | No. One durable active-operation claim exists per complete target tuple. New revisions wait while the prior operation may still apply; `OUTCOME_UNKNOWN` holds the barrier across restart until authorized reconciliation. The initial profile assumes no remote conditional-write guarantee. Acceptance delays an older local mock operation and proves the correction remains unsent until the predecessor resolves. |
+| Q42 | Can DHIS2 asynchronous import be used by the initial profile? | No. Initial export is synchronous only; task acceptance is not terminal value delivery and cannot release the tuple barrier. Any future async profile requires a separately approved spec/profile, durable task ID, and terminal task-result/reconciliation semantics. |
 
 ## Deployment configuration
 
@@ -50,7 +62,7 @@
 - Remote Capacity freshness TTL and owner policy version.
 - Indicator catalogue, attribution, reporting timezone/calendar, reporting frequency, source freshness/completeness, correction window and finalization policy.
 - DHIS2 partner API capability/version, authentication profile, metadata UIDs, mapping version, target zero behavior, write ownership, read-back support and retry ceilings.
-- Privacy thresholds/coarsening for indicators that require small-number protection.
+- Release-set disclosure controls, thresholds/coarsening and release-history retention for indicators that require small-number protection; known target-side baseline or approved conservative fallback where relevant.
 
 ## Future volume
 
