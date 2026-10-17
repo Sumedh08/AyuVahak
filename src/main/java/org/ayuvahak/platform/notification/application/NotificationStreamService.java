@@ -31,6 +31,7 @@ import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
 import org.ayuvahak.platform.notification.configuration.NotificationStreamProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
@@ -55,7 +56,7 @@ public final class NotificationStreamService implements AutoCloseable {
       NotificationHintReader reader,
       NotificationFeedAuthorizer authorizer,
       NotificationStreamProperties properties,
-      Clock clock) {
+      @Qualifier("notificationClock") Clock clock) {
     this.reader = Objects.requireNonNull(reader, "reader");
     this.authorizer = Objects.requireNonNull(authorizer, "authorizer");
     this.properties = Objects.requireNonNull(properties, "properties");
