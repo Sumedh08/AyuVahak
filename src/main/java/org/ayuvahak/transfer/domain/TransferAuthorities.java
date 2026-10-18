@@ -35,6 +35,8 @@ public final class TransferAuthorities {
       new FunctionalAuthority("TransferJourneyClosureAuthority", ORIGIN_SCOPES);
   private static final FunctionalAuthority VIEW =
       new FunctionalAuthority("TransferViewAuthority", ORIGIN_SCOPES);
+  private static final FunctionalAuthority REPORTING_SNAPSHOTS =
+      new FunctionalAuthority("TransferReportingSnapshot", ORIGIN_SCOPES);
   private static final FunctionalAuthority PATIENT_CONTEXT_PARTICIPATION =
       new FunctionalAuthority(
           "TransferPatientContextParticipation", Set.of(ExecutionScope.Kind.FACILITY));
@@ -97,6 +99,10 @@ public final class TransferAuthorities {
 
   public static FunctionalAuthority view() {
     return VIEW;
+  }
+
+  public static FunctionalAuthority reportingSnapshots() {
+    return REPORTING_SNAPSHOTS;
   }
 
   public static FunctionalAuthority patientContextParticipation() {
