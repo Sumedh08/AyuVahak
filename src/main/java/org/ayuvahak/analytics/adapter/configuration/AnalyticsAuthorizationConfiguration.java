@@ -27,4 +27,19 @@ class AnalyticsAuthorizationConfiguration {
   FunctionalAuthority analyticsAggregateSnapshotCorrectionAuthority() {
     return AnalyticsAuthorities.aggregateSnapshotCorrection();
   }
+
+  @Bean
+  FunctionalAuthority analyticsDisclosurePolicyAdministrationAuthority() {
+    return AnalyticsAuthorities.disclosurePolicyAdministration();
+  }
+
+  @Bean
+  FunctionalAuthority analyticsDisclosureReleaseAuthority() {
+    return AnalyticsAuthorities.disclosureRelease();
+  }
+
+  @Bean
+  FunctionalAuthority analyticsDisclosureReservationLifecycleAuthority() {
+    return AnalyticsAuthorities.disclosureReservationLifecycle();
+  }
 }

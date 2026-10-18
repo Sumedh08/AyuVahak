@@ -28,4 +28,19 @@ public final class AnalyticsAuthorities {
     return new FunctionalAuthority(
         "AnalyticsAggregateSnapshotCorrection", Set.of(ExecutionScope.Kind.ORGANIZATION));
   }
+
+  public static FunctionalAuthority disclosurePolicyAdministration() {
+    return new FunctionalAuthority(
+        "AnalyticsDisclosurePolicyAdministration", Set.of(ExecutionScope.Kind.ORGANIZATION));
+  }
+
+  public static FunctionalAuthority disclosureRelease() {
+    return new FunctionalAuthority(
+        "AnalyticsDisclosureRelease", Set.of(ExecutionScope.Kind.ORGANIZATION));
+  }
+
+  public static FunctionalAuthority disclosureReservationLifecycle() {
+    return new FunctionalAuthority(
+        "AnalyticsDisclosureReservationLifecycle", Set.of(ExecutionScope.Kind.ORGANIZATION));
+  }
 }
