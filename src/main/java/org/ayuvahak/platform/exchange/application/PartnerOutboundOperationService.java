@@ -51,9 +51,11 @@ public final class PartnerOutboundOperationService implements PartnerOutboundOpe
 
   private PartnerProfileVersion requireActive(
       org.ayuvahak.platform.exchange.domain.PartnerKey partnerKey, AllowedOperation operation) {
-    if (operation.ownerContext() != OwnerContext.TRANSPORT
-        || operation.direction() != Direction.OUTBOUND
-        || operation.protocol() != Protocol.JSON) {
+    boolean transportOperation =
+        operation.ownerContext() == OwnerContext.TRANSPORT
+            && operation.direction() == Direction.OUTBOUND
+            && operation.protocol() == Protocol.JSON;
+    if (!transportOperation && !operation.isNamedAnalyticsDhis2DataValueSet()) {
       throw new PartnerTransportException(PartnerTransportFailure.PROFILE_NOT_ACTIVE);
     }
     try {

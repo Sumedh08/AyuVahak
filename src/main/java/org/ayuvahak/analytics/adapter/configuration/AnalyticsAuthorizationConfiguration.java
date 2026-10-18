@@ -42,4 +42,14 @@ class AnalyticsAuthorizationConfiguration {
   FunctionalAuthority analyticsDisclosureReservationLifecycleAuthority() {
     return AnalyticsAuthorities.disclosureReservationLifecycle();
   }
+
+  @Bean
+  FunctionalAuthority analyticsDhis2MappingAdministrationAuthority() {
+    return AnalyticsAuthorities.dhis2MappingAdministration();
+  }
+
+  @Bean
+  FunctionalAuthority analyticsDhis2ExportAuthority() {
+    return AnalyticsAuthorities.dhis2Export();
+  }
 }

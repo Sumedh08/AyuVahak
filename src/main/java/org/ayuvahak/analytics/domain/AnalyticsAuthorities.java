@@ -43,4 +43,14 @@ public final class AnalyticsAuthorities {
     return new FunctionalAuthority(
         "AnalyticsDisclosureReservationLifecycle", Set.of(ExecutionScope.Kind.ORGANIZATION));
   }
+
+  public static FunctionalAuthority dhis2MappingAdministration() {
+    return new FunctionalAuthority(
+        "AnalyticsDhis2MappingAdministration", Set.of(ExecutionScope.Kind.ORGANIZATION));
+  }
+
+  public static FunctionalAuthority dhis2Export() {
+    return new FunctionalAuthority(
+        "AnalyticsDhis2Export", Set.of(ExecutionScope.Kind.ORGANIZATION));
+  }
 }

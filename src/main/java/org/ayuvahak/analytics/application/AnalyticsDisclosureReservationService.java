@@ -170,6 +170,21 @@ public final class AnalyticsDisclosureReservationService {
     }
   }
 
+  /** Returns the currently active policy version for a scoped release worker without reserving. */
+  public int activePolicyVersionForRelease(ExecutionContext context, String policyKey) {
+    DisclosurePolicyVersion policy = requireActivePolicy(policyKey);
+    UUID targetId = InternalId.generate().value();
+    requireOrganizationScope(
+        context, policy.organization(), targetId, "ANALYTICS_DISCLOSURE_RELEASE_DENIED");
+    requireReleaseWorker(context, targetId);
+    requireAuthorized(
+        context,
+        AnalyticsAuthorities.disclosureRelease().code(),
+        targetId,
+        "ANALYTICS_DISCLOSURE_RELEASE_DENIED");
+    return policy.version();
+  }
+
   /** Records an administrator-confirmed, already-existing output as external release history. */
   public DisclosureReservation recordKnownExternalBaseline(
       ExecutionContext context, DisclosureCandidate baseline) {

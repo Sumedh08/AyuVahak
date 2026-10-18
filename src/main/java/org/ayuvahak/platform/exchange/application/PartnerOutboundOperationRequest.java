@@ -29,11 +29,13 @@ public record PartnerOutboundOperationRequest(
     Objects.requireNonNull(partnerKey, "partnerKey");
     Objects.requireNonNull(operation, "operation");
     Objects.requireNonNull(correlationId, "correlationId");
-    if (operation.ownerContext() != OwnerContext.TRANSPORT
-        || operation.direction() != Direction.OUTBOUND
-        || operation.protocol() != Protocol.JSON) {
+    boolean transportOperation =
+        operation.ownerContext() == OwnerContext.TRANSPORT
+            && operation.direction() == Direction.OUTBOUND
+            && operation.protocol() == Protocol.JSON;
+    if (!transportOperation && !operation.isNamedAnalyticsDhis2DataValueSet()) {
       throw new IllegalArgumentException(
-          "outbound operation commands require an allowlisted Transport JSON operation");
+          "outbound operation commands require an allowlisted Transport or DHIS2 JSON operation");
     }
     pathSegments = List.copyOf(Objects.requireNonNull(pathSegments, "pathSegments"));
     if (pathSegments.isEmpty()
@@ -47,6 +49,11 @@ public record PartnerOutboundOperationRequest(
                         || "..".equals(segment))) {
       throw new IllegalArgumentException(
           "relative operation path must contain bounded safe segments");
+    }
+    if (operation.isNamedAnalyticsDhis2DataValueSet()
+        && !pathSegments.equals(List.of("dataValueSets"))) {
+      throw new IllegalArgumentException(
+          "Analytics DHIS2 export is limited to the configured dataValueSets operation path");
     }
     body = Objects.requireNonNull(body, "body").clone();
     if (body.length == 0 || body.length > MAX_REQUEST_BYTES) {

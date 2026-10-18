@@ -109,6 +109,119 @@ class ApachePartnerHttpTransportTest {
   }
 
   @Test
+  void sendsNamedAnalyticsDataValueSetToOnlyItsConfiguredSynchronousPath() throws Exception {
+    AtomicReference<String> path = new AtomicReference<>();
+    AtomicReference<String> requestBody = new AtomicReference<>();
+    AtomicReference<String> operationReference = new AtomicReference<>();
+    try (LocalPartner partner =
+            LocalPartner.start(
+                exchange -> {
+                  path.set(exchange.getRequestURI().toASCIIString());
+                  requestBody.set(
+                      new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+                  operationReference.set(
+                      exchange.getRequestHeaders().getFirst("X-AyuVahak-Operation-Reference"));
+                  return new LocalResponse(
+                      200,
+                      "application/json",
+                      "{\"status\":\"SUCCESS\",\"importCount\":{\"imported\":1,\"updated\":0,\"ignored\":0,\"deleted\":0}}"
+                          .getBytes(StandardCharsets.UTF_8));
+                });
+        BoundedPartnerOperationExecutor executor = new BoundedPartnerOperationExecutor(2, 8)) {
+      ApachePartnerHttpTransport transport = localTransport(partner, executor, null);
+      var operation = PartnerTrustConfiguration.AllowedOperation.analyticsDhis2DataValueSet();
+      String value =
+          "{\"dataSet\":\"SYN-DATASET-001\",\"period\":\"202601\","
+              + "\"orgUnit\":\"SYN-ORGUNIT-001\",\"dataValues\":[{"
+              + "\"dataElement\":\"SYN-DATAELEMENT-001\",\"value\":\"4\"}]}";
+      var response =
+          transport.execute(
+              analyticsProfile("partner.test", partner.port()),
+              new PartnerOutboundOperationRequest(
+                  PARTNER,
+                  operation,
+                  List.of("dataValueSets"),
+                  value.getBytes(StandardCharsets.UTF_8),
+                  "export-SYN-OPERATION-001"),
+              Optional.empty(),
+              () -> {});
+
+      assertThat(path).hasValue("/api/dataValueSets");
+      assertThat(requestBody).hasValue(value);
+      assertThat(operationReference).hasValue("export-SYN-OPERATION-001");
+      assertThat(response.status()).isEqualTo(200);
+      assertThat(partner.requests()).hasValue(1);
+    }
+  }
+
+  @Test
+  void classifiesLocalDhis2WriteAuthenticationValidationRateAndServerFailures() throws Exception {
+    AtomicInteger status = new AtomicInteger(401);
+    try (LocalPartner partner =
+            LocalPartner.start(
+                exchange ->
+                    new LocalResponse(
+                        status.get(),
+                        "application/json",
+                        "SYN-DHIS2-SECRET-MUST-NOT-LEAK-9E1A".getBytes(StandardCharsets.UTF_8)));
+        BoundedPartnerOperationExecutor executor = new BoundedPartnerOperationExecutor(2, 8)) {
+      ApachePartnerHttpTransport transport = localTransport(partner, executor, null);
+      var profile = analyticsProfile("partner.test", partner.port());
+      var operation = PartnerTrustConfiguration.AllowedOperation.analyticsDhis2DataValueSet();
+      var request =
+          new PartnerOutboundOperationRequest(
+              PARTNER,
+              operation,
+              List.of("dataValueSets"),
+              "{\"dataValues\":[{\"value\":\"1\"}]}".getBytes(StandardCharsets.UTF_8),
+              "export-SYN-STATUS-001");
+
+      assertOperationFailure(
+          transport,
+          profile,
+          request,
+          status,
+          401,
+          PartnerTransportFailure.REMOTE_AUTHENTICATION_FAILURE);
+      assertOperationFailure(
+          transport,
+          profile,
+          request,
+          status,
+          403,
+          PartnerTransportFailure.REMOTE_AUTHORIZATION_FAILURE);
+      assertOperationFailure(
+          transport, profile, request, status, 400, PartnerTransportFailure.REMOTE_4XX);
+      assertOperationFailure(
+          transport, profile, request, status, 429, PartnerTransportFailure.RATE_LIMITED);
+      assertOperationFailure(
+          transport, profile, request, status, 503, PartnerTransportFailure.REMOTE_5XX);
+      assertThat(partner.requests()).hasValue(5);
+    }
+  }
+
+  private static void assertOperationFailure(
+      ApachePartnerHttpTransport transport,
+      PartnerProfileVersion profile,
+      PartnerOutboundOperationRequest request,
+      AtomicInteger status,
+      int responseStatus,
+      PartnerTransportFailure expected)
+      throws Exception {
+    status.set(responseStatus);
+    assertThatThrownBy(() -> transport.execute(profile, request, Optional.empty(), () -> {}))
+        .isInstanceOfSatisfying(
+            PartnerTransportException.class,
+            failure -> {
+              assertThat(failure.failure()).isEqualTo(expected);
+              assertThat(failure.getMessage())
+                  .doesNotContain("SYN-DHIS2-SECRET-MUST-NOT-LEAK-9E1A", "partner.test");
+              assertThat(failure.toString())
+                  .doesNotContain("SYN-DHIS2-SECRET-MUST-NOT-LEAK-9E1A", "partner.test");
+            });
+  }
+
+  @Test
   void acceptsAnEmptySuccessfulOperationResponseWithoutAContentType() throws Exception {
     try (LocalPartner partner =
             LocalPartner.start(exchange -> new LocalResponse(202, null, new byte[0]));
@@ -615,6 +728,25 @@ class ApachePartnerHttpTransportTest {
             limits(2_000, 100_000, 200_000),
             PartnerTrustConfiguration.RetryClass.NEVER,
             List.of(TRANSPORT_DISPATCH));
+    Instant now = Instant.now();
+    return new PartnerProfileVersion(
+        InternalId.generate(), 1, PartnerProfileState.ACTIVE, configuration, now, now);
+  }
+
+  private static PartnerProfileVersion analyticsProfile(String hostname, int port) {
+    PartnerTrustConfiguration configuration =
+        new PartnerTrustConfiguration(
+            PARTNER,
+            new ExternalReference(
+                new IssuerId("urn:synthetic:directory"), "Organization", "SYN-ORG-001"),
+            "https://" + hostname + ":" + port,
+            "/api",
+            PartnerTrustConfiguration.Authentication.none(),
+            PartnerTrustConfiguration.TlsPolicy.SYSTEM_CA,
+            Optional.empty(),
+            limits(2_000, 100_000, 200_000),
+            PartnerTrustConfiguration.RetryClass.NEVER,
+            List.of(PartnerTrustConfiguration.AllowedOperation.analyticsDhis2DataValueSet()));
     Instant now = Instant.now();
     return new PartnerProfileVersion(
         InternalId.generate(), 1, PartnerProfileState.ACTIVE, configuration, now, now);

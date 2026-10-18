@@ -106,4 +106,32 @@ class PartnerOutboundOperationRequestTest {
                 new PartnerOutboundOperationRequest(
                     PARTNER, inbound, List.of("transport-requests"), new byte[] {'{'}, "op-1"));
   }
+
+  @Test
+  void admitsOnlyTheNamedAnalyticsDataValueSetPath() {
+    AllowedOperation dhis2 = AllowedOperation.analyticsDhis2DataValueSet();
+    PartnerOutboundOperationRequest request =
+        new PartnerOutboundOperationRequest(
+            PARTNER,
+            dhis2,
+            List.of("dataValueSets"),
+            "{\"dataValues\":[{\"value\":\"1\"}]}".getBytes(),
+            "export-SYN-OPERATION-001");
+
+    assertThat(request.pathSegments()).containsExactly("dataValueSets");
+    assertThatIllegalArgumentException()
+        .isThrownBy(
+            () ->
+                new PartnerOutboundOperationRequest(
+                    PARTNER, dhis2, List.of("users"), "{}".getBytes(), "export-SYN-OPERATION-002"));
+    assertThatIllegalArgumentException()
+        .isThrownBy(
+            () ->
+                new AllowedOperation(
+                    OwnerContext.ANALYTICS,
+                    "analytics.anything",
+                    Direction.OUTBOUND,
+                    Protocol.JSON,
+                    "DHIS2-DataValueSet-2.43"));
+  }
 }

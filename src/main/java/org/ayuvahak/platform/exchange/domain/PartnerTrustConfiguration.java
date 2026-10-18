@@ -109,6 +109,7 @@ public record PartnerTrustConfiguration(
               operation ->
                   operation.ownerContext() == OwnerContext.REFERRAL
                       || operation.ownerContext() == OwnerContext.TRANSPORT
+                      || operation.ownerContext() == OwnerContext.ANALYTICS
                       || operation.protocol() != Protocol.JSON
                       || !peer.protocolProfile().equals(operation.profile()))) {
         throw new IllegalArgumentException(
@@ -120,6 +121,12 @@ public record PartnerTrustConfiguration(
         && retryClass != RetryClass.NEVER) {
       throw new IllegalArgumentException(
           "Transport provider operations must not be automatically retried by Exchange");
+    }
+    if (allowedOperations.stream()
+            .anyMatch(operation -> operation.ownerContext() == OwnerContext.ANALYTICS)
+        && (retryClass != RetryClass.NEVER || limits.maxAttempts() != 1)) {
+      throw new IllegalArgumentException(
+          "Analytics aggregate writes must not be automatically retried by Exchange");
     }
   }
 
@@ -270,7 +277,8 @@ public record PartnerTrustConfiguration(
     TRANSPORT,
     CAPACITY,
     MATCHING,
-    TRANSFER
+    TRANSFER,
+    ANALYTICS
   }
 
   public enum Protocol {
@@ -312,7 +320,8 @@ public record PartnerTrustConfiguration(
       if ((ownerContext == OwnerContext.TRANSPORT
               || ownerContext == OwnerContext.CAPACITY
               || ownerContext == OwnerContext.MATCHING
-              || ownerContext == OwnerContext.TRANSFER)
+              || ownerContext == OwnerContext.TRANSFER
+              || ownerContext == OwnerContext.ANALYTICS)
           && protocol != Protocol.JSON) {
         throw new IllegalArgumentException(
             "Transport and federation owner operations use bounded JSON");
@@ -322,6 +331,12 @@ public record PartnerTrustConfiguration(
       }
       if (profile == null || !SAFE_PROFILE.matcher(profile).matches()) {
         throw new IllegalArgumentException("profile must be a bounded identifier");
+      }
+      if (ownerContext == OwnerContext.ANALYTICS
+          && !isNamedAnalyticsDhis2DataValueSet(
+              ownerContext, operationCode, direction, protocol, profile)) {
+        throw new IllegalArgumentException(
+            "Analytics Exchange support is limited to the named DHIS2 aggregate operation");
       }
     }
 
@@ -364,6 +379,34 @@ public record PartnerTrustConfiguration(
 
     public static AllowedOperation transportDestinationChange() {
       return transportOutbound("transport.destination-change");
+    }
+
+    /** The sole named Analytics write admitted through the existing technical exchange boundary. */
+    public static AllowedOperation analyticsDhis2DataValueSet() {
+      return new AllowedOperation(
+          OwnerContext.ANALYTICS,
+          "analytics.dhis2.data-value-set",
+          Direction.OUTBOUND,
+          Protocol.JSON,
+          "DHIS2-DataValueSet-2.43");
+    }
+
+    public boolean isNamedAnalyticsDhis2DataValueSet() {
+      return isNamedAnalyticsDhis2DataValueSet(
+          ownerContext, operationCode, direction, protocol, profile);
+    }
+
+    private static boolean isNamedAnalyticsDhis2DataValueSet(
+        OwnerContext ownerContext,
+        String operationCode,
+        Direction direction,
+        Protocol protocol,
+        String profile) {
+      return ownerContext == OwnerContext.ANALYTICS
+          && "analytics.dhis2.data-value-set".equals(operationCode)
+          && direction == Direction.OUTBOUND
+          && protocol == Protocol.JSON
+          && "DHIS2-DataValueSet-2.43".equals(profile);
     }
 
     /** Named federated movement fact operation received by the remote Transfer owner. */

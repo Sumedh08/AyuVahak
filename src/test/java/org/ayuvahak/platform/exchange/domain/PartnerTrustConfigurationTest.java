@@ -190,6 +190,28 @@ class PartnerTrustConfigurationTest {
   }
 
   @Test
+  void analyticsTrustAllowsOnlyNamedSynchronousDataValueSetWithoutRetries() {
+    AllowedOperation operation = AllowedOperation.analyticsDhis2DataValueSet();
+    assertThat(operation.isNamedAnalyticsDhis2DataValueSet()).isTrue();
+    assertThat(profile(operation, RetryClass.NEVER, 1).allowedOperations())
+        .containsExactly(operation);
+
+    assertThatThrownBy(() -> profile(operation, RetryClass.NEVER, 2))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("must not be automatically retried");
+    assertThatThrownBy(
+            () ->
+                new AllowedOperation(
+                    OwnerContext.ANALYTICS,
+                    "analytics.dhis2.metadata-create",
+                    Direction.OUTBOUND,
+                    Protocol.JSON,
+                    "DHIS2-DataValueSet-2.43"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("limited to the named DHIS2 aggregate operation");
+  }
+
+  @Test
   void federationPeerProfileUsesAuthenticatedScopedJsonOperations() {
     ExternalReference organization =
         new ExternalReference(

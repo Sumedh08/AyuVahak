@@ -106,9 +106,10 @@ final class ApachePartnerHttpTransport
     if (activeProfile.state() != PartnerProfileState.ACTIVE
         || !configuration.partnerKey().equals(request.partnerKey())
         || !configuration.allowedOperations().contains(request.operation())
-        || request.operation().ownerContext() != PartnerTrustConfiguration.OwnerContext.TRANSPORT
-        || request.operation().direction() != PartnerTrustConfiguration.Direction.OUTBOUND
-        || request.operation().protocol() != PartnerTrustConfiguration.Protocol.JSON
+        || !((request.operation().ownerContext() == PartnerTrustConfiguration.OwnerContext.TRANSPORT
+                && request.operation().direction() == PartnerTrustConfiguration.Direction.OUTBOUND
+                && request.operation().protocol() == PartnerTrustConfiguration.Protocol.JSON)
+            || request.operation().isNamedAnalyticsDhis2DataValueSet())
         || configuration.retryClass() != PartnerTrustConfiguration.RetryClass.NEVER) {
       throw new PartnerTransportException(PartnerTransportFailure.PROFILE_NOT_ACTIVE);
     }
