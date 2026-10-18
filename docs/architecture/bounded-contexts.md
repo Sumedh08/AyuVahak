@@ -6,7 +6,7 @@ FHIR, IPS, SMART, mCSD, DHIS2, HAPI, Spring, PostgreSQL/PostGIS, a routing provi
 
 ## Context definitions
 
-Volume II's implemented business contexts are Directory, Capacity, Referral, Matching, and Transfer. They were implemented sequentially in Phases 3–7. Volume III adds standards/exchange adapters and Transport as a distinct business context. Phases 8–10 are implemented and frozen. Volume IV design now covers a technical realtime notification capability and formalizes Analytics as a bounded context for Phase 12; neither Phase 11 nor Phase 12 is implemented. The [Volume II context map](volume-2-core-care-coordination.md#context-model) shows the frozen five-context collaboration; [Volume III architecture](volume-3-interoperability-security-transport.md) and [Volume IV architecture](volume-4-resilient-operations-federation-public-health.md) define the approved extensions.
+Volume II's implemented business contexts are Directory, Capacity, Referral, Matching, and Transfer. They were implemented sequentially in Phases 3–7. Volume III adds standards/exchange adapters and Transport as a distinct business context. Phases 8–10 are implemented and frozen. Phase 11 implements Volume IV's technical realtime notification and federation capabilities; Phase 12 Analytics remains designed but unimplemented. The [Volume II context map](volume-2-core-care-coordination.md#context-model) shows the frozen five-context collaboration; [Volume III architecture](volume-3-interoperability-security-transport.md) and [Volume IV architecture](volume-4-resilient-operations-federation-public-health.md) define the approved extensions.
 
 ### Directory
 
@@ -78,7 +78,7 @@ Volume II's implemented business contexts are Directory, Capacity, Referral, Mat
 
 ### Realtime notification feed
 
-**Classification:** Phase 11 platform capability, not a business bounded context. It is not implemented.
+**Classification:** Implemented Phase 11 platform capability, not a business bounded context.
 
 - **Purpose:** Tell an authorized client that a scoped owner resource may have changed.
 - **Owns:** Only a bounded cursor/replay projection if needed. It owns no business state and no general SMS/email/push delivery lifecycle.
@@ -139,7 +139,7 @@ The consuming business context owns its port, the meaning of the data or action 
 
 ## Volume IV design boundary
 
-Phase 11 keeps owner databases authoritative, uses optional bounded SSE hints with authorized refresh, and federates named owner operations through Phase 9 without shared storage or multi-master replication. Phase 12 introduces Analytics as a derived aggregate context with owner-produced reporting snapshots and a downstream DHIS2 DataValueSet adapter. Missing/partial facts are never zero, aggregate privacy requires configured policy, and public DHIS2 is never a test dependency. See [Volume IV architecture](volume-4-resilient-operations-federation-public-health.md), [contracts](volume-4-context-contracts.md), [state machines](volume-4-state-machines.md), and [data ownership](volume-4-data-ownership.md). Both phases remain design-only; see the [Phase 11](../specs/phase-11-real-time-resilience-federation-spec.md) and [Phase 12](../specs/phase-12-public-health-analytics-dhis2-spec.md) specifications.
+Phase 11 keeps owner databases authoritative, uses optional bounded SSE hints with authorized refresh, and federates named owner operations through Phase 9 without shared storage or multi-master replication. Its implementation is frozen; see the [Phase 11 acceptance record](../reviews/phase-11-acceptance.md). Phase 12 introduces Analytics as a derived aggregate context with owner-produced reporting snapshots and a downstream DHIS2 DataValueSet adapter. Missing/partial facts are never zero, aggregate privacy requires configured policy, and public DHIS2 is never a test dependency. See [Volume IV architecture](volume-4-resilient-operations-federation-public-health.md), [contracts](volume-4-context-contracts.md), [state machines](volume-4-state-machines.md), and [data ownership](volume-4-data-ownership.md), plus the [Phase 11](../specs/phase-11-real-time-resilience-federation-spec.md) and [Phase 12](../specs/phase-12-public-health-analytics-dhis2-spec.md) specifications.
 - Capacity owns its source-to-CapacityDimension mappings and reservation semantics. Matching owns CareCapability-to-CapacityDimension operational-requirement policy; Capacity does not infer CareCapability meaning.
 - Matching owns its travel-time port and interpretation of any route estimate as advisory evidence.
 - Transfer owns reservation requests and their business reconciliation; Transport owns dispatch requests and reported assignment/status.
