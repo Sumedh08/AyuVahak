@@ -71,6 +71,11 @@ class TransferAuthorityConfiguration {
   }
 
   @Bean
+  FunctionalAuthority transferReportingSnapshotsAuthority() {
+    return TransferAuthorities.reportingSnapshots();
+  }
+
+  @Bean
   FunctionalAuthority transferPatientContextParticipationAuthority() {
     return TransferAuthorities.patientContextParticipation();
   }
