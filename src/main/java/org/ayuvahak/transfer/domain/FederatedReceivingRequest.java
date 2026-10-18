@@ -158,7 +158,7 @@ public record FederatedReceivingRequest(
         capacityQuantity,
         capacityIntervalStart,
         capacityIntervalEnd,
-        status,
+        assessment.outcome() == Outcome.DOES_NOT_SUPPORT ? Status.REJECTED : status,
         assessment.kind() == AssessmentKind.CLINICAL ? Optional.of(assessment) : clinicalAssessment,
         assessment.kind() == AssessmentKind.OPERATIONAL
             ? Optional.of(assessment)
@@ -176,10 +176,14 @@ public record FederatedReceivingRequest(
   }
 
   public FederatedReceivingRequest accept(
-      ActorReference actor, Instant acceptedAt, InternalId stableCapacityOperationId) {
+      ActorReference actor,
+      Instant acceptedAt,
+      InternalId stableCapacityOperationId,
+      Instant recordedAt) {
     Objects.requireNonNull(actor, "acceptance actor");
     Objects.requireNonNull(acceptedAt, "acceptance time");
     Objects.requireNonNull(stableCapacityOperationId, "Capacity operation id");
+    Objects.requireNonNull(recordedAt, "acceptance record time");
     return new FederatedReceivingRequest(
         id,
         originDeployment,
@@ -206,7 +210,7 @@ public record FederatedReceivingRequest(
         capacityLifecycleSequence,
         Math.addExact(version, 1),
         receivedAt,
-        acceptedAt);
+        recordedAt);
   }
 
   public FederatedReceivingRequest withCapacityOutcome(

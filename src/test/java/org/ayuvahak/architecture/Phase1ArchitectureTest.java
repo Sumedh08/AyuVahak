@@ -29,9 +29,6 @@ class Phase1ArchitectureTest {
     Phase1ArchitectureRules.notificationHintsMustNotDependOnPatientReference()
         .check(productionClasses);
     Phase1ArchitectureRules.domainCodeMustNotDependOnFrameworks().check(productionClasses);
-    Phase1ArchitectureRules.notificationHintsMustNotDependOnSseTypes().check(productionClasses);
-    Phase1ArchitectureRules.notificationHintsMustNotDependOnPatientReference()
-        .check(productionClasses);
     Phase1ArchitectureRules.directoryMustNotDependOnOtherBusinessContexts()
         .check(productionClasses);
     Phase1ArchitectureRules.businessContextsMustNotDependOnAnotherContextsPersistence()

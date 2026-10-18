@@ -23,8 +23,13 @@ public record FederatedOriginReceivingAttempt(
     byte[] requestBody,
     State state,
     Optional<RemoteOutcome> remoteOutcome,
+    Optional<RemoteReservationStatus> remoteReservationStatus,
     Optional<InternalId> remoteReceivingRequestId,
     Optional<InternalId> remoteCapacityReservationId,
+    Optional<RemoteAssessmentEvidence> remoteClinicalAssessment,
+    Optional<RemoteAssessmentEvidence> remoteOperationalAssessment,
+    Optional<Instant> remoteAcceptedAt,
+    Optional<Instant> remoteSourceUpdatedAt,
     long remoteVersion,
     long version,
     Instant createdAt,
@@ -54,10 +59,30 @@ public record FederatedOriginReceivingAttempt(
     }
     Objects.requireNonNull(state, "operation state");
     remoteOutcome = Objects.requireNonNull(remoteOutcome, "remote outcome");
+    remoteReservationStatus =
+        Objects.requireNonNull(remoteReservationStatus, "remote reservation status");
     remoteReceivingRequestId =
         Objects.requireNonNull(remoteReceivingRequestId, "remote request id");
     remoteCapacityReservationId =
         Objects.requireNonNull(remoteCapacityReservationId, "remote reservation id");
+    remoteClinicalAssessment =
+        Objects.requireNonNull(remoteClinicalAssessment, "remote clinical assessment");
+    remoteOperationalAssessment =
+        Objects.requireNonNull(remoteOperationalAssessment, "remote operational assessment");
+    remoteAcceptedAt = Objects.requireNonNull(remoteAcceptedAt, "remote acceptance time");
+    remoteSourceUpdatedAt =
+        Objects.requireNonNull(remoteSourceUpdatedAt, "remote source update time");
+    if (remoteOutcome.isPresent()
+        != (remoteReservationStatus.isPresent() && remoteReceivingRequestId.isPresent())) {
+      throw new IllegalArgumentException("remote result provenance is incomplete");
+    }
+    if (remoteOutcome.isEmpty()
+        && (remoteClinicalAssessment.isPresent()
+            || remoteOperationalAssessment.isPresent()
+            || remoteAcceptedAt.isPresent()
+            || remoteCapacityReservationId.isPresent())) {
+      throw new IllegalArgumentException("remote evidence requires a remote result");
+    }
     if (remoteVersion < 0 || version < 1) {
       throw new IllegalArgumentException("remote/local versions are invalid");
     }
@@ -84,6 +109,39 @@ public record FederatedOriginReceivingAttempt(
     ACCEPTED_RESERVED,
     ACCEPTED_UNRESERVED,
     REJECTED
+  }
+
+  public enum RemoteReservationStatus {
+    NOT_REQUESTED,
+    PENDING,
+    OUTCOME_UNKNOWN,
+    RESERVED,
+    CONFLICT,
+    UNKNOWN,
+    INVALID,
+    UNAVAILABLE,
+    AT_RISK,
+    RELEASED,
+    EXPIRED
+  }
+
+  /** Allowlisted remote decision evidence; actor identities and narratives are never copied. */
+  public record RemoteAssessmentEvidence(
+      AssessmentOutcome outcome, String reasonCode, Instant occurredAt, Instant recordedAt) {
+    public RemoteAssessmentEvidence {
+      Objects.requireNonNull(outcome, "assessment outcome");
+      if (reasonCode == null || !reasonCode.matches("[A-Z][A-Z0-9_]{1,63}")) {
+        throw new IllegalArgumentException("assessment reason code is invalid");
+      }
+      Objects.requireNonNull(occurredAt, "assessment source time");
+      Objects.requireNonNull(recordedAt, "assessment recorded time");
+    }
+  }
+
+  public enum AssessmentOutcome {
+    SUPPORTS,
+    DOES_NOT_SUPPORT,
+    INDETERMINATE
   }
 
   public static FederatedOriginReceivingAttempt pending(
@@ -115,6 +173,11 @@ public record FederatedOriginReceivingAttempt(
         Optional.empty(),
         Optional.empty(),
         Optional.empty(),
+        Optional.empty(),
+        Optional.empty(),
+        Optional.empty(),
+        Optional.empty(),
+        Optional.empty(),
         0,
         1,
         now,
@@ -136,8 +199,13 @@ public record FederatedOriginReceivingAttempt(
         requestBody,
         next,
         remoteOutcome,
+        remoteReservationStatus,
         remoteReceivingRequestId,
         remoteCapacityReservationId,
+        remoteClinicalAssessment,
+        remoteOperationalAssessment,
+        remoteAcceptedAt,
+        remoteSourceUpdatedAt,
         remoteVersion,
         Math.addExact(version, 1),
         createdAt,
@@ -146,20 +214,53 @@ public record FederatedOriginReceivingAttempt(
 
   public FederatedOriginReceivingAttempt withRemoteResult(
       RemoteOutcome outcome,
+      RemoteReservationStatus reservationStatus,
       InternalId receivingRequestId,
       Optional<InternalId> reservationId,
+      Optional<RemoteAssessmentEvidence> clinicalAssessment,
+      Optional<RemoteAssessmentEvidence> operationalAssessment,
+      Optional<Instant> acceptedAt,
+      Instant sourceUpdatedAt,
       long receivingVersion,
       Instant now) {
     Objects.requireNonNull(outcome, "remote outcome");
+    Objects.requireNonNull(reservationStatus, "remote reservation status");
     Objects.requireNonNull(receivingRequestId, "remote receiving request id");
     reservationId = Objects.requireNonNull(reservationId, "remote reservation id");
+    clinicalAssessment = Objects.requireNonNull(clinicalAssessment, "clinical assessment");
+    operationalAssessment = Objects.requireNonNull(operationalAssessment, "operational assessment");
+    acceptedAt = Objects.requireNonNull(acceptedAt, "remote acceptance time");
+    Objects.requireNonNull(sourceUpdatedAt, "remote source update time");
     if (receivingVersion < remoteVersion) {
       throw new IllegalArgumentException("remote owner version cannot move backwards");
     }
     if (state == State.REJECTED) {
       throw new IllegalStateException("a terminal operation cannot accept a remote update");
     }
-    State nextState = outcome == RemoteOutcome.REJECTED ? State.REJECTED : State.RESOLVED;
+    boolean same =
+        remoteOutcome.equals(Optional.of(outcome))
+            && remoteReservationStatus.equals(Optional.of(reservationStatus))
+            && remoteReceivingRequestId.equals(Optional.of(receivingRequestId))
+            && remoteCapacityReservationId.equals(reservationId)
+            && remoteClinicalAssessment.equals(clinicalAssessment)
+            && remoteOperationalAssessment.equals(operationalAssessment)
+            && remoteAcceptedAt.equals(acceptedAt)
+            && remoteSourceUpdatedAt.equals(Optional.of(sourceUpdatedAt))
+            && remoteVersion == receivingVersion;
+    if (same) {
+      return this;
+    }
+    if (remoteOutcome.isPresent() && receivingVersion == remoteVersion) {
+      throw new IllegalArgumentException("remote owner changed evidence without advancing version");
+    }
+    State nextState =
+        switch (outcome) {
+          case RECEIVED -> State.SENT;
+          case REJECTED -> State.REJECTED;
+          case ACCEPTED_RESERVED -> State.RESOLVED;
+          case ACCEPTED_UNRESERVED ->
+              isRecoverable(reservationStatus) ? State.OUTCOME_UNKNOWN : State.RESOLVED;
+        };
     return new FederatedOriginReceivingAttempt(
         id,
         journeyId,
@@ -174,11 +275,23 @@ public record FederatedOriginReceivingAttempt(
         requestBody,
         nextState,
         Optional.of(outcome),
+        Optional.of(reservationStatus),
         Optional.of(receivingRequestId),
         reservationId,
+        clinicalAssessment,
+        operationalAssessment,
+        acceptedAt,
+        Optional.of(sourceUpdatedAt),
         receivingVersion,
         Math.addExact(version, 1),
         createdAt,
         now);
+  }
+
+  private static boolean isRecoverable(RemoteReservationStatus status) {
+    return status == RemoteReservationStatus.PENDING
+        || status == RemoteReservationStatus.OUTCOME_UNKNOWN
+        || status == RemoteReservationStatus.UNKNOWN
+        || status == RemoteReservationStatus.UNAVAILABLE;
   }
 }

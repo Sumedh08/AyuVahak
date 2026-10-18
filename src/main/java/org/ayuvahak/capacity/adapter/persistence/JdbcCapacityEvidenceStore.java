@@ -36,6 +36,24 @@ public class JdbcCapacityEvidenceStore implements CapacityEvidenceStore {
   }
 
   @Override
+  public long currentSourceSequence(ExternalReference facility, String dimensionCode) {
+    Long sequence =
+        jdbc.queryForObject(
+            "SELECT COALESCE(MAX(source_sequence), 1) FROM capacity.capacity_observation "
+                + "WHERE facility_issuer = ? AND facility_identifier_type = ? "
+                + "AND facility_identifier = ? AND dimension_code = ?",
+            Long.class,
+            facility.issuer().value(),
+            facility.resourceType(),
+            facility.value(),
+            dimensionCode);
+    if (sequence == null || sequence < 1) {
+      throw new IllegalStateException("Capacity source sequence is not positive");
+    }
+    return sequence;
+  }
+
+  @Override
   public List<CapacityObservationFact> findForProjection(
       ExternalReference facility, String dimensionCode) {
     return jdbc.query(

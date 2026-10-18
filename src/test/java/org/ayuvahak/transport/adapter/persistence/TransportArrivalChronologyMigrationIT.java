@@ -74,6 +74,7 @@ class TransportArrivalChronologyMigrationIT {
         .defaultSchema("transport")
         .baselineOnMigrate(true)
         .baselineVersion("61")
+        .target("62")
         .load()
         .migrate();
 

@@ -132,7 +132,7 @@ public final class FederatedReceivingOriginCommands {
                       createOrRecover(context, journeyId, command, commandFingerprint, receiptKey)),
               "origin receiving creation result");
       FederatedOriginReceivingAttempt coordinated =
-          coordinator.submit(creation.attempt().operationId());
+          coordinator.submit(context, creation.attempt().operationId());
       return new FederatedOriginReceivingAttemptResult(coordinated, creation.replayed());
     } catch (CannotAcquireLockException busy) {
       throw problem(HttpStatus.CONFLICT, PlatformErrorCode.IDEMPOTENCY_IN_PROGRESS, BUSY_DETAIL);
@@ -239,7 +239,7 @@ public final class FederatedReceivingOriginCommands {
     }
     attempts.insert(attempt);
     auditMutation(context, attempt);
-    recordChanged(context, attempt, now);
+    recordChanged(context, attempt, Math.addExact(journey.version(), 1), now);
     attempts.completeReceipt(
         receiptKey, HttpStatus.CREATED.value(), attempt.id(), attempt.attemptNumber(), now);
     return new Creation(attempt, false);
@@ -397,11 +397,14 @@ public final class FederatedReceivingOriginCommands {
   }
 
   private void recordChanged(
-      ExecutionContext context, FederatedOriginReceivingAttempt attempt, Instant now) {
+      ExecutionContext context,
+      FederatedOriginReceivingAttempt attempt,
+      long journeyVersion,
+      Instant now) {
     ObjectNode payload = mapper.createObjectNode();
     payload.put("resourceType", "transfer-journey");
     payload.put("resourceId", attempt.journeyId().toString());
-    payload.put("version", attempt.attemptNumber());
+    payload.put("version", journeyVersion);
     outbox.record(
         new EventEnvelope(
             InternalId.generate(),
@@ -411,8 +414,7 @@ public final class FederatedReceivingOriginCommands {
             new org.ayuvahak.platform.core.RecordedAt(now),
             context,
             Optional.of(
-                new AggregatePosition(
-                    "transfer-journey/" + attempt.journeyId(), attempt.attemptNumber())),
+                new AggregatePosition("transfer-journey/" + attempt.journeyId(), journeyVersion)),
             payload));
   }
 

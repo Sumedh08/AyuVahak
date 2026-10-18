@@ -50,6 +50,8 @@ import tools.jackson.databind.ObjectMapper;
 @Lazy
 public final class FederatedReceivingCoordinationCommands {
 
+  private static final java.time.Duration MAX_FUTURE_SKEW = java.time.Duration.ofMinutes(5);
+
   private static final AllowedOperation RECEIVING_REQUEST =
       AllowedOperation.transferRemoteReceivingRequest(Direction.INBOUND);
   private static final AllowedOperation RESERVATION_STATUS =
@@ -155,10 +157,7 @@ public final class FederatedReceivingCoordinationCommands {
               ignored -> {
                 FederatedReceivingRequestStore.Claim claim = store.receive(candidate, now);
                 if (!claim.fingerprintMatches()) {
-                  throw problem(
-                      HttpStatus.CONFLICT,
-                      PlatformErrorCode.EXCHANGE_REPLAY_CONFLICT,
-                      "The peer reused a receiving operation identity with different content.");
+                  throw new FederatedOperationFingerprintConflict(claim.request().id());
                 }
                 if (claim.created()) {
                   audit.recordMutation(
@@ -180,6 +179,33 @@ public final class FederatedReceivingCoordinationCommands {
                 return new FederatedReceivingRequestResult(claim.request(), !claim.created());
               }),
           "federated receiving transaction result");
+    } catch (FederatedOperationFingerprintConflict conflict) {
+      try {
+        audit.recordNonMutating(
+            new AuditEvidence(
+                AuditActionKind.SECURITY_OUTCOME,
+                Optional.of(authorization.authenticatedPeerPrincipal()),
+                Optional.of(eventContext.scope()),
+                "TRANSFER_FEDERATED_RECEIVING_REPLAY_CONFLICT",
+                "FederatedReceivingRequest",
+                Optional.of(conflict.requestId()),
+                now,
+                AuditOutcome.DENIED,
+                Optional.of("OPERATION_FINGERPRINT_CONFLICT"),
+                AuditAuthenticationEvidence.SERVICE_ACCESS_TOKEN,
+                AuditAuthorizationOutcome.DENIED,
+                eventContext.correlationId(),
+                Optional.of(targetContext(eventContext.scope()))));
+      } catch (AuditPersistenceUnavailableException unavailable) {
+        throw problem(
+            HttpStatus.SERVICE_UNAVAILABLE,
+            PlatformErrorCode.AUDIT_UNAVAILABLE,
+            "The replay conflict remains denied; its required audit record is unavailable.");
+      }
+      throw problem(
+          HttpStatus.CONFLICT,
+          PlatformErrorCode.EXCHANGE_REPLAY_CONFLICT,
+          "The peer reused a receiving operation identity with different content.");
     } catch (AuditPersistenceUnavailableException unavailable) {
       throw problem(
           HttpStatus.SERVICE_UNAVAILABLE,
@@ -212,6 +238,7 @@ public final class FederatedReceivingCoordinationCommands {
             : TransferAuthorities.operationalReadiness().code();
     requireLocalAuthority(context, requestId, authorityCode, "TRANSFER_FEDERATED_ASSESSMENT");
     Instant now = clock.instant();
+    requireNotFutureSkewed(occurredAt, now);
     try {
       return Objects.requireNonNull(
           transaction.execute(
@@ -277,6 +304,7 @@ public final class FederatedReceivingCoordinationCommands {
         TransferAuthorities.acceptance().code(),
         "TRANSFER_FEDERATED_RECEIVING_ACCEPT");
     Instant now = clock.instant();
+    requireNotFutureSkewed(occurredAt, now);
     FederatedReceivingRequest accepted;
     try {
       accepted =
@@ -297,7 +325,7 @@ public final class FederatedReceivingCoordinationCommands {
                     requireSupportingAssessment(
                         current, FederatedReceivingRequest.AssessmentKind.OPERATIONAL);
                     FederatedReceivingRequest updated =
-                        current.accept(context.actor(), occurredAt, InternalId.generate());
+                        current.accept(context.actor(), occurredAt, InternalId.generate(), now);
                     if (!store.update(updated, current.version())) {
                       throw stateConflict();
                     }
@@ -335,6 +363,44 @@ public final class FederatedReceivingCoordinationCommands {
     return capacityRecovery.reconcile(accepted.id());
   }
 
+  /** Reads one receiver-owned case under a fresh local Transfer view grant. */
+  public FederatedReceivingRequest get(ExecutionContext context, InternalId requestId) {
+    Objects.requireNonNull(requestId, "receiving request id");
+    requireLocalFacilityContext(context);
+    requireLocalAuthority(
+        context,
+        requestId,
+        TransferAuthorities.view().code(),
+        "TRANSFER_FEDERATED_RECEIVING_REQUEST_READ");
+    FederatedReceivingRequest request =
+        store.find(requestId).orElseThrow(FederatedReceivingCoordinationCommands::notFound);
+    requireLocalDestination(context, request);
+    Instant now = clock.instant();
+    try {
+      audit.recordNonMutating(
+          new AuditEvidence(
+              AuditActionKind.SENSITIVE_READ,
+              Optional.of(context.actor()),
+              Optional.of(context.scope()),
+              "TRANSFER_FEDERATED_RECEIVING_REQUEST_READ",
+              "FederatedReceivingRequest",
+              Optional.of(requestId),
+              now,
+              AuditOutcome.SUCCEEDED,
+              Optional.empty(),
+              authenticationEvidence(context),
+              AuditAuthorizationOutcome.ALLOWED,
+              context.correlationId(),
+              Optional.of(targetContext(context.scope()))));
+    } catch (AuditPersistenceUnavailableException unavailable) {
+      throw problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          PlatformErrorCode.AUDIT_UNAVAILABLE,
+          "The receiving request cannot be read while required audit storage is unavailable.");
+    }
+    return request;
+  }
+
   /** Revalidates peer scope and returns the same receiver-owned reservation operation outcome. */
   public FederatedReceivingRequestResult reservationStatus(
       FederationPeerInboundAuthorization authorization,
@@ -360,18 +426,87 @@ public final class FederatedReceivingCoordinationCommands {
     if (!authorization.scope().equals(current.destinationFacility())
         || !requestedFacility.equals(current.destinationFacility())
         || !requestedOrganization.equals(current.destinationOrganization())) {
+      ExecutionContext peerContext =
+          peerContext(
+              authorization, current.destinationOrganization(), current.destinationFacility());
+      recordPeerStatusAudit(
+          peerContext,
+          current.id(),
+          "TRANSFER_FEDERATED_RESERVATION_STATUS_SCOPE_DENIED",
+          AuditOutcome.DENIED,
+          Optional.of("PEER_RECEIVING_SCOPE_MISMATCH"));
       throw problem(
           HttpStatus.FORBIDDEN,
           PlatformErrorCode.AUTHORIZATION_DENIED,
           "The peer is not authorized for this receiving Facility scope.");
     }
     if (!current.requestFingerprint().equals(requestFingerprint.value())) {
+      ExecutionContext peerContext =
+          peerContext(authorization, requestedOrganization, requestedFacility);
+      recordPeerStatusAudit(
+          peerContext,
+          current.id(),
+          "TRANSFER_FEDERATED_RESERVATION_STATUS_REPLAY_CONFLICT",
+          AuditOutcome.DENIED,
+          Optional.of("OPERATION_FINGERPRINT_CONFLICT"));
       throw problem(
           HttpStatus.CONFLICT,
           PlatformErrorCode.EXCHANGE_REPLAY_CONFLICT,
           "The reservation status request does not match the original receiving operation.");
     }
+    ExecutionContext peerContext =
+        peerContext(authorization, requestedOrganization, requestedFacility);
+    recordPeerStatusAudit(
+        peerContext,
+        current.id(),
+        "TRANSFER_FEDERATED_RESERVATION_STATUS_READ",
+        AuditOutcome.SUCCEEDED,
+        Optional.empty());
     return new FederatedReceivingRequestResult(capacityRecovery.reconcile(current.id()), false);
+  }
+
+  private ExecutionContext peerContext(
+      FederationPeerInboundAuthorization authorization,
+      org.ayuvahak.platform.core.ExternalReference organization,
+      org.ayuvahak.platform.core.ExternalReference facility) {
+    return contexts.forIntegrationRequest(
+        authorization.authenticatedPeerPrincipal(),
+        RequestedExecutionScope.facility(organization, facility),
+        CorrelationId.generate());
+  }
+
+  private void recordPeerStatusAudit(
+      ExecutionContext context,
+      InternalId requestId,
+      String action,
+      AuditOutcome outcome,
+      Optional<String> reason) {
+    try {
+      audit.recordNonMutating(
+          new AuditEvidence(
+              outcome == AuditOutcome.SUCCEEDED
+                  ? AuditActionKind.SENSITIVE_READ
+                  : AuditActionKind.SECURITY_OUTCOME,
+              Optional.of(context.actor()),
+              Optional.of(context.scope()),
+              action,
+              "FederatedReceivingRequest",
+              Optional.of(requestId),
+              clock.instant(),
+              outcome,
+              reason,
+              AuditAuthenticationEvidence.SERVICE_ACCESS_TOKEN,
+              outcome == AuditOutcome.SUCCEEDED
+                  ? AuditAuthorizationOutcome.ALLOWED
+                  : AuditAuthorizationOutcome.DENIED,
+              context.correlationId(),
+              Optional.of(targetContext(context.scope()))));
+    } catch (AuditPersistenceUnavailableException unavailable) {
+      throw problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          PlatformErrorCode.AUDIT_UNAVAILABLE,
+          "The peer operation remains blocked because its required audit record is unavailable.");
+    }
   }
 
   private void requireLocalAuthority(
@@ -429,6 +564,15 @@ public final class FederatedReceivingCoordinationCommands {
           HttpStatus.FORBIDDEN,
           PlatformErrorCode.INVALID_EXECUTION_SCOPE,
           "Receiving decisions require an authorized local Facility scope.");
+    }
+  }
+
+  private static void requireNotFutureSkewed(Instant occurredAt, Instant now) {
+    if (occurredAt.isAfter(now.plus(MAX_FUTURE_SKEW))) {
+      throw problem(
+          HttpStatus.BAD_REQUEST,
+          PlatformErrorCode.MALFORMED_REQUEST,
+          "The source-reported time exceeds the allowed future clock-skew bound.");
     }
   }
 
@@ -532,5 +676,21 @@ public final class FederatedReceivingCoordinationCommands {
   private static PlatformProblemException problem(
       HttpStatus status, PlatformErrorCode code, String detail) {
     return new PlatformProblemException(status, code, detail);
+  }
+
+  private static final class FederatedOperationFingerprintConflict extends RuntimeException {
+
+    private static final long serialVersionUID = 1L;
+
+    private final InternalId requestId;
+
+    private FederatedOperationFingerprintConflict(InternalId requestId) {
+      super("Federated receiving operation fingerprint conflicts with its durable receipt.");
+      this.requestId = Objects.requireNonNull(requestId, "requestId");
+    }
+
+    private InternalId requestId() {
+      return requestId;
+    }
   }
 }

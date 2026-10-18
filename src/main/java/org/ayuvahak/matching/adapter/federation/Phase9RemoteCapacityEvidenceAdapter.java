@@ -276,6 +276,7 @@ public final class Phase9RemoteCapacityEvidenceAdapter implements RemoteCapacity
           case AUTHENTICATION_FAILED ->
               RemoteCapacityEvidenceExchangeException.Reason.AUTHENTICATION_FAILED;
           case REMOTE_REJECTED -> RemoteCapacityEvidenceExchangeException.Reason.REMOTE_REJECTED;
+          case REMOTE_NOT_FOUND -> RemoteCapacityEvidenceExchangeException.Reason.REMOTE_REJECTED;
           case RESPONSE_UNCERTAIN -> RemoteCapacityEvidenceExchangeException.Reason.OUTCOME_UNKNOWN;
         };
     return new RemoteCapacityEvidenceExchangeException(reason);

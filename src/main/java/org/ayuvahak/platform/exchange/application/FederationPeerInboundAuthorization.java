@@ -14,6 +14,7 @@ import org.ayuvahak.platform.federation.domain.DeploymentId;
 public record FederationPeerInboundAuthorization(
     PartnerKey partnerKey,
     DeploymentId peerDeployment,
+    ExternalReference organizationScope,
     InternalId profileId,
     int profileVersion,
     ActorReference authenticatedPeerPrincipal,
@@ -23,6 +24,10 @@ public record FederationPeerInboundAuthorization(
   public FederationPeerInboundAuthorization {
     Objects.requireNonNull(partnerKey, "partnerKey");
     Objects.requireNonNull(peerDeployment, "peerDeployment");
+    Objects.requireNonNull(organizationScope, "organizationScope");
+    if (!"Organization".equals(organizationScope.resourceType())) {
+      throw new IllegalArgumentException("peer authorization requires its Organization scope");
+    }
     Objects.requireNonNull(profileId, "profileId");
     if (profileVersion < 1) {
       throw new IllegalArgumentException("partner configuration version must be positive");

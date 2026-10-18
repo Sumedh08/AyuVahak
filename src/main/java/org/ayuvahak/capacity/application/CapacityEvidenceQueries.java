@@ -10,6 +10,7 @@ import org.ayuvahak.capacity.domain.CapacityAuthorities;
 import org.ayuvahak.capacity.domain.CapacityDimensionReadiness;
 import org.ayuvahak.capacity.domain.CapacityEvidenceProjection;
 import org.ayuvahak.capacity.domain.CapacityEvidenceProjector;
+import org.ayuvahak.capacity.domain.CapacityPolicy;
 import org.ayuvahak.capacity.domain.CapacityReadinessEvaluation;
 import org.ayuvahak.capacity.domain.CapacityReadinessEvaluator;
 import org.ayuvahak.platform.api.PlatformErrorCode;
@@ -120,6 +121,57 @@ public class CapacityEvidenceQueries implements CapacityReadiness {
       throw unavailable("Current Capacity evidence could not be read safely.");
     }
     recordRead(context, facility, "CAPACITY_CURRENT_EVIDENCE_READ");
+    return result;
+  }
+
+  /** Reads one owner-approved federation projection with its persisted monotonic source version. */
+  public CapacityFederatedEvidence currentFederated(
+      ExecutionContext context, ExternalReference facility, String dimensionCode) {
+    requireFacility(context, facility);
+    requireReviewer(context, "CAPACITY_FEDERATED_EVIDENCE_READ", facility);
+    List<String> dimensions = validateDimensions(List.of(dimensionCode));
+    String dimension = dimensions.getFirst();
+    Instant evaluationTime = clock.instant();
+    CapacityFederatedEvidence result;
+    try {
+      result =
+          Objects.requireNonNull(
+              readTransaction.execute(
+                  status -> {
+                    var dimensionConfiguration = configuration.currentDimension(dimension);
+                    var policyConfiguration = configuration.currentPolicy(dimension);
+                    CapacityEvidenceProjection projection =
+                        projector.project(
+                            facility,
+                            dimension,
+                            dimensionConfiguration,
+                            policyConfiguration,
+                            evidence.findForProjection(facility, dimension),
+                            evaluationTime);
+                    var readiness =
+                        readinessEvaluator.evaluate(
+                            dimension, dimensionConfiguration, policyConfiguration, projection);
+                    if (readiness.dimensionVersion().isEmpty()
+                        || readiness.policyVersion().isEmpty()) {
+                      throw unavailable("The requested Capacity dimension is not configured.");
+                    }
+                    long maximumObservationAgeSeconds =
+                        policyConfiguration
+                            .map(CapacityPolicy::maximumObservationAgeSeconds)
+                            .orElseThrow(
+                                () ->
+                                    unavailable(
+                                        "The requested Capacity readiness policy is not configured."));
+                    return new CapacityFederatedEvidence(
+                        readiness,
+                        evidence.currentSourceSequence(facility, dimension),
+                        maximumObservationAgeSeconds);
+                  }),
+              "Federated Capacity evidence result");
+    } catch (DataAccessException unavailable) {
+      throw unavailable("Federated Capacity evidence could not be read safely.");
+    }
+    recordRead(context, facility, "CAPACITY_FEDERATED_EVIDENCE_READ");
     return result;
   }
 

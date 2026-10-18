@@ -229,6 +229,7 @@ final class FederatedReceivingOperationController {
       response.put("operationId", result.operationId().toString());
       response.put("requestFingerprint", result.requestFingerprint());
       response.put("outcome", result.request().status().name());
+      response.put("reservationStatus", result.request().reservationStatus().name());
       response.put("receivingRequestId", result.request().id().toString());
       if (result.request().capacityReservationId().isPresent()) {
         response.put(
@@ -237,6 +238,23 @@ final class FederatedReceivingOperationController {
       } else {
         response.putNull("capacityReservationId");
       }
+      if (result.request().clinicalAssessment().isPresent()) {
+        response.set("clinicalAssessment", assessmentJson(result.request().clinicalAssessment()));
+      } else {
+        response.putNull("clinicalAssessment");
+      }
+      if (result.request().operationalAssessment().isPresent()) {
+        response.set(
+            "operationalAssessment", assessmentJson(result.request().operationalAssessment()));
+      } else {
+        response.putNull("operationalAssessment");
+      }
+      if (result.request().acceptedAt().isPresent()) {
+        response.put("acceptedAt", result.request().acceptedAt().orElseThrow().toString());
+      } else {
+        response.putNull("acceptedAt");
+      }
+      response.put("sourceUpdatedAt", result.request().updatedAt().toString());
       response.put("receivingVersion", result.request().version());
       return ResponseEntity.ok()
           .contentType(MediaType.APPLICATION_JSON)
@@ -244,6 +262,18 @@ final class FederatedReceivingOperationController {
     } catch (JacksonException failure) {
       throw unavailable();
     }
+  }
+
+  private ObjectNode assessmentJson(
+      java.util.Optional<org.ayuvahak.transfer.domain.FederatedReceivingRequest.Assessment>
+          assessment) {
+    var value = mapper.createObjectNode();
+    var current = assessment.orElseThrow();
+    value.put("outcome", current.outcome().name());
+    value.put("reasonCode", current.reasonCode());
+    value.put("occurredAt", current.occurredAt().toString());
+    value.put("recordedAt", current.recordedAt().toString());
+    return value;
   }
 
   private FederatedReceivingRequestResultRepresentation representation(

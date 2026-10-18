@@ -615,6 +615,9 @@ final class ApachePartnerHttpTransport
             PartnerTransportFailure.RATE_LIMITED,
             parseRetryAfter(responseHeader(response, "Retry-After")));
       }
+      if (status == 404) {
+        throw new PartnerTransportException(PartnerTransportFailure.REMOTE_NOT_FOUND);
+      }
       throw new PartnerTransportException(PartnerTransportFailure.REMOTE_4XX);
     }
     if (status >= 500) {

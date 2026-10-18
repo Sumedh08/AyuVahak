@@ -156,6 +156,10 @@ public final class FederationPeerOperationService implements FederationPeerOpera
           new FederationPeerOperationException(
               FederationPeerOperationDisposition.REMOTE_REJECTED,
               FederationPeerOperationFailure.REMOTE_REJECTED);
+      case REMOTE_NOT_FOUND ->
+          new FederationPeerOperationException(
+              FederationPeerOperationDisposition.REMOTE_REJECTED,
+              FederationPeerOperationFailure.REMOTE_NOT_FOUND);
       case READ_TIMEOUT,
           OPERATION_TIMEOUT,
           RESPONSE_TOO_LARGE,

@@ -15,6 +15,9 @@ import org.ayuvahak.transfer.application.FederatedReceivingOriginExchange;
 import org.ayuvahak.transfer.application.FederatedReceivingOriginExchangeException;
 import org.ayuvahak.transfer.application.FederatedReceivingOriginExchangeResult;
 import org.ayuvahak.transfer.domain.FederatedOriginReceivingAttempt;
+import org.ayuvahak.transfer.domain.FederatedOriginReceivingAttempt.AssessmentOutcome;
+import org.ayuvahak.transfer.domain.FederatedOriginReceivingAttempt.RemoteAssessmentEvidence;
+import org.ayuvahak.transfer.domain.FederatedOriginReceivingAttempt.RemoteReservationStatus;
 import org.springframework.stereotype.Component;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
@@ -35,9 +38,16 @@ public final class Phase9FederatedReceivingOriginExchange
           "operationId",
           "requestFingerprint",
           "outcome",
+          "reservationStatus",
           "receivingRequestId",
           "capacityReservationId",
+          "clinicalAssessment",
+          "operationalAssessment",
+          "acceptedAt",
+          "sourceUpdatedAt",
           "receivingVersion");
+  private static final Set<String> ASSESSMENT_FIELDS =
+      Set.of("outcome", "reasonCode", "occurredAt", "recordedAt");
 
   private final FederationPeerOperationPort exchange;
   private final org.ayuvahak.matching.application.FederationLocalDeploymentIdentity deployment;
@@ -101,7 +111,7 @@ public final class Phase9FederatedReceivingOriginExchange
       }
       return parse(response.body(), attempt);
     } catch (FederationPeerOperationException failure) {
-      throw map(failure.failure());
+      throw map(failure.failure(), statusOnly);
     }
   }
 
@@ -154,25 +164,56 @@ public final class Phase9FederatedReceivingOriginExchange
       long receivingVersion = positiveLong(response, "receivingVersion");
       var outcome =
           FederatedOriginReceivingAttempt.RemoteOutcome.valueOf(text(response, "outcome"));
+      var reservationStatus = RemoteReservationStatus.valueOf(text(response, "reservationStatus"));
       var receivingRequestId = InternalId.parse(text(response, "receivingRequestId"));
       var reservationValue = response.get("capacityReservationId");
       java.util.Optional<org.ayuvahak.platform.core.InternalId> reservation =
           reservationValue == null || reservationValue.isNull()
               ? java.util.Optional.empty()
               : java.util.Optional.of(InternalId.parse(asText(reservationValue)));
-      if (outcome == FederatedOriginReceivingAttempt.RemoteOutcome.ACCEPTED_RESERVED
-          && reservation.isEmpty()) {
-        throw FederatedReceivingOriginExchangeException.invalidResponse();
-      }
-      if (outcome != FederatedOriginReceivingAttempt.RemoteOutcome.ACCEPTED_RESERVED
-          && reservation.isPresent()) {
-        throw FederatedReceivingOriginExchangeException.invalidResponse();
-      }
+      var clinical = assessment(response.get("clinicalAssessment"));
+      var operational = assessment(response.get("operationalAssessment"));
+      var acceptedValue = response.get("acceptedAt");
+      var acceptedAt =
+          acceptedValue == null || acceptedValue.isNull()
+              ? java.util.Optional.<java.time.Instant>empty()
+              : java.util.Optional.of(java.time.Instant.parse(asText(acceptedValue)));
+      var sourceUpdatedAt = java.time.Instant.parse(text(response, "sourceUpdatedAt"));
       return new FederatedReceivingOriginExchangeResult(
-          outcome, receivingRequestId, reservation, receivingVersion);
+          outcome,
+          reservationStatus,
+          receivingRequestId,
+          reservation,
+          clinical,
+          operational,
+          acceptedAt,
+          sourceUpdatedAt,
+          receivingVersion);
     } catch (JacksonException
         | java.nio.charset.CharacterCodingException
         | IllegalArgumentException malformed) {
+      throw FederatedReceivingOriginExchangeException.invalidResponse();
+    }
+  }
+
+  private java.util.Optional<RemoteAssessmentEvidence> assessment(JsonNode value) {
+    if (value == null || value.isNull()) {
+      return java.util.Optional.empty();
+    }
+    if (!value.isObject()
+        || value.properties().stream()
+            .anyMatch(field -> !ASSESSMENT_FIELDS.contains(field.getKey()))
+        || value.size() != ASSESSMENT_FIELDS.size()) {
+      throw FederatedReceivingOriginExchangeException.invalidResponse();
+    }
+    try {
+      return java.util.Optional.of(
+          new RemoteAssessmentEvidence(
+              AssessmentOutcome.valueOf(text(value, "outcome")),
+              text(value, "reasonCode"),
+              java.time.Instant.parse(text(value, "occurredAt")),
+              java.time.Instant.parse(text(value, "recordedAt"))));
+    } catch (IllegalArgumentException invalid) {
       throw FederatedReceivingOriginExchangeException.invalidResponse();
     }
   }
@@ -213,11 +254,15 @@ public final class Phase9FederatedReceivingOriginExchange
   }
 
   private static FederatedReceivingOriginExchangeException map(
-      FederationPeerOperationFailure failure) {
+      FederationPeerOperationFailure failure, boolean statusOnly) {
     return switch (failure) {
       case TRUST_DENIED, TRUST_UNAVAILABLE, AUTHENTICATION_FAILED, DESTINATION_NOT_REACHED ->
           FederatedReceivingOriginExchangeException.notSent();
-      case REMOTE_REJECTED -> FederatedReceivingOriginExchangeException.rejected();
+      case REMOTE_REJECTED -> FederatedReceivingOriginExchangeException.invalidResponse();
+      case REMOTE_NOT_FOUND ->
+          statusOnly
+              ? FederatedReceivingOriginExchangeException.notSent()
+              : FederatedReceivingOriginExchangeException.invalidResponse();
       case RESPONSE_UNCERTAIN -> FederatedReceivingOriginExchangeException.outcomeUnknown();
     };
   }

@@ -31,6 +31,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
@@ -112,7 +113,7 @@ import org.testcontainers.utility.DockerImageName;
     properties = {
       "management.tracing.sampling.probability=0.0",
       "ayuvahak.authentication.audience=ayuvahak-api",
-      "ayuvahak.authentication.service-client-ids=synthetic-integration-service,synthetic-federated-origin-peer,ayuvahak-transport-worker,ayuvahak-transfer-owner-event-consumer,synthetic-transport-provider,synthetic-mcsd-worker",
+      "ayuvahak.authentication.service-client-ids=synthetic-integration-service,synthetic-federated-origin-peer,synthetic-federated-capacity-peer,synthetic-federated-directory-peer,ayuvahak-transport-worker,ayuvahak-transfer-owner-event-consumer,synthetic-transport-provider,synthetic-mcsd-worker",
       "ayuvahak.authentication.allow-http=true",
       "ayuvahak.test.partner.enabled=true",
       "ayuvahak.transfer.request-deadline=PT1H",
@@ -2248,7 +2249,11 @@ class DirectoryCapacityReferralScenarioIT {
       var coordinator =
           new org.ayuvahak.transfer.application.FederatedReceivingOriginOperationCoordinator(
               originAttemptStore,
+              originTransferStore,
               originExchange,
+              originAudit,
+              originOutbox,
+              new tools.jackson.databind.ObjectMapper(),
               originTransactionManager,
               java.time.Clock.systemUTC());
       var originCommand =
@@ -2682,6 +2687,267 @@ class DirectoryCapacityReferralScenarioIT {
             failure ->
                 assertThat(((PlatformProblemException) failure).code().name())
                     .isEqualTo("EXCHANGE_REPLAY_CONFLICT"));
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code = ? "
+                    + "AND target_id = ? AND outcome = 'DENIED' "
+                    + "AND reason_code = 'OPERATION_FINGERPRINT_CONFLICT'",
+                Integer.class,
+                "TRANSFER_FEDERATED_RECEIVING_REPLAY_CONFLICT",
+                created.request().id().value()))
+        .as("changed operation content must leave durable security audit evidence")
+        .isEqualTo(1);
+  }
+
+  @Test
+  void federatedCapacityEvidenceUsesTrustedPeerAndReturnsVersionedOwnerEvidence() throws Exception {
+    grantPlatform(CURATOR, "DirectoryCuration");
+    grantPlatform(CURATOR, "DirectoryVocabularyAdministration");
+    grantPlatform(CAPACITY_ADMIN, "CapacityPolicyAdministration");
+    String organizationId =
+        createOrganization("synthetic-federated-capacity-evidence-organization");
+    String facilityId =
+        createFacility(
+            "synthetic-federated-capacity-evidence-facility", organizationId, "Synthetic Capacity");
+    String dimension = "SYN_FEDERATED_CAPACITY_EVIDENCE";
+    defineCapacityDimension(
+        dimension,
+        "synthetic-federated-capacity-dimension-" + UUID.randomUUID(),
+        CAPACITY_ADMIN,
+        false,
+        "unit");
+    configureCapacityPolicy(
+        dimension, "synthetic-federated-capacity-policy-" + UUID.randomUUID(), CAPACITY_ADMIN, 600);
+    grantService(
+        "synthetic-federated-capacity-peer",
+        "CapacityEvidenceReview",
+        "FACILITY",
+        organizationId,
+        facilityId);
+    grantFacility(CAPACITY_REPORTER, "CapacityReporting", organizationId, facilityId);
+    Instant sourceObservedAt =
+        Instant.now().minusSeconds(1).truncatedTo(java.time.temporal.ChronoUnit.MICROS);
+    Instant sourceValidUntil = sourceObservedAt.plusSeconds(4 * 60 * 60);
+    recordCapacityObservation(
+        CAPACITY_REPORTER,
+        organizationId,
+        facilityId,
+        dimension,
+        "synthetic-federated-capacity-observation-" + UUID.randomUUID(),
+        7,
+        sourceObservedAt,
+        sourceValidUntil);
+
+    var localDeployment =
+        new org.ayuvahak.platform.federation.domain.DeploymentId("SYN-DEPLOYMENT-RECEIVER");
+    var sourceDeployment =
+        new org.ayuvahak.platform.federation.domain.DeploymentId("SYN-DEPLOYMENT-CAPACITY-ORIGIN");
+    String peerDirectoryIssuer =
+        "urn:ayuvahak:deployment:" + localDeployment.value() + ":directory";
+    var peerOrganization =
+        new ExternalReference(new IssuerId(peerDirectoryIssuer), "Organization", organizationId);
+    var peerFacility =
+        new ExternalReference(new IssuerId(peerDirectoryIssuer), "Facility", facilityId);
+    var operation =
+        org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.AllowedOperation
+            .capacityRemoteEvidence(
+                org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.Direction.INBOUND);
+    var partnerKey =
+        new org.ayuvahak.platform.exchange.domain.PartnerKey(
+            "synthetic-capacity-peer-" + UUID.randomUUID());
+    var principal =
+        ActorReference.service(new IssuerId(ISSUER), "synthetic-federated-capacity-peer");
+    var configuration =
+        new org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration(
+            partnerKey,
+            peerOrganization,
+            "https://synthetic-federation-peer.example.test",
+            "/federation",
+            new org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.Authentication(
+                org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.AuthenticationMethod
+                    .MUTUAL_TLS,
+                Optional.of("secretref:SYNTHETIC-CAPACITY-PEER-CERTIFICATE"),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty()),
+            org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.TlsPolicy.SYSTEM_CA,
+            Optional.empty(),
+            new org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.Limits(
+                1_000, 2_000, 5_000, 100_000, 200_000, 1, 100, 16, 1),
+            org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.RetryClass.NEVER,
+            List.of(operation),
+            Optional.of(principal),
+            Optional.of(
+                new org.ayuvahak.platform.exchange.domain.FederationPeerConfiguration(
+                    sourceDeployment,
+                    peerOrganization,
+                    org.ayuvahak.platform.exchange.domain.FederationPeerConfiguration
+                        .supportedProtocolProfile(),
+                    List.of(peerFacility))));
+    new TransactionTemplate(transactionManager)
+        .execute(
+            ignored -> {
+              partnerTrustProfileStore.createInitial(configuration, Instant.now());
+              partnerTrustProfileStore.activate(partnerKey, 1, Instant.now());
+              return null;
+            });
+
+    byte[] requestBody =
+        ("{\"contractVersion\":\"capacity-remote-evidence-v1\","
+                + "\"deploymentId\":\"SYN-DEPLOYMENT-RECEIVER\","
+                + "\"context\":\"directory\",\"resourceId\":\""
+                + facilityId
+                + "\",\"dimensionCode\":\""
+                + dimension
+                + "\"}")
+            .getBytes(StandardCharsets.UTF_8);
+    InternalId operationId = InternalId.generate();
+    String fingerprint =
+        org.ayuvahak.platform.exchange.application.FederationOperationFingerprint.calculate(
+                sourceDeployment, localDeployment, peerFacility, operation, requestBody)
+            .value();
+    mockMvc
+        .perform(
+            post("/api/federation/operations/capacity.remote-evidence")
+                .header("Authorization", bearer(serviceToken("synthetic-federated-capacity-peer")))
+                .header("X-AyuVahak-Federation-Source", sourceDeployment.value())
+                .header("X-AyuVahak-Federation-Peer", localDeployment.value())
+                .header("X-AyuVahak-Federation-Operation", operation.operationCode())
+                .header("X-AyuVahak-Operation-Id", operationId.toString())
+                .header("X-AyuVahak-Operation-Fingerprint", fingerprint)
+                .contentType("application/json")
+                .content(requestBody))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.contractVersion").value("capacity-remote-evidence-v1"))
+        .andExpect(jsonPath("$.deploymentId").value(localDeployment.value()))
+        .andExpect(jsonPath("$.resourceId").value(facilityId))
+        .andExpect(jsonPath("$.dimensionCode").value(dimension))
+        .andExpect(jsonPath("$.sourceSequence").isNumber())
+        .andExpect(jsonPath("$.dimensionVersion").value(1))
+        .andExpect(jsonPath("$.policyVersion").value(1))
+        .andExpect(jsonPath("$.outcome").value("READY"))
+        .andExpect(jsonPath("$.freshness").value("CURRENT"))
+        .andExpect(jsonPath("$.complete").value(true))
+        .andExpect(jsonPath("$.quantity").value(7))
+        .andExpect(jsonPath("$.validUntil").value(sourceObservedAt.plusSeconds(600).toString()));
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE actor_kind = 'SERVICE' "
+                    + "AND actor_reference = ? AND action_code = 'CAPACITY_FEDERATED_EVIDENCE_READ' "
+                    + "AND target_type = 'Facility' AND target_id = ? AND outcome = 'SUCCEEDED'",
+                Integer.class,
+                "synthetic-federated-capacity-peer",
+                UUID.fromString(facilityId)))
+        .isEqualTo(1);
+  }
+
+  @Test
+  void federatedDirectoryDiscoveryServesOnlyAuthorizedOwnerFacts() throws Exception {
+    grantPlatform(CURATOR, "DirectoryCuration");
+    grantPlatform(CURATOR, "DirectoryVocabularyAdministration");
+    String organizationId = createOrganization("synthetic-federated-directory-organization");
+    String facilityId =
+        createFacility(
+            "synthetic-federated-directory-facility", organizationId, "Synthetic Remote Facility");
+    String peerClient = "synthetic-federated-directory-peer";
+    grantService(peerClient, "DirectoryRead", "ORGANIZATION", organizationId, null);
+
+    var localDeployment =
+        new org.ayuvahak.platform.federation.domain.DeploymentId("SYN-DEPLOYMENT-RECEIVER");
+    var sourceDeployment =
+        new org.ayuvahak.platform.federation.domain.DeploymentId("SYN-DEPLOYMENT-DIRECTORY-ORIGIN");
+    String localIssuer = "urn:ayuvahak:deployment:" + localDeployment.value() + ":directory";
+    var peerOrganization =
+        new ExternalReference(new IssuerId(localIssuer), "Organization", organizationId);
+    var operation =
+        org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.AllowedOperation
+            .directoryRemoteDiscovery(
+                org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.Direction.INBOUND);
+    var partnerKey =
+        new org.ayuvahak.platform.exchange.domain.PartnerKey(
+            "synthetic-directory-peer-" + UUID.randomUUID());
+    var principal = ActorReference.service(new IssuerId(ISSUER), peerClient);
+    var configuration =
+        new org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration(
+            partnerKey,
+            peerOrganization,
+            "https://synthetic-directory-peer.example.test",
+            "/federation",
+            new org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.Authentication(
+                org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.AuthenticationMethod
+                    .MUTUAL_TLS,
+                Optional.of("secretref:SYNTHETIC-DIRECTORY-PEER-CERTIFICATE"),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty()),
+            org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.TlsPolicy.SYSTEM_CA,
+            Optional.empty(),
+            new org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.Limits(
+                1_000, 2_000, 5_000, 100_000, 200_000, 1, 100, 16, 1),
+            org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.RetryClass.NEVER,
+            List.of(operation),
+            Optional.of(principal),
+            Optional.of(
+                new org.ayuvahak.platform.exchange.domain.FederationPeerConfiguration(
+                    sourceDeployment,
+                    peerOrganization,
+                    org.ayuvahak.platform.exchange.domain.FederationPeerConfiguration
+                        .supportedProtocolProfile(),
+                    List.of())));
+    new TransactionTemplate(transactionManager)
+        .execute(
+            ignored -> {
+              partnerTrustProfileStore.createInitial(configuration, Instant.now());
+              partnerTrustProfileStore.activate(partnerKey, 1, Instant.now());
+              return null;
+            });
+
+    var operationScope =
+        new ExternalReference(new IssuerId(localIssuer), "Organization", organizationId);
+    byte[] requestBody =
+        ("{\"protocolProfile\":\"AyuVahak-Federation-v1\","
+                + "\"sourceDeploymentId\":\""
+                + sourceDeployment.value()
+                + "\",\"requestedScope\":{\"issuer\":\""
+                + localIssuer
+                + "\",\"resourceType\":\"Organization\",\"value\":\""
+                + organizationId
+                + "\"},\"resourceTypes\":[\"Organization\",\"Facility\"],"
+                + "\"maximumFacts\":10}")
+            .getBytes(StandardCharsets.UTF_8);
+    InternalId operationId = InternalId.generate();
+    String fingerprint =
+        org.ayuvahak.platform.exchange.application.FederationOperationFingerprint.calculate(
+                sourceDeployment, localDeployment, operationScope, operation, requestBody)
+            .value();
+
+    mockMvc
+        .perform(
+            post("/api/federation/operations/directory.remote-discovery")
+                .header("Authorization", bearer(serviceToken(peerClient)))
+                .header("X-AyuVahak-Federation-Source", sourceDeployment.value())
+                .header("X-AyuVahak-Federation-Peer", localDeployment.value())
+                .header("X-AyuVahak-Federation-Operation", operation.operationCode())
+                .header("X-AyuVahak-Operation-Id", operationId.toString())
+                .header("X-AyuVahak-Operation-Fingerprint", fingerprint)
+                .contentType("application/json")
+                .content(requestBody))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.sourceDeploymentId").value(localDeployment.value()))
+        .andExpect(jsonPath("$.completeness").value("COMPLETE"))
+        .andExpect(jsonPath("$.facts.length()").value(2))
+        .andExpect(jsonPath("$.facts[0].resourceType").value("Organization"))
+        .andExpect(jsonPath("$.facts[0].resourceId").value(organizationId))
+        .andExpect(jsonPath("$.facts[1].resourceType").value("Facility"))
+        .andExpect(jsonPath("$.facts[1].resourceId").value(facilityId))
+        .andExpect(jsonPath("$.facts[1].organizationResourceId").value(organizationId));
   }
 
   @Test
@@ -2854,10 +3120,27 @@ class DirectoryCapacityReferralScenarioIT {
             "SYNTHETIC_OPERATIONAL_REVIEW",
             Instant.now(),
             clinical.version());
+    Instant reportedAcceptedAt = Instant.now().minusSeconds(30).truncatedTo(ChronoUnit.MICROS);
+    assertThatThrownBy(
+            () ->
+                federatedReceivingCommands.accept(
+                    acceptanceContext,
+                    received.request().id(),
+                    Instant.now().plusSeconds(3600),
+                    operational.version()))
+        .isInstanceOf(PlatformProblemException.class)
+        .satisfies(
+            failure ->
+                assertThat(((PlatformProblemException) failure).status())
+                    .isEqualTo(org.springframework.http.HttpStatus.BAD_REQUEST));
+
     federatedReceivingCapacityFailureProbe.loseNextResponseAfterReservationCommit();
     var accepted =
         federatedReceivingCommands.accept(
-            acceptanceContext, received.request().id(), Instant.now(), operational.version());
+            acceptanceContext, received.request().id(), reportedAcceptedAt, operational.version());
+
+    assertThat(accepted.acceptedAt()).contains(reportedAcceptedAt);
+    assertThat(accepted.updatedAt()).isAfter(reportedAcceptedAt);
 
     assertThat(accepted.status())
         .isEqualTo(
@@ -2933,6 +3216,32 @@ class DirectoryCapacityReferralScenarioIT {
             peer,
             statusOperation,
             destinationFacility);
+    var wrongScopeFacility =
+        new ExternalReference(
+            new IssuerId(DIRECTORY_ISSUER), "Facility", InternalId.generate().toString());
+    assertThatThrownBy(
+            () ->
+                federatedReceivingCommands.reservationStatus(
+                    statusAuthorization,
+                    operationId,
+                    new org.ayuvahak.platform.exchange.application.FederationOperationFingerprint(
+                        received.request().requestFingerprint()),
+                    destinationOrganization,
+                    wrongScopeFacility))
+        .isInstanceOf(PlatformProblemException.class)
+        .satisfies(
+            failure ->
+                assertThat(((PlatformProblemException) failure).status())
+                    .isEqualTo(org.springframework.http.HttpStatus.FORBIDDEN));
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE target_type = "
+                    + "'FederatedReceivingRequest' AND target_id = ? AND action_code = "
+                    + "'TRANSFER_FEDERATED_RESERVATION_STATUS_SCOPE_DENIED' "
+                    + "AND outcome = 'DENIED' AND reason_code = 'PEER_RECEIVING_SCOPE_MISMATCH'",
+                Integer.class,
+                received.request().id().value()))
+        .isEqualTo(1);
     var recovered =
         federatedReceivingCommands
             .reservationStatus(
@@ -4671,6 +4980,20 @@ class DirectoryCapacityReferralScenarioIT {
       int quantity,
       Instant observedAt)
       throws Exception {
+    recordCapacityObservation(
+        actor, organizationId, facilityId, dimension, key, quantity, observedAt, null);
+  }
+
+  private void recordCapacityObservation(
+      String actor,
+      String organizationId,
+      String facilityId,
+      String dimension,
+      String key,
+      int quantity,
+      Instant observedAt,
+      Instant validUntil)
+      throws Exception {
     mockMvc
         .perform(
             post("/api/v1/capacity/observations")
@@ -4694,7 +5017,9 @@ class DirectoryCapacityReferralScenarioIT {
                         + (dimension.endsWith("_SLOT") ? "slot" : "unit")
                         + "\",\"observedAt\":\""
                         + observedAt
-                        + "\",\"validUntil\":null,\"reportingMethod\":\"MANUAL_ENTRY\","
+                        + "\",\"validUntil\":"
+                        + (validUntil == null ? "null" : "\"" + validUntil + "\"")
+                        + ",\"reportingMethod\":\"MANUAL_ENTRY\","
                         + "\"reasonCode\":\"CAPACITY_REPORT\"}"))
         .andExpect(status().isCreated());
   }
@@ -5043,6 +5368,11 @@ class DirectoryCapacityReferralScenarioIT {
         JdbcTemplate jdbc,
         CapacityIsolationProbe probe) {
       return new CapacityEvidenceStore() {
+        @Override
+        public long currentSourceSequence(ExternalReference facility, String dimensionCode) {
+          return delegate.currentSourceSequence(facility, dimensionCode);
+        }
+
         @Override
         public List<CapacityObservationFact> findForProjection(
             ExternalReference facility, String dimensionCode) {

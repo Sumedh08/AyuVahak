@@ -84,8 +84,13 @@ class FederatedReceivingOriginCommandsTest {
           }
           return new FederatedReceivingOriginExchangeResult(
               FederatedOriginReceivingAttempt.RemoteOutcome.ACCEPTED_UNRESERVED,
+              FederatedOriginReceivingAttempt.RemoteReservationStatus.OUTCOME_UNKNOWN,
               InternalId.generate(),
               Optional.empty(),
+              Optional.of(supportingAssessment()),
+              Optional.of(supportingAssessment()),
+              Optional.of(Instant.EPOCH),
+              Instant.EPOCH,
               3);
         };
     fixture.command = fixture.command(exchange);
@@ -99,7 +104,8 @@ class FederatedReceivingOriginCommandsTest {
 
     assertThat(first.attempt().state())
         .isEqualTo(FederatedOriginReceivingAttempt.State.OUTCOME_UNKNOWN);
-    assertThat(replay.attempt().state()).isEqualTo(FederatedOriginReceivingAttempt.State.RESOLVED);
+    assertThat(replay.attempt().state())
+        .isEqualTo(FederatedOriginReceivingAttempt.State.OUTCOME_UNKNOWN);
     assertThat(replay.replayed()).isTrue();
     assertThat(replay.attempt().operationId()).isEqualTo(first.attempt().operationId());
     assertThat(replay.attempt().requestFingerprint())
@@ -107,7 +113,44 @@ class FederatedReceivingOriginCommandsTest {
     assertThat(fixture.originStore.attempts).hasSize(1);
     assertThat(statusCalls).containsExactly(false, true);
     assertThat(fixture.originStore.receipts).hasSize(1);
-    assertThat(fixture.outboxEvents).hasSize(1);
+    assertThat(fixture.outboxEvents).hasSize(4);
+  }
+
+  @Test
+  void receivingAcknowledgementRemainsPendingAndReplayDoesNotRaceReceiverCommit() {
+    Fixture fixture = new Fixture();
+    List<Boolean> statusCalls = new ArrayList<>();
+    InternalId receivingRequestId = InternalId.generate();
+    fixture.command =
+        fixture.command(
+            (attempt, statusOnly) -> {
+              statusCalls.add(statusOnly);
+              return new FederatedReceivingOriginExchangeResult(
+                  FederatedOriginReceivingAttempt.RemoteOutcome.RECEIVED,
+                  FederatedOriginReceivingAttempt.RemoteReservationStatus.NOT_REQUESTED,
+                  receivingRequestId,
+                  Optional.empty(),
+                  Optional.empty(),
+                  Optional.empty(),
+                  Optional.empty(),
+                  Instant.EPOCH,
+                  1);
+            });
+
+    var first =
+        fixture.command.request(
+            fixture.context, fixture.journey.id(), fixture.commandInput, "idem-pending");
+    var replay =
+        fixture.command.request(
+            fixture.context, fixture.journey.id(), fixture.commandInput, "idem-pending");
+
+    assertThat(first.attempt().state()).isEqualTo(FederatedOriginReceivingAttempt.State.SENT);
+    assertThat(first.attempt().remoteOutcome())
+        .contains(FederatedOriginReceivingAttempt.RemoteOutcome.RECEIVED);
+    assertThat(replay.attempt().state()).isEqualTo(FederatedOriginReceivingAttempt.State.SENT);
+    assertThat(replay.replayed()).isTrue();
+    assertThat(replay.attempt().remoteReceivingRequestId()).contains(receivingRequestId);
+    assertThat(statusCalls).containsExactly(false);
   }
 
   @Test
@@ -289,7 +332,14 @@ class FederatedReceivingOriginCommandsTest {
                       new RemoteCapacityEvidenceCompatibility("synthetic-v1", 1, 1)));
       FederatedReceivingOriginOperationCoordinator coordinator =
           new FederatedReceivingOriginOperationCoordinator(
-              originStore, exchange, noOpTransactions(), Clock.fixed(NOW, ZoneOffset.UTC));
+              originStore,
+              transferStore(),
+              exchange,
+              audit,
+              outbox,
+              new ObjectMapper(),
+              noOpTransactions(),
+              Clock.fixed(NOW, ZoneOffset.UTC));
       return new FederatedReceivingOriginCommands(
           transferStore(),
           originStore,
@@ -488,5 +538,13 @@ class FederatedReceivingOriginCommandsTest {
       @Override
       public void rollback(TransactionStatus status) {}
     };
+  }
+
+  private static FederatedOriginReceivingAttempt.RemoteAssessmentEvidence supportingAssessment() {
+    return new FederatedOriginReceivingAttempt.RemoteAssessmentEvidence(
+        FederatedOriginReceivingAttempt.AssessmentOutcome.SUPPORTS,
+        "SYNTHETIC_POSITIVE_REVIEW",
+        Instant.EPOCH,
+        Instant.EPOCH);
   }
 }

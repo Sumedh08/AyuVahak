@@ -9,6 +9,9 @@ import org.ayuvahak.platform.core.ExternalReference;
 /** Capacity-owned read boundary for immutable evidence and its correction chain. */
 public interface CapacityEvidenceStore {
 
+  /** Monotonic owner-assigned version for evidence at one Facility/dimension boundary. */
+  long currentSourceSequence(ExternalReference facility, String dimensionCode);
+
   List<CapacityObservationFact> findForProjection(ExternalReference facility, String dimensionCode);
 
   List<CapacityObservationFact> findHistory(

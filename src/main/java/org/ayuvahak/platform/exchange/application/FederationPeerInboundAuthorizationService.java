@@ -80,6 +80,7 @@ public final class FederationPeerInboundAuthorizationService {
       return new FederationPeerInboundAuthorization(
           profile.configuration().partnerKey(),
           authenticatedPeerDeployment,
+          profile.configuration().organization(),
           profile.id(),
           profile.version(),
           authenticatedPeerPrincipal,

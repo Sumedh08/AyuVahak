@@ -14,6 +14,9 @@ import org.ayuvahak.platform.idempotency.RequestFingerprint;
 import org.ayuvahak.transfer.application.FederatedOriginReceivingAttemptStore;
 import org.ayuvahak.transfer.application.TransferStore;
 import org.ayuvahak.transfer.domain.FederatedOriginReceivingAttempt;
+import org.ayuvahak.transfer.domain.FederatedOriginReceivingAttempt.AssessmentOutcome;
+import org.ayuvahak.transfer.domain.FederatedOriginReceivingAttempt.RemoteAssessmentEvidence;
+import org.ayuvahak.transfer.domain.FederatedOriginReceivingAttempt.RemoteReservationStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
@@ -87,8 +90,14 @@ public class JdbcFederatedOriginReceivingAttemptStore
             + "attempt_number, origin_deployment_id, peer_deployment_id, partner_key, "
             + "partner_configuration_version, operation_id, request_fingerprint, command_fingerprint, "
             + "request_body, operation_state, remote_outcome, remote_receiving_request_id, "
-            + "remote_capacity_reservation_id, remote_version, attempt_version, created_at, updated_at) "
-            + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            + "remote_reservation_status, remote_capacity_reservation_id, "
+            + "remote_clinical_assessment_outcome, remote_clinical_assessment_reason_code, "
+            + "remote_clinical_assessment_occurred_at, remote_clinical_assessment_recorded_at, "
+            + "remote_operational_assessment_outcome, remote_operational_assessment_reason_code, "
+            + "remote_operational_assessment_occurred_at, remote_operational_assessment_recorded_at, "
+            + "remote_accepted_at, remote_source_updated_at, remote_version, attempt_version, "
+            + "created_at, updated_at) "
+            + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         attempt.id().value(),
         attempt.journeyId().value(),
         attempt.attemptNumber(),
@@ -103,7 +112,43 @@ public class JdbcFederatedOriginReceivingAttemptStore
         attempt.state().name(),
         attempt.remoteOutcome().map(Enum::name).orElse(null),
         attempt.remoteReceivingRequestId().map(InternalId::value).orElse(null),
+        attempt.remoteReservationStatus().map(Enum::name).orElse(null),
         attempt.remoteCapacityReservationId().map(InternalId::value).orElse(null),
+        attempt.remoteClinicalAssessment().map(value -> value.outcome().name()).orElse(null),
+        attempt.remoteClinicalAssessment().map(RemoteAssessmentEvidence::reasonCode).orElse(null),
+        attempt
+            .remoteClinicalAssessment()
+            .map(RemoteAssessmentEvidence::occurredAt)
+            .map(JdbcFederatedOriginReceivingAttemptStore::timestamp)
+            .orElse(null),
+        attempt
+            .remoteClinicalAssessment()
+            .map(RemoteAssessmentEvidence::recordedAt)
+            .map(JdbcFederatedOriginReceivingAttemptStore::timestamp)
+            .orElse(null),
+        attempt.remoteOperationalAssessment().map(value -> value.outcome().name()).orElse(null),
+        attempt
+            .remoteOperationalAssessment()
+            .map(RemoteAssessmentEvidence::reasonCode)
+            .orElse(null),
+        attempt
+            .remoteOperationalAssessment()
+            .map(RemoteAssessmentEvidence::occurredAt)
+            .map(JdbcFederatedOriginReceivingAttemptStore::timestamp)
+            .orElse(null),
+        attempt
+            .remoteOperationalAssessment()
+            .map(RemoteAssessmentEvidence::recordedAt)
+            .map(JdbcFederatedOriginReceivingAttemptStore::timestamp)
+            .orElse(null),
+        attempt
+            .remoteAcceptedAt()
+            .map(JdbcFederatedOriginReceivingAttemptStore::timestamp)
+            .orElse(null),
+        attempt
+            .remoteSourceUpdatedAt()
+            .map(JdbcFederatedOriginReceivingAttemptStore::timestamp)
+            .orElse(null),
         attempt.remoteVersion(),
         attempt.version(),
         timestamp(attempt.createdAt()),
@@ -149,13 +194,57 @@ public class JdbcFederatedOriginReceivingAttemptStore
   public boolean update(FederatedOriginReceivingAttempt attempt, long expectedVersion) {
     return jdbc.update(
             "UPDATE transfer.federated_origin_receiving_attempt SET operation_state = ?, "
-                + "remote_outcome = ?, remote_receiving_request_id = ?, "
-                + "remote_capacity_reservation_id = ?, remote_version = ?, attempt_version = ?, "
+                + "remote_outcome = ?, remote_reservation_status = ?, "
+                + "remote_receiving_request_id = ?, remote_capacity_reservation_id = ?, "
+                + "remote_clinical_assessment_outcome = ?, remote_clinical_assessment_reason_code = ?, "
+                + "remote_clinical_assessment_occurred_at = ?, remote_clinical_assessment_recorded_at = ?, "
+                + "remote_operational_assessment_outcome = ?, remote_operational_assessment_reason_code = ?, "
+                + "remote_operational_assessment_occurred_at = ?, remote_operational_assessment_recorded_at = ?, "
+                + "remote_accepted_at = ?, remote_source_updated_at = ?, remote_version = ?, attempt_version = ?, "
                 + "updated_at = ? WHERE operation_id = ? AND attempt_version = ?",
             attempt.state().name(),
             attempt.remoteOutcome().map(Enum::name).orElse(null),
+            attempt.remoteReservationStatus().map(Enum::name).orElse(null),
             attempt.remoteReceivingRequestId().map(InternalId::value).orElse(null),
             attempt.remoteCapacityReservationId().map(InternalId::value).orElse(null),
+            attempt.remoteClinicalAssessment().map(value -> value.outcome().name()).orElse(null),
+            attempt
+                .remoteClinicalAssessment()
+                .map(RemoteAssessmentEvidence::reasonCode)
+                .orElse(null),
+            attempt
+                .remoteClinicalAssessment()
+                .map(RemoteAssessmentEvidence::occurredAt)
+                .map(JdbcFederatedOriginReceivingAttemptStore::timestamp)
+                .orElse(null),
+            attempt
+                .remoteClinicalAssessment()
+                .map(RemoteAssessmentEvidence::recordedAt)
+                .map(JdbcFederatedOriginReceivingAttemptStore::timestamp)
+                .orElse(null),
+            attempt.remoteOperationalAssessment().map(value -> value.outcome().name()).orElse(null),
+            attempt
+                .remoteOperationalAssessment()
+                .map(RemoteAssessmentEvidence::reasonCode)
+                .orElse(null),
+            attempt
+                .remoteOperationalAssessment()
+                .map(RemoteAssessmentEvidence::occurredAt)
+                .map(JdbcFederatedOriginReceivingAttemptStore::timestamp)
+                .orElse(null),
+            attempt
+                .remoteOperationalAssessment()
+                .map(RemoteAssessmentEvidence::recordedAt)
+                .map(JdbcFederatedOriginReceivingAttemptStore::timestamp)
+                .orElse(null),
+            attempt
+                .remoteAcceptedAt()
+                .map(JdbcFederatedOriginReceivingAttemptStore::timestamp)
+                .orElse(null),
+            attempt
+                .remoteSourceUpdatedAt()
+                .map(JdbcFederatedOriginReceivingAttemptStore::timestamp)
+                .orElse(null),
             attempt.remoteVersion(),
             attempt.version(),
             timestamp(attempt.updatedAt()),
@@ -166,6 +255,7 @@ public class JdbcFederatedOriginReceivingAttemptStore
 
   private static FederatedOriginReceivingAttempt map(ResultSet row, int index) throws SQLException {
     String remoteOutcome = row.getString("remote_outcome");
+    String remoteReservationStatus = row.getString("remote_reservation_status");
     return new FederatedOriginReceivingAttempt(
         id(row, "origin_attempt_id"),
         id(row, "journey_id"),
@@ -181,12 +271,37 @@ public class JdbcFederatedOriginReceivingAttemptStore
         FederatedOriginReceivingAttempt.State.valueOf(row.getString("operation_state")),
         Optional.ofNullable(remoteOutcome)
             .map(FederatedOriginReceivingAttempt.RemoteOutcome::valueOf),
+        Optional.ofNullable(remoteReservationStatus).map(RemoteReservationStatus::valueOf),
         optionalId(row, "remote_receiving_request_id"),
         optionalId(row, "remote_capacity_reservation_id"),
+        assessment(row, "remote_clinical_assessment"),
+        assessment(row, "remote_operational_assessment"),
+        optionalInstant(row, "remote_accepted_at"),
+        optionalInstant(row, "remote_source_updated_at"),
         row.getLong("remote_version"),
         row.getLong("attempt_version"),
         row.getTimestamp("created_at").toInstant(),
         row.getTimestamp("updated_at").toInstant());
+  }
+
+  private static Optional<RemoteAssessmentEvidence> assessment(ResultSet row, String prefix)
+      throws SQLException {
+    String outcome = row.getString(prefix + "_outcome");
+    if (outcome == null) {
+      return Optional.empty();
+    }
+    return Optional.of(
+        new RemoteAssessmentEvidence(
+            AssessmentOutcome.valueOf(outcome),
+            row.getString(prefix + "_reason_code"),
+            row.getTimestamp(prefix + "_occurred_at").toInstant(),
+            row.getTimestamp(prefix + "_recorded_at").toInstant()));
+  }
+
+  private static Optional<Instant> optionalInstant(ResultSet row, String column)
+      throws SQLException {
+    Timestamp value = row.getTimestamp(column);
+    return value == null ? Optional.empty() : Optional.of(value.toInstant());
   }
 
   private static InternalId id(ResultSet row, String column) throws SQLException {
