@@ -13,4 +13,19 @@ public final class AnalyticsAuthorities {
     return new FunctionalAuthority(
         "AnalyticsAggregateComputation", Set.of(ExecutionScope.Kind.ORGANIZATION));
   }
+
+  public static FunctionalAuthority lateAggregateRevision() {
+    return new FunctionalAuthority(
+        "AnalyticsLateAggregateRevision", Set.of(ExecutionScope.Kind.ORGANIZATION));
+  }
+
+  public static FunctionalAuthority aggregateSnapshotFinalization() {
+    return new FunctionalAuthority(
+        "AnalyticsAggregateSnapshotFinalization", Set.of(ExecutionScope.Kind.ORGANIZATION));
+  }
+
+  public static FunctionalAuthority aggregateSnapshotCorrection() {
+    return new FunctionalAuthority(
+        "AnalyticsAggregateSnapshotCorrection", Set.of(ExecutionScope.Kind.ORGANIZATION));
+  }
 }

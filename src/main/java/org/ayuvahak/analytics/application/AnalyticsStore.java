@@ -1,6 +1,7 @@
 package org.ayuvahak.analytics.application;
 
 import java.util.Optional;
+import java.util.UUID;
 import org.ayuvahak.analytics.domain.AggregateSnapshot;
 import org.ayuvahak.analytics.domain.IndicatorDefinitionVersion;
 import org.ayuvahak.platform.core.InternalId;
@@ -15,4 +16,6 @@ public interface AnalyticsStore {
   AggregateSnapshot saveOrReplay(AggregateSnapshot snapshot);
 
   Optional<AggregateSnapshot> findSnapshot(InternalId computationRequestId);
+
+  Optional<AggregateSnapshot> findSnapshotById(UUID snapshotId);
 }

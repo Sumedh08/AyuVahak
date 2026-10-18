@@ -12,4 +12,19 @@ class AnalyticsAuthorizationConfiguration {
   FunctionalAuthority analyticsAggregateComputationAuthority() {
     return AnalyticsAuthorities.aggregateComputation();
   }
+
+  @Bean
+  FunctionalAuthority analyticsLateAggregateRevisionAuthority() {
+    return AnalyticsAuthorities.lateAggregateRevision();
+  }
+
+  @Bean
+  FunctionalAuthority analyticsAggregateSnapshotFinalizationAuthority() {
+    return AnalyticsAuthorities.aggregateSnapshotFinalization();
+  }
+
+  @Bean
+  FunctionalAuthority analyticsAggregateSnapshotCorrectionAuthority() {
+    return AnalyticsAuthorities.aggregateSnapshotCorrection();
+  }
 }

@@ -231,6 +231,25 @@ public class JdbcAnalyticsStore implements AnalyticsStore {
       return Optional.empty();
     }
     AggregateHeader header = rows.getFirst();
+    return Optional.of(loadSnapshot(header));
+  }
+
+  @Override
+  public Optional<AggregateSnapshot> findSnapshotById(UUID snapshotId) {
+    List<AggregateHeader> rows =
+        jdbc.query(
+            "SELECT snapshot_id, computation_request_id, indicator_key, definition_version, "
+                + "organization_issuer, organization_resource_type, organization_id, "
+                + "period_start_local, period_end_exclusive_local, period_start_utc, "
+                + "period_end_exclusive_utc, time_zone_id, time_zone_rules_version, completeness, "
+                + "aggregate_value, computed_at, input_fingerprint "
+                + "FROM analytics.aggregate_snapshot WHERE snapshot_id = ?",
+            AGGREGATE_HEADER_MAPPER,
+            snapshotId);
+    return rows.isEmpty() ? Optional.empty() : Optional.of(loadSnapshot(rows.getFirst()));
+  }
+
+  private AggregateSnapshot loadSnapshot(AggregateHeader header) {
     List<AggregateInput> inputs =
         jdbc.query(
             "SELECT source_owner, measure_key, attribution, source_snapshot_reference, source_cutoff, "
@@ -239,7 +258,7 @@ public class JdbcAnalyticsStore implements AnalyticsStore {
                 + "ORDER BY source_owner, measure_key, attribution",
             AGGREGATE_INPUT_MAPPER,
             header.snapshotId());
-    return Optional.of(header.toSnapshot(inputs));
+    return header.toSnapshot(inputs);
   }
 
   private void insertSnapshot(AggregateSnapshot snapshot) {
