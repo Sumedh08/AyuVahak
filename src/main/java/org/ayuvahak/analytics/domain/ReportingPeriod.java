@@ -1,9 +1,15 @@
 package org.ayuvahak.analytics.domain;
 
+import java.time.DateTimeException;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.time.zone.ZoneOffsetTransition;
+import java.time.zone.ZoneRules;
 import java.time.zone.ZoneRulesProvider;
+import java.util.List;
 import java.util.Objects;
 
 /** A half-open local reporting interval with its resolved, reproducible UTC boundaries. */
@@ -57,5 +63,37 @@ public record ReportingPeriod(
       String timeZoneRulesVersion) {
     return new ReportingPeriod(
         startInclusive, endExclusive, timeZoneId, startUtc, endUtc, timeZoneRulesVersion);
+  }
+
+  /**
+   * Returns whether both UTC boundaries match the exact IANA rules version carried by this period.
+   * This deliberately fails closed when that version is unavailable locally.
+   */
+  public boolean hasConsistentResolvedBoundaries() {
+    if (!ZoneId.getAvailableZoneIds().contains(timeZoneId)) {
+      return false;
+    }
+    try {
+      ZoneRules rules = ZoneRulesProvider.getVersions(timeZoneId).get(timeZoneRulesVersion);
+      return rules != null
+          && startOfDay(startInclusiveLocal, rules).equals(startInclusiveUtc)
+          && startOfDay(endExclusiveLocal, rules).equals(endExclusiveUtc);
+    } catch (DateTimeException invalidZone) {
+      return false;
+    }
+  }
+
+  private static Instant startOfDay(LocalDate date, ZoneRules rules) {
+    LocalDateTime localStart = date.atStartOfDay();
+    List<ZoneOffset> offsets = rules.getValidOffsets(localStart);
+    if (!offsets.isEmpty()) {
+      // ZoneRules orders overlap offsets with the earlier offset first, as ZonedDateTime does.
+      return localStart.toInstant(offsets.getFirst());
+    }
+    ZoneOffsetTransition gap = rules.getTransition(localStart);
+    if (gap == null) {
+      throw new DateTimeException("no zone transition resolves local start of day");
+    }
+    return gap.getDateTimeAfter().toInstant(gap.getOffsetAfter());
   }
 }

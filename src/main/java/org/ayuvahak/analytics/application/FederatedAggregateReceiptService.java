@@ -143,6 +143,7 @@ public final class FederatedAggregateReceiptService {
         .findDefinition(snapshot.indicatorKey(), snapshot.indicatorVersion())
         .filter(definition -> definition.fingerprint().equals(mapping.definitionFingerprint()))
         .filter(definition -> definition.fingerprint().equals(snapshot.definitionFingerprint()))
+        .filter(ignored -> snapshot.period().hasConsistentResolvedBoundaries())
         .filter(
             definition ->
                 definition.reportingTimeZone().getId().equals(snapshot.period().timeZoneId()))

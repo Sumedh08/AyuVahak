@@ -286,6 +286,24 @@ class FederatedAggregateFederationPostgresIT {
   }
 
   @Test
+  void receiptRejectsUtcBoundariesThatDoNotMatchTheRecordedZoneRules() {
+    var peer = authorizePeer(PartnerProfileState.ACTIVE);
+    ReportingPeriod valid =
+        ReportingPeriod.resolve(
+            LocalDate.of(2026, 1, 1), LocalDate.of(2026, 2, 1), ZoneId.of("UTC"));
+    ReportingPeriod forged =
+        ReportingPeriod.restore(
+            valid.startInclusiveLocal(),
+            valid.endExclusiveLocal(),
+            valid.timeZoneId(),
+            valid.startInclusiveUtc().plusSeconds(3_600),
+            valid.endExclusiveUtc().plusSeconds(3_600),
+            valid.timeZoneRulesVersion());
+
+    assertIncompatible(peer, forged);
+  }
+
+  @Test
   void revokedOrWrongOperationPeerCannotReachAggregateReceipt() {
     var revokedAuthorization = peerAuthorizationService(PartnerProfileState.REVOKED);
     assertThatThrownBy(

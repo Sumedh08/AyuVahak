@@ -33,4 +33,39 @@ class ReportingPeriodTest {
                     ZoneId.of("+02:00")))
         .isInstanceOf(IllegalArgumentException.class);
   }
+
+  @Test
+  void distinguishesResolvedFromForgedUtcBoundaries() {
+    ReportingPeriod resolved =
+        ReportingPeriod.resolve(
+            LocalDate.parse("2026-01-01"), LocalDate.parse("2026-02-01"), ZoneId.of("UTC"));
+    ReportingPeriod forged =
+        ReportingPeriod.restore(
+            resolved.startInclusiveLocal(),
+            resolved.endExclusiveLocal(),
+            resolved.timeZoneId(),
+            resolved.startInclusiveUtc().plusSeconds(3_600),
+            resolved.endExclusiveUtc().plusSeconds(3_600),
+            resolved.timeZoneRulesVersion());
+
+    assertThat(resolved.hasConsistentResolvedBoundaries()).isTrue();
+    assertThat(forged.hasConsistentResolvedBoundaries()).isFalse();
+  }
+
+  @Test
+  void failsClosedWhenTheRecordedZoneRulesVersionIsUnavailable() {
+    ReportingPeriod resolved =
+        ReportingPeriod.resolve(
+            LocalDate.parse("2026-01-01"), LocalDate.parse("2026-02-01"), ZoneId.of("UTC"));
+    ReportingPeriod unknownRules =
+        ReportingPeriod.restore(
+            resolved.startInclusiveLocal(),
+            resolved.endExclusiveLocal(),
+            resolved.timeZoneId(),
+            resolved.startInclusiveUtc(),
+            resolved.endExclusiveUtc(),
+            "synthetic-unavailable-tzdb-version");
+
+    assertThat(unknownRules.hasConsistentResolvedBoundaries()).isFalse();
+  }
 }
