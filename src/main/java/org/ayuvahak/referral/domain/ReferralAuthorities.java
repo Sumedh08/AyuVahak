@@ -26,6 +26,9 @@ public final class ReferralAuthorities {
   private static final FunctionalAuthority PATIENT_CONTEXT_DISCLOSURE =
       new FunctionalAuthority(
           "ReferralPatientContextDisclosure", Set.of(ExecutionScope.Kind.FACILITY));
+  private static final FunctionalAuthority REPORTING_SNAPSHOT =
+      new FunctionalAuthority(
+          "ReferralReportingSnapshot", Set.of(ExecutionScope.Kind.ORGANIZATION));
 
   private ReferralAuthorities() {}
 
@@ -59,5 +62,9 @@ public final class ReferralAuthorities {
 
   public static FunctionalAuthority patientContextDisclosure() {
     return PATIENT_CONTEXT_DISCLOSURE;
+  }
+
+  public static FunctionalAuthority reportingSnapshot() {
+    return REPORTING_SNAPSHOT;
   }
 }

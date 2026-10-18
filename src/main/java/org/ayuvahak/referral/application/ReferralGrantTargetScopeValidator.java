@@ -18,13 +18,20 @@ public final class ReferralGrantTargetScopeValidator implements GrantTargetScope
 
   @Override
   public boolean supports(FunctionalAuthority authority) {
-    return ReferralAuthorities.patientContextDisclosure().equals(authority);
+    return ReferralAuthorities.patientContextDisclosure().equals(authority)
+        || ReferralAuthorities.reportingSnapshot().equals(authority);
   }
 
   @Override
   public boolean isValid(FunctionalAuthority authority, RequestedExecutionScope targetScope) {
-    if (!supports(authority)
-        || !(targetScope instanceof RequestedExecutionScope.Facility facility)) {
+    if (!supports(authority)) {
+      return false;
+    }
+    if (ReferralAuthorities.reportingSnapshot().equals(authority)) {
+      return targetScope instanceof RequestedExecutionScope.Organization organization
+          && directory.isActiveOrganization(organization.organization());
+    }
+    if (!(targetScope instanceof RequestedExecutionScope.Facility facility)) {
       return false;
     }
     return directory.isActiveFacilityInOrganization(facility.organization(), facility.facility());
