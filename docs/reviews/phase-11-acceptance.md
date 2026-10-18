@@ -1,6 +1,6 @@
 # Phase 11 Acceptance Record
 
-**Result:** PASS — Phase 11 implementation is ready to freeze.
+**Result:** PASS — Phase 11 implementation is frozen. A later test-only verification follow-up adds explicit two-client SSE fan-out coverage; production behavior is unchanged.
 **Scope:** Real-time operations, resilience and federation only. Phase 12 and Volume V were not started.
 
 ## Ticket graph
@@ -24,7 +24,7 @@ The graph was implemented sequentially where state and ownership semantics requi
 
 The existing Phase 2 outbox remains the durable internal event substrate. A bounded PostgreSQL notification projection stores only scope, event identity, notification type, resource type and opaque ID, owner version, sequence/cursor, correlation metadata and timestamps. It does not store patient content or full event payloads. Duplicate event delivery is deduplicated; sequence allocation and replay are scoped; expiry or cursor-epoch mismatch requires an authorized full refresh.
 
-Spring MVC SSE sends only non-authoritative resource/version hints. The client must fetch current state through the normal owner API, which independently checks authorization. Reconnect cursors are accepted from the event header, not URL parameters. Open streams reauthorize on a bounded interval and close after revocation. Queue, replay, connection and executor limits are bounded; same-resource hints may coalesce and overflow triggers refresh/disconnect. Tests cover hint minimization, grant revocation, blocked client writes, queue coalescing/overflow, connection caps, expired cursor behavior, projection reset, cross-scope isolation, concurrent sequencing, redelivery and recovery after constructing a new reader against the same PostgreSQL state.
+Spring MVC SSE sends only non-authoritative resource/version hints. The client must fetch current state through the normal owner API, which independently checks authorization. Reconnect cursors are accepted from the event header, not URL parameters. Open streams reauthorize on a bounded interval and close after revocation. Queue, replay, connection and executor limits are bounded; same-resource hints may coalesce and overflow triggers refresh/disconnect. Tests cover two independently authorized clients receiving the same projected hint, hint minimization, grant revocation, blocked client writes, queue coalescing/overflow, connection caps, expired cursor behavior, projection reset, cross-scope isolation, concurrent sequencing, redelivery and recovery after constructing a new reader against the same PostgreSQL state.
 
 PostgreSQL `LISTEN`/`NOTIFY` is not required for correctness and was not added. Durable projection/outbox polling is the recovery mechanism. Notification failure does not invalidate an owner commit; an authorized read returns current owner state.
 
@@ -55,14 +55,14 @@ Local synthetic marker checks and structural payload tests cover notification me
 ## Verification
 
 Required command: `.\mvnw.cmd -B -ntp clean verify`
-Result: **BUILD SUCCESS** on OpenJDK Temurin 25.0.4.1.
+Result: **BUILD SUCCESS** on OpenJDK Temurin 25.0.4.1 and Apache Maven 3.10.0.
 
 | Suite | Test count | Failures | Errors | Skipped |
 |---|---:|---:|---:|---:|
-| Surefire | 386 | 0 | 0 | 0 |
+| Surefire | 387 | 0 | 0 | 0 |
 | Failsafe | 316 | 0 | 0 | 0 |
 
-Flyway validated 73 migrations. Formatting passed for 739 Java files. The local integration run exercised disposable PostgreSQL/PostGIS and Keycloak containers, in-process or controlled local peer/exchange doubles, migration upgrades, Phase 2 event/outbox behavior, Volume II Directory/Capacity/Referral/Matching/Transfer, Volume III FHIR/exchange/Transport, and Phase 11 notification and federation flows. No public or externally hosted healthcare/federation system was used. Compose smoke was not run because runtime Compose wiring did not change; the local container-backed integration suites ran instead.
+Flyway validated 73 migrations. Formatting passed for 739 Java files. The final rerun followed the two-client SSE test addition and a formatting-only correction. The local integration run exercised disposable PostgreSQL/PostGIS and Keycloak containers, in-process or controlled local peer/exchange doubles, migration upgrades, Phase 2 event/outbox behavior, Volume II Directory/Capacity/Referral/Matching/Transfer, Volume III FHIR/exchange/Transport, and Phase 11 notification and federation flows. No public or externally hosted healthcare/federation system was used. Compose smoke was not run because runtime Compose wiring did not change; the local container-backed integration suites ran instead.
 
 ## Independent code review
 

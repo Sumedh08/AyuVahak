@@ -94,6 +94,57 @@ class NotificationStreamServiceTest {
   }
 
   @Test
+  void deliversTheSameCommittedHintToTwoAuthorizedClients() throws Exception {
+    ExecutionScope scope = organizationScope("SYN-ORG-001");
+    String committedCursor = cursor(2);
+    NotificationHint hint = hint("SYN-PRIVATE-MARKER", 9, 17, committedCursor);
+    NotificationHintReader reader =
+        new NotificationHintReader() {
+          @Override
+          public String currentCursor(ExecutionScope ignoredScope) {
+            return cursor(1);
+          }
+
+          @Override
+          public NotificationProjectionPage listAfter(
+              ExecutionScope ignoredScope, Optional<String> after, int limit) {
+            if (after.filter(committedCursor::equals).isPresent()) {
+              return emptyPage(committedCursor);
+            }
+            return new NotificationProjectionPage(
+                List.of(hint), Optional.of(committedCursor), false);
+          }
+        };
+    service =
+        new NotificationStreamService(
+            reader, new FakeAuthorizer(scope), properties(), Clock.systemUTC());
+    RecordingSink firstClient = new RecordingSink();
+    RecordingSink secondClient = new RecordingSink();
+    RequestedExecutionScope requestedScope =
+        RequestedExecutionScope.organization(scope.organization().orElseThrow());
+
+    service.subscribe(
+        actor("SYN-USER-001"),
+        requestedScope,
+        new CorrelationId("sse-first-authorized-client"),
+        Optional.empty(),
+        firstClient);
+    service.subscribe(
+        actor("SYN-USER-002"),
+        requestedScope,
+        new CorrelationId("sse-second-authorized-client"),
+        Optional.empty(),
+        secondClient);
+
+    assertThat(firstClient.awaitHint()).isTrue();
+    assertThat(secondClient.awaitHint()).isTrue();
+    assertThat(firstClient.hints).containsExactly(secondClient.hints.getFirst());
+    assertThat(firstClient.hints.getFirst().resourceId())
+        .isEqualTo(UUID.fromString("00000000-0000-0000-0000-000000000009"));
+    assertThat(firstClient.hints.getFirst().ownerVersion()).isEqualTo(17);
+  }
+
+  @Test
   void federatedReceivingNotificationIsAReadHintNotAReceivingPayload() throws Exception {
     ExecutionScope scope = organizationScope("SYN-ORG-001");
     String startCursor = cursor(1);
@@ -363,8 +414,11 @@ class NotificationStreamServiceTest {
   }
 
   private static ActorReference actor() {
-    return ActorReference.human(
-        new IssuerId("https://identity.example.test/realms/test"), "SYN-USER-001");
+    return actor("SYN-USER-001");
+  }
+
+  private static ActorReference actor(String id) {
+    return ActorReference.human(new IssuerId("https://identity.example.test/realms/test"), id);
   }
 
   private static ExecutionScope organizationScope(String id) {
