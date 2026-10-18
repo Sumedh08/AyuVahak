@@ -9,6 +9,7 @@ import java.time.LocalDate;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
+import org.ayuvahak.analytics.application.FederatedAggregateEnvelopeCodec;
 import org.ayuvahak.analytics.domain.AggregateCompleteness;
 import org.ayuvahak.analytics.domain.FederatedAggregateAcknowledgement;
 import org.ayuvahak.analytics.domain.FederatedAggregateEnvelope;
@@ -27,7 +28,7 @@ import tools.jackson.databind.node.ObjectNode;
 
 /** Strict, bounded JSON codec for the one named Analytics peer aggregate contract. */
 @Component
-public final class FederatedAggregateEnvelopeJsonMapper {
+public final class FederatedAggregateEnvelopeJsonMapper implements FederatedAggregateEnvelopeCodec {
 
   public static final String PROFILE = "AyuVahak-Federation-v1";
   public static final int MAX_BYTES = 65_536;

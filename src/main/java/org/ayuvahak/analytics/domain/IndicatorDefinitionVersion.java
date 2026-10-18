@@ -17,7 +17,29 @@ public record IndicatorDefinitionVersion(
     AggregationFormula formula,
     ZoneId reportingTimeZone,
     List<SourceMeasure> sourceMeasures,
-    boolean zeroAllowed) {
+    boolean zeroAllowed,
+    List<SourceMeasure> denominatorMeasures,
+    IndicatorDefinitionGovernance governance) {
+
+  public IndicatorDefinitionVersion(
+      String key,
+      int version,
+      String description,
+      AggregationFormula formula,
+      ZoneId reportingTimeZone,
+      List<SourceMeasure> sourceMeasures,
+      boolean zeroAllowed) {
+    this(
+        key,
+        version,
+        description,
+        formula,
+        reportingTimeZone,
+        sourceMeasures,
+        zeroAllowed,
+        List.of(),
+        IndicatorDefinitionGovernance.syntheticFixture(description));
+  }
 
   public IndicatorDefinitionVersion(
       String key,
@@ -33,7 +55,9 @@ public record IndicatorDefinitionVersion(
         AggregationFormula.SUM,
         reportingTimeZone,
         sourceMeasures,
-        zeroAllowed);
+        zeroAllowed,
+        List.of(),
+        IndicatorDefinitionGovernance.syntheticFixture(description));
   }
 
   public IndicatorDefinitionVersion {
@@ -56,6 +80,9 @@ public record IndicatorDefinitionVersion(
       throw new IllegalArgumentException("reporting time zone must be a versioned IANA zone");
     }
     sourceMeasures = List.copyOf(Objects.requireNonNull(sourceMeasures, "source measures"));
+    denominatorMeasures =
+        List.copyOf(Objects.requireNonNull(denominatorMeasures, "denominator measures"));
+    Objects.requireNonNull(governance, "indicator governance");
     if (sourceMeasures.isEmpty() || sourceMeasures.size() > 12) {
       throw new IllegalArgumentException("an indicator requires between one and twelve measures");
     }
@@ -66,6 +93,23 @@ public record IndicatorDefinitionVersion(
         sourceMeasures.stream()
             .sorted(java.util.Comparator.comparing(SourceMeasure::stableKey))
             .toList();
+    if (!denominatorMeasures.isEmpty()) {
+      throw new IllegalArgumentException(
+          "the initial SUM profile has numerator source measures and no denominator");
+    }
+    if (sourceMeasures.stream()
+            .anyMatch(measure -> measure.attribution() != SourceMeasure.Attribution.NONE)
+        && !governance
+            .allowedDimensions()
+            .contains(IndicatorDefinitionGovernance.ReportingDimension.SOURCE_ATTRIBUTION)) {
+      throw new IllegalArgumentException(
+          "source attribution measures require an explicitly allowed bounded dimension");
+    }
+  }
+
+  /** The bounded owner measures summed by the initial supported formula profile. */
+  public List<SourceMeasure> numeratorMeasures() {
+    return sourceMeasures;
   }
 
   public String fingerprint() {
@@ -82,6 +126,12 @@ public record IndicatorDefinitionVersion(
             + "\n"
             + zeroAllowed
             + "\n"
+            + denominatorMeasures.stream()
+                .map(SourceMeasure::stableKey)
+                .reduce("", (a, b) -> a + "\n" + b)
+            + "\n"
+            + governanceCanonical()
+            + "\n"
             + sourceMeasures.stream()
                 .map(SourceMeasure::stableKey)
                 .reduce("", (a, b) -> a + "\n" + b);
@@ -93,5 +143,26 @@ public record IndicatorDefinitionVersion(
     } catch (NoSuchAlgorithmException impossible) {
       throw new IllegalStateException("SHA-256 is required by the Java runtime", impossible);
     }
+  }
+
+  private String governanceCanonical() {
+    return String.join(
+        "\n",
+        governance.ownerApprovedPurpose(),
+        governance.effectiveFrom().toString(),
+        governance.effectiveUntil().map(Object::toString).orElse("OPEN"),
+        governance.reportingCalendar().name(),
+        governance.allowedDimensions().stream()
+            .map(Enum::name)
+            .sorted()
+            .reduce("", (a, b) -> a + "," + b),
+        governance.completenessRequirement().name(),
+        governance.maximumSourceAge().map(Object::toString).orElse("OWNER_REPORTED_FRESHNESS"),
+        governance.sensitivity().name(),
+        governance.requiredDisclosurePolicyKey().orElse("MAPPING_POLICY_REQUIRED"),
+        governance
+            .authorityDefinition()
+            .map(value -> value.authorityIdentifier() + "@" + value.definitionVersion())
+            .orElse("NO_EXTERNAL_AUTHORITY_DEFINITION"));
   }
 }

@@ -3,12 +3,15 @@ package org.ayuvahak.analytics.adapter.persistence;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.Set;
 import java.util.UUID;
 import org.ayuvahak.analytics.application.AnalyticsDefinitionConflictException;
 import org.ayuvahak.analytics.application.AnalyticsSnapshotConflictException;
@@ -17,6 +20,12 @@ import org.ayuvahak.analytics.domain.AggregateCompleteness;
 import org.ayuvahak.analytics.domain.AggregateInput;
 import org.ayuvahak.analytics.domain.AggregateSnapshot;
 import org.ayuvahak.analytics.domain.AggregationFormula;
+import org.ayuvahak.analytics.domain.IndicatorDefinitionGovernance;
+import org.ayuvahak.analytics.domain.IndicatorDefinitionGovernance.AuthorityDefinition;
+import org.ayuvahak.analytics.domain.IndicatorDefinitionGovernance.CompletenessRequirement;
+import org.ayuvahak.analytics.domain.IndicatorDefinitionGovernance.ReportingCalendar;
+import org.ayuvahak.analytics.domain.IndicatorDefinitionGovernance.ReportingDimension;
+import org.ayuvahak.analytics.domain.IndicatorDefinitionGovernance.SensitivityClassification;
 import org.ayuvahak.analytics.domain.IndicatorDefinitionVersion;
 import org.ayuvahak.analytics.domain.ReportingPeriod;
 import org.ayuvahak.analytics.domain.SourceMeasure;
@@ -84,7 +93,11 @@ public class JdbcAnalyticsStore implements AnalyticsStore {
     List<DefinitionHeader> rows =
         jdbc.query(
             "SELECT indicator_key, definition_version, description, aggregation_formula, "
-                + "reporting_time_zone, zero_allowed FROM analytics.indicator_definition_version "
+                + "reporting_time_zone, zero_allowed, owner_approved_purpose, effective_from, "
+                + "effective_until, reporting_calendar, completeness_requirement, "
+                + "maximum_source_age_seconds, sensitivity_classification, "
+                + "required_disclosure_policy_key, authority_identifier, authority_definition_version "
+                + "FROM analytics.indicator_definition_version "
                 + "WHERE indicator_key = ? AND definition_version = ?",
             (result, rowNumber) ->
                 new DefinitionHeader(
@@ -93,7 +106,19 @@ public class JdbcAnalyticsStore implements AnalyticsStore {
                     result.getString("description"),
                     AggregationFormula.valueOf(result.getString("aggregation_formula")),
                     result.getString("reporting_time_zone"),
-                    result.getBoolean("zero_allowed")),
+                    result.getBoolean("zero_allowed"),
+                    result.getString("owner_approved_purpose"),
+                    instant(result, "effective_from"),
+                    Optional.ofNullable(instant(result, "effective_until")),
+                    ReportingCalendar.valueOf(result.getString("reporting_calendar")),
+                    CompletenessRequirement.valueOf(result.getString("completeness_requirement")),
+                    Optional.ofNullable(result.getObject("maximum_source_age_seconds", Long.class))
+                        .map(Duration::ofSeconds),
+                    SensitivityClassification.valueOf(
+                        result.getString("sensitivity_classification")),
+                    Optional.ofNullable(result.getString("required_disclosure_policy_key")),
+                    Optional.ofNullable(result.getString("authority_identifier")),
+                    Optional.ofNullable(result.getString("authority_definition_version"))),
             key,
             version);
     if (rows.isEmpty()) {
@@ -111,6 +136,36 @@ public class JdbcAnalyticsStore implements AnalyticsStore {
                     result.getString("attribution")),
             key,
             version);
+    Set<ReportingDimension> dimensions =
+        jdbc
+            .query(
+                "SELECT dimension_key FROM analytics.indicator_definition_dimension "
+                    + "WHERE indicator_key = ? AND definition_version = ?",
+                (result, rowNumber) ->
+                    ReportingDimension.valueOf(result.getString("dimension_key")),
+                key,
+                version)
+            .stream()
+            .collect(
+                java.util.stream.Collectors.toCollection(
+                    () -> EnumSet.noneOf(ReportingDimension.class)));
+    IndicatorDefinitionGovernance governance =
+        new IndicatorDefinitionGovernance(
+            header.purpose(),
+            header.effectiveFrom(),
+            header.effectiveUntil(),
+            header.calendar(),
+            dimensions,
+            header.completenessRequirement(),
+            header.maximumSourceAge(),
+            header.sensitivity(),
+            header.requiredDisclosurePolicyKey(),
+            header.authorityIdentifier().isPresent()
+                ? Optional.of(
+                    new AuthorityDefinition(
+                        header.authorityIdentifier().orElseThrow(),
+                        header.authorityDefinitionVersion().orElseThrow()))
+                : Optional.empty());
     return Optional.of(
         new IndicatorDefinitionVersion(
             header.key(),
@@ -119,7 +174,9 @@ public class JdbcAnalyticsStore implements AnalyticsStore {
             header.formula(),
             ZoneId.of(header.timeZone()),
             measures,
-            header.zeroAllowed()));
+            header.zeroAllowed(),
+            List.of(),
+            governance));
   }
 
   @Override
@@ -148,15 +205,44 @@ public class JdbcAnalyticsStore implements AnalyticsStore {
             jdbc.update(
                 "INSERT INTO analytics.indicator_definition_version "
                     + "(indicator_key, definition_version, description, aggregation_formula, "
-                    + "reporting_time_zone, zero_allowed, definition_fingerprint) "
-                    + "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    + "reporting_time_zone, zero_allowed, definition_fingerprint, "
+                    + "owner_approved_purpose, effective_from, effective_until, reporting_calendar, "
+                    + "completeness_requirement, maximum_source_age_seconds, sensitivity_classification, "
+                    + "required_disclosure_policy_key, authority_identifier, authority_definition_version) "
+                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 definition.key(),
                 definition.version(),
                 definition.description(),
                 definition.formula().name(),
                 definition.reportingTimeZone().getId(),
                 definition.zeroAllowed(),
-                definition.fingerprint());
+                definition.fingerprint(),
+                definition.governance().ownerApprovedPurpose(),
+                Timestamp.from(definition.governance().effectiveFrom()),
+                definition.governance().effectiveUntil().map(Timestamp::from).orElse(null),
+                definition.governance().reportingCalendar().name(),
+                definition.governance().completenessRequirement().name(),
+                definition.governance().maximumSourceAge().map(Duration::getSeconds).orElse(null),
+                definition.governance().sensitivity().name(),
+                definition.governance().requiredDisclosurePolicyKey().orElse(null),
+                definition
+                    .governance()
+                    .authorityDefinition()
+                    .map(AuthorityDefinition::authorityIdentifier)
+                    .orElse(null),
+                definition
+                    .governance()
+                    .authorityDefinition()
+                    .map(AuthorityDefinition::definitionVersion)
+                    .orElse(null));
+            for (ReportingDimension dimension : definition.governance().allowedDimensions()) {
+              jdbc.update(
+                  "INSERT INTO analytics.indicator_definition_dimension "
+                      + "(indicator_key, definition_version, dimension_key) VALUES (?, ?, ?)",
+                  definition.key(),
+                  definition.version(),
+                  dimension.name());
+            }
             for (int index = 0; index < definition.sourceMeasures().size(); index++) {
               SourceMeasure measure = definition.sourceMeasures().get(index);
               jdbc.update(
@@ -321,7 +407,17 @@ public class JdbcAnalyticsStore implements AnalyticsStore {
       String description,
       AggregationFormula formula,
       String timeZone,
-      boolean zeroAllowed) {}
+      boolean zeroAllowed,
+      String purpose,
+      Instant effectiveFrom,
+      Optional<Instant> effectiveUntil,
+      ReportingCalendar calendar,
+      CompletenessRequirement completenessRequirement,
+      Optional<Duration> maximumSourceAge,
+      SensitivityClassification sensitivity,
+      Optional<String> requiredDisclosurePolicyKey,
+      Optional<String> authorityIdentifier,
+      Optional<String> authorityDefinitionVersion) {}
 
   private record AggregateHeader(
       UUID snapshotId,

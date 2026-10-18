@@ -122,6 +122,20 @@ public final class Dhis2AggregateExportService {
                 snapshot.indicatorKey(), snapshot.indicatorVersion(), snapshot.organization(), now)
             .orElseThrow(
                 () -> new Dhis2ExportException(Dhis2ExportException.Reason.MAPPING_NOT_FOUND));
+    IndicatorDefinitionVersion definition =
+        snapshots
+            .findDefinition(snapshot.indicatorKey(), snapshot.indicatorVersion())
+            .orElseThrow(
+                () -> new Dhis2ExportException(Dhis2ExportException.Reason.MAPPING_NOT_FOUND));
+    if (!definition.governance().effectiveFor(snapshot.period())
+        || !definition.governance().calendarAccepts(snapshot.period())
+        || definition
+            .governance()
+            .requiredDisclosurePolicyKey()
+            .filter(key -> !key.equals(mapping.disclosurePolicyKey()))
+            .isPresent()) {
+      throw new Dhis2ExportException(Dhis2ExportException.Reason.MAPPING_NOT_EFFECTIVE);
+    }
     if (!mapping.exclusiveWriteAuthority()) {
       throw new Dhis2ExportException(Dhis2ExportException.Reason.MAPPING_NOT_EFFECTIVE);
     }

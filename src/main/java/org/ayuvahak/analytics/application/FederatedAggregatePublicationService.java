@@ -9,8 +9,9 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
-import org.ayuvahak.analytics.adapter.federation.FederatedAggregateEnvelopeJsonMapper;
+import java.util.concurrent.ConcurrentHashMap;
 import org.ayuvahak.analytics.domain.AggregateDisclosureEquation;
 import org.ayuvahak.analytics.domain.AggregateSnapshot;
 import org.ayuvahak.analytics.domain.AnalyticsAuthorities;
@@ -66,13 +67,15 @@ public final class FederatedAggregatePublicationService {
   private final FederatedAggregateMappingStore mappings;
   private final FederatedAggregatePublicationStore publications;
   private final AnalyticsDisclosureReservationService disclosure;
-  private final FederatedAggregateEnvelopeJsonMapper mapper;
+  private final FederatedAggregateEnvelopeCodec mapper;
   private final FederationPeerOperationPort exchange;
   private final DeploymentIdentityRegistrationService deploymentIdentity;
   private final AuthorizationService authorization;
   private final AuditWriter audit;
   private final TransactionTemplate transactions;
   private final Clock clock;
+  private final Set<UUID> activeAttempts = ConcurrentHashMap.newKeySet();
+  private static final java.time.Duration STALE_SENDING_AFTER = java.time.Duration.ofMinutes(2);
 
   public FederatedAggregatePublicationService(
       AnalyticsStore snapshots,
@@ -80,7 +83,7 @@ public final class FederatedAggregatePublicationService {
       FederatedAggregateMappingStore mappings,
       FederatedAggregatePublicationStore publications,
       AnalyticsDisclosureReservationService disclosure,
-      FederatedAggregateEnvelopeJsonMapper mapper,
+      FederatedAggregateEnvelopeCodec mapper,
       FederationPeerOperationPort exchange,
       DeploymentIdentityRegistrationService deploymentIdentity,
       AuthorizationService authorization,
@@ -131,7 +134,14 @@ public final class FederatedAggregatePublicationService {
     if (!mapping.indicatorKey().equals(snapshot.indicatorKey())
         || mapping.indicatorVersion() != snapshot.indicatorVersion()
         || !mapping.sourceOrganization().equals(snapshot.organization())
-        || !mapping.definitionFingerprint().equals(definition.fingerprint())) {
+        || !mapping.definitionFingerprint().equals(definition.fingerprint())
+        || !definition.governance().effectiveFor(snapshot.period())
+        || !definition.governance().calendarAccepts(snapshot.period())
+        || definition
+            .governance()
+            .requiredDisclosurePolicyKey()
+            .filter(key -> !key.equals(mapping.disclosurePolicyKey()))
+            .isPresent()) {
       throw new FederatedAggregateException(
           FederatedAggregateException.Reason.DEFINITION_INCOMPATIBLE);
     }
@@ -180,23 +190,7 @@ public final class FederatedAggregatePublicationService {
             now,
             now);
     FederatedAggregatePublication publication = createOrReplay(context, proposed);
-    if (publication.state() != State.READY) {
-      return publication;
-    }
-    DisclosureReservation reservation =
-        reserveDisclosure(context, publication, mapping, snapshot, definition);
-    if (reservation.state() != DisclosureReservationState.RESERVED) {
-      return transition(
-          context,
-          publication,
-          State.WITHHELD,
-          "DISCLOSURE_" + reservation.state().name(),
-          Optional.empty());
-    }
-    publication = attachReservation(publication, reservation.reservationId());
-    Optional<FederatedAggregatePublication> claimed =
-        publications.claimForSend(publication.operationId(), clock.instant());
-    if (claimed.isEmpty()) {
+    if (!activeAttempts.add(publication.operationId())) {
       return publications
           .find(publication.operationId())
           .orElseThrow(
@@ -204,7 +198,73 @@ public final class FederatedAggregatePublicationService {
                   new FederatedAggregateException(
                       FederatedAggregateException.Reason.STORE_UNAVAILABLE));
     }
-    publication = claimed.orElseThrow();
+    try {
+      return dispatch(
+          context, publication, mapping, localDeployment, wireSnapshot, snapshot, definition, body);
+    } finally {
+      activeAttempts.remove(publication.operationId());
+    }
+  }
+
+  private FederatedAggregatePublication dispatch(
+      ExecutionContext context,
+      FederatedAggregatePublication publication,
+      FederatedAggregateMappingVersion mapping,
+      DeploymentId localDeployment,
+      FederatedAggregateSnapshot wireSnapshot,
+      AggregateSnapshot snapshot,
+      IndicatorDefinitionVersion definition,
+      byte[] body) {
+    if (publication.state() == State.READY) {
+      DisclosureReservation reservation =
+          reserveDisclosure(context, publication, mapping, snapshot, definition);
+      if (reservation.state() != DisclosureReservationState.RESERVED) {
+        return transition(
+            context,
+            publication,
+            State.WITHHELD,
+            "DISCLOSURE_" + reservation.state().name(),
+            Optional.empty());
+      }
+      publication = attachReservation(publication, reservation.reservationId());
+      Optional<FederatedAggregatePublication> claimed =
+          publications.claimForSend(publication.operationId(), clock.instant());
+      if (claimed.isEmpty()) {
+        return latest(publication.operationId());
+      }
+      publication = claimed.orElseThrow();
+    } else if (publication.state() == State.SENDING) {
+      if (publication.updatedAt().plus(STALE_SENDING_AFTER).isAfter(clock.instant())) {
+        return publication;
+      }
+      if (publication.disclosureReservationId().isEmpty()) {
+        throw new FederatedAggregateException(
+            FederatedAggregateException.Reason.OPERATION_CONFLICT);
+      }
+      publication =
+          completePotentiallyDisclosed(
+              context,
+              publication,
+              State.OUTCOME_UNKNOWN,
+              "SENDING_RECOVERED_AFTER_RESTART",
+              Optional.empty());
+    } else if (publication.state() != State.OUTCOME_UNKNOWN) {
+      return publication;
+    }
+
+    if (publication.disclosureReservationId().isEmpty()) {
+      throw new FederatedAggregateException(FederatedAggregateException.Reason.OPERATION_CONFLICT);
+    }
+    return sendSameOperation(context, publication, mapping, localDeployment, wireSnapshot, body);
+  }
+
+  private FederatedAggregatePublication sendSameOperation(
+      ExecutionContext context,
+      FederatedAggregatePublication publication,
+      FederatedAggregateMappingVersion mapping,
+      DeploymentId localDeployment,
+      FederatedAggregateSnapshot wireSnapshot,
+      byte[] body) {
     try {
       var response =
           exchange.execute(
@@ -268,6 +328,15 @@ public final class FederatedAggregatePublicationService {
       return completePotentiallyDisclosed(
           context, publication, State.OUTCOME_UNKNOWN, "PEER_OUTCOME_UNKNOWN", Optional.empty());
     }
+  }
+
+  private FederatedAggregatePublication latest(UUID operationId) {
+    return publications
+        .find(operationId)
+        .orElseThrow(
+            () ->
+                new FederatedAggregateException(
+                    FederatedAggregateException.Reason.STORE_UNAVAILABLE));
   }
 
   private DisclosureReservation reserveDisclosure(

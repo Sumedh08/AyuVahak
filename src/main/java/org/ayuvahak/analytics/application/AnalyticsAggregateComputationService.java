@@ -160,6 +160,16 @@ public final class AnalyticsAggregateComputationService {
     ReportingPeriod period =
         ReportingPeriod.resolve(
             request.startInclusive(), request.endExclusive(), definition.reportingTimeZone());
+    if (!definition.governance().effectiveFor(period)) {
+      throw new AnalyticsComputationException(
+          AnalyticsComputationException.Reason.DEFINITION_NOT_EFFECTIVE,
+          "The indicator definition is not effective for the requested period.");
+    }
+    if (!definition.governance().calendarAccepts(period)) {
+      throw new AnalyticsComputationException(
+          AnalyticsComputationException.Reason.REPORTING_PERIOD_INVALID,
+          "The requested period does not match the indicator reporting calendar.");
+    }
     OwnerReportingRequest ownerRequest =
         new OwnerReportingRequest(
             request.computationRequestId(), organization, period, request.referralSourceCutoff());
@@ -178,7 +188,10 @@ public final class AnalyticsAggregateComputationService {
     }
 
     List<AggregateInput> inputs =
-        ownerInputs.stream().map(OwnerMeasureSnapshot::toAggregateInput).toList();
+        ownerInputs.stream()
+            .map(OwnerMeasureSnapshot::toAggregateInput)
+            .map(input -> applyFreshnessPolicy(input, definition))
+            .toList();
     AggregateCompleteness completeness = completeness(inputs);
     OptionalLong value =
         completeness == AggregateCompleteness.COMPLETE
@@ -194,6 +207,27 @@ public final class AnalyticsAggregateComputationService {
             value,
             inputs,
             clock.instant().truncatedTo(java.time.temporal.ChronoUnit.MICROS)));
+  }
+
+  private AggregateInput applyFreshnessPolicy(
+      AggregateInput input, IndicatorDefinitionVersion definition) {
+    Optional<Duration> maximumAge = definition.governance().maximumSourceAge();
+    if (maximumAge.isEmpty() || input.completeness() != AggregateCompleteness.COMPLETE) {
+      return input;
+    }
+    Instant generatedAt = input.generatedAt().orElseThrow();
+    Instant oldestAllowed = clock.instant().minus(maximumAge.orElseThrow());
+    if (!generatedAt.isBefore(oldestAllowed) && !generatedAt.isAfter(clock.instant())) {
+      return input;
+    }
+    return new AggregateInput(
+        input.measure(),
+        input.sourceSnapshotReference(),
+        input.sourceCutoff(),
+        input.ownerContractVersion(),
+        AggregateCompleteness.STALE_SOURCE,
+        OptionalLong.empty(),
+        input.generatedAt());
   }
 
   private void authorizeComputation(ExecutionContext context) {

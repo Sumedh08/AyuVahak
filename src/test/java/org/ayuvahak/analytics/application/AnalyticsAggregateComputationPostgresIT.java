@@ -4,10 +4,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalLong;
@@ -17,6 +19,12 @@ import org.ayuvahak.analytics.adapter.persistence.JdbcAnalyticsStore;
 import org.ayuvahak.analytics.domain.AggregateCompleteness;
 import org.ayuvahak.analytics.domain.AggregateSnapshot;
 import org.ayuvahak.analytics.domain.AnalyticsAuthorities;
+import org.ayuvahak.analytics.domain.IndicatorDefinitionGovernance;
+import org.ayuvahak.analytics.domain.IndicatorDefinitionGovernance.AuthorityDefinition;
+import org.ayuvahak.analytics.domain.IndicatorDefinitionGovernance.CompletenessRequirement;
+import org.ayuvahak.analytics.domain.IndicatorDefinitionGovernance.ReportingCalendar;
+import org.ayuvahak.analytics.domain.IndicatorDefinitionGovernance.ReportingDimension;
+import org.ayuvahak.analytics.domain.IndicatorDefinitionGovernance.SensitivityClassification;
 import org.ayuvahak.analytics.domain.IndicatorDefinitionVersion;
 import org.ayuvahak.analytics.domain.ReportingPeriod;
 import org.ayuvahak.analytics.domain.SourceMeasure;
@@ -99,6 +107,7 @@ class AnalyticsAggregateComputationPostgresIT {
     jdbc.update("DELETE FROM analytics.computation_operation");
     jdbc.update("DELETE FROM analytics.aggregate_snapshot_input");
     jdbc.update("DELETE FROM analytics.aggregate_snapshot");
+    jdbc.update("DELETE FROM analytics.indicator_definition_dimension");
     jdbc.update("DELETE FROM analytics.indicator_definition_measure");
     jdbc.update("DELETE FROM analytics.indicator_definition_version");
   }
@@ -298,6 +307,83 @@ class AnalyticsAggregateComputationPostgresIT {
         .isInstanceOf(AnalyticsDefinitionConflictException.class);
   }
 
+  @Test
+  void persistsCompleteIndicatorGovernanceAndFormulaInputs() {
+    IndicatorDefinitionGovernance governance =
+        new IndicatorDefinitionGovernance(
+            "Synthetic count of submitted referrals for local acceptance",
+            Instant.parse("2026-01-01T00:00:00Z"),
+            Optional.of(Instant.parse("2027-01-01T00:00:00Z")),
+            ReportingCalendar.MONTHLY,
+            EnumSet.of(ReportingDimension.ORGANIZATION, ReportingDimension.SOURCE_ATTRIBUTION),
+            CompletenessRequirement.ALL_REQUIRED_SOURCES_COMPLETE_FOR_NUMERIC_VALUE,
+            Optional.of(Duration.ofHours(12)),
+            SensitivityClassification.SENSITIVE_AGGREGATE,
+            Optional.of("SYN-ANALYTICS-POLICY-001"),
+            Optional.of(new AuthorityDefinition("urn:synthetic:authority", "SYN-definition-v1")));
+    IndicatorDefinitionVersion definition =
+        new IndicatorDefinitionVersion(
+            "SYN-OPS-COUNT",
+            1,
+            "Synthetic operational count",
+            org.ayuvahak.analytics.domain.AggregationFormula.SUM,
+            ZoneId.of("Europe/Berlin"),
+            List.of(referralSubmitted()),
+            true,
+            List.of(),
+            governance);
+
+    store.publishDefinition(definition);
+
+    assertThat(store.findDefinition(definition.key(), definition.version())).contains(definition);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT denominator_definition FROM analytics.indicator_definition_version "
+                    + "WHERE indicator_key = ? AND definition_version = ?",
+                String.class,
+                definition.key(),
+                definition.version()))
+        .isEqualTo("NONE");
+  }
+
+  @Test
+  void sourceFreshnessRequirementTurnsOldOwnerSnapshotIntoStaleNotAValue() {
+    IndicatorDefinitionGovernance governance =
+        new IndicatorDefinitionGovernance(
+            "Synthetic freshness-gated submitted referral count",
+            Instant.EPOCH,
+            Optional.empty(),
+            ReportingCalendar.DAILY,
+            java.util.EnumSet.of(ReportingDimension.ORGANIZATION),
+            CompletenessRequirement.ALL_REQUIRED_SOURCES_COMPLETE_FOR_NUMERIC_VALUE,
+            Optional.of(Duration.ofHours(1)),
+            SensitivityClassification.SENSITIVE_AGGREGATE,
+            Optional.empty(),
+            Optional.empty());
+    IndicatorDefinitionVersion base = definition(1, List.of(referralSubmitted()));
+    IndicatorDefinitionVersion governed =
+        new IndicatorDefinitionVersion(
+            base.key(),
+            base.version(),
+            base.description(),
+            base.formula(),
+            base.reportingTimeZone(),
+            base.sourceMeasures(),
+            base.zeroAllowed(),
+            List.of(),
+            governance);
+    store.publishDefinition(governed);
+    var reader =
+        new SyntheticOwnerReader(
+            List.of(input(referralSubmitted(), 4, Instant.parse("2026-03-31T09:00:00Z"))));
+
+    AggregateSnapshot result = compute(service(reader, true), request(InternalId.generate()));
+
+    assertThat(result.completeness()).isEqualTo(AggregateCompleteness.STALE_SOURCE);
+    assertThat(result.value()).isEmpty();
+    assertThat(result.inputs().getFirst().value()).isEmpty();
+  }
+
   private static AnalyticsAggregateComputationService service(
       OwnerReportingSnapshotReader reader, boolean allowed) {
     return service(reader, allowed, store);
@@ -370,6 +456,11 @@ class AnalyticsAggregateComputationPostgresIT {
   }
 
   private static OwnerMeasureSnapshot input(SourceMeasure measure, long value) {
+    return input(measure, value, Instant.parse("2026-03-31T11:30:00Z"));
+  }
+
+  private static OwnerMeasureSnapshot input(
+      SourceMeasure measure, long value, Instant generatedAt) {
     return new OwnerMeasureSnapshot(
         measure,
         ORGANIZATION,
@@ -388,7 +479,7 @@ class AnalyticsAggregateComputationPostgresIT {
                 : "transfer-reporting-v1"),
         AggregateCompleteness.COMPLETE,
         OptionalLong.of(value),
-        Optional.of(Instant.parse("2026-03-31T11:30:00Z")));
+        Optional.of(generatedAt));
   }
 
   private static OwnerMeasureSnapshot missingInput(SourceMeasure measure) {

@@ -54,6 +54,7 @@ import org.ayuvahak.platform.core.CorrelationId;
 import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.InternalId;
 import org.ayuvahak.platform.core.IssuerId;
+import org.ayuvahak.platform.exchange.adapter.http.LocalDhis2Phase9ExchangeHarness;
 import org.ayuvahak.platform.exchange.application.PartnerOutboundOperationPort;
 import org.ayuvahak.platform.exchange.application.PartnerOutboundOperationRequest;
 import org.ayuvahak.platform.exchange.application.PartnerOutboundOperationResponse;
@@ -248,6 +249,46 @@ class Dhis2AggregateExportPostgresIT {
                 "SELECT count(*) FROM audit.audit_record WHERE action_code = 'ANALYTICS_DHIS2_MAPPING_PUBLISHED'",
                 Integer.class))
         .isEqualTo(1);
+  }
+
+  @Test
+  void exportsOneValueThroughPhase9ToOnlyTheControlledLocalTlsDhis2Mock() throws Exception {
+    AggregateSnapshot snapshot = prepareSnapshotAndMapping();
+    try (LocalDhis2Phase9ExchangeHarness localPartner =
+        LocalDhis2Phase9ExchangeHarness.start(new PartnerKey("synthetic-dhis2"))) {
+      AuthorizationGrantLookup grants =
+          (actor, authority, scope) -> GRANTED_AUTHORITIES.contains(authority.code());
+      AuthorizationService authorization = new AuthorizationService(grants, authorities());
+      AuditWriter audit =
+          new AuditWriter(new JdbcAuditRecordAppender(jdbc, transactionManager), CLOCK);
+      Dhis2AggregateExportService phase9Exporter =
+          new Dhis2AggregateExportService(
+              analyticsStore,
+              revisionStore,
+              mappingStore,
+              operationStore,
+              disclosure,
+              new Dhis2DataValueSetMapper(new ObjectMapper()),
+              new Dhis2ImportSummaryParser(new ObjectMapper()),
+              localPartner.exchange(),
+              authorization,
+              audit,
+              transactionManager,
+              CLOCK);
+
+      Dhis2ExportOperation operation =
+          phase9Exporter.export(
+              serviceContext(), new Dhis2ExportRequest(UUID.randomUUID(), snapshot.snapshotId()));
+
+      assertThat(operation.state()).isEqualTo(Dhis2ExportState.ACKNOWLEDGED);
+      assertThat(localPartner.requestCount()).isEqualTo(1);
+      assertThat(localPartner.method()).isEqualTo("POST");
+      assertThat(localPartner.path()).isEqualTo("/api/dataValueSets");
+      assertThat(localPartner.operationReference()).isEqualTo("dhis2-" + operation.operationId());
+      assertThat(localPartner.requestBody())
+          .contains("SYN-DATAELEMENT-001", "SYN-ORGUNIT-001", "202601", "\"value\":\"4\"");
+      assertThat(localPartner.requestBody()).containsOnlyOnce("\"dataElement\"");
+    }
   }
 
   @Test

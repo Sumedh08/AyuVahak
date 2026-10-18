@@ -24,6 +24,8 @@ public final class AnalyticsComputationException extends RuntimeException {
   public enum Reason {
     NOT_AUTHORIZED,
     DEFINITION_NOT_FOUND,
+    DEFINITION_NOT_EFFECTIVE,
+    REPORTING_PERIOD_INVALID,
     OWNER_CONTRACT_INVALID,
     ZERO_NOT_ALLOWED,
     VALUE_OVERFLOW

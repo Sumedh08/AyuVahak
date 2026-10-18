@@ -4,10 +4,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -18,11 +21,15 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import org.ayuvahak.analytics.adapter.persistence.JdbcAnalyticsRevisionStore;
 import org.ayuvahak.analytics.adapter.persistence.JdbcAnalyticsStore;
 import org.ayuvahak.analytics.adapter.persistence.JdbcDisclosureReservationStore;
 import org.ayuvahak.analytics.adapter.persistence.JdbcFederatedAggregateMappingStore;
+import org.ayuvahak.analytics.adapter.persistence.JdbcFederatedAggregatePublicationStore;
 import org.ayuvahak.analytics.adapter.persistence.JdbcFederatedAggregateReceiptStore;
 import org.ayuvahak.analytics.domain.AggregateCompleteness;
+import org.ayuvahak.analytics.domain.AggregateInput;
+import org.ayuvahak.analytics.domain.AggregateSnapshot;
 import org.ayuvahak.analytics.domain.AnalyticsAuthorities;
 import org.ayuvahak.analytics.domain.DisclosureCandidate;
 import org.ayuvahak.analytics.domain.DisclosureOutput;
@@ -31,9 +38,11 @@ import org.ayuvahak.analytics.domain.DisclosureReservation;
 import org.ayuvahak.analytics.domain.DisclosureReservationState;
 import org.ayuvahak.analytics.domain.FederatedAggregateEnvelope;
 import org.ayuvahak.analytics.domain.FederatedAggregateMappingVersion;
+import org.ayuvahak.analytics.domain.FederatedAggregatePublication;
 import org.ayuvahak.analytics.domain.FederatedAggregateReceipt;
 import org.ayuvahak.analytics.domain.FederatedAggregateSnapshot;
 import org.ayuvahak.analytics.domain.IndicatorDefinitionVersion;
+import org.ayuvahak.analytics.domain.ReportingPeriod;
 import org.ayuvahak.analytics.domain.SourceMeasure;
 import org.ayuvahak.platform.audit.adapter.persistence.JdbcAuditRecordAppender;
 import org.ayuvahak.platform.audit.application.AuditWriter;
@@ -48,6 +57,8 @@ import org.ayuvahak.platform.core.IssuerId;
 import org.ayuvahak.platform.exchange.application.FederationOperationFingerprint;
 import org.ayuvahak.platform.exchange.application.FederationPeerInboundAuthorizationException;
 import org.ayuvahak.platform.exchange.application.FederationPeerInboundAuthorizationService;
+import org.ayuvahak.platform.exchange.application.FederationPeerOperationPort;
+import org.ayuvahak.platform.exchange.application.PartnerOutboundOperationResponse;
 import org.ayuvahak.platform.exchange.application.PartnerTrustProfileStore;
 import org.ayuvahak.platform.exchange.domain.FederationPeerConfiguration;
 import org.ayuvahak.platform.exchange.domain.PartnerKey;
@@ -73,6 +84,7 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
+import tools.jackson.databind.ObjectMapper;
 
 /** Local PostgreSQL acceptance for trusted aggregate receipts and the shared disclosure gate. */
 @Testcontainers
@@ -302,6 +314,169 @@ class FederatedAggregateFederationPostgresIT {
     }
   }
 
+  @Test
+  void recoversPersistedSendingPublicationAfterRestartUsingSamePeerOperationIdentity() {
+    IndicatorDefinitionVersion definition = definition();
+    AnalyticsStore analytics = new JdbcAnalyticsStore(jdbc, transactionManager);
+    analytics.publishDefinition(definition);
+    JdbcAnalyticsRevisionStore revisions = new JdbcAnalyticsRevisionStore(jdbc);
+    UUID computationId = UUID.randomUUID();
+    AggregateSnapshot snapshot =
+        AggregateSnapshot.create(
+            new InternalId(computationId),
+            definition,
+            LOCAL_ORGANIZATION,
+            ReportingPeriod.resolve(
+                LocalDate.of(2026, 1, 1), LocalDate.of(2026, 2, 1), ZoneId.of("UTC")),
+            AggregateCompleteness.COMPLETE,
+            java.util.OptionalLong.of(8),
+            List.of(
+                new AggregateInput(
+                    SourceMeasure.referral("SUBMITTED_COUNT"),
+                    Optional.of(UUID.randomUUID()),
+                    Optional.of(NOW.minusSeconds(3600)),
+                    Optional.of("referral-reporting-v1"),
+                    AggregateCompleteness.COMPLETE,
+                    java.util.OptionalLong.of(8),
+                    Optional.of(NOW.minusSeconds(60)))),
+            NOW);
+    AggregateSnapshot sourceSnapshot = analytics.saveOrReplay(snapshot);
+    revisions.registerInitial(sourceSnapshot, UUID.randomUUID(), NOW, NOW.plus(Duration.ofDays(7)));
+
+    UUID lineage = UUID.randomUUID();
+    DisclosurePolicyVersion policy =
+        new DisclosurePolicyVersion(
+            POLICY_KEY,
+            1,
+            LOCAL_ORGANIZATION,
+            1,
+            true,
+            lineage,
+            Map.of("SYN-FEDERATED-OUT", Set.of(lineage)));
+    disclosure.activatePolicy(adminContext(), policy);
+
+    DeploymentId receiving = SOURCE_DEPLOYMENT;
+    ExternalReference receivingOrganization =
+        new ExternalReference(
+            new IssuerId(FederatedAggregateMappingVersion.deploymentNamespace(receiving)),
+            "Organization",
+            "SYN-ORG-RECEIVER-001");
+    FederatedAggregateMappingVersion mapping =
+        new FederatedAggregateMappingVersion(
+            "SYN-OUTBOUND-AGGREGATE-MAP",
+            1,
+            FederatedAggregateMappingVersion.Direction.OUTBOUND,
+            definition.key(),
+            definition.version(),
+            definition.fingerprint(),
+            LOCAL_ORGANIZATION,
+            PEER_KEY,
+            receiving,
+            1,
+            receivingOrganization,
+            POLICY_KEY,
+            "SYN-FEDERATED-OUT",
+            NOW.minusSeconds(60),
+            Optional.empty());
+    JdbcFederatedAggregateMappingStore mappings =
+        new JdbcFederatedAggregateMappingStore(jdbc, transactionManager);
+    mappings.publish(mapping, NOW);
+
+    FederatedAggregateSnapshot wire =
+        FederatedAggregateSnapshot.from(
+            sourceSnapshot,
+            definition,
+            revisions.currentRevision(sourceSnapshot.snapshotId()).orElseThrow(),
+            LOCAL_DEPLOYMENT);
+    var mapper =
+        new org.ayuvahak.analytics.adapter.federation.FederatedAggregateEnvelopeJsonMapper(
+            new ObjectMapper());
+    Map<UUID, PartnerOutboundOperationResponse> remoteReceipts = new HashMap<>();
+    List<UUID> sentIds = new ArrayList<>();
+    List<String> sentFingerprints = new ArrayList<>();
+    FederationPeerOperationPort localPeer =
+        request -> {
+          UUID operationId = request.operationId().value();
+          sentIds.add(operationId);
+          sentFingerprints.add(request.fingerprint().value());
+          PartnerOutboundOperationResponse prior = remoteReceipts.get(operationId);
+          if (prior != null) {
+            return prior;
+          }
+          PartnerOutboundOperationResponse committed =
+              new PartnerOutboundOperationResponse(
+                  200,
+                  Optional.of("application/json"),
+                  mapper.encodeAcknowledgement(
+                      new FederatedAggregateReceipt(
+                          UUID.randomUUID(),
+                          wire,
+                          operationId,
+                          receivingOrganization,
+                          PEER_KEY,
+                          1,
+                          Optional.of(mapping.mappingKey()),
+                          Optional.of(mapping.version()),
+                          FederatedAggregateReceipt.State.COMBINABLE,
+                          "COMPATIBLE",
+                          NOW,
+                          false),
+                      receiving),
+                  1);
+          remoteReceipts.put(operationId, committed);
+          throw new AssertionError("synthetic peer committed and dropped the response");
+        };
+
+    MutableClock clock = new MutableClock(NOW);
+    FederatedAggregatePublicationService firstProcess =
+        publicationService(analytics, revisions, mappings, localPeer, mapper, clock);
+    assertThatThrownBy(
+            () ->
+                firstProcess.publish(
+                    releaseContext(),
+                    new FederatedAggregatePublicationRequest(
+                        sourceSnapshot.snapshotId(), mapping.mappingKey())))
+        .isInstanceOf(AssertionError.class);
+    JdbcFederatedAggregatePublicationStore publicationStore =
+        new JdbcFederatedAggregatePublicationStore(jdbc, transactionManager);
+    UUID operationId =
+        jdbc.queryForObject(
+            "SELECT operation_id FROM analytics.federated_aggregate_publication "
+                + "WHERE source_snapshot_id = ? AND mapping_key = ? AND mapping_version = 1",
+            UUID.class,
+            sourceSnapshot.snapshotId(),
+            mapping.mappingKey());
+    FederatedAggregatePublication sending = publicationStore.find(operationId).orElseThrow();
+    assertThat(sending.state()).isEqualTo(FederatedAggregatePublication.State.SENDING);
+
+    clock.advance(Duration.ofMinutes(3));
+    FederatedAggregatePublication recovered =
+        publicationService(analytics, revisions, mappings, localPeer, mapper, clock)
+            .publish(
+                releaseContext(),
+                new FederatedAggregatePublicationRequest(
+                    sourceSnapshot.snapshotId(), mapping.mappingKey()));
+
+    assertThat(recovered.state()).isEqualTo(FederatedAggregatePublication.State.ACKNOWLEDGED);
+    assertThat(recovered.operationId()).isEqualTo(sending.operationId());
+    assertThat(sentIds).containsExactly(sending.operationId(), sending.operationId());
+    assertThat(sentFingerprints).hasSize(2).containsOnly(sentFingerprints.getFirst());
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT count(*) FROM analytics.federated_aggregate_publication "
+                    + "WHERE source_snapshot_id = ? AND mapping_key = ?",
+                Integer.class,
+                sourceSnapshot.snapshotId(),
+                mapping.mappingKey()))
+        .isEqualTo(1);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT state FROM analytics.disclosure_reservation WHERE reservation_id = ?",
+                String.class,
+                recovered.disclosureReservationId().orElseThrow()))
+        .isEqualTo("DISCLOSED");
+  }
+
   private static DisclosureReservation reserveAfter(
       CountDownLatch start, DisclosureCandidate candidate) throws InterruptedException {
     if (!start.await(10, TimeUnit.SECONDS)) {
@@ -317,6 +492,37 @@ class FederatedAggregateFederationPostgresIT {
             ? new DisclosureOutput(outputKey, 9, Map.of("SYN-CELL-A", 1L))
             : new DisclosureOutput(outputKey, 10, Map.of("SYN-CELL-A", 1L, "SYN-CELL-B", 1L));
     return new DisclosureCandidate(POLICY_KEY, 1, UUID.randomUUID(), cells, List.of(output));
+  }
+
+  private FederatedAggregatePublicationService publicationService(
+      AnalyticsStore analytics,
+      JdbcAnalyticsRevisionStore revisions,
+      JdbcFederatedAggregateMappingStore mappings,
+      FederationPeerOperationPort exchange,
+      org.ayuvahak.analytics.adapter.federation.FederatedAggregateEnvelopeJsonMapper mapper,
+      Clock clock) {
+    List<org.ayuvahak.platform.authorization.domain.FunctionalAuthority> authorities =
+        List.of(
+            AnalyticsAuthorities.disclosurePolicyAdministration(),
+            AnalyticsAuthorities.disclosureRelease(),
+            AnalyticsAuthorities.disclosureReservationLifecycle(),
+            AnalyticsAuthorities.federatedAggregatePublication());
+    AuthorizationService authorization =
+        new AuthorizationService(
+            (actor, authority, scope) -> true, new FunctionalAuthorityCatalog(authorities));
+    return new FederatedAggregatePublicationService(
+        analytics,
+        revisions,
+        mappings,
+        new JdbcFederatedAggregatePublicationStore(jdbc, transactionManager),
+        disclosure,
+        mapper,
+        exchange,
+        localIdentity,
+        authorization,
+        new AuditWriter(new JdbcAuditRecordAppender(jdbc, transactionManager), clock),
+        transactionManager,
+        clock);
   }
 
   private FederatedAggregateReceiptService receiptService(
@@ -549,5 +755,33 @@ class FederatedAggregateFederationPostgresIT {
         org.ayuvahak.platform.executioncontext.RequestedExecutionScope.organization(
             LOCAL_ORGANIZATION),
         new CorrelationId(UUID.randomUUID().toString()));
+  }
+
+  private static final class MutableClock extends Clock {
+
+    private final java.util.concurrent.atomic.AtomicReference<Instant> current;
+
+    private MutableClock(Instant initial) {
+      current = new java.util.concurrent.atomic.AtomicReference<>(initial);
+    }
+
+    private void advance(Duration duration) {
+      current.updateAndGet(value -> value.plus(duration));
+    }
+
+    @Override
+    public java.time.ZoneId getZone() {
+      return ZoneOffset.UTC;
+    }
+
+    @Override
+    public Clock withZone(java.time.ZoneId zone) {
+      return this;
+    }
+
+    @Override
+    public Instant instant() {
+      return current.get();
+    }
   }
 }

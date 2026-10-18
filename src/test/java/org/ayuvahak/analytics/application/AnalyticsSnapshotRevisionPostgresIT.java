@@ -123,6 +123,7 @@ class AnalyticsSnapshotRevisionPostgresIT {
     jdbc.update("DELETE FROM analytics.aggregate_snapshot_input");
     jdbc.update("DELETE FROM analytics.aggregate_snapshot");
     jdbc.update("DELETE FROM analytics.indicator_definition_measure");
+    jdbc.update("DELETE FROM analytics.indicator_definition_dimension");
     jdbc.update("DELETE FROM analytics.indicator_definition_version");
     jdbc.update("DELETE FROM audit.audit_record WHERE action_code LIKE 'ANALYTICS_SNAPSHOT_%'");
     clock.set(Instant.parse("2026-04-01T12:00:00Z"));
