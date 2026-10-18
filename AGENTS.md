@@ -46,7 +46,7 @@ Do not request, generate, store, expose, commit, or transmit real production cre
 - Phase 10 — Emergency Transport / EMS Coordination: IMPLEMENTATION COMPLETE + FROZEN
 - Volume IV — DESIGN FROZEN
 - Phase 11 — IMPLEMENTATION COMPLETE + FROZEN
-- Phase 12 — SPECIFICATION FROZEN / IMPLEMENTATION NOT STARTED
+- Phase 12 — IMPLEMENTATION AUTHORIZED
 - Volume IV — NOT YET COMPLETE
 - Volume V — NOT AUTHORIZED
 
@@ -57,8 +57,8 @@ Do not request, generate, store, expose, commit, or transmit real production cre
 - Do not scaffold or implement a later phase before it is authorized. Do not create placeholder modules, schemas, APIs, dependencies, or infrastructure for future phases.
 - Use `/to-spec`, `/to-tickets`, `/implement-spec`, and related implementation workflows only when the active prompt authorizes them for the current phase. Planning artifacts and tickets default to local Markdown under `.scratch/`; external issue tracking remains subject to the external-mutation policy above.
 - Local Git branches, worktrees, commits, and merges are allowed when required by an authorized phase workflow. Remote Git operations remain prohibited unless the human explicitly authorizes that exact operation under the external-mutation policy.
-- Volume I, Volume II, and Volume III are complete and frozen. Phase 8–10 implementations are frozen; implementation authorization remains phase-specific and does not authorize later phases early. Volume IV architecture and Phase 11/12 specifications are frozen. Phase 11 implementation is complete and frozen; Phase 12 remains unauthorized for implementation. Volume V is not authorized.
-- Phases 8, 9, 10, and 11 have passed their acceptance gates and are locally frozen. Volume III integrated evidence is recorded in `docs/reviews/volume-3-acceptance.md`; its local freeze commit is `4e5fa3c3843591ed59c0a87721c138484b8feefa`. Phase 11 evidence is recorded in `docs/reviews/phase-11-acceptance.md`. Volume IV design is frozen. Phase 12 remains specification-only and unauthorized for implementation.
+- Volume I, Volume II, and Volume III are complete and frozen. Phase 8–10 implementations are frozen; implementation authorization remains phase-specific and does not authorize later phases early. Volume IV architecture and Phase 11/12 specifications are frozen. Phase 11 implementation is complete and frozen. Phase 12 implementation is authorized by the active master prompt; Volume V is not authorized.
+- Phases 8, 9, 10, and 11 have passed their acceptance gates and are locally frozen. Volume III integrated evidence is recorded in `docs/reviews/volume-3-acceptance.md`; its local freeze commit is `4e5fa3c3843591ed59c0a87721c138484b8feefa`. Phase 11 evidence is recorded in `docs/reviews/phase-11-acceptance.md`. Volume IV design is frozen. Phase 12 implementation is authorized by the active master prompt. Volume V remains unauthorized.
 - When no phase is explicitly authorized by the active master prompt, do not advance implementation, generate phase tickets, or start a later phase. Stop and request direction if the authorized scope cannot be determined.
 - Keep planning trackers local. Never create external issues without explicit authorization for that exact operation.
 
