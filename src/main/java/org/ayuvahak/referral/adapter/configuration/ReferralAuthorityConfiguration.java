@@ -55,6 +55,11 @@ public class ReferralAuthorityConfiguration {
   }
 
   @Bean
+  FunctionalAuthority referralReportingSnapshotAuthority() {
+    return ReferralAuthorities.reportingSnapshot();
+  }
+
+  @Bean
   @ConditionalOnBean(DirectoryScopeReferenceLookup.class)
   ReferralGrantTargetScopeValidator referralGrantTargetScopeValidator(
       DirectoryScopeReferenceLookup directoryScopeReferenceLookup) {

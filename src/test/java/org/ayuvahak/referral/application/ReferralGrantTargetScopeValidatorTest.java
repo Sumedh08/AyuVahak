@@ -60,4 +60,40 @@ class ReferralGrantTargetScopeValidatorTest {
                 validScope))
         .isFalse();
   }
+
+  @Test
+  void validatesReportingGrantOnlyForAnActiveOrganization() {
+    var validator =
+        new ReferralGrantTargetScopeValidator(
+            new DirectoryScopeReferenceLookup() {
+              @Override
+              public boolean isActiveOrganization(ExternalReference organization) {
+                return ORGANIZATION.equals(organization);
+              }
+
+              @Override
+              public boolean isActiveFacilityInOrganization(
+                  ExternalReference organization, ExternalReference facility) {
+                return false;
+              }
+            });
+
+    assertThat(validator.supports(ReferralAuthorities.reportingSnapshot())).isTrue();
+    assertThat(
+            validator.isValid(
+                ReferralAuthorities.reportingSnapshot(),
+                RequestedExecutionScope.organization(ORGANIZATION)))
+        .isTrue();
+    assertThat(
+            validator.isValid(
+                ReferralAuthorities.reportingSnapshot(),
+                RequestedExecutionScope.facility(ORGANIZATION, FACILITY)))
+        .isFalse();
+    assertThat(
+            validator.isValid(
+                ReferralAuthorities.reportingSnapshot(),
+                RequestedExecutionScope.organization(
+                    new ExternalReference(DIRECTORY, "Organization", "SYN-INACTIVE-ORG"))))
+        .isFalse();
+  }
 }
