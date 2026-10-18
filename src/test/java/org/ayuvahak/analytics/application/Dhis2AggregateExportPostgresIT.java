@@ -15,6 +15,12 @@ import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.ayuvahak.analytics.adapter.dhis2.Dhis2DataValueSetMapper;
@@ -30,6 +36,7 @@ import org.ayuvahak.analytics.domain.AggregateSnapshot;
 import org.ayuvahak.analytics.domain.AnalyticsAuthorities;
 import org.ayuvahak.analytics.domain.AnalyticsRevisionCause;
 import org.ayuvahak.analytics.domain.Dhis2ExportOperation;
+import org.ayuvahak.analytics.domain.Dhis2ExportReconciliation;
 import org.ayuvahak.analytics.domain.Dhis2ExportState;
 import org.ayuvahak.analytics.domain.Dhis2MappingVersion;
 import org.ayuvahak.analytics.domain.Dhis2PeriodFormat;
@@ -91,6 +98,7 @@ class Dhis2AggregateExportPostgresIT {
       Set.of(
           AnalyticsAuthorities.dhis2MappingAdministration().code(),
           AnalyticsAuthorities.dhis2Export().code(),
+          AnalyticsAuthorities.dhis2ExportReconciliation().code(),
           AnalyticsAuthorities.disclosurePolicyAdministration().code(),
           AnalyticsAuthorities.disclosureRelease().code(),
           AnalyticsAuthorities.disclosureReservationLifecycle().code());
@@ -113,6 +121,7 @@ class Dhis2AggregateExportPostgresIT {
   private static JdbcDhis2ExportOperationStore operationStore;
   private static AnalyticsDisclosureReservationService disclosure;
   private static Dhis2MappingAdministrationService mappingAdministration;
+  private static Dhis2ExportReconciliationService reconciliation;
   private static ExecutionContextFactory contexts;
   private static Dhis2AggregateExportService exporter;
   private static RecordingExchange exchange;
@@ -148,6 +157,15 @@ class Dhis2AggregateExportPostgresIT {
     mappingAdministration =
         new Dhis2MappingAdministrationService(
             mappingStore, authorization, audit, transactionManager, CLOCK);
+    reconciliation =
+        new Dhis2ExportReconciliationService(
+            analyticsStore,
+            operationStore,
+            disclosure,
+            authorization,
+            audit,
+            transactionManager,
+            CLOCK);
     exchange = new RecordingExchange();
     exporter =
         new Dhis2AggregateExportService(
@@ -194,6 +212,10 @@ class Dhis2AggregateExportPostgresIT {
     assertThat(operation.resultClass()).isEqualTo("IMPORTED_ACKNOWLEDGED");
     assertThat(operation.importCounts()).isPresent();
     assertThat(exchange.requestCount()).isEqualTo(1);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT count(*) FROM analytics.dhis2_export_target_tuple_claim", Integer.class))
+        .isZero();
     PartnerOutboundOperationRequest outbound = exchange.request().orElseThrow();
     assertThat(outbound.operation().isNamedAnalyticsDhis2DataValueSet()).isTrue();
     assertThat(outbound.pathSegments()).containsExactly("dataValueSets");
@@ -227,17 +249,16 @@ class Dhis2AggregateExportPostgresIT {
   }
 
   @Test
-  void treatsUpdatedAsAcknowledgedButIgnoredAsyncAndLostResponseAsReconciliationOrUnknown() {
+  void ambiguousIgnoredResultHoldsTupleUntilExactAuthorizedReconciliation() {
     AggregateSnapshot snapshot = prepareSnapshotAndMapping();
-    exchange.respond(200, "application/json", updated());
-    Dhis2ExportOperation updatedOperation = export(snapshot);
-    assertThat(updatedOperation.state()).isEqualTo(Dhis2ExportState.ACKNOWLEDGED);
-    assertThat(updatedOperation.resultClass()).isEqualTo("UPDATED_ACKNOWLEDGED");
-
     exchange.respond(200, "application/json", ignored());
-    Dhis2ExportOperation ignoredOperation = export(snapshot);
+    UUID operationId = UUID.randomUUID();
+    Dhis2ExportOperation ignoredOperation =
+        exporter.export(
+            serviceContext(), new Dhis2ExportRequest(operationId, snapshot.snapshotId()));
     assertThat(ignoredOperation.state()).isEqualTo(Dhis2ExportState.RECONCILIATION_REQUIRED);
     assertThat(ignoredOperation.resultClass()).isEqualTo("IMPORT_IGNORED_AMBIGUOUS");
+    assertThat(operationStore.hasTargetTupleClaim(operationId)).isTrue();
     assertThat(
             disclosure
                 .findReservation(
@@ -245,28 +266,194 @@ class Dhis2AggregateExportPostgresIT {
                 .state())
         .isEqualTo(DisclosureReservationState.POTENTIALLY_DISCLOSED);
 
-    exchange.respond(202, "application/json", "{\"id\":\"SYN-TASK-001\"}");
-    Dhis2ExportOperation asyncOperation = export(snapshot);
-    assertThat(asyncOperation.state()).isEqualTo(Dhis2ExportState.RECONCILIATION_REQUIRED);
-    assertThat(asyncOperation.resultClass()).isEqualTo("ASYNC_PROFILE_UNSUPPORTED");
+    Dhis2ExportOperation blocked = export(snapshot);
+    assertThat(blocked.state()).isEqualTo(Dhis2ExportState.PREPARED);
+    assertThat(blocked.resultClass()).isEqualTo("TARGET_TUPLE_ACTIVE");
+    assertThat(exchange.requestCount()).isEqualTo(1);
 
+    var mapping =
+        mappingStore
+            .findVersion(ignoredOperation.mappingKey(), ignoredOperation.mappingVersion())
+            .orElseThrow();
+    var tuple = mapping.tupleFor(snapshot.period());
+    var wrongTuple =
+        new org.ayuvahak.analytics.domain.Dhis2DataValueTuple(
+            "SYN-DATAELEMENT-999",
+            tuple.period(),
+            tuple.orgUnitUid(),
+            tuple.categoryOptionComboUid(),
+            tuple.attributeOptionComboUid());
+    assertThatThrownBy(
+            () ->
+                reconciliation.reconcile(
+                    adminContext(),
+                    new Dhis2ExportReconciliationRequest(
+                        operationId,
+                        wrongTuple,
+                        Dhis2ExportReconciliation.Resolution.CONFIRMED_APPLIED,
+                        UUID.randomUUID(),
+                        OptionalLong.of(snapshot.value().orElseThrow()))))
+        .isInstanceOf(Dhis2ExportException.class)
+        .extracting(failure -> ((Dhis2ExportException) failure).reason())
+        .isEqualTo(Dhis2ExportException.Reason.NOT_AUTHORIZED);
+    assertThat(operationStore.hasTargetTupleClaim(operationId)).isTrue();
+
+    UUID evidenceReference = UUID.randomUUID();
+    Dhis2ExportOperation resolved =
+        reconciliation.reconcile(
+            adminContext(),
+            new Dhis2ExportReconciliationRequest(
+                operationId,
+                tuple,
+                Dhis2ExportReconciliation.Resolution.CONFIRMED_APPLIED,
+                evidenceReference,
+                OptionalLong.of(snapshot.value().orElseThrow())));
+    assertThat(resolved.state()).isEqualTo(Dhis2ExportState.ACKNOWLEDGED);
+    assertThat(operationStore.hasTargetTupleClaim(operationId)).isFalse();
+    assertThat(operationStore.findReconciliation(operationId)).isPresent();
+    assertThat(operationStore.findReconciliation(operationId).orElseThrow().evidenceReference())
+        .isEqualTo(evidenceReference);
+    assertThat(
+            disclosure
+                .findReservation(
+                    serviceContext(), ignoredOperation.disclosureReservationId().orElseThrow())
+                .state())
+        .isEqualTo(DisclosureReservationState.DISCLOSED);
+    assertThat(exchange.requestCount()).isEqualTo(1);
+  }
+
+  @Test
+  void unknownOutcomeRetainsTupleAcrossRestartAndReconciliationDoesNotBlindlyResend()
+      throws Exception {
+    AggregateSnapshot snapshot = prepareSnapshotAndMapping();
     exchange.failWith(new PartnerTransportException(PartnerTransportFailure.READ_TIMEOUT));
-    UUID lostOperationId = UUID.randomUUID();
-    Dhis2ExportOperation unknown =
-        exporter.export(
-            serviceContext(), new Dhis2ExportRequest(lostOperationId, snapshot.snapshotId()));
-    assertThat(unknown.state()).isEqualTo(Dhis2ExportState.OUTCOME_UNKNOWN);
-    assertThat(exchange.requestCount()).isEqualTo(4);
-    Dhis2ExportOperation replay =
-        exporter.export(
-            serviceContext(), new Dhis2ExportRequest(lostOperationId, snapshot.snapshotId()));
-    assertThat(replay.state()).isEqualTo(Dhis2ExportState.OUTCOME_UNKNOWN);
-    assertThat(exchange.requestCount()).isEqualTo(4);
+    exchange.blockNextResponse();
+    UUID operationId = UUID.randomUUID();
+    Dhis2ExportOperation unknown;
+    try (ExecutorService workers = Executors.newSingleThreadExecutor()) {
+      Future<Dhis2ExportOperation> initialAttempt =
+          workers.submit(
+              () ->
+                  exporter.export(
+                      serviceContext(),
+                      new Dhis2ExportRequest(operationId, snapshot.snapshotId())));
+      assertThat(exchange.awaitBlockedRequest()).isTrue();
+
+      Dhis2AggregateExportService restarted = newExporter();
+      unknown =
+          restarted.export(
+              serviceContext(), new Dhis2ExportRequest(operationId, snapshot.snapshotId()));
+      assertThat(unknown.state()).isEqualTo(Dhis2ExportState.OUTCOME_UNKNOWN);
+      assertThat(operationStore.hasTargetTupleClaim(operationId)).isTrue();
+      assertThat(exchange.requestCount()).isEqualTo(1);
+
+      Dhis2ExportOperation replay =
+          restarted.export(
+              serviceContext(), new Dhis2ExportRequest(operationId, snapshot.snapshotId()));
+      assertThat(replay.state()).isEqualTo(Dhis2ExportState.OUTCOME_UNKNOWN);
+      assertThat(exchange.requestCount()).isEqualTo(1);
+
+      AggregateSnapshot corrected = correctedSnapshot(snapshot, 5);
+      Dhis2ExportOperation newer = export(corrected);
+      assertThat(newer.state()).isEqualTo(Dhis2ExportState.PREPARED);
+      assertThat(newer.resultClass()).isEqualTo("TARGET_TUPLE_ACTIVE");
+      assertThat(exchange.requestCount()).isEqualTo(1);
+
+      exchange.releaseBlockedResponse();
+      assertThat(initialAttempt.get(10, TimeUnit.SECONDS).state())
+          .isEqualTo(Dhis2ExportState.OUTCOME_UNKNOWN);
+    }
+
+    var tuple = unknown.targetTuple();
+    Dhis2ExportOperation resolved =
+        reconciliation.reconcile(
+            adminContext(),
+            new Dhis2ExportReconciliationRequest(
+                operationId,
+                tuple,
+                Dhis2ExportReconciliation.Resolution.CONFIRMED_NOT_APPLIED_AND_QUIESCED,
+                UUID.randomUUID(),
+                OptionalLong.empty()));
+    assertThat(resolved.state()).isEqualTo(Dhis2ExportState.REJECTED);
+    assertThat(operationStore.hasTargetTupleClaim(operationId)).isFalse();
     assertThat(
             disclosure
                 .findReservation(serviceContext(), unknown.disclosureReservationId().orElseThrow())
                 .state())
         .isEqualTo(DisclosureReservationState.POTENTIALLY_DISCLOSED);
+    assertThat(exchange.requestCount()).isEqualTo(1);
+  }
+
+  @Test
+  void duplicateOperationIdentityReplaysOnlySameFingerprintAndStaleRevisionCannotSend() {
+    AggregateSnapshot snapshot = prepareSnapshotAndMapping();
+    UUID operationId = UUID.randomUUID();
+    exchange.respond(200, "application/json", updated());
+    Dhis2ExportOperation acknowledged =
+        exporter.export(
+            serviceContext(), new Dhis2ExportRequest(operationId, snapshot.snapshotId()));
+    assertThat(acknowledged.state()).isEqualTo(Dhis2ExportState.ACKNOWLEDGED);
+
+    Dhis2ExportOperation replay =
+        exporter.export(
+            serviceContext(), new Dhis2ExportRequest(operationId, snapshot.snapshotId()));
+    assertThat(replay.operationId()).isEqualTo(operationId);
+    assertThat(replay.state()).isEqualTo(Dhis2ExportState.ACKNOWLEDGED);
+    assertThat(exchange.requestCount()).isEqualTo(1);
+
+    Dhis2ExportOperation stale = export(snapshot);
+    assertThat(stale.state()).isEqualTo(Dhis2ExportState.REJECTED);
+    assertThat(stale.resultClass()).isEqualTo("STALE_OR_DUPLICATE_REVISION");
+    assertThat(exchange.requestCount()).isEqualTo(1);
+
+    AggregateSnapshot changed = correctedSnapshot(snapshot, 5);
+    assertThatThrownBy(
+            () ->
+                exporter.export(
+                    serviceContext(), new Dhis2ExportRequest(operationId, changed.snapshotId())))
+        .isInstanceOf(Dhis2ExportOperationConflictException.class);
+    assertThat(exchange.requestCount()).isEqualTo(1);
+  }
+
+  @Test
+  void newerRevisionCannotOvertakeOlderPreparedOperationThatHasNotClaimedYet() {
+    AggregateSnapshot original = prepareSnapshotAndMapping();
+    var currentRevision = revisionStore.currentRevision(original.snapshotId()).orElseThrow();
+    var targetMapping =
+        mappingStore
+            .activeMapping(
+                original.indicatorKey(), original.indicatorVersion(), original.organization(), NOW)
+            .orElseThrow();
+    var tuple = targetMapping.tupleFor(original.period());
+    UUID olderOperationId = UUID.randomUUID();
+    operationStore.createOrReplay(
+        new Dhis2ExportOperation(
+            olderOperationId,
+            "a".repeat(64),
+            original.snapshotId(),
+            currentRevision.seriesId(),
+            currentRevision.revisionNumber(),
+            targetMapping.mappingKey(),
+            targetMapping.version(),
+            targetMapping.partnerKey().value(),
+            Optional.empty(),
+            tuple,
+            targetMapping.dataSetUid(),
+            Optional.empty(),
+            Dhis2ExportState.PREPARED,
+            "PREPARED",
+            0,
+            Optional.empty(),
+            Optional.empty(),
+            NOW,
+            NOW));
+
+    AggregateSnapshot corrected = correctedSnapshot(original, 5);
+    Dhis2ExportOperation newer = export(corrected);
+    assertThat(newer.state()).isEqualTo(Dhis2ExportState.PREPARED);
+    assertThat(newer.resultClass()).isEqualTo("OLDER_REVISION_PENDING");
+    assertThat(operationStore.hasTargetTupleClaim(olderOperationId)).isFalse();
+    assertThat(exchange.requestCount()).isZero();
   }
 
   @Test
@@ -299,14 +486,72 @@ class Dhis2AggregateExportPostgresIT {
                 Dhis2ExportState.OUTCOME_UNKNOWN,
                 "TRANSPORT_OUTCOME_UNKNOWN"));
 
-    for (FailureExpectation expected : failures) {
+    for (int index = 0; index < failures.size(); index++) {
+      FailureExpectation expected = failures.get(index);
+      LocalDate periodStart = LocalDate.of(2026, index + 2, 1);
+      AggregateSnapshot periodSnapshot =
+          snapshotForPeriod(4, periodStart, periodStart.plusMonths(1));
+      analyticsStore.saveOrReplay(periodSnapshot);
+      revisionStore.registerInitial(
+          periodSnapshot, UUID.randomUUID(), NOW, NOW.plusSeconds(30L * 24 * 60 * 60));
       exchange.failWith(new PartnerTransportException(expected.failure()));
-      Dhis2ExportOperation operation = export(snapshot);
+      Dhis2ExportOperation operation = export(periodSnapshot);
       assertThat(operation.state()).isEqualTo(expected.state());
       assertThat(operation.resultClass()).isEqualTo(expected.resultClass());
     }
 
     assertThat(exchange.requestCount()).isEqualTo(failures.size());
+  }
+
+  @Test
+  void unresolvedExportOwnsTheCompleteTargetTupleUntilItsOutcomeIsTerminal() throws Exception {
+    AggregateSnapshot snapshot = prepareSnapshotAndMapping();
+    exchange.respond(200, "application/json", imported());
+    exchange.blockNextResponse();
+    UUID firstOperationId = UUID.randomUUID();
+    UUID competingOperationId = UUID.randomUUID();
+
+    try (ExecutorService workers = Executors.newFixedThreadPool(2)) {
+      Future<Dhis2ExportOperation> first =
+          workers.submit(
+              () ->
+                  exporter.export(
+                      serviceContext(),
+                      new Dhis2ExportRequest(firstOperationId, snapshot.snapshotId())));
+      assertThat(exchange.awaitBlockedRequest()).isTrue();
+
+      Dhis2ExportOperation competing =
+          exporter.export(
+              serviceContext(),
+              new Dhis2ExportRequest(competingOperationId, snapshot.snapshotId()));
+
+      Dhis2ExportOperation sameOperationReplay =
+          exporter.export(
+              serviceContext(), new Dhis2ExportRequest(firstOperationId, snapshot.snapshotId()));
+      assertThat(sameOperationReplay.state()).isEqualTo(Dhis2ExportState.SENDING);
+
+      assertThat(competing.state()).isEqualTo(Dhis2ExportState.PREPARED);
+      assertThat(competing.resultClass()).isEqualTo("TARGET_TUPLE_ACTIVE");
+      assertThat(exchange.requestCount()).isEqualTo(1);
+
+      exchange.releaseBlockedResponse();
+      assertThat(first.get(10, TimeUnit.SECONDS).state()).isEqualTo(Dhis2ExportState.ACKNOWLEDGED);
+      assertThat(
+              exporter
+                  .export(
+                      serviceContext(),
+                      new Dhis2ExportRequest(firstOperationId, snapshot.snapshotId()))
+                  .state())
+          .isEqualTo(Dhis2ExportState.ACKNOWLEDGED);
+      Dhis2ExportOperation completedTupleRetry =
+          exporter.export(
+              serviceContext(),
+              new Dhis2ExportRequest(competingOperationId, snapshot.snapshotId()));
+      assertThat(completedTupleRetry.state()).isEqualTo(Dhis2ExportState.REJECTED);
+      assertThat(completedTupleRetry.resultClass()).isEqualTo("STALE_OR_DUPLICATE_REVISION");
+    }
+
+    assertThat(exchange.requestCount()).isEqualTo(1);
   }
 
   @Test
@@ -551,6 +796,28 @@ class Dhis2AggregateExportPostgresIT {
         serviceContext(), new Dhis2ExportRequest(UUID.randomUUID(), snapshot.snapshotId()));
   }
 
+  private static Dhis2AggregateExportService newExporter() {
+    AuthorizationService authorization =
+        new AuthorizationService(
+            (actor, authority, scope) -> GRANTED_AUTHORITIES.contains(authority.code()),
+            authorities());
+    AuditWriter audit =
+        new AuditWriter(new JdbcAuditRecordAppender(jdbc, transactionManager), CLOCK);
+    return new Dhis2AggregateExportService(
+        analyticsStore,
+        revisionStore,
+        mappingStore,
+        operationStore,
+        disclosure,
+        new Dhis2DataValueSetMapper(new ObjectMapper()),
+        new Dhis2ImportSummaryParser(new ObjectMapper()),
+        exchange,
+        authorization,
+        audit,
+        transactionManager,
+        CLOCK);
+  }
+
   private static AggregateSnapshot prepareSnapshotAndMapping() {
     return prepareSnapshotAndMapping(4, true);
   }
@@ -770,6 +1037,7 @@ class Dhis2AggregateExportPostgresIT {
         List.of(
             AnalyticsAuthorities.dhis2MappingAdministration(),
             AnalyticsAuthorities.dhis2Export(),
+            AnalyticsAuthorities.dhis2ExportReconciliation(),
             AnalyticsAuthorities.disclosurePolicyAdministration(),
             AnalyticsAuthorities.disclosureRelease(),
             AnalyticsAuthorities.disclosureReservationLifecycle()));
@@ -797,11 +1065,27 @@ class Dhis2AggregateExportPostgresIT {
     private final AtomicReference<PartnerOutboundOperationResponse> response =
         new AtomicReference<>();
     private final AtomicReference<RuntimeException> failure = new AtomicReference<>();
+    private final AtomicReference<CountDownLatch> responseEntered = new AtomicReference<>();
+    private final AtomicReference<CountDownLatch> responseReleased = new AtomicReference<>();
+    private final AtomicBoolean blockResponse = new AtomicBoolean();
 
     @Override
     public PartnerOutboundOperationResponse execute(PartnerOutboundOperationRequest request) {
       calls.incrementAndGet();
       lastRequest.set(request);
+      CountDownLatch entered = responseEntered.get();
+      CountDownLatch released = responseReleased.get();
+      if (entered != null && blockResponse.compareAndSet(true, false)) {
+        entered.countDown();
+        try {
+          if (released == null || !released.await(10, TimeUnit.SECONDS)) {
+            throw new IllegalStateException("local test response was not released");
+          }
+        } catch (InterruptedException interrupted) {
+          Thread.currentThread().interrupt();
+          throw new IllegalStateException("local test response was interrupted", interrupted);
+        }
+      }
       RuntimeException transportFailure = failure.getAndSet(null);
       if (transportFailure != null) {
         throw transportFailure;
@@ -820,6 +1104,24 @@ class Dhis2AggregateExportPostgresIT {
       failure.set(exception);
     }
 
+    void blockNextResponse() {
+      responseEntered.set(new CountDownLatch(1));
+      responseReleased.set(new CountDownLatch(1));
+      blockResponse.set(true);
+    }
+
+    boolean awaitBlockedRequest() throws InterruptedException {
+      CountDownLatch entered = responseEntered.get();
+      return entered != null && entered.await(10, TimeUnit.SECONDS);
+    }
+
+    void releaseBlockedResponse() {
+      CountDownLatch released = responseReleased.getAndSet(null);
+      if (released != null) {
+        released.countDown();
+      }
+    }
+
     int requestCount() {
       return calls.get();
     }
@@ -833,6 +1135,12 @@ class Dhis2AggregateExportPostgresIT {
       lastRequest.set(null);
       failure.set(null);
       response.set(null);
+      responseEntered.set(null);
+      blockResponse.set(false);
+      CountDownLatch released = responseReleased.getAndSet(null);
+      if (released != null) {
+        released.countDown();
+      }
     }
   }
 }

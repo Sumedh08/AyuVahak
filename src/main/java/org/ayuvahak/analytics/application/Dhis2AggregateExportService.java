@@ -10,7 +10,9 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import org.ayuvahak.analytics.domain.AggregateCompleteness;
 import org.ayuvahak.analytics.domain.AggregateInput;
 import org.ayuvahak.analytics.domain.AggregateSnapshot;
@@ -40,6 +42,7 @@ import org.ayuvahak.platform.core.InternalId;
 import org.ayuvahak.platform.core.SourceKind;
 import org.ayuvahak.platform.exchange.application.PartnerOutboundOperationPort;
 import org.ayuvahak.platform.exchange.application.PartnerOutboundOperationRequest;
+import org.ayuvahak.platform.exchange.application.PartnerOutboundOperationResponse;
 import org.ayuvahak.platform.exchange.application.PartnerTransportException;
 import org.ayuvahak.platform.exchange.application.PartnerTransportFailure;
 import org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.AllowedOperation;
@@ -71,6 +74,7 @@ public final class Dhis2AggregateExportService {
   private final AuditWriter audit;
   private final TransactionTemplate transactions;
   private final Clock clock;
+  private final Set<UUID> activeAttempts = ConcurrentHashMap.newKeySet();
 
   public Dhis2AggregateExportService(
       AnalyticsStore snapshots,
@@ -163,57 +167,58 @@ public final class Dhis2AggregateExportService {
 
     Dhis2ExportOperation operation = createOrReplay(context, proposed);
     if (operation.state() == Dhis2ExportState.SENDING) {
+      if (activeAttempts.contains(operation.operationId())) {
+        return operation;
+      }
       return markUnknownAfterRestart(context, operation);
     }
     if (operation.state() != Dhis2ExportState.PREPARED) {
       return operation;
     }
-
-    Optional<DisclosureReservation> reservationResult =
-        reserveDisclosure(context, mapping, operation, snapshot, cellEquation);
-    if (reservationResult.isEmpty()) {
-      return transition(
-          context,
-          operation,
-          Dhis2ExportState.WITHHELD,
-          "DISCLOSURE_OVERLAP_REVIEW_REQUIRED",
-          Optional.empty(),
-          Optional.empty(),
-          Optional.empty());
+    if (!activeAttempts.add(operation.operationId())) {
+      return operations.find(operation.operationId()).orElse(operation);
     }
-    DisclosureReservation reservation = reservationResult.orElseThrow();
-    if (reservation.state() != DisclosureReservationState.RESERVED) {
-      return transition(
-          context,
-          operation,
-          Dhis2ExportState.WITHHELD,
-          "DISCLOSURE_" + reservation.state().name(),
-          Optional.empty(),
-          Optional.empty(),
-          Optional.of(reservation.reservationId()));
+    StartResult start;
+    try {
+      start = claimReserveAndStart(context, mapping, operation, snapshot, cellEquation);
+    } catch (RuntimeException failure) {
+      activeAttempts.remove(operation.operationId());
+      throw failure;
     }
-    operation = attachReservation(context, operation, reservation.reservationId());
-    operation =
-        transition(
+    operation = start.operation();
+    if (!start.started()) {
+      activeAttempts.remove(operation.operationId());
+      return operation;
+    }
+    try {
+      PartnerOutboundOperationResponse response;
+      Dhis2ImportSummary summary;
+      try {
+        response =
+            exchange.execute(
+                new PartnerOutboundOperationRequest(
+                    mapping.partnerKey(),
+                    DHIS2_OPERATION,
+                    java.util.List.of("dataValueSets"),
+                    body,
+                    "dhis2-" + request.operationId()));
+        summary = summaryParser.parse(response.status(), response.contentType(), response.body());
+      } catch (Dhis2ImportResponseException malformed) {
+        return completePotentiallyDisclosed(
+            context, operation, Dhis2ExportState.OUTCOME_UNKNOWN, "MALFORMED_RESPONSE", null, null);
+      } catch (PartnerTransportException transportFailure) {
+        MappedFailure mapped = classify(transportFailure.failure());
+        return completePotentiallyDisclosed(
+            context, operation, mapped.state(), mapped.resultClass(), null, null);
+      } catch (RuntimeException uncertain) {
+        return completePotentiallyDisclosed(
             context,
             operation,
-            Dhis2ExportState.SENDING,
-            "SEND_STARTED",
-            Optional.empty(),
-            Optional.empty(),
-            Optional.of(reservation.reservationId()));
-
-    try {
-      var response =
-          exchange.execute(
-              new PartnerOutboundOperationRequest(
-                  mapping.partnerKey(),
-                  DHIS2_OPERATION,
-                  java.util.List.of("dataValueSets"),
-                  body,
-                  "dhis2-" + request.operationId()));
-      Dhis2ImportSummary summary =
-          summaryParser.parse(response.status(), response.contentType(), response.body());
+            Dhis2ExportState.OUTCOME_UNKNOWN,
+            "EXCHANGE_OUTCOME_UNKNOWN",
+            null,
+            null);
+      }
       return switch (summary.outcome()) {
         case IMPORTED_ACKNOWLEDGED, UPDATED_ACKNOWLEDGED ->
             completeAcknowledged(context, operation, summary, response.configurationVersion());
@@ -234,21 +239,121 @@ public final class Dhis2AggregateExportService {
                 summary,
                 response.configurationVersion());
       };
-    } catch (Dhis2ImportResponseException malformed) {
-      return completePotentiallyDisclosed(
-          context, operation, Dhis2ExportState.OUTCOME_UNKNOWN, "MALFORMED_RESPONSE", null, null);
-    } catch (PartnerTransportException transportFailure) {
-      MappedFailure mapped = classify(transportFailure.failure());
-      return completePotentiallyDisclosed(
-          context, operation, mapped.state(), mapped.resultClass(), null, null);
-    } catch (RuntimeException uncertain) {
-      return completePotentiallyDisclosed(
-          context,
-          operation,
-          Dhis2ExportState.OUTCOME_UNKNOWN,
-          "EXCHANGE_OUTCOME_UNKNOWN",
-          null,
-          null);
+    } finally {
+      activeAttempts.remove(operation.operationId());
+    }
+  }
+
+  private StartResult claimReserveAndStart(
+      ExecutionContext context,
+      Dhis2MappingVersion mapping,
+      Dhis2ExportOperation operation,
+      AggregateSnapshot snapshot,
+      SourceCellEquation cellEquation) {
+    try {
+      return transactions.execute(
+          status -> {
+            Dhis2ExportOperationStore.TargetTupleClaimResult claim =
+                operations.acquireTargetTupleClaim(operation, clock.instant());
+            switch (claim.outcome()) {
+              case HELD_BY_OTHER -> {
+                return new StartResult(
+                    transition(
+                        context,
+                        operation,
+                        Dhis2ExportState.PREPARED,
+                        "TARGET_TUPLE_ACTIVE",
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.empty()),
+                    false);
+              }
+              case BLOCKED_BY_OLDER -> {
+                return new StartResult(
+                    transition(
+                        context,
+                        operation,
+                        Dhis2ExportState.PREPARED,
+                        "OLDER_REVISION_PENDING",
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.empty()),
+                    false);
+              }
+              case STALE_REVISION, CONFLICTING_SERIES -> {
+                return new StartResult(
+                    transition(
+                        context,
+                        operation,
+                        Dhis2ExportState.REJECTED,
+                        claim.outcome()
+                                == Dhis2ExportOperationStore.TargetTupleClaimOutcome.STALE_REVISION
+                            ? "STALE_OR_DUPLICATE_REVISION"
+                            : "TARGET_TUPLE_SERIES_CONFLICT",
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.empty()),
+                    false);
+              }
+              case SAME_OPERATION -> {
+                return new StartResult(
+                    operations.find(operation.operationId()).orElse(operation), false);
+              }
+              case ACQUIRED -> {
+                // Continue in the same transaction so disclosure and send ownership commit
+                // together.
+              }
+            }
+
+            Optional<DisclosureReservation> reservationResult =
+                reserveDisclosure(context, mapping, operation, snapshot, cellEquation);
+            if (reservationResult.isEmpty()) {
+              return new StartResult(
+                  transition(
+                      context,
+                      operation,
+                      Dhis2ExportState.WITHHELD,
+                      "DISCLOSURE_OVERLAP_REVIEW_REQUIRED",
+                      Optional.empty(),
+                      Optional.empty(),
+                      Optional.empty()),
+                  false);
+            }
+            DisclosureReservation reservation = reservationResult.orElseThrow();
+            if (reservation.state() != DisclosureReservationState.RESERVED) {
+              return new StartResult(
+                  transition(
+                      context,
+                      operation,
+                      Dhis2ExportState.WITHHELD,
+                      "DISCLOSURE_" + reservation.state().name(),
+                      Optional.empty(),
+                      Optional.empty(),
+                      Optional.of(reservation.reservationId())),
+                  false);
+            }
+            Dhis2ExportOperation withReservation =
+                transition(
+                    context,
+                    operation,
+                    Dhis2ExportState.PREPARED,
+                    "DISCLOSURE_RESERVED",
+                    Optional.empty(),
+                    Optional.empty(),
+                    Optional.of(reservation.reservationId()));
+            Dhis2ExportOperation sending =
+                transition(
+                    context,
+                    withReservation,
+                    Dhis2ExportState.SENDING,
+                    "SEND_STARTED",
+                    Optional.empty(),
+                    Optional.empty(),
+                    Optional.of(reservation.reservationId()));
+            return new StartResult(sending, true);
+          });
+    } catch (DataAccessException | AuditPersistenceUnavailableException unavailable) {
+      throw new Dhis2ExportException(Dhis2ExportException.Reason.STORE_UNAVAILABLE, unavailable);
     }
   }
 
@@ -394,18 +499,6 @@ public final class Dhis2AggregateExportService {
     }
   }
 
-  private Dhis2ExportOperation attachReservation(
-      ExecutionContext context, Dhis2ExportOperation operation, UUID reservationId) {
-    return transition(
-        context,
-        operation,
-        Dhis2ExportState.PREPARED,
-        "DISCLOSURE_RESERVED",
-        Optional.empty(),
-        Optional.empty(),
-        Optional.of(reservationId));
-  }
-
   private Dhis2ExportOperation completeAcknowledged(
       ExecutionContext context,
       Dhis2ExportOperation operation,
@@ -414,6 +507,14 @@ public final class Dhis2AggregateExportService {
     try {
       return transactions.execute(
           status -> {
+            Dhis2ExportOperation current =
+                operations
+                    .find(operation.operationId())
+                    .orElseThrow(Dhis2ExportOperationConflictException::new);
+            if (current.state() != Dhis2ExportState.SENDING
+                && current.state() != Dhis2ExportState.OUTCOME_UNKNOWN) {
+              throw new Dhis2ExportOperationConflictException();
+            }
             InternalId auditId =
                 audit.recordMutation(
                     mutationEvidence(
@@ -424,7 +525,7 @@ public final class Dhis2AggregateExportService {
             Dhis2ExportOperation completed =
                 operations.update(
                     operation.operationId(),
-                    Dhis2ExportState.SENDING,
+                    current.state(),
                     Dhis2ExportState.ACKNOWLEDGED,
                     summary.outcome().name(),
                     1,
@@ -461,6 +562,20 @@ public final class Dhis2AggregateExportService {
     try {
       return transactions.execute(
           status -> {
+            Dhis2ExportOperation current =
+                operations
+                    .find(operation.operationId())
+                    .orElseThrow(Dhis2ExportOperationConflictException::new);
+            if (current.state() != Dhis2ExportState.SENDING
+                && current.state() != Dhis2ExportState.OUTCOME_UNKNOWN) {
+              throw new Dhis2ExportOperationConflictException();
+            }
+            if (current.state() == state) {
+              operation
+                  .disclosureReservationId()
+                  .ifPresent(id -> disclosure.markPotentiallyDisclosed(context, id));
+              return current;
+            }
             InternalId auditId =
                 audit.recordMutation(
                     mutationEvidence(
@@ -471,7 +586,7 @@ public final class Dhis2AggregateExportService {
             Dhis2ExportOperation updated =
                 operations.update(
                     operation.operationId(),
-                    Dhis2ExportState.SENDING,
+                    current.state(),
                     state,
                     resultClass,
                     1,
@@ -503,6 +618,16 @@ public final class Dhis2AggregateExportService {
     try {
       return transactions.execute(
           status -> {
+            Dhis2ExportOperation current =
+                operations
+                    .find(operation.operationId())
+                    .orElseThrow(Dhis2ExportOperationConflictException::new);
+            if (current.state() != Dhis2ExportState.SENDING) {
+              if (current.state() == Dhis2ExportState.OUTCOME_UNKNOWN) {
+                return current;
+              }
+              throw new Dhis2ExportOperationConflictException();
+            }
             InternalId auditId =
                 audit.recordMutation(
                     mutationEvidence(
@@ -513,7 +638,7 @@ public final class Dhis2AggregateExportService {
             Dhis2ExportOperation updated =
                 operations.update(
                     operation.operationId(),
-                    Dhis2ExportState.SENDING,
+                    current.state(),
                     Dhis2ExportState.OUTCOME_UNKNOWN,
                     "RESTART_DURING_SEND",
                     1,
@@ -713,4 +838,6 @@ public final class Dhis2AggregateExportService {
 
   private record SourceCellEquation(
       Map<String, Long> cellValues, Map<String, Long> totalTerms, long total) {}
+
+  private record StartResult(Dhis2ExportOperation operation, boolean started) {}
 }

@@ -6,6 +6,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import org.ayuvahak.analytics.domain.AnalyticsAuthorities;
+import org.ayuvahak.analytics.domain.Dhis2ExportReconciliation;
 import org.ayuvahak.analytics.domain.DisclosureCandidate;
 import org.ayuvahak.analytics.domain.DisclosureInferenceAnalyzer;
 import org.ayuvahak.analytics.domain.DisclosurePolicyActivation;
@@ -245,6 +246,55 @@ public final class AnalyticsDisclosureReservationService {
         DisclosureReservationState.POTENTIALLY_DISCLOSED,
         "OUTCOME_UNKNOWN",
         Optional.empty());
+  }
+
+  /** Resolves only the disclosure history for an explicitly authorized DHIS2 operator decision. */
+  public DisclosureReservation resolveDhis2DisclosureByOperator(
+      ExecutionContext context,
+      UUID reservationId,
+      Dhis2ExportReconciliation.Resolution resolution) {
+    Objects.requireNonNull(resolution, "reconciliation resolution");
+    org.ayuvahak.platform.core.ExternalReference organization =
+        reservations
+            .organizationForReservation(reservationId)
+            .orElseThrow(
+                () ->
+                    new DisclosureReservationException(
+                        DisclosureReservationException.Reason.RESERVATION_NOT_FOUND));
+    requireOrganizationScope(
+        context, organization, reservationId, "ANALYTICS_DHIS2_RECONCILIATION_DENIED");
+    if (context == null
+        || context.actor().kind() != ActorKind.HUMAN
+        || !(context.sourceKind() == SourceKind.INTERACTIVE_REQUEST
+            || context.sourceKind() == SourceKind.LOCAL_OPERATOR_COMMAND)) {
+      recordDenial(context, reservationId, "ANALYTICS_DHIS2_RECONCILIATION_DENIED");
+      throw new DisclosureReservationException(
+          DisclosureReservationException.Reason.NOT_AUTHORIZED);
+    }
+    requireAuthorized(
+        context,
+        AnalyticsAuthorities.dhis2ExportReconciliation().code(),
+        reservationId,
+        "ANALYTICS_DHIS2_RECONCILIATION_DENIED");
+    DisclosureReservation existing = requireReservation(reservationId);
+    DisclosureReservationState target =
+        resolution == Dhis2ExportReconciliation.Resolution.CONFIRMED_APPLIED
+            ? DisclosureReservationState.DISCLOSED
+            : DisclosureReservationState.POTENTIALLY_DISCLOSED;
+    if (existing.state() == target) {
+      return existing;
+    }
+    if (existing.state() != DisclosureReservationState.RESERVED
+        && existing.state() != DisclosureReservationState.POTENTIALLY_DISCLOSED) {
+      throw new DisclosureReservationException(DisclosureReservationException.Reason.INVALID_STATE);
+    }
+    return transitionAuthorized(
+        context,
+        reservationId,
+        target,
+        resolution == Dhis2ExportReconciliation.Resolution.CONFIRMED_APPLIED
+            ? "OPERATOR_CONFIRMED_TARGET_VALUE"
+            : "OPERATOR_CONFIRMED_NO_FUTURE_APPLY");
   }
 
   public DisclosureReservation withdrawNotSent(

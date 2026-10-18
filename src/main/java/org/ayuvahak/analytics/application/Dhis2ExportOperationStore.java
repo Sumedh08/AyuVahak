@@ -4,6 +4,7 @@ import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
 import org.ayuvahak.analytics.domain.Dhis2ExportOperation;
+import org.ayuvahak.analytics.domain.Dhis2ExportReconciliation;
 import org.ayuvahak.analytics.domain.Dhis2ExportState;
 import org.ayuvahak.analytics.domain.Dhis2MappingVersion;
 import org.ayuvahak.analytics.domain.ReportingPeriod;
@@ -16,6 +17,15 @@ public interface Dhis2ExportOperationStore {
   CreateResult createOrReplay(Dhis2ExportOperation operation);
 
   Optional<Dhis2ExportOperation> find(UUID operationId);
+
+  /** Acquires the durable full-target claim, serializing competing revisions in PostgreSQL. */
+  TargetTupleClaimResult acquireTargetTupleClaim(Dhis2ExportOperation operation, Instant claimedAt);
+
+  boolean hasTargetTupleClaim(UUID operationId);
+
+  void recordReconciliation(Dhis2ExportReconciliation reconciliation);
+
+  Optional<Dhis2ExportReconciliation> findReconciliation(UUID operationId);
 
   /**
    * Acquires a transaction-scoped lock for this organization's export history and reports whether
@@ -39,4 +49,16 @@ public interface Dhis2ExportOperationStore {
       UUID auditRecordId);
 
   record CreateResult(Dhis2ExportOperation operation, boolean created) {}
+
+  enum TargetTupleClaimOutcome {
+    ACQUIRED,
+    SAME_OPERATION,
+    HELD_BY_OTHER,
+    BLOCKED_BY_OLDER,
+    STALE_REVISION,
+    CONFLICTING_SERIES
+  }
+
+  record TargetTupleClaimResult(
+      TargetTupleClaimOutcome outcome, Optional<UUID> blockingOperationId) {}
 }

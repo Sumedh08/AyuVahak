@@ -52,4 +52,9 @@ class AnalyticsAuthorizationConfiguration {
   FunctionalAuthority analyticsDhis2ExportAuthority() {
     return AnalyticsAuthorities.dhis2Export();
   }
+
+  @Bean
+  FunctionalAuthority analyticsDhis2ExportReconciliationAuthority() {
+    return AnalyticsAuthorities.dhis2ExportReconciliation();
+  }
 }

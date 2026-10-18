@@ -53,4 +53,9 @@ public final class AnalyticsAuthorities {
     return new FunctionalAuthority(
         "AnalyticsDhis2Export", Set.of(ExecutionScope.Kind.ORGANIZATION));
   }
+
+  public static FunctionalAuthority dhis2ExportReconciliation() {
+    return new FunctionalAuthority(
+        "AnalyticsDhis2ExportReconciliation", Set.of(ExecutionScope.Kind.ORGANIZATION));
+  }
 }

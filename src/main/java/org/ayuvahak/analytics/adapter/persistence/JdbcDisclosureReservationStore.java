@@ -313,6 +313,24 @@ public class JdbcDisclosureReservationStore implements DisclosureReservationStor
   }
 
   @Override
+  public Optional<ExternalReference> organizationForReservation(UUID reservationId) {
+    return jdbc
+        .query(
+            "SELECT head.organization_issuer, head.organization_reference_type, head.organization_id "
+                + "FROM analytics.disclosure_reservation reservation "
+                + "JOIN analytics.disclosure_policy_head head ON head.policy_key = reservation.policy_key "
+                + "WHERE reservation.reservation_id = ?",
+            (result, row) ->
+                new ExternalReference(
+                    new IssuerId(result.getString("organization_issuer")),
+                    result.getString("organization_reference_type"),
+                    result.getObject("organization_id", UUID.class).toString()),
+            reservationId)
+        .stream()
+        .findFirst();
+  }
+
+  @Override
   public DisclosureReservation transition(
       UUID reservationId,
       DisclosureReservationState targetState,

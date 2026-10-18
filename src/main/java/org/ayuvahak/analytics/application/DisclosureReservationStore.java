@@ -8,6 +8,7 @@ import org.ayuvahak.analytics.domain.DisclosurePolicyActivation;
 import org.ayuvahak.analytics.domain.DisclosurePolicyVersion;
 import org.ayuvahak.analytics.domain.DisclosureReservation;
 import org.ayuvahak.analytics.domain.DisclosureReservationState;
+import org.ayuvahak.platform.core.ExternalReference;
 
 /** Analytics-owned serialization and durable-history boundary for disclosure decisions. */
 public interface DisclosureReservationStore {
@@ -29,6 +30,8 @@ public interface DisclosureReservationStore {
       DisclosureCandidate candidate, DisclosureReleaseContext lockedHistory, Instant recordedAt);
 
   Optional<DisclosureReservation> findReservation(UUID reservationId);
+
+  Optional<ExternalReference> organizationForReservation(UUID reservationId);
 
   DisclosureReservation transition(
       UUID reservationId,

@@ -4,6 +4,8 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -11,6 +13,7 @@ import org.ayuvahak.analytics.application.Dhis2ExportOperationConflictException;
 import org.ayuvahak.analytics.application.Dhis2ExportOperationStore;
 import org.ayuvahak.analytics.domain.Dhis2DataValueTuple;
 import org.ayuvahak.analytics.domain.Dhis2ExportOperation;
+import org.ayuvahak.analytics.domain.Dhis2ExportReconciliation;
 import org.ayuvahak.analytics.domain.Dhis2ExportState;
 import org.ayuvahak.analytics.domain.Dhis2MappingVersion;
 import org.ayuvahak.analytics.domain.ReportingPeriod;
@@ -83,6 +86,146 @@ public class JdbcDhis2ExportOperationStore implements Dhis2ExportOperationStore 
         .query(
             SELECT_OPERATION + "WHERE operation_id = ?",
             (result, row) -> fromRow(result),
+            operationId)
+        .stream()
+        .findFirst();
+  }
+
+  @Override
+  public TargetTupleClaimResult acquireTargetTupleClaim(
+      Dhis2ExportOperation operation, Instant claimedAt) {
+    Objects.requireNonNull(operation, "export operation");
+    Objects.requireNonNull(claimedAt, "claim time");
+    var tuple = operation.targetTuple();
+    lockTargetTuple(operation);
+
+    List<OperationVersion> acknowledged =
+        jdbc.query(
+            "SELECT operation_id, revision_series_id, revision_number "
+                + "FROM analytics.dhis2_export_operation WHERE "
+                + tuplePredicate()
+                + " AND operation_state = 'ACKNOWLEDGED' AND operation_id <> ? "
+                + "ORDER BY updated_at DESC, operation_id",
+            (result, row) ->
+                new OperationVersion(
+                    result.getObject("operation_id", UUID.class),
+                    result.getObject("revision_series_id", UUID.class),
+                    result.getInt("revision_number")),
+            tupleAndTrailingParameters(operation, operation.operationId()));
+    for (OperationVersion prior : acknowledged) {
+      if (!prior.revisionSeriesId().equals(operation.revisionSeriesId())) {
+        return new TargetTupleClaimResult(
+            TargetTupleClaimOutcome.CONFLICTING_SERIES, Optional.of(prior.operationId()));
+      }
+      if (prior.revisionNumber() >= operation.revisionNumber()) {
+        return new TargetTupleClaimResult(
+            TargetTupleClaimOutcome.STALE_REVISION, Optional.of(prior.operationId()));
+      }
+    }
+
+    Optional<OperationVersion> olderPrepared =
+        jdbc
+            .query(
+                "SELECT operation_id, revision_series_id, revision_number "
+                    + "FROM analytics.dhis2_export_operation WHERE "
+                    + tuplePredicate()
+                    + " AND operation_state = 'PREPARED' AND revision_series_id = ? "
+                    + "AND revision_number < ? AND operation_id <> ? "
+                    + "ORDER BY revision_number, created_at, operation_id LIMIT 1",
+                (result, row) ->
+                    new OperationVersion(
+                        result.getObject("operation_id", UUID.class),
+                        result.getObject("revision_series_id", UUID.class),
+                        result.getInt("revision_number")),
+                tupleAndTrailingParameters(
+                    operation,
+                    operation.revisionSeriesId(),
+                    operation.revisionNumber(),
+                    operation.operationId()))
+            .stream()
+            .findFirst();
+    if (olderPrepared.isPresent()) {
+      return new TargetTupleClaimResult(
+          TargetTupleClaimOutcome.BLOCKED_BY_OLDER,
+          Optional.of(olderPrepared.orElseThrow().operationId()));
+    }
+
+    int inserted =
+        jdbc.update(
+            "INSERT INTO analytics.dhis2_export_target_tuple_claim (partner_key, data_element_uid, "
+                + "period_code, org_unit_uid, category_option_combo_uid, attribute_option_combo_uid, "
+                + "operation_id, claimed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                + "ON CONFLICT DO NOTHING",
+            operation.partnerKey(),
+            tuple.dataElementUid(),
+            tuple.period(),
+            tuple.orgUnitUid(),
+            tuple.categoryOptionComboUid().orElse(null),
+            tuple.attributeOptionComboUid().orElse(null),
+            operation.operationId(),
+            Timestamp.from(claimedAt));
+    if (inserted == 1) {
+      return new TargetTupleClaimResult(TargetTupleClaimOutcome.ACQUIRED, Optional.empty());
+    }
+    UUID holder =
+        jdbc.queryForObject(
+            "SELECT operation_id FROM analytics.dhis2_export_target_tuple_claim WHERE "
+                + tuplePredicate(),
+            UUID.class,
+            tupleParameters(operation));
+    return new TargetTupleClaimResult(
+        holder.equals(operation.operationId())
+            ? TargetTupleClaimOutcome.SAME_OPERATION
+            : TargetTupleClaimOutcome.HELD_BY_OTHER,
+        Optional.of(holder));
+  }
+
+  @Override
+  public boolean hasTargetTupleClaim(UUID operationId) {
+    Boolean exists =
+        jdbc.queryForObject(
+            "SELECT EXISTS (SELECT 1 FROM analytics.dhis2_export_target_tuple_claim "
+                + "WHERE operation_id = ?)",
+            Boolean.class,
+            operationId);
+    return Boolean.TRUE.equals(exists);
+  }
+
+  @Override
+  public void recordReconciliation(Dhis2ExportReconciliation reconciliation) {
+    Objects.requireNonNull(reconciliation, "reconciliation");
+    jdbc.update(
+        "INSERT INTO analytics.dhis2_export_reconciliation (operation_id, resolution, "
+            + "evidence_reference, observed_value, audit_record_id, resolved_at) "
+            + "VALUES (?, ?, ?, ?, ?, ?)",
+        reconciliation.operationId(),
+        reconciliation.resolution().name(),
+        reconciliation.evidenceReference(),
+        reconciliation.observedValue().isPresent()
+            ? reconciliation.observedValue().getAsLong()
+            : null,
+        reconciliation.auditRecordId(),
+        Timestamp.from(reconciliation.resolvedAt()));
+  }
+
+  @Override
+  public Optional<Dhis2ExportReconciliation> findReconciliation(UUID operationId) {
+    return jdbc
+        .query(
+            "SELECT operation_id, resolution, evidence_reference, observed_value, audit_record_id, "
+                + "resolved_at FROM analytics.dhis2_export_reconciliation WHERE operation_id = ?",
+            (result, row) -> {
+              Long observedValue = (Long) result.getObject("observed_value");
+              return new Dhis2ExportReconciliation(
+                  result.getObject("operation_id", UUID.class),
+                  Dhis2ExportReconciliation.Resolution.valueOf(result.getString("resolution")),
+                  result.getObject("evidence_reference", UUID.class),
+                  observedValue == null
+                      ? java.util.OptionalLong.empty()
+                      : java.util.OptionalLong.of(observedValue),
+                  result.getObject("audit_record_id", UUID.class),
+                  result.getTimestamp("resolved_at").toInstant());
+            },
             operationId)
         .stream()
         .findFirst();
@@ -165,6 +308,11 @@ public class JdbcDhis2ExportOperationStore implements Dhis2ExportOperationStore 
       Instant changedAt,
       UUID auditRecordId) {
     Dhis2ExportOperation.Dhis2ImportCounts counts = importCounts.orElse(null);
+    if (state == Dhis2ExportState.ACKNOWLEDGED
+        || state == Dhis2ExportState.REJECTED
+        || state == Dhis2ExportState.WITHHELD) {
+      find(operationId).ifPresent(this::lockTargetTuple);
+    }
     int changed =
         jdbc.update(
             "UPDATE analytics.dhis2_export_operation SET operation_state = ?, result_class = ?, "
@@ -189,8 +337,54 @@ public class JdbcDhis2ExportOperationStore implements Dhis2ExportOperationStore 
     if (changed != 1) {
       throw new Dhis2ExportOperationConflictException();
     }
+    if (state == Dhis2ExportState.ACKNOWLEDGED
+        || state == Dhis2ExportState.REJECTED
+        || state == Dhis2ExportState.WITHHELD) {
+      jdbc.update(
+          "DELETE FROM analytics.dhis2_export_target_tuple_claim WHERE operation_id = ?",
+          operationId);
+    }
     return find(operationId).orElseThrow(Dhis2ExportOperationConflictException::new);
   }
+
+  private static String tuplePredicate() {
+    return "partner_key = ? AND data_element_uid = ? AND period_code = ? AND org_unit_uid = ? "
+        + "AND category_option_combo_uid IS NOT DISTINCT FROM ? "
+        + "AND attribute_option_combo_uid IS NOT DISTINCT FROM ?";
+  }
+
+  private void lockTargetTuple(Dhis2ExportOperation operation) {
+    jdbc.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended(?, 0))",
+        result -> {
+          while (result.next()) {
+            // Hold the exact-target ordering lock until the surrounding transaction commits.
+          }
+        },
+        operation.partnerKey() + "\n" + operation.targetTuple().stableKey());
+  }
+
+  private static Object[] tupleParameters(Dhis2ExportOperation operation) {
+    var tuple = operation.targetTuple();
+    return new Object[] {
+      operation.partnerKey(),
+      tuple.dataElementUid(),
+      tuple.period(),
+      tuple.orgUnitUid(),
+      tuple.categoryOptionComboUid().orElse(null),
+      tuple.attributeOptionComboUid().orElse(null)
+    };
+  }
+
+  private static Object[] tupleAndTrailingParameters(
+      Dhis2ExportOperation operation, Object... trailing) {
+    Object[] tuple = tupleParameters(operation);
+    Object[] parameters = Arrays.copyOf(tuple, tuple.length + trailing.length);
+    System.arraycopy(trailing, 0, parameters, tuple.length, trailing.length);
+    return parameters;
+  }
+
+  private record OperationVersion(UUID operationId, UUID revisionSeriesId, int revisionNumber) {}
 
   private static Dhis2ExportOperation fromRow(ResultSet result) throws SQLException {
     return new Dhis2ExportOperation(
