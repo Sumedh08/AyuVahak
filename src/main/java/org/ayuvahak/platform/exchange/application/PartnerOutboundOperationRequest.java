@@ -18,7 +18,8 @@ public record PartnerOutboundOperationRequest(
     List<String> pathSegments,
     byte[] body,
     String operationReference,
-    Optional<CorrelationId> correlationId) {
+    Optional<CorrelationId> correlationId,
+    Optional<Integer> expectedConfigurationVersion) {
 
   private static final Pattern PATH_SEGMENT = Pattern.compile("[A-Za-z0-9._~$-]{1,128}");
   private static final Pattern OPERATION_REFERENCE =
@@ -29,6 +30,11 @@ public record PartnerOutboundOperationRequest(
     Objects.requireNonNull(partnerKey, "partnerKey");
     Objects.requireNonNull(operation, "operation");
     Objects.requireNonNull(correlationId, "correlationId");
+    expectedConfigurationVersion =
+        Objects.requireNonNull(expectedConfigurationVersion, "expected configuration version");
+    if (expectedConfigurationVersion.filter(version -> version < 1).isPresent()) {
+      throw new IllegalArgumentException("expected configuration version must be positive");
+    }
     boolean transportOperation =
         operation.ownerContext() == OwnerContext.TRANSPORT
             && operation.direction() == Direction.OUTBOUND
@@ -71,7 +77,31 @@ public record PartnerOutboundOperationRequest(
       List<String> pathSegments,
       byte[] body,
       String operationReference) {
-    this(partnerKey, operation, pathSegments, body, operationReference, Optional.empty());
+    this(
+        partnerKey,
+        operation,
+        pathSegments,
+        body,
+        operationReference,
+        Optional.empty(),
+        Optional.empty());
+  }
+
+  public PartnerOutboundOperationRequest(
+      PartnerKey partnerKey,
+      AllowedOperation operation,
+      List<String> pathSegments,
+      byte[] body,
+      String operationReference,
+      Optional<CorrelationId> correlationId) {
+    this(
+        partnerKey,
+        operation,
+        pathSegments,
+        body,
+        operationReference,
+        correlationId,
+        Optional.empty());
   }
 
   @Override

@@ -210,6 +210,7 @@ class Dhis2AggregateExportPostgresIT {
 
     assertThat(operation.state()).isEqualTo(Dhis2ExportState.ACKNOWLEDGED);
     assertThat(operation.resultClass()).isEqualTo("IMPORTED_ACKNOWLEDGED");
+    assertThat(operation.partnerConfigurationVersion()).contains(1);
     assertThat(operation.importCounts()).isPresent();
     assertThat(exchange.requestCount()).isEqualTo(1);
     assertThat(
@@ -218,6 +219,7 @@ class Dhis2AggregateExportPostgresIT {
         .isZero();
     PartnerOutboundOperationRequest outbound = exchange.request().orElseThrow();
     assertThat(outbound.operation().isNamedAnalyticsDhis2DataValueSet()).isTrue();
+    assertThat(outbound.expectedConfigurationVersion()).contains(1);
     assertThat(outbound.pathSegments()).containsExactly("dataValueSets");
     String body = new String(outbound.body(), StandardCharsets.UTF_8);
     assertThat(body)
@@ -412,6 +414,30 @@ class Dhis2AggregateExportPostgresIT {
                 exporter.export(
                     serviceContext(), new Dhis2ExportRequest(operationId, changed.snapshotId())))
         .isInstanceOf(Dhis2ExportOperationConflictException.class);
+    assertThat(exchange.requestCount()).isEqualTo(1);
+  }
+
+  @Test
+  void completedOperationReplaysAfterPartnerRevocationButNewExportIsBlocked() {
+    AggregateSnapshot snapshot = prepareSnapshotAndMapping();
+    exchange.respond(200, "application/json", imported());
+    UUID operationId = UUID.randomUUID();
+    Dhis2ExportOperation completed =
+        exporter.export(
+            serviceContext(), new Dhis2ExportRequest(operationId, snapshot.snapshotId()));
+    assertThat(completed.state()).isEqualTo(Dhis2ExportState.ACKNOWLEDGED);
+
+    exchange.deactivateProfile();
+    Dhis2ExportOperation replay =
+        exporter.export(
+            serviceContext(), new Dhis2ExportRequest(operationId, snapshot.snapshotId()));
+    assertThat(replay.state()).isEqualTo(Dhis2ExportState.ACKNOWLEDGED);
+    assertThat(exchange.requestCount()).isEqualTo(1);
+
+    assertThatThrownBy(() -> export(snapshot))
+        .isInstanceOf(Dhis2ExportException.class)
+        .extracting(failure -> ((Dhis2ExportException) failure).reason())
+        .isEqualTo(Dhis2ExportException.Reason.TARGET_PROFILE_UNAVAILABLE);
     assertThat(exchange.requestCount()).isEqualTo(1);
   }
 
@@ -1068,6 +1094,18 @@ class Dhis2AggregateExportPostgresIT {
     private final AtomicReference<CountDownLatch> responseEntered = new AtomicReference<>();
     private final AtomicReference<CountDownLatch> responseReleased = new AtomicReference<>();
     private final AtomicBoolean blockResponse = new AtomicBoolean();
+    private final AtomicBoolean profileActive = new AtomicBoolean(true);
+
+    @Override
+    public int activeConfigurationVersion(
+        org.ayuvahak.platform.exchange.domain.PartnerKey partnerKey,
+        org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.AllowedOperation
+            operation) {
+      if (!profileActive.get()) {
+        throw new PartnerTransportException(PartnerTransportFailure.PROFILE_NOT_ACTIVE);
+      }
+      return 1;
+    }
 
     @Override
     public PartnerOutboundOperationResponse execute(PartnerOutboundOperationRequest request) {
@@ -1126,6 +1164,10 @@ class Dhis2AggregateExportPostgresIT {
       return calls.get();
     }
 
+    void deactivateProfile() {
+      profileActive.set(false);
+    }
+
     Optional<PartnerOutboundOperationRequest> request() {
       return Optional.ofNullable(lastRequest.get());
     }
@@ -1137,6 +1179,7 @@ class Dhis2AggregateExportPostgresIT {
       response.set(null);
       responseEntered.set(null);
       blockResponse.set(false);
+      profileActive.set(true);
       CountDownLatch released = responseReleased.getAndSet(null);
       if (released != null) {
         released.countDown();

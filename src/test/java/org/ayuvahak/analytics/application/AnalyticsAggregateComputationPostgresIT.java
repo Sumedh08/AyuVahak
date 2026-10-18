@@ -8,16 +8,17 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.UUID;
+import org.ayuvahak.analytics.adapter.persistence.JdbcAnalyticsComputationOperationStore;
 import org.ayuvahak.analytics.adapter.persistence.JdbcAnalyticsStore;
 import org.ayuvahak.analytics.domain.AggregateCompleteness;
 import org.ayuvahak.analytics.domain.AggregateSnapshot;
 import org.ayuvahak.analytics.domain.AnalyticsAuthorities;
 import org.ayuvahak.analytics.domain.IndicatorDefinitionVersion;
+import org.ayuvahak.analytics.domain.ReportingPeriod;
 import org.ayuvahak.analytics.domain.SourceMeasure;
 import org.ayuvahak.platform.authorization.application.AuthorizationGrantLookup;
 import org.ayuvahak.platform.authorization.application.AuthorizationService;
@@ -71,6 +72,7 @@ class AnalyticsAggregateComputationPostgresIT {
   private static JdbcTemplate jdbc;
   private static DataSourceTransactionManager transactionManager;
   private static AnalyticsStore store;
+  private static AnalyticsComputationOperationStore operations;
   private static ExecutionContextFactory contexts;
 
   @BeforeAll
@@ -83,6 +85,7 @@ class AnalyticsAggregateComputationPostgresIT {
     jdbc = new JdbcTemplate(dataSource);
     transactionManager = new DataSourceTransactionManager(dataSource);
     store = new JdbcAnalyticsStore(jdbc, transactionManager);
+    operations = new JdbcAnalyticsComputationOperationStore(jdbc);
     contexts = new ExecutionContextFactory((actor, scope) -> actor != null && scope != null);
   }
 
@@ -93,6 +96,7 @@ class AnalyticsAggregateComputationPostgresIT {
 
   @BeforeEach
   void clearSyntheticAnalyticsRows() {
+    jdbc.update("DELETE FROM analytics.computation_operation");
     jdbc.update("DELETE FROM analytics.aggregate_snapshot_input");
     jdbc.update("DELETE FROM analytics.aggregate_snapshot");
     jdbc.update("DELETE FROM analytics.indicator_definition_measure");
@@ -110,7 +114,15 @@ class AnalyticsAggregateComputationPostgresIT {
     var service = service(reader, true);
     InternalId computationId = InternalId.generate();
 
-    AggregateSnapshot result = service.compute(context(), request(computationId));
+    var accepted = service.enqueue(context(), request(computationId));
+    assertThat(accepted.state()).isEqualTo(AnalyticsComputationOperation.State.PENDING);
+    assertThat(reader.readCount()).isZero();
+
+    AnalyticsComputationOperation completed = service.processNext().orElseThrow();
+    assertThat(completed.state()).isEqualTo(AnalyticsComputationOperation.State.COMPLETED);
+    AggregateSnapshot result =
+        store.findSnapshotById(completed.snapshotId().orElseThrow()).orElseThrow();
+    assertThat(reader.readCount()).isEqualTo(2);
 
     assertThat(result.completeness()).isEqualTo(AggregateCompleteness.COMPLETE);
     assertThat(result.value()).hasValue(6L);
@@ -124,8 +136,11 @@ class AnalyticsAggregateComputationPostgresIT {
             Optional.of(SOURCE_CUTOFF), Optional.of(Instant.parse("2026-03-31T11:00:00Z")));
 
     AnalyticsStore restartedStore = new JdbcAnalyticsStore(jdbc, transactionManager);
+    AnalyticsComputationOperation replayOperation =
+        service(reader, true, restartedStore).enqueue(context(), request(computationId));
+    assertThat(replayOperation.state()).isEqualTo(AnalyticsComputationOperation.State.COMPLETED);
     AggregateSnapshot replay =
-        service(reader, true, restartedStore).compute(context(), request(computationId));
+        restartedStore.findSnapshotById(replayOperation.snapshotId().orElseThrow()).orElseThrow();
 
     assertThat(replay.snapshotId()).isEqualTo(result.snapshotId());
     assertThat(replay.inputFingerprint()).isEqualTo(result.inputFingerprint());
@@ -137,12 +152,110 @@ class AnalyticsAggregateComputationPostgresIT {
   }
 
   @Test
+  void recoversSnapshotCommittedBeforeWorkerRestartWithoutRepeatingOwnerReads() {
+    IndicatorDefinitionVersion definition = definition(1, List.of(referralSubmitted()));
+    store.publishDefinition(definition);
+    InternalId requestId = InternalId.generate();
+    var reader = new SyntheticOwnerReader(List.of(input(referralSubmitted(), 4)));
+    var service = service(reader, true);
+    service.enqueue(context(), request(requestId));
+    AnalyticsComputationOperation claimed =
+        operations.claimNext(CLOCK.instant(), CLOCK.instant().plusSeconds(30)).orElseThrow();
+
+    ReportingPeriod period =
+        ReportingPeriod.resolve(
+            LocalDate.parse("2026-03-29"),
+            LocalDate.parse("2026-03-30"),
+            ZoneId.of("Europe/Berlin"));
+    AggregateSnapshot committedBeforeCrash =
+        AggregateSnapshot.create(
+            requestId,
+            definition,
+            ORGANIZATION,
+            period,
+            AggregateCompleteness.COMPLETE,
+            OptionalLong.of(4),
+            List.of(input(referralSubmitted(), 4).toAggregateInput()),
+            CLOCK.instant());
+    store.saveOrReplay(committedBeforeCrash);
+    jdbc.update(
+        "UPDATE analytics.computation_operation SET lease_until = ? WHERE request_id = ?",
+        java.sql.Timestamp.from(CLOCK.instant().minusSeconds(1)),
+        requestId.value());
+
+    assertThat(service.processNext()).isEmpty();
+    AnalyticsComputationOperation recovered = operations.find(requestId).orElseThrow();
+    assertThat(recovered.state()).isEqualTo(AnalyticsComputationOperation.State.COMPLETED);
+    assertThat(recovered.snapshotId()).contains(committedBeforeCrash.snapshotId());
+    assertThat(claimed.attemptCount()).isEqualTo(1);
+    assertThat(reader.readCount()).isZero();
+  }
+
+  @Test
+  void transientOwnerFailureIsDurablyRetriedAndCompletesAfterBackoff() {
+    IndicatorDefinitionVersion definition = definition(1, List.of(referralSubmitted()));
+    store.publishDefinition(definition);
+    var clock = new MutableClock(CLOCK.instant());
+    var reader = new SyntheticOwnerReader(List.of(input(referralSubmitted(), 4)), 1);
+    var service = service(reader, true, store, clock);
+    InternalId requestId = InternalId.generate();
+    service.enqueue(context(), request(requestId));
+
+    AnalyticsComputationOperation firstAttempt = service.processNext().orElseThrow();
+    assertThat(firstAttempt.state()).isEqualTo(AnalyticsComputationOperation.State.RETRY_PENDING);
+    assertThat(firstAttempt.attemptCount()).isEqualTo(1);
+    assertThat(firstAttempt.snapshotId()).isEmpty();
+    assertThat(reader.readCount()).isEqualTo(1);
+
+    clock.advanceSeconds(3);
+    AnalyticsComputationOperation recovered =
+        service(reader, true, store, clock).processNext().orElseThrow();
+    assertThat(recovered.state()).isEqualTo(AnalyticsComputationOperation.State.COMPLETED);
+    assertThat(recovered.attemptCount()).isEqualTo(2);
+    assertThat(reader.readCount()).isEqualTo(2);
+    assertThat(store.findSnapshotById(recovered.snapshotId().orElseThrow())).isPresent();
+  }
+
+  @Test
+  void staleWorkerCannotCompleteOrRetryAfterAnotherWorkerReclaimsExpiredLease() {
+    IndicatorDefinitionVersion definition = definition(1, List.of(referralSubmitted()));
+    store.publishDefinition(definition);
+    InternalId requestId = InternalId.generate();
+    service(new SyntheticOwnerReader(List.of(input(referralSubmitted(), 4))), true)
+        .enqueue(context(), request(requestId));
+    AnalyticsComputationOperation firstClaim =
+        operations.claimNext(CLOCK.instant(), CLOCK.instant().plusSeconds(1)).orElseThrow();
+    AnalyticsComputationOperation reclaimed =
+        operations
+            .claimNext(CLOCK.instant().plusSeconds(2), CLOCK.instant().plusSeconds(30))
+            .orElseThrow();
+    assertThat(reclaimed.attemptCount()).isEqualTo(firstClaim.attemptCount() + 1);
+
+    assertThatThrownBy(
+            () ->
+                operations.complete(
+                    requestId, firstClaim.attemptCount(), UUID.randomUUID(), CLOCK.instant()))
+        .isInstanceOf(AnalyticsComputationOperationConflictException.class);
+    assertThatThrownBy(
+            () ->
+                operations.retry(
+                    requestId,
+                    firstClaim.attemptCount(),
+                    "COMPUTATION_UNAVAILABLE",
+                    8,
+                    CLOCK.instant().plusSeconds(5),
+                    CLOCK.instant()))
+        .isInstanceOf(AnalyticsComputationOperationConflictException.class);
+    assertThat(operations.find(requestId).orElseThrow().state())
+        .isEqualTo(AnalyticsComputationOperation.State.PROCESSING);
+  }
+
+  @Test
   void unavailableOwnerInputIsMissingSourceRatherThanNumericZero() {
     store.publishDefinition(definition(1, List.of(referralSubmitted())));
     var reader = new SyntheticOwnerReader(List.of(missingInput(referralSubmitted())));
 
-    AggregateSnapshot result =
-        service(reader, true).compute(context(), request(InternalId.generate()));
+    AggregateSnapshot result = compute(service(reader, true), request(InternalId.generate()));
 
     assertThat(result.completeness()).isEqualTo(AggregateCompleteness.MISSING_SOURCE);
     assertThat(result.value()).isEmpty();
@@ -154,8 +267,9 @@ class AnalyticsAggregateComputationPostgresIT {
     IndicatorDefinitionVersion zeroDefinition = definition(1, List.of(referralSubmitted()));
     store.publishDefinition(zeroDefinition);
     AggregateSnapshot zero =
-        service(new SyntheticOwnerReader(List.of(input(referralSubmitted(), 0))), true)
-            .compute(context(), request(InternalId.generate()));
+        compute(
+            service(new SyntheticOwnerReader(List.of(input(referralSubmitted(), 0))), true),
+            request(InternalId.generate()));
 
     assertThat(zero.completeness()).isEqualTo(AggregateCompleteness.COMPLETE);
     assertThat(zero.value()).hasValue(0L);
@@ -163,7 +277,7 @@ class AnalyticsAggregateComputationPostgresIT {
     assertThatThrownBy(
             () ->
                 service(new SyntheticOwnerReader(List.of(input(referralSubmitted(), 9))), false)
-                    .compute(context(), request(InternalId.generate())))
+                    .enqueue(context(), request(InternalId.generate())))
         .isInstanceOf(AnalyticsComputationException.class)
         .hasMessageContaining("not authorized");
     assertThat(
@@ -191,12 +305,28 @@ class AnalyticsAggregateComputationPostgresIT {
 
   private static AnalyticsAggregateComputationService service(
       OwnerReportingSnapshotReader reader, boolean allowed, AnalyticsStore analyticsStore) {
+    return service(reader, allowed, analyticsStore, CLOCK);
+  }
+
+  private static AnalyticsAggregateComputationService service(
+      OwnerReportingSnapshotReader reader,
+      boolean allowed,
+      AnalyticsStore analyticsStore,
+      Clock clock) {
     AuthorizationGrantLookup grants = (actor, authority, scope) -> allowed;
     AuthorizationService authorization =
         new AuthorizationService(
             grants,
             new FunctionalAuthorityCatalog(List.of(AnalyticsAuthorities.aggregateComputation())));
-    return new AnalyticsAggregateComputationService(analyticsStore, reader, authorization, CLOCK);
+    return new AnalyticsAggregateComputationService(
+        analyticsStore, operations, reader, authorization, contexts, clock);
+  }
+
+  private static AggregateSnapshot compute(
+      AnalyticsAggregateComputationService service, AnalyticsComputationRequest request) {
+    service.enqueue(context(), request);
+    var completed = service.processNext().orElseThrow();
+    return store.findSnapshotById(completed.snapshotId().orElseThrow()).orElseThrow();
   }
 
   private static ExecutionContext context() {
@@ -275,19 +405,63 @@ class AnalyticsAggregateComputationPostgresIT {
         Optional.empty());
   }
 
-  private record SyntheticOwnerReader(List<OwnerMeasureSnapshot> results)
-      implements OwnerReportingSnapshotReader {
-    private SyntheticOwnerReader {
-      results = new ArrayList<>(results);
+  private static final class SyntheticOwnerReader implements OwnerReportingSnapshotReader {
+    private final List<OwnerMeasureSnapshot> results;
+    private final java.util.concurrent.atomic.AtomicInteger reads =
+        new java.util.concurrent.atomic.AtomicInteger();
+    private final java.util.concurrent.atomic.AtomicInteger failuresRemaining;
+
+    private SyntheticOwnerReader(List<OwnerMeasureSnapshot> results) {
+      this(results, 0);
+    }
+
+    private SyntheticOwnerReader(List<OwnerMeasureSnapshot> results, int failures) {
+      this.results = List.copyOf(results);
+      this.failuresRemaining = new java.util.concurrent.atomic.AtomicInteger(failures);
+    }
+
+    private int readCount() {
+      return reads.get();
     }
 
     @Override
     public OwnerMeasureSnapshot snapshot(
         ExecutionContext context, SourceMeasure measure, OwnerReportingRequest request) {
+      reads.incrementAndGet();
+      if (failuresRemaining.getAndUpdate(value -> Math.max(0, value - 1)) > 0) {
+        throw new IllegalStateException("synthetic local owner source unavailable");
+      }
       return results.stream()
           .filter(input -> input.measure().equals(measure))
           .findFirst()
           .orElseThrow(() -> new AssertionError("unexpected owner measure " + measure.key()));
+    }
+  }
+
+  private static final class MutableClock extends Clock {
+    private Instant current;
+
+    private MutableClock(Instant current) {
+      this.current = current;
+    }
+
+    @Override
+    public ZoneId getZone() {
+      return ZoneOffset.UTC;
+    }
+
+    @Override
+    public Clock withZone(ZoneId zone) {
+      return this;
+    }
+
+    @Override
+    public Instant instant() {
+      return current;
+    }
+
+    private void advanceSeconds(long seconds) {
+      current = current.plusSeconds(seconds);
     }
   }
 }

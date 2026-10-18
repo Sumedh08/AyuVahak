@@ -1,8 +1,15 @@
 package org.ayuvahak.analytics.application;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.UUID;
 import org.ayuvahak.analytics.domain.AggregateCompleteness;
@@ -15,10 +22,13 @@ import org.ayuvahak.analytics.domain.ReportingPeriod;
 import org.ayuvahak.platform.authorization.application.AuthorizationService;
 import org.ayuvahak.platform.authorization.domain.AuthorizationDecision;
 import org.ayuvahak.platform.core.ActorKind;
+import org.ayuvahak.platform.core.ActorReference;
 import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.SourceKind;
 import org.ayuvahak.platform.executioncontext.ExecutionContext;
+import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
 import org.ayuvahak.platform.executioncontext.ExecutionScope;
+import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
@@ -29,31 +39,112 @@ public final class AnalyticsAggregateComputationService {
   private static final String DIRECTORY_ISSUER = "urn:ayuvahak:directory";
 
   private final AnalyticsStore store;
+  private final AnalyticsComputationOperationStore operations;
   private final OwnerReportingSnapshotReader ownerSnapshots;
   private final AuthorizationService authorization;
+  private final ExecutionContextFactory contexts;
   private final Clock clock;
 
   public AnalyticsAggregateComputationService(
       AnalyticsStore store,
+      AnalyticsComputationOperationStore operations,
       OwnerReportingSnapshotReader ownerSnapshots,
       AuthorizationService authorization,
+      ExecutionContextFactory contexts,
       @Qualifier("auditClock") Clock clock) {
     this.store = Objects.requireNonNull(store, "Analytics store");
+    this.operations = Objects.requireNonNull(operations, "computation operation store");
     this.ownerSnapshots = Objects.requireNonNull(ownerSnapshots, "owner reporting reader");
     this.authorization = Objects.requireNonNull(authorization, "authorization service");
+    this.contexts = Objects.requireNonNull(contexts, "execution context factory");
     this.clock = Objects.requireNonNull(clock, "clock");
   }
 
-  public AggregateSnapshot compute(ExecutionContext context, AnalyticsComputationRequest request) {
+  /** Durably accepts an authorized computation request; owner reads occur on the polling worker. */
+  public AnalyticsComputationOperation enqueue(
+      ExecutionContext context, AnalyticsComputationRequest request) {
     Objects.requireNonNull(request, "computation request");
     ExternalReference organization = authorizedOrganization(context);
-    AuthorizationDecision decision =
-        authorization.evaluate(context, AnalyticsAuthorities.aggregateComputation().code());
-    if (!decision.isAllowed()) {
-      throw new AnalyticsComputationException(
-          AnalyticsComputationException.Reason.NOT_AUTHORIZED,
-          "Analytics computation is not authorized.");
+    authorizeComputation(context);
+    Instant now = clock.instant();
+    if (request.referralSourceCutoff().isAfter(now)) {
+      throw new IllegalArgumentException("source cutoff cannot be in the future");
     }
+    AnalyticsComputationOperation proposed =
+        new AnalyticsComputationOperation(
+            request.computationRequestId(),
+            fingerprint(request, organization, context.actor()),
+            request,
+            organization,
+            context.actor(),
+            context.correlationId(),
+            AnalyticsComputationOperation.State.PENDING,
+            0,
+            now,
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            now,
+            now);
+    return operations.createOrReplay(proposed);
+  }
+
+  /**
+   * Claims one durable request, rechecks its stored service grant, and records a recoverable
+   * result.
+   */
+  public Optional<AnalyticsComputationOperation> processNext() {
+    Instant now = clock.instant();
+    Optional<AnalyticsComputationOperation> claimed =
+        operations.claimNext(now, now.plus(Duration.ofMinutes(2)));
+    if (claimed.isEmpty()) {
+      return Optional.empty();
+    }
+    AnalyticsComputationOperation operation = claimed.orElseThrow();
+    try {
+      Optional<AggregateSnapshot> prior = store.findSnapshot(operation.requestId());
+      if (prior.isPresent()) {
+        return Optional.of(
+            operations.complete(
+                operation.requestId(),
+                operation.attemptCount(),
+                prior.orElseThrow().snapshotId(),
+                clock.instant()));
+      }
+      ExecutionContext workerContext =
+          contexts.forBackgroundWork(
+              operation.requester(),
+              RequestedExecutionScope.organization(operation.organization()),
+              operation.correlationId(),
+              Optional.empty());
+      AggregateSnapshot snapshot = computeSnapshot(workerContext, operation.request());
+      return Optional.of(
+          operations.complete(
+              operation.requestId(),
+              operation.attemptCount(),
+              snapshot.snapshotId(),
+              clock.instant()));
+    } catch (RuntimeException failure) {
+      boolean permanent = failure instanceof AnalyticsComputationException;
+      String failureClass = failureClass(failure);
+      int maxAttempts = 8;
+      long delaySeconds = Math.min(300, 1L << Math.min(operation.attemptCount(), 8));
+      return Optional.of(
+          operations.retry(
+              operation.requestId(),
+              operation.attemptCount(),
+              failureClass,
+              permanent ? 0 : maxAttempts,
+              clock.instant().plusSeconds(delaySeconds),
+              clock.instant()));
+    }
+  }
+
+  private AggregateSnapshot computeSnapshot(
+      ExecutionContext context, AnalyticsComputationRequest request) {
+    Objects.requireNonNull(request, "computation request");
+    ExternalReference organization = authorizedOrganization(context);
+    authorizeComputation(context);
     if (request.referralSourceCutoff().isAfter(clock.instant())) {
       throw new IllegalArgumentException("source cutoff cannot be in the future");
     }
@@ -103,6 +194,50 @@ public final class AnalyticsAggregateComputationService {
             value,
             inputs,
             clock.instant().truncatedTo(java.time.temporal.ChronoUnit.MICROS)));
+  }
+
+  private void authorizeComputation(ExecutionContext context) {
+    AuthorizationDecision decision =
+        authorization.evaluate(context, AnalyticsAuthorities.aggregateComputation().code());
+    if (!decision.isAllowed()) {
+      throw new AnalyticsComputationException(
+          AnalyticsComputationException.Reason.NOT_AUTHORIZED,
+          "Analytics computation is not authorized.");
+    }
+  }
+
+  private static String fingerprint(
+      AnalyticsComputationRequest request,
+      ExternalReference organization,
+      ActorReference requester) {
+    String canonical =
+        String.join(
+            "\n",
+            request.indicatorKey(),
+            Integer.toString(request.indicatorVersion()),
+            request.startInclusive().toString(),
+            request.endExclusive().toString(),
+            request.referralSourceCutoff().toString(),
+            organization.issuer().value(),
+            organization.resourceType(),
+            organization.value(),
+            requester.identity().issuer().value(),
+            requester.identity().value());
+    try {
+      return HexFormat.of()
+          .formatHex(
+              MessageDigest.getInstance("SHA-256")
+                  .digest(canonical.getBytes(StandardCharsets.UTF_8)));
+    } catch (NoSuchAlgorithmException impossible) {
+      throw new IllegalStateException("SHA-256 is required by the Java runtime", impossible);
+    }
+  }
+
+  private static String failureClass(RuntimeException failure) {
+    if (failure instanceof AnalyticsComputationException computationFailure) {
+      return "COMPUTATION_" + computationFailure.reason().name();
+    }
+    return "COMPUTATION_UNAVAILABLE";
   }
 
   private ExternalReference authorizedOrganization(ExecutionContext context) {

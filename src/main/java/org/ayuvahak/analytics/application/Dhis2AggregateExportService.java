@@ -6,25 +6,20 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.HexFormat;
-import java.util.LinkedHashMap;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import org.ayuvahak.analytics.domain.AggregateCompleteness;
-import org.ayuvahak.analytics.domain.AggregateInput;
+import org.ayuvahak.analytics.domain.AggregateDisclosureEquation;
 import org.ayuvahak.analytics.domain.AggregateSnapshot;
 import org.ayuvahak.analytics.domain.AggregateSnapshotRevision;
-import org.ayuvahak.analytics.domain.AggregationFormula;
 import org.ayuvahak.analytics.domain.AnalyticsAuthorities;
 import org.ayuvahak.analytics.domain.Dhis2DataValueTuple;
 import org.ayuvahak.analytics.domain.Dhis2ExportOperation;
 import org.ayuvahak.analytics.domain.Dhis2ExportState;
 import org.ayuvahak.analytics.domain.Dhis2MappingVersion;
 import org.ayuvahak.analytics.domain.DisclosureCandidate;
-import org.ayuvahak.analytics.domain.DisclosureOutput;
 import org.ayuvahak.analytics.domain.DisclosureReservation;
 import org.ayuvahak.analytics.domain.DisclosureReservationState;
 import org.ayuvahak.analytics.domain.IndicatorDefinitionVersion;
@@ -45,6 +40,7 @@ import org.ayuvahak.platform.exchange.application.PartnerOutboundOperationReques
 import org.ayuvahak.platform.exchange.application.PartnerOutboundOperationResponse;
 import org.ayuvahak.platform.exchange.application.PartnerTransportException;
 import org.ayuvahak.platform.exchange.application.PartnerTransportFailure;
+import org.ayuvahak.platform.exchange.application.PartnerTrustLookupUnavailableException;
 import org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.AllowedOperation;
 import org.ayuvahak.platform.executioncontext.AuthenticationMechanism;
 import org.ayuvahak.platform.executioncontext.ExecutionContext;
@@ -140,32 +136,52 @@ public final class Dhis2AggregateExportService {
       }
       throw new Dhis2ExportException(Dhis2ExportException.Reason.MAPPING_NOT_EFFECTIVE);
     }
-    SourceCellEquation cellEquation = sourceCellEquation(snapshot);
+    AggregateDisclosureEquation cellEquation = sourceCellEquation(snapshot);
 
     String fingerprint = operationFingerprint(snapshot, current, mapping, tuple);
-    Dhis2ExportOperation proposed =
-        new Dhis2ExportOperation(
-            request.operationId(),
-            fingerprint,
-            snapshot.snapshotId(),
-            current.seriesId(),
-            current.revisionNumber(),
-            mapping.mappingKey(),
-            mapping.version(),
-            mapping.partnerKey().value(),
-            Optional.empty(),
-            tuple,
-            mapping.dataSetUid(),
-            Optional.empty(),
-            Dhis2ExportState.PREPARED,
-            "PREPARED",
-            0,
-            Optional.empty(),
-            Optional.empty(),
-            now,
-            now);
-
-    Dhis2ExportOperation operation = createOrReplay(context, proposed);
+    Optional<Dhis2ExportOperation> existing = operations.find(request.operationId());
+    Dhis2ExportOperation operation;
+    if (existing.isPresent()) {
+      operation = existing.orElseThrow();
+      if (!operation.fingerprint().equals(fingerprint)) {
+        throw new Dhis2ExportOperationConflictException();
+      }
+      if (operation.state() == Dhis2ExportState.PREPARED
+          && !operation
+              .partnerConfigurationVersion()
+              .equals(Optional.of(activePartnerConfigurationVersion(mapping)))) {
+        throw new Dhis2ExportOperationConflictException();
+      }
+    } else {
+      int partnerConfigurationVersion = activePartnerConfigurationVersion(mapping);
+      Dhis2ExportOperation proposed =
+          new Dhis2ExportOperation(
+              request.operationId(),
+              fingerprint,
+              snapshot.snapshotId(),
+              current.seriesId(),
+              current.revisionNumber(),
+              mapping.mappingKey(),
+              mapping.version(),
+              mapping.partnerKey().value(),
+              Optional.of(partnerConfigurationVersion),
+              tuple,
+              mapping.dataSetUid(),
+              Optional.empty(),
+              Dhis2ExportState.PREPARED,
+              "PREPARED",
+              0,
+              Optional.empty(),
+              Optional.empty(),
+              now,
+              now);
+      operation = createOrReplay(context, proposed);
+      if (!operation
+          .partnerConfigurationVersion()
+          .equals(Optional.of(partnerConfigurationVersion))) {
+        throw new Dhis2ExportOperationConflictException();
+      }
+    }
     if (operation.state() == Dhis2ExportState.SENDING) {
       if (activeAttempts.contains(operation.operationId())) {
         return operation;
@@ -201,7 +217,9 @@ public final class Dhis2AggregateExportService {
                     DHIS2_OPERATION,
                     java.util.List.of("dataValueSets"),
                     body,
-                    "dhis2-" + request.operationId()));
+                    "dhis2-" + request.operationId(),
+                    Optional.of(context.correlationId()),
+                    Optional.of(operation.partnerConfigurationVersion().orElseThrow())));
         summary = summaryParser.parse(response.status(), response.contentType(), response.body());
       } catch (Dhis2ImportResponseException malformed) {
         return completePotentiallyDisclosed(
@@ -244,12 +262,21 @@ public final class Dhis2AggregateExportService {
     }
   }
 
+  private int activePartnerConfigurationVersion(Dhis2MappingVersion mapping) {
+    try {
+      return exchange.activeConfigurationVersion(mapping.partnerKey(), DHIS2_OPERATION);
+    } catch (PartnerTransportException | PartnerTrustLookupUnavailableException unavailable) {
+      throw new Dhis2ExportException(
+          Dhis2ExportException.Reason.TARGET_PROFILE_UNAVAILABLE, unavailable);
+    }
+  }
+
   private StartResult claimReserveAndStart(
       ExecutionContext context,
       Dhis2MappingVersion mapping,
       Dhis2ExportOperation operation,
       AggregateSnapshot snapshot,
-      SourceCellEquation cellEquation) {
+      AggregateDisclosureEquation cellEquation) {
     try {
       return transactions.execute(
           status -> {
@@ -395,7 +422,7 @@ public final class Dhis2AggregateExportService {
       Dhis2MappingVersion mapping,
       Dhis2ExportOperation operation,
       AggregateSnapshot snapshot,
-      SourceCellEquation cellEquation) {
+      AggregateDisclosureEquation cellEquation) {
     try {
       return transactions.execute(
           status -> {
@@ -424,78 +451,27 @@ public final class Dhis2AggregateExportService {
   private DisclosureCandidate disclosureCandidate(
       Dhis2MappingVersion mapping,
       Dhis2ExportOperation operation,
-      SourceCellEquation cellEquation,
+      AggregateDisclosureEquation cellEquation,
       int policyVersion) {
     return new DisclosureCandidate(
         mapping.disclosurePolicyKey(),
         policyVersion,
         operation.operationId(),
         cellEquation.cellValues(),
-        java.util.List.of(
-            new DisclosureOutput(
-                mapping.disclosureOutputKey(), cellEquation.total(), cellEquation.totalTerms())));
+        java.util.List.of(cellEquation.output(mapping.disclosureOutputKey())));
   }
 
-  private SourceCellEquation sourceCellEquation(AggregateSnapshot snapshot) {
+  private AggregateDisclosureEquation sourceCellEquation(AggregateSnapshot snapshot) {
     IndicatorDefinitionVersion definition =
         snapshots
             .findDefinition(snapshot.indicatorKey(), snapshot.indicatorVersion())
             .orElseThrow(
                 () -> new Dhis2ExportException(Dhis2ExportException.Reason.SNAPSHOT_NOT_CURRENT));
-    if (definition.formula() != AggregationFormula.SUM
-        || definition.sourceMeasures().size() != snapshot.inputs().size()
-        || !definition
-            .sourceMeasures()
-            .equals(snapshot.inputs().stream().map(AggregateInput::measure).toList())) {
-      throw new Dhis2ExportException(Dhis2ExportException.Reason.DISCLOSURE_UNAVAILABLE);
-    }
-
-    Map<String, Long> cellValues = new LinkedHashMap<>();
-    Map<String, Long> totalTerms = new LinkedHashMap<>();
-    long computedTotal = 0;
     try {
-      for (AggregateInput input : snapshot.inputs()) {
-        if (input.completeness() != AggregateCompleteness.COMPLETE || input.value().isEmpty()) {
-          throw new Dhis2ExportException(Dhis2ExportException.Reason.INCOMPLETE_SNAPSHOT);
-        }
-        String cellKey = sourceCellKey(input, snapshot);
-        long value = input.value().orElseThrow();
-        if (cellValues.putIfAbsent(cellKey, value) != null) {
-          throw new Dhis2ExportException(Dhis2ExportException.Reason.DISCLOSURE_UNAVAILABLE);
-        }
-        totalTerms.put(cellKey, 1L);
-        computedTotal = Math.addExact(computedTotal, value);
-      }
-    } catch (ArithmeticException overflow) {
-      throw new Dhis2ExportException(Dhis2ExportException.Reason.DISCLOSURE_UNAVAILABLE, overflow);
-    }
-    long result = snapshot.value().orElseThrow();
-    if (computedTotal != result || cellValues.isEmpty()) {
-      throw new Dhis2ExportException(Dhis2ExportException.Reason.DISCLOSURE_UNAVAILABLE);
-    }
-    return new SourceCellEquation(Map.copyOf(cellValues), Map.copyOf(totalTerms), result);
-  }
-
-  private static String sourceCellKey(AggregateInput input, AggregateSnapshot snapshot) {
-    String canonical =
-        String.join(
-            "\n",
-            "ANALYTICS_SOURCE_CELL_V1",
-            input.measure().stableKey(),
-            snapshot.organization().issuer().value(),
-            snapshot.organization().resourceType(),
-            snapshot.organization().value(),
-            snapshot.period().startInclusiveUtc().toString(),
-            snapshot.period().endExclusiveUtc().toString());
-    try {
-      String digest =
-          HexFormat.of()
-              .formatHex(
-                  MessageDigest.getInstance("SHA-256")
-                      .digest(canonical.getBytes(StandardCharsets.UTF_8)));
-      return "SOURCE_" + digest.substring(0, 56).toUpperCase(java.util.Locale.ROOT);
-    } catch (NoSuchAlgorithmException impossible) {
-      throw new IllegalStateException("SHA-256 is required by the Java runtime", impossible);
+      return AggregateDisclosureEquation.from(snapshot, definition);
+    } catch (IllegalArgumentException | ArithmeticException invalidEquation) {
+      throw new Dhis2ExportException(
+          Dhis2ExportException.Reason.DISCLOSURE_UNAVAILABLE, invalidEquation);
     }
   }
 
@@ -835,9 +811,6 @@ public final class Dhis2AggregateExportService {
   }
 
   private record MappedFailure(Dhis2ExportState state, String resultClass) {}
-
-  private record SourceCellEquation(
-      Map<String, Long> cellValues, Map<String, Long> totalTerms, long total) {}
 
   private record StartResult(Dhis2ExportOperation operation, boolean started) {}
 }

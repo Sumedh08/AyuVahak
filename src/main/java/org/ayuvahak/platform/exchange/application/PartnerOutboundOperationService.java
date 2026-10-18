@@ -35,9 +35,20 @@ public final class PartnerOutboundOperationService implements PartnerOutboundOpe
   public PartnerOutboundOperationResponse execute(PartnerOutboundOperationRequest request) {
     Objects.requireNonNull(request, "request");
     PartnerProfileVersion profile = requireActive(request.partnerKey(), request.operation());
+    if (request.expectedConfigurationVersion().isPresent()
+        && request.expectedConfigurationVersion().orElseThrow() != profile.version()) {
+      authorization.invalidate(request.partnerKey());
+      throw new PartnerTransportException(PartnerTransportFailure.PROFILE_NOT_ACTIVE);
+    }
     Runnable beforeAttempt = () -> requireSameActiveProfile(profile, request.operation());
     Optional<PartnerBearerToken> token = authorization.bearerToken(profile, beforeAttempt);
     return transport.execute(profile, request, token, beforeAttempt);
+  }
+
+  @Override
+  public int activeConfigurationVersion(
+      org.ayuvahak.platform.exchange.domain.PartnerKey partnerKey, AllowedOperation operation) {
+    return requireActive(partnerKey, operation).version();
   }
 
   private void requireSameActiveProfile(

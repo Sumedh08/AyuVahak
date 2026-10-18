@@ -7,15 +7,14 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.HexFormat;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import org.ayuvahak.analytics.adapter.federation.FederatedAggregateEnvelopeJsonMapper;
+import org.ayuvahak.analytics.domain.AggregateDisclosureEquation;
 import org.ayuvahak.analytics.domain.AggregateSnapshot;
 import org.ayuvahak.analytics.domain.AnalyticsAuthorities;
 import org.ayuvahak.analytics.domain.DisclosureCandidate;
-import org.ayuvahak.analytics.domain.DisclosureOutput;
 import org.ayuvahak.analytics.domain.DisclosureReservation;
 import org.ayuvahak.analytics.domain.DisclosureReservationState;
 import org.ayuvahak.analytics.domain.FederatedAggregateAcknowledgement;
@@ -185,7 +184,7 @@ public final class FederatedAggregatePublicationService {
       return publication;
     }
     DisclosureReservation reservation =
-        reserveDisclosure(context, publication, mapping, wireSnapshot);
+        reserveDisclosure(context, publication, mapping, snapshot, definition);
     if (reservation.state() != DisclosureReservationState.RESERVED) {
       return transition(
           context,
@@ -275,17 +274,24 @@ public final class FederatedAggregatePublicationService {
       ExecutionContext context,
       FederatedAggregatePublication publication,
       FederatedAggregateMappingVersion mapping,
-      FederatedAggregateSnapshot snapshot) {
+      AggregateSnapshot snapshot,
+      IndicatorDefinitionVersion definition) {
     int policyVersion =
         disclosure.activePolicyVersionForRelease(context, mapping.disclosurePolicyKey());
-    String cellKey = mapping.disclosureOutputKey();
+    AggregateDisclosureEquation equation;
+    try {
+      equation = AggregateDisclosureEquation.from(snapshot, definition);
+    } catch (IllegalArgumentException | ArithmeticException invalidEquation) {
+      throw new FederatedAggregateException(
+          FederatedAggregateException.Reason.INCOMPLETE_SNAPSHOT, invalidEquation);
+    }
     DisclosureCandidate candidate =
         new DisclosureCandidate(
             mapping.disclosurePolicyKey(),
             policyVersion,
             publication.operationId(),
-            Map.of(cellKey, snapshot.value()),
-            List.of(new DisclosureOutput(cellKey, snapshot.value(), Map.of(cellKey, 1L))));
+            equation.cellValues(),
+            List.of(equation.output(mapping.disclosureOutputKey())));
     return disclosure.reserve(context, candidate);
   }
 
