@@ -61,6 +61,9 @@ public class JdbcDisclosureReservationStore implements DisclosureReservationStor
   @Override
   public DisclosurePolicyActivation activatePolicy(
       DisclosurePolicyVersion proposed, Instant activatedAt) {
+    ensureLineageRows(
+        proposed.organization(), Set.of(proposed.conservativeLineageId()), activatedAt);
+    ensureOrganizationPrivacyScope(proposed, activatedAt);
     jdbc.update(
         "INSERT INTO analytics.disclosure_policy_head (policy_key, organization_issuer, "
             + "organization_reference_type, organization_id, conservative_lineage_id, active_version, "
@@ -113,7 +116,7 @@ public class JdbcDisclosureReservationStore implements DisclosureReservationStor
       throw new DisclosureReservationException(
           DisclosureReservationException.Reason.LINEAGE_INVALID);
     }
-    ensureLineageRows(proposed.policyKey(), allLineages, activatedAt);
+    ensureLineageRows(proposed.organization(), allLineages, activatedAt);
     lockLineages(allLineages);
 
     DisclosurePolicyVersion effective =
@@ -188,7 +191,7 @@ public class JdbcDisclosureReservationStore implements DisclosureReservationStor
     }
     History history;
     try {
-      history = loadHistory(candidate.policyKey(), lineageIds);
+      history = loadHistory(lineageIds);
     } catch (InconsistentHistoryException inconsistentHistory) {
       history = new History(List.of(), Map.of(), false);
     }
@@ -550,20 +553,56 @@ public class JdbcDisclosureReservationStore implements DisclosureReservationStor
     return Set.copyOf(lineages);
   }
 
-  private void ensureLineageRows(String policyKey, Set<UUID> lineageIds, Instant createdAt) {
+  private void ensureOrganizationPrivacyScope(DisclosurePolicyVersion proposed, Instant createdAt) {
+    UUID organizationId = UUID.fromString(proposed.organization().value());
+    jdbc.update(
+        "INSERT INTO analytics.disclosure_privacy_scope (organization_issuer, "
+            + "organization_reference_type, organization_id, conservative_lineage_id, created_at) "
+            + "VALUES (?, ?, ?, ?, ?) ON CONFLICT (organization_issuer, "
+            + "organization_reference_type, organization_id) DO NOTHING",
+        proposed.organization().issuer().value(),
+        proposed.organization().resourceType(),
+        organizationId,
+        proposed.conservativeLineageId(),
+        Timestamp.from(createdAt));
+    UUID configuredLineage =
+        jdbc.queryForObject(
+            "SELECT conservative_lineage_id FROM analytics.disclosure_privacy_scope "
+                + "WHERE organization_issuer = ? AND organization_reference_type = ? "
+                + "AND organization_id = ? FOR UPDATE",
+            UUID.class,
+            proposed.organization().issuer().value(),
+            proposed.organization().resourceType(),
+            organizationId);
+    if (!proposed.conservativeLineageId().equals(configuredLineage)) {
+      throw new DisclosureReservationException(
+          DisclosureReservationException.Reason.LINEAGE_INVALID);
+    }
+  }
+
+  private void ensureLineageRows(
+      ExternalReference organization, Set<UUID> lineageIds, Instant createdAt) {
+    UUID organizationId = UUID.fromString(organization.value());
     for (UUID lineageId : lineageIds.stream().sorted().toList()) {
       jdbc.update(
-          "INSERT INTO analytics.disclosure_lineage (lineage_id, policy_key, created_at) "
-              + "VALUES (?, ?, ?) ON CONFLICT (lineage_id) DO NOTHING",
+          "INSERT INTO analytics.disclosure_lineage (lineage_id, organization_issuer, "
+              + "organization_reference_type, organization_id, created_at) "
+              + "VALUES (?, ?, ?, ?, ?) ON CONFLICT (lineage_id) DO NOTHING",
           lineageId,
-          policyKey,
+          organization.issuer().value(),
+          organization.resourceType(),
+          organizationId,
           Timestamp.from(createdAt));
-      String existingPolicy =
-          jdbc.queryForObject(
-              "SELECT policy_key FROM analytics.disclosure_lineage WHERE lineage_id = ?",
-              String.class,
-              lineageId);
-      if (!policyKey.equals(existingPolicy)) {
+      List<UUID> existingOwner =
+          jdbc.query(
+              "SELECT organization_id FROM analytics.disclosure_lineage "
+                  + "WHERE lineage_id = ? AND organization_issuer = ? "
+                  + "AND organization_reference_type = ?",
+              (result, row) -> result.getObject("organization_id", UUID.class),
+              lineageId,
+              organization.issuer().value(),
+              organization.resourceType());
+      if (existingOwner.size() != 1 || !organizationId.equals(existingOwner.getFirst())) {
         throw new DisclosureReservationException(
             DisclosureReservationException.Reason.LINEAGE_INVALID);
       }
@@ -590,10 +629,9 @@ public class JdbcDisclosureReservationStore implements DisclosureReservationStor
     }
   }
 
-  private History loadHistory(String policyKey, Set<UUID> lineages) {
+  private History loadHistory(Set<UUID> lineages) {
     String placeholders = String.join(",", java.util.Collections.nCopies(lineages.size(), "?"));
     List<Object> values = new ArrayList<>();
-    values.add(policyKey);
     String statePlaceholders =
         String.join(",", java.util.Collections.nCopies(ACTIVE_HISTORY_STATES.size(), "?"));
     ACTIVE_HISTORY_STATES.stream().map(Enum::name).sorted().forEach(values::add);
@@ -604,7 +642,7 @@ public class JdbcDisclosureReservationStore implements DisclosureReservationStor
             "SELECT DISTINCT r.reservation_id, o.output_key, o.output_value "
                 + "FROM analytics.disclosure_reservation r "
                 + "JOIN analytics.disclosure_reservation_output o ON o.reservation_id = r.reservation_id "
-                + "WHERE r.policy_key = ? AND r.state IN ("
+                + "WHERE r.state IN ("
                 + statePlaceholders
                 + ") AND EXISTS (SELECT 1 FROM analytics.disclosure_reservation_lineage rl "
                 + "WHERE rl.reservation_id = r.reservation_id AND rl.lineage_id IN ("

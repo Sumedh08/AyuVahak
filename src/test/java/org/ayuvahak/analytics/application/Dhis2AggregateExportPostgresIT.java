@@ -193,7 +193,8 @@ class Dhis2AggregateExportPostgresIT {
   void clearSyntheticFixtures() {
     jdbc.update("TRUNCATE analytics.dhis2_export_operation CASCADE");
     jdbc.update("TRUNCATE analytics.dhis2_mapping_head CASCADE");
-    jdbc.update("TRUNCATE analytics.disclosure_policy_head CASCADE");
+    jdbc.update(
+        "TRUNCATE analytics.disclosure_privacy_scope, analytics.disclosure_policy_head CASCADE");
     jdbc.update("TRUNCATE analytics.indicator_definition_version CASCADE");
     jdbc.update("DELETE FROM audit.audit_record WHERE action_code LIKE 'ANALYTICS_DHIS2_%'");
     exchange.clear();

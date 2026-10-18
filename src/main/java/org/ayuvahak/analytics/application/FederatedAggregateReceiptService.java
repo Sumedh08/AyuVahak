@@ -145,6 +145,11 @@ public final class FederatedAggregateReceiptService {
         .filter(definition -> definition.fingerprint().equals(snapshot.definitionFingerprint()))
         .filter(
             definition ->
+                definition.reportingTimeZone().getId().equals(snapshot.period().timeZoneId()))
+        .filter(definition -> definition.governance().effectiveFor(snapshot.period()))
+        .filter(definition -> definition.governance().calendarAccepts(snapshot.period()))
+        .filter(
+            definition ->
                 FederatedAggregateSnapshot.attribution(definition) == snapshot.attribution())
         .isPresent();
   }

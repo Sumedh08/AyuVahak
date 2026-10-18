@@ -108,7 +108,7 @@ class AnalyticsDisclosureReservationPostgresIT {
   @BeforeEach
   void clearDisclosureFixtures() {
     jdbc.update(
-        "TRUNCATE analytics.disclosure_policy_head, analytics.disclosure_reservation "
+        "TRUNCATE analytics.disclosure_privacy_scope, analytics.disclosure_policy_head, analytics.disclosure_reservation "
             + "RESTART IDENTITY CASCADE");
     jdbc.update("DELETE FROM audit.audit_record WHERE action_code LIKE 'ANALYTICS_DISCLOSURE_%'");
     noSendEvidence.clear();
@@ -268,6 +268,95 @@ class AnalyticsDisclosureReservationPostgresIT {
               releaseContext(), candidate(UUID.randomUUID(), 2, outputA(), totalOutput()));
       assertThat(current.state()).isEqualTo(DisclosureReservationState.WITHHELD);
     }
+  }
+
+  @Test
+  void aNewPolicyKeyForTheSameOrganizationCannotResetDisclosureHistory() {
+    UUID broadLineage = UUID.randomUUID();
+    activate(
+        policy(
+            POLICY_KEY,
+            1,
+            broadLineage,
+            Map.of("CELL_A", Set.of(broadLineage), "TOTAL", Set.of(broadLineage)),
+            true));
+    service.reserve(releaseContext(), candidate(UUID.randomUUID(), 1, outputA()));
+
+    String nextPolicyKey = "SYN-REPORTING-SCOPE-B";
+    activate(
+        policy(
+            nextPolicyKey,
+            1,
+            broadLineage,
+            Map.of("CELL_A", Set.of(broadLineage), "TOTAL", Set.of(broadLineage)),
+            true));
+
+    DisclosureReservation relatedOutput =
+        service.reserve(
+            releaseContext(), candidate(nextPolicyKey, UUID.randomUUID(), 1, totalOutput()));
+
+    assertThat(relatedOutput.state()).isEqualTo(DisclosureReservationState.WITHHELD);
+    assertThat(relatedOutput.reasonCode()).isEqualTo("INFERENCE_RISK");
+  }
+
+  @Test
+  void concurrentReleasesAcrossPolicyKeysSerializeOnTheOrganizationLineage() throws Exception {
+    UUID broadLineage = UUID.randomUUID();
+    activate(
+        policy(
+            POLICY_KEY,
+            1,
+            broadLineage,
+            Map.of("CELL_A", Set.of(broadLineage), "TOTAL", Set.of(broadLineage)),
+            true));
+    String secondPolicyKey = "SYN-REPORTING-SCOPE-D";
+    activate(
+        policy(
+            secondPolicyKey,
+            1,
+            broadLineage,
+            Map.of("CELL_A", Set.of(broadLineage), "TOTAL", Set.of(broadLineage)),
+            true));
+    CountDownLatch start = new CountDownLatch(1);
+
+    try (ExecutorService workers = Executors.newFixedThreadPool(2)) {
+      Future<DisclosureReservation> first =
+          workers.submit(() -> reserveAfter(start, candidate(UUID.randomUUID(), 1, outputA())));
+      Future<DisclosureReservation> second =
+          workers.submit(
+              () ->
+                  reserveAfter(
+                      start, candidate(secondPolicyKey, UUID.randomUUID(), 1, totalOutput())));
+      start.countDown();
+      List<DisclosureReservation> results =
+          List.of(first.get(30, TimeUnit.SECONDS), second.get(30, TimeUnit.SECONDS));
+
+      assertThat(results)
+          .extracting(DisclosureReservation::state)
+          .containsExactlyInAnyOrder(
+              DisclosureReservationState.RESERVED, DisclosureReservationState.WITHHELD);
+    }
+  }
+
+  @Test
+  void aNewPolicyKeyCannotIntroduceANewConservativeLineageForTheSameOrganization() {
+    UUID originalLineage = UUID.randomUUID();
+    activate(
+        policy(POLICY_KEY, 1, originalLineage, Map.of("CELL_A", Set.of(originalLineage)), true));
+    UUID unrelatedLineage = UUID.randomUUID();
+
+    assertThatThrownBy(
+            () ->
+                activate(
+                    policy(
+                        "SYN-REPORTING-SCOPE-C",
+                        1,
+                        unrelatedLineage,
+                        Map.of("CELL_A", Set.of(unrelatedLineage)),
+                        true)))
+        .isInstanceOf(DisclosureReservationException.class)
+        .extracting("reason")
+        .isEqualTo(DisclosureReservationException.Reason.LINEAGE_INVALID);
   }
 
   @Test
@@ -431,8 +520,17 @@ class AnalyticsDisclosureReservationPostgresIT {
       UUID conservativeLineage,
       Map<String, Set<UUID>> lineages,
       boolean externalBaselineComplete) {
+    return policy(POLICY_KEY, version, conservativeLineage, lineages, externalBaselineComplete);
+  }
+
+  private static DisclosurePolicyVersion policy(
+      String policyKey,
+      int version,
+      UUID conservativeLineage,
+      Map<String, Set<UUID>> lineages,
+      boolean externalBaselineComplete) {
     return new DisclosurePolicyVersion(
-        POLICY_KEY,
+        policyKey,
         version,
         ORGANIZATION,
         5,
@@ -443,9 +541,14 @@ class AnalyticsDisclosureReservationPostgresIT {
 
   private static DisclosureCandidate candidate(
       UUID operationId, int policyVersion, DisclosureOutput... outputs) {
+    return candidate(POLICY_KEY, operationId, policyVersion, outputs);
+  }
+
+  private static DisclosureCandidate candidate(
+      String policyKey, UUID operationId, int policyVersion, DisclosureOutput... outputs) {
     List<DisclosureOutput> outputList = new ArrayList<>(List.of(outputs));
     return new DisclosureCandidate(
-        POLICY_KEY, policyVersion, operationId, Map.of("CELL_A", 9L, "CELL_B", 1L), outputList);
+        policyKey, policyVersion, operationId, Map.of("CELL_A", 9L, "CELL_B", 1L), outputList);
   }
 
   private static DisclosureOutput outputA() {

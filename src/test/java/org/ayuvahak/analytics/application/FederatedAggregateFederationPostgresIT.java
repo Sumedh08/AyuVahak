@@ -41,6 +41,7 @@ import org.ayuvahak.analytics.domain.FederatedAggregateMappingVersion;
 import org.ayuvahak.analytics.domain.FederatedAggregatePublication;
 import org.ayuvahak.analytics.domain.FederatedAggregateReceipt;
 import org.ayuvahak.analytics.domain.FederatedAggregateSnapshot;
+import org.ayuvahak.analytics.domain.IndicatorDefinitionGovernance;
 import org.ayuvahak.analytics.domain.IndicatorDefinitionVersion;
 import org.ayuvahak.analytics.domain.ReportingPeriod;
 import org.ayuvahak.analytics.domain.SourceMeasure;
@@ -192,7 +193,8 @@ class FederatedAggregateFederationPostgresIT {
   void clearSyntheticFixtures() {
     jdbc.update("TRUNCATE analytics.federated_aggregate_mapping_head CASCADE");
     jdbc.update("TRUNCATE analytics.indicator_definition_version CASCADE");
-    jdbc.update("TRUNCATE analytics.disclosure_policy_head CASCADE");
+    jdbc.update(
+        "TRUNCATE analytics.disclosure_privacy_scope, analytics.disclosure_policy_head CASCADE");
     jdbc.update("DELETE FROM audit.audit_record WHERE action_code LIKE ?", P08_ACTION);
     AnalyticsStore analytics = new JdbcAnalyticsStore(jdbc, transactionManager);
     IndicatorDefinitionVersion definition = definition();
@@ -256,6 +258,31 @@ class FederatedAggregateFederationPostgresIT {
             failure ->
                 assertThat(failure.reason())
                     .isEqualTo(FederatedAggregateException.Reason.RECEIPT_CONFLICT));
+  }
+
+  @Test
+  void receiptRejectsWrongTimezoneCalendarAndEffectivePeriod() {
+    var peer = authorizePeer(PartnerProfileState.ACTIVE);
+
+    assertIncompatible(
+        peer,
+        ReportingPeriod.resolve(
+            LocalDate.of(2026, 1, 1), LocalDate.of(2026, 2, 1), ZoneId.of("Asia/Kolkata")));
+    assertIncompatible(
+        peer,
+        ReportingPeriod.resolve(
+            LocalDate.of(2026, 1, 2), LocalDate.of(2026, 2, 2), ZoneId.of("UTC")));
+    assertIncompatible(
+        peer,
+        ReportingPeriod.resolve(
+            LocalDate.of(2025, 12, 1), LocalDate.of(2026, 1, 1), ZoneId.of("UTC")));
+
+    assertThat(
+            jdbc.queryForList(
+                "SELECT receipt_state FROM analytics.federated_aggregate_receipt "
+                    + "ORDER BY received_at"))
+        .extracting(row -> row.get("receipt_state"))
+        .containsOnly("INCOMPATIBLE");
   }
 
   @Test
@@ -703,30 +730,61 @@ class FederatedAggregateFederationPostgresIT {
         "SYN-INDICATOR-001",
         1,
         "Synthetic aggregate for local federation acceptance",
+        org.ayuvahak.analytics.domain.AggregationFormula.SUM,
         ZoneId.of("UTC"),
         List.of(SourceMeasure.referral("SUBMITTED_COUNT")),
-        true);
+        true,
+        List.of(),
+        new IndicatorDefinitionGovernance(
+            "Synthetic monthly reporting purpose",
+            Instant.parse("2026-01-01T00:00:00Z"),
+            Optional.of(Instant.parse("2027-01-01T00:00:00Z")),
+            IndicatorDefinitionGovernance.ReportingCalendar.MONTHLY,
+            Set.of(IndicatorDefinitionGovernance.ReportingDimension.ORGANIZATION),
+            IndicatorDefinitionGovernance.CompletenessRequirement
+                .ALL_REQUIRED_SOURCES_COMPLETE_FOR_NUMERIC_VALUE,
+            Optional.empty(),
+            IndicatorDefinitionGovernance.SensitivityClassification.LOW_SENSITIVITY_AGGREGATE,
+            Optional.empty(),
+            Optional.empty()));
   }
 
   private static FederatedAggregateEnvelope envelope(long value) {
+    return envelope(
+        value,
+        ReportingPeriod.resolve(
+            LocalDate.of(2026, 1, 1), LocalDate.of(2026, 2, 1), ZoneId.of("UTC")));
+  }
+
+  private static FederatedAggregateEnvelope envelope(long value, ReportingPeriod period) {
     FederatedAggregateSnapshot snapshot =
         new FederatedAggregateSnapshot(
             SOURCE_DEPLOYMENT,
-            UUID.fromString("f2ec9a86-18eb-4a6f-94af-1ac68fe00101"),
-            UUID.fromString("f2ec9a86-18eb-4a6f-94af-1ac68fe00102"),
+            UUID.randomUUID(),
+            UUID.randomUUID(),
             1,
             "SYN-INDICATOR-001",
             1,
             definition().fingerprint(),
             "a".repeat(64),
             SOURCE_ORGANIZATION,
-            org.ayuvahak.analytics.domain.ReportingPeriod.resolve(
-                LocalDate.of(2026, 1, 1), LocalDate.of(2026, 2, 1), ZoneId.of("UTC")),
+            period,
             AggregateCompleteness.COMPLETE,
             value,
             SourceMeasure.Attribution.NONE,
             NOW.minusSeconds(30));
     return new FederatedAggregateEnvelope(snapshot, TARGET_ORGANIZATION);
+  }
+
+  private void assertIncompatible(
+      org.ayuvahak.platform.exchange.application.FederationPeerInboundAuthorization peer,
+      ReportingPeriod period) {
+    byte[] requestBytes =
+        UUID.randomUUID().toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    FederatedAggregateReceipt receipt =
+        receiptService.receive(
+            peer, UUID.randomUUID(), fingerprint(requestBytes), envelope(7, period));
+    assertThat(receipt.state()).isEqualTo(FederatedAggregateReceipt.State.INCOMPATIBLE);
   }
 
   private org.ayuvahak.platform.exchange.application.FederationPeerInboundAuthorization
