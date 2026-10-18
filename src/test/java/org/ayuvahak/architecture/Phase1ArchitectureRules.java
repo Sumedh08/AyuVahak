@@ -68,11 +68,13 @@ final class Phase1ArchitectureRules {
             "org.ayuvahak.transfer",
             "org.ayuvahak.transfer..",
             "org.ayuvahak.transport",
-            "org.ayuvahak.transport..")
+            "org.ayuvahak.transport..",
+            "org.ayuvahak.analytics",
+            "org.ayuvahak.analytics..")
         .as(
             "Production code contains only implemented platform concerns and the active Directory"
-                + ", Capacity, Referral, Matching, Transfer, and Transport contexts; create later"
-                + " healthcare contexts only when their phase begins");
+                + ", Capacity, Referral, Matching, Transfer, Transport, and Analytics contexts;"
+                + " create later healthcare contexts only when their phase begins");
   }
 
   static ArchRule packageSlicesAreAcyclic() {
@@ -349,6 +351,47 @@ final class Phase1ArchitectureRules {
               }
             })
         .as("A context must use another context's public application boundary")
+        .allowEmptyShould(true);
+  }
+
+  static ArchRule operationalContextsMustNotDependOnAnalytics() {
+    return noClasses()
+        .that()
+        .resideInAnyPackage(
+            "org.ayuvahak.directory..",
+            "org.ayuvahak.capacity..",
+            "org.ayuvahak.referral..",
+            "org.ayuvahak.matching..",
+            "org.ayuvahak.transfer..",
+            "org.ayuvahak.transport..")
+        .should()
+        .dependOnClassesThat()
+        .resideInAnyPackage("org.ayuvahak.analytics..")
+        .as("Operational owner contexts must not depend on derived Analytics results")
+        .allowEmptyShould(true);
+  }
+
+  static ArchRule analyticsMustNotImportOwnerPersistenceOrDomainModels() {
+    return noClasses()
+        .that()
+        .resideInAnyPackage("org.ayuvahak.analytics..")
+        .should()
+        .dependOnClassesThat()
+        .resideInAnyPackage(
+            "org.ayuvahak.directory.domain..",
+            "org.ayuvahak.directory.adapter.persistence..",
+            "org.ayuvahak.capacity.domain..",
+            "org.ayuvahak.capacity.adapter.persistence..",
+            "org.ayuvahak.referral.domain..",
+            "org.ayuvahak.referral.adapter.persistence..",
+            "org.ayuvahak.matching.domain..",
+            "org.ayuvahak.matching.adapter.persistence..",
+            "org.ayuvahak.transfer.domain..",
+            "org.ayuvahak.transfer.adapter.persistence..",
+            "org.ayuvahak.transport.domain..",
+            "org.ayuvahak.transport.adapter.persistence..")
+        .as(
+            "Analytics must use owner application reporting contracts, never owner models or persistence")
         .allowEmptyShould(true);
   }
 

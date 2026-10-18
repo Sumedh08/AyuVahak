@@ -33,6 +33,9 @@ class Phase1ArchitectureTest {
         .check(productionClasses);
     Phase1ArchitectureRules.businessContextsMustNotDependOnAnotherContextsPersistence()
         .check(productionClasses);
+    Phase1ArchitectureRules.operationalContextsMustNotDependOnAnalytics().check(productionClasses);
+    Phase1ArchitectureRules.analyticsMustNotImportOwnerPersistenceOrDomainModels()
+        .check(productionClasses);
     Phase1ArchitectureRules.capacityMustNotDependOnReferralMatchingOrTransfer()
         .check(productionClasses);
     Phase1ArchitectureRules.referralMustNotDependOnMatchingOrTransfer().check(productionClasses);
@@ -89,6 +92,9 @@ class Phase1ArchitectureTest {
     Phase1ArchitectureRules.directoryMustNotDependOnOtherBusinessContexts()
         .check(productionClasses);
     Phase1ArchitectureRules.businessContextsMustNotDependOnAnotherContextsPersistence()
+        .check(productionClasses);
+    Phase1ArchitectureRules.operationalContextsMustNotDependOnAnalytics().check(productionClasses);
+    Phase1ArchitectureRules.analyticsMustNotImportOwnerPersistenceOrDomainModels()
         .check(productionClasses);
     Phase1ArchitectureRules.capacityMustNotDependOnReferralMatchingOrTransfer()
         .check(productionClasses);
