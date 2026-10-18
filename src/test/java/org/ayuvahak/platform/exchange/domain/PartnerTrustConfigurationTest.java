@@ -208,7 +208,7 @@ class PartnerTrustConfigurationTest {
                     Protocol.JSON,
                     "DHIS2-DataValueSet-2.43"))
         .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("limited to the named DHIS2 aggregate operation");
+        .hasMessageContaining("limited to named aggregate operations");
   }
 
   @Test
@@ -265,6 +265,58 @@ class PartnerTrustConfigurationTest {
                 new ExternalReference(
                     new IssuerId("urn:synthetic:authority"), "Facility", "SYN-FACILITY-B")))
         .isFalse();
+
+    AllowedOperation aggregateOperation =
+        AllowedOperation.analyticsAggregateSnapshot(Direction.OUTBOUND);
+    PartnerTrustConfiguration aggregatePeerProfile =
+        new PartnerTrustConfiguration(
+            new PartnerKey("synthetic-analytics-peer"),
+            organization,
+            "https://peer.example.test",
+            "/api/federation",
+            new Authentication(
+                AuthenticationMethod.MUTUAL_TLS,
+                Optional.of("secret-ref:SYN-PEER-CERT"),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty()),
+            TlsPolicy.SYSTEM_CA,
+            Optional.empty(),
+            new Limits(1_000, 2_000, 5_000, 100_000, 200_000, 2, 20, 8, 1),
+            RetryClass.NEVER,
+            List.of(aggregateOperation),
+            Optional.empty(),
+            Optional.of(peer));
+    assertThat(aggregatePeerProfile.allowedOperations()).containsExactly(aggregateOperation);
+
+    assertThatThrownBy(
+            () ->
+                new PartnerTrustConfiguration(
+                    new PartnerKey("synthetic-analytics-peer"),
+                    organization,
+                    "https://peer.example.test",
+                    "/api/federation",
+                    new Authentication(
+                        AuthenticationMethod.MUTUAL_TLS,
+                        Optional.of("secret-ref:SYN-PEER-CERT"),
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.empty()),
+                    TlsPolicy.SYSTEM_CA,
+                    Optional.empty(),
+                    new Limits(1_000, 2_000, 5_000, 100_000, 200_000, 2, 20, 8, 1),
+                    RetryClass.NEVER,
+                    List.of(AllowedOperation.analyticsDhis2DataValueSet()),
+                    Optional.empty(),
+                    Optional.of(peer)))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("federation peer profiles allow only scoped JSON owner operations");
   }
 
   @Test

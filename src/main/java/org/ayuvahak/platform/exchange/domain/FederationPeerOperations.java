@@ -19,7 +19,9 @@ public final class FederationPeerOperations {
           AllowedOperation.transferRemoteReservationStatus(Direction.OUTBOUND),
           AllowedOperation.transferRemoteReservationStatus(Direction.INBOUND),
           AllowedOperation.transferMovementFact(Direction.OUTBOUND),
-          AllowedOperation.transferMovementFact(Direction.INBOUND));
+          AllowedOperation.transferMovementFact(Direction.INBOUND),
+          AllowedOperation.analyticsAggregateSnapshot(Direction.OUTBOUND),
+          AllowedOperation.analyticsAggregateSnapshot(Direction.INBOUND));
 
   private FederationPeerOperations() {}
 

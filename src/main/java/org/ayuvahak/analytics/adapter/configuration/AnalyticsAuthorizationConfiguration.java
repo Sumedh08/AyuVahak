@@ -57,4 +57,14 @@ class AnalyticsAuthorizationConfiguration {
   FunctionalAuthority analyticsDhis2ExportReconciliationAuthority() {
     return AnalyticsAuthorities.dhis2ExportReconciliation();
   }
+
+  @Bean
+  FunctionalAuthority analyticsFederatedAggregateMappingAdministrationAuthority() {
+    return AnalyticsAuthorities.federatedAggregateMappingAdministration();
+  }
+
+  @Bean
+  FunctionalAuthority analyticsFederatedAggregatePublicationAuthority() {
+    return AnalyticsAuthorities.federatedAggregatePublication();
+  }
 }

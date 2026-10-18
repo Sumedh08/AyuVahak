@@ -109,7 +109,13 @@ public record PartnerTrustConfiguration(
               operation ->
                   operation.ownerContext() == OwnerContext.REFERRAL
                       || operation.ownerContext() == OwnerContext.TRANSPORT
-                      || operation.ownerContext() == OwnerContext.ANALYTICS
+                      || (operation.ownerContext() == OwnerContext.ANALYTICS
+                          && !AllowedOperation.isNamedAnalyticsAggregateSnapshot(
+                              operation.ownerContext(),
+                              operation.operationCode(),
+                              operation.direction(),
+                              operation.protocol(),
+                              operation.profile()))
                       || operation.protocol() != Protocol.JSON
                       || !peer.protocolProfile().equals(operation.profile()))) {
         throw new IllegalArgumentException(
@@ -333,10 +339,10 @@ public record PartnerTrustConfiguration(
         throw new IllegalArgumentException("profile must be a bounded identifier");
       }
       if (ownerContext == OwnerContext.ANALYTICS
-          && !isNamedAnalyticsDhis2DataValueSet(
+          && !isNamedAnalyticsOperation(
               ownerContext, operationCode, direction, protocol, profile)) {
         throw new IllegalArgumentException(
-            "Analytics Exchange support is limited to the named DHIS2 aggregate operation");
+            "Analytics Exchange support is limited to named aggregate operations");
       }
     }
 
@@ -381,7 +387,7 @@ public record PartnerTrustConfiguration(
       return transportOutbound("transport.destination-change");
     }
 
-    /** The sole named Analytics write admitted through the existing technical exchange boundary. */
+    /** Named Analytics DataValueSet write to a configured DHIS2 partner. */
     public static AllowedOperation analyticsDhis2DataValueSet() {
       return new AllowedOperation(
           OwnerContext.ANALYTICS,
@@ -389,6 +395,16 @@ public record PartnerTrustConfiguration(
           Direction.OUTBOUND,
           Protocol.JSON,
           "DHIS2-DataValueSet-2.43");
+    }
+
+    /** Named peer-to-peer aggregate publication, separate from the DHIS2 export operation. */
+    public static AllowedOperation analyticsAggregateSnapshot(Direction direction) {
+      return new AllowedOperation(
+          OwnerContext.ANALYTICS,
+          "analytics.aggregate-snapshot",
+          Objects.requireNonNull(direction, "direction"),
+          Protocol.JSON,
+          FederationPeerConfiguration.supportedProtocolProfile());
     }
 
     public boolean isNamedAnalyticsDhis2DataValueSet() {
@@ -407,6 +423,31 @@ public record PartnerTrustConfiguration(
           && direction == Direction.OUTBOUND
           && protocol == Protocol.JSON
           && "DHIS2-DataValueSet-2.43".equals(profile);
+    }
+
+    private static boolean isNamedAnalyticsAggregateSnapshot(
+        OwnerContext ownerContext,
+        String operationCode,
+        Direction direction,
+        Protocol protocol,
+        String profile) {
+      return ownerContext == OwnerContext.ANALYTICS
+          && "analytics.aggregate-snapshot".equals(operationCode)
+          && (direction == Direction.INBOUND || direction == Direction.OUTBOUND)
+          && protocol == Protocol.JSON
+          && FederationPeerConfiguration.supportedProtocolProfile().equals(profile);
+    }
+
+    private static boolean isNamedAnalyticsOperation(
+        OwnerContext ownerContext,
+        String operationCode,
+        Direction direction,
+        Protocol protocol,
+        String profile) {
+      return isNamedAnalyticsDhis2DataValueSet(
+              ownerContext, operationCode, direction, protocol, profile)
+          || isNamedAnalyticsAggregateSnapshot(
+              ownerContext, operationCode, direction, protocol, profile);
     }
 
     /** Named federated movement fact operation received by the remote Transfer owner. */

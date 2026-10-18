@@ -156,10 +156,10 @@ class FederationPeerOperationRequestTest {
   }
 
   @Test
-  void finiteAllowlistIncludesOnlyNamedDirectoryCapacityAndTransferContracts() {
+  void finiteAllowlistIncludesOnlyNamedOwnerContracts() {
     assertThat(FederationPeerOperations.all())
         .extracting(operation -> operation.ownerContext().name())
-        .containsOnly("DIRECTORY", "CAPACITY", "TRANSFER");
+        .containsOnly("DIRECTORY", "CAPACITY", "TRANSFER", "ANALYTICS");
     assertThat(FederationPeerOperations.all())
         .extracting(AllowedOperation::operationCode)
         .containsExactlyInAnyOrder(
@@ -172,7 +172,9 @@ class FederationPeerOperationRequestTest {
             "transfer.remote-reservation-status",
             "transfer.remote-reservation-status",
             "transfer.movement-fact",
-            "transfer.movement-fact");
+            "transfer.movement-fact",
+            "analytics.aggregate-snapshot",
+            "analytics.aggregate-snapshot");
     assertThat(
             FederationPeerOperations.supportsOutbound(
                 AllowedOperation.directoryRemoteDiscovery(Direction.OUTBOUND)))
@@ -188,6 +190,10 @@ class FederationPeerOperationRequestTest {
     assertThat(
             FederationPeerOperations.supportsOutbound(
                 AllowedOperation.transferRemoteReservationStatus(Direction.OUTBOUND)))
+        .isTrue();
+    assertThat(
+            FederationPeerOperations.supportsOutbound(
+                AllowedOperation.analyticsAggregateSnapshot(Direction.OUTBOUND)))
         .isTrue();
     assertThat(
             FederationPeerOperations.supportsOutbound(
@@ -207,6 +213,29 @@ class FederationPeerOperationRequestTest {
                     Protocol.JSON,
                     "AyuVahak-Federation-v1")))
         .isFalse();
+  }
+
+  @Test
+  void analyticsAggregateFederationIsNamedAndBounded() {
+    AllowedOperation outbound = AllowedOperation.analyticsAggregateSnapshot(Direction.OUTBOUND);
+    assertThat(outbound.ownerContext()).isEqualTo(OwnerContext.ANALYTICS);
+    assertThat(outbound.operationCode()).isEqualTo("analytics.aggregate-snapshot");
+    assertThat(outbound.protocol()).isEqualTo(Protocol.JSON);
+    assertThat(FederationPeerOperations.supportsOutbound(outbound)).isTrue();
+    assertThat(
+            FederationPeerOperations.supportsInbound(
+                AllowedOperation.analyticsAggregateSnapshot(Direction.INBOUND)))
+        .isTrue();
+
+    assertThatIllegalArgumentException()
+        .isThrownBy(
+            () ->
+                new AllowedOperation(
+                    OwnerContext.ANALYTICS,
+                    "analytics.anything",
+                    Direction.OUTBOUND,
+                    Protocol.JSON,
+                    "AyuVahak-Federation-v1"));
   }
 
   @Test

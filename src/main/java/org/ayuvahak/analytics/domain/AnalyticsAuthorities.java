@@ -58,4 +58,15 @@ public final class AnalyticsAuthorities {
     return new FunctionalAuthority(
         "AnalyticsDhis2ExportReconciliation", Set.of(ExecutionScope.Kind.ORGANIZATION));
   }
+
+  public static FunctionalAuthority federatedAggregateMappingAdministration() {
+    return new FunctionalAuthority(
+        "AnalyticsFederatedAggregateMappingAdministration",
+        Set.of(ExecutionScope.Kind.ORGANIZATION));
+  }
+
+  public static FunctionalAuthority federatedAggregatePublication() {
+    return new FunctionalAuthority(
+        "AnalyticsFederatedAggregatePublication", Set.of(ExecutionScope.Kind.ORGANIZATION));
+  }
 }
