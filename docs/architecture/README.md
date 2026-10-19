@@ -24,4 +24,16 @@ Start with the [architecture constitution](constitution.md) for product boundari
 - [Design review](../reviews/volume-4-design-review.md)
 - [Resolved design-question register](../reviews/volume-4-open-questions.md)
 
-Root [AGENTS.md](../../AGENTS.md) is authoritative for program state and execution authorization. Phase 11 and Phase 12 are implemented and frozen. Volume V remains outside this volume and requires separate human authorization.
+## Volume V — design review; implementation not started
+
+- [Volume V architecture](volume-5-production-hardening-optimization-intelligence.md): production hardening, DPG evidence, measured optimization and optional non-authoritative intelligence.
+- [Phase 13 specification](../specs/phase-13-production-hardening-dpg-readiness-spec.md)
+- [Phase 14 specification](../specs/phase-14-optimization-intelligence-spec.md)
+- [Production readiness gap analysis](../reviews/production-readiness-gap-analysis.md)
+- [DPG readiness gap analysis](../reviews/dpg-readiness-gap-analysis.md)
+- [Volume V threat model](volume-5-threat-model.md)
+- [Volume V design review](../reviews/volume-5-design-review.md)
+- [Volume V question disposition](../reviews/volume-5-open-questions.md)
+- [Official research: production/security/supply chain](../research/volume-5-production-security-supply-chain-research.md), [DPG Standard](../research/volume-5-dpg-standard-research.md), and [AI governance](../research/volume-5-ai-governance-research.md)
+
+Root [AGENTS.md](../../AGENTS.md) is authoritative for program state and execution authorization. Volumes I–IV are implemented and frozen. Volume V design is in review; Phase 13/14 implementation requires separate human authorization.

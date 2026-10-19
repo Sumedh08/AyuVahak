@@ -2,7 +2,7 @@
 
 ## Purpose and status
 
-This document defines the frozen design boundary for Phase 11, Real-Time Operations, Resilience and Federation, and Phase 12, Public Health Analytics and DHIS2 Integration. It extends the frozen Volumes I–III without changing their ownership or implementation. Phase 11/12 implementation has not started and requires separate human authorization.
+This document defines the frozen design boundary for Phase 11, Real-Time Operations, Resilience and Federation, and Phase 12, Public Health Analytics and DHIS2 Integration. It extends the frozen Volumes I–III without changing their ownership or implementation. Phase 11 and Phase 12 implementations are complete and frozen; their acceptance evidence is linked from the [architecture index](README.md).
 
 Volume IV adds timely change notification, bounded cooperation between independently administered AyuVahak deployments, reproducible operational aggregates, and an approved aggregate export to DHIS2. PostgreSQL owner state remains authoritative. External systems remain independently administered and untrusted for business meaning.
 

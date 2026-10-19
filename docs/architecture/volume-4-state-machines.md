@@ -1,6 +1,6 @@
 # Volume IV State Machines
 
-These state tables describe future application behavior only. They do not imply implementation exists. Owner transactions persist transitions; external messages and notifications are not the source of truth.
+These state tables define the Phase 11/12 behavior and remain the reference for their implementations. Owner transactions persist transitions; external messages and notifications are not the source of truth. Verification evidence is recorded in the phase acceptance records.
 
 ## Client notification cursor
 

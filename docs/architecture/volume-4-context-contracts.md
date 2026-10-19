@@ -1,6 +1,6 @@
 # Volume IV Context Contracts
 
-These are design-time contracts for future Phase 11/12 implementation. They do not create runtime endpoints or alter frozen Volumes I–III. Every contract uses owner application boundaries; private repositories and tables are never shared.
+These contracts describe the Phase 11/12 owner application boundaries and their frozen design. They do not alter Volumes I–III. Every contract uses owner application boundaries; private repositories and tables are never shared. Implemented behavior and local evidence are recorded in the Phase 11, Phase 12 and Volume IV acceptance records.
 
 ## Contract principles
 
