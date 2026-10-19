@@ -18,7 +18,9 @@ import com.nimbusds.jwt.SignedJWT;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.Base64;
 import java.util.Date;
@@ -32,6 +34,7 @@ import org.ayuvahak.platform.core.IssuerId;
 import org.ayuvahak.platform.exchange.application.PartnerBearerToken;
 import org.ayuvahak.platform.exchange.application.PartnerSecretMaterial;
 import org.ayuvahak.platform.exchange.application.PartnerSecretProvider;
+import org.ayuvahak.platform.exchange.application.PartnerSecretProviderUnavailableException;
 import org.ayuvahak.platform.exchange.application.PartnerTokenEndpointPort;
 import org.ayuvahak.platform.exchange.application.PartnerTokenEndpointRequest;
 import org.ayuvahak.platform.exchange.application.PartnerTokenEndpointResponse;
@@ -97,6 +100,59 @@ class PartnerOAuthAuthorizationAdapterTest {
         .containsExactly(Map.entry("grant_type", "client_credentials"));
     assertThat(fixture.lastRequest.toString()).doesNotContain("synthetic-client-secret");
     assertThat(token.toString()).doesNotContain("synthetic-access-token");
+  }
+
+  @Test
+  void rotatedSecretIsUsedAfterTheCachedBearerTokenExpires() throws Exception {
+    Fixture fixture =
+        new Fixture(TokenMutation.VALID, AuthenticationMethod.OAUTH_CLIENT_CREDENTIALS);
+    PartnerBearerToken initial = fixture.adapter.bearerToken(fixture.profile).orElseThrow();
+
+    fixture.secrets.put("env:SYNTH_CLIENT_SECRET", "synthetic-rotated-client-secret");
+    fixture.clock.advance(Duration.ofSeconds(120));
+    assertThat(fixture.adapter.bearerToken(fixture.profile)).containsSame(initial);
+    assertThat(fixture.tokenCalls).isEqualTo(1);
+
+    fixture.clock.advance(Duration.ofSeconds(271));
+    fixture.adapter.bearerToken(fixture.profile).orElseThrow();
+
+    String expectedCredentials =
+        Base64.getEncoder()
+            .encodeToString(
+                "synthetic-client:synthetic-rotated-client-secret"
+                    .getBytes(StandardCharsets.UTF_8));
+    assertThat(fixture.tokenCalls).isEqualTo(2);
+    assertThat(fixture.lastRequest.basicAuthorization()).isEqualTo("Basic " + expectedCredentials);
+  }
+
+  @Test
+  void revokedSecretCannotFallBackToAnOlderCachedBearerToken() throws Exception {
+    Fixture fixture =
+        new Fixture(TokenMutation.VALID, AuthenticationMethod.OAUTH_CLIENT_CREDENTIALS);
+    fixture.adapter.bearerToken(fixture.profile).orElseThrow();
+    fixture.secrets.remove("env:SYNTH_CLIENT_SECRET");
+    fixture.clock.advance(Duration.ofSeconds(271));
+
+    assertThatThrownBy(() -> fixture.adapter.bearerToken(fixture.profile))
+        .isInstanceOf(PartnerTransportException.class)
+        .extracting(failure -> ((PartnerTransportException) failure).failure())
+        .isEqualTo(PartnerTransportFailure.AUTHENTICATION_FAILURE);
+    assertThat(fixture.tokenCalls).isEqualTo(1);
+  }
+
+  @Test
+  void providerOutageAfterTokenExpiryFailsSafelyWithoutReusingAnOlderToken() throws Exception {
+    Fixture fixture =
+        new Fixture(TokenMutation.VALID, AuthenticationMethod.OAUTH_CLIENT_CREDENTIALS);
+    fixture.adapter.bearerToken(fixture.profile).orElseThrow();
+    fixture.providerUnavailable = true;
+    fixture.clock.advance(Duration.ofSeconds(271));
+
+    assertThatThrownBy(() -> fixture.adapter.bearerToken(fixture.profile))
+        .isInstanceOf(PartnerTransportException.class)
+        .extracting(failure -> ((PartnerTransportException) failure).failure())
+        .isEqualTo(PartnerTransportFailure.AUTHENTICATION_FAILURE);
+    assertThat(fixture.tokenCalls).isEqualTo(1);
   }
 
   @Test
@@ -166,9 +222,12 @@ class PartnerOAuthAuthorizationAdapterTest {
     private final TokenMutation mutation;
     private final ObjectMapper mapper = new ObjectMapper();
     private final AuthenticationMethod authenticationMethod;
+    private final MutableClock clock = new MutableClock(NOW);
+    private final Map<String, String> secrets = new HashMap<>();
     private final PartnerProfileVersion profile;
     private final PartnerOAuthAuthorizationAdapter adapter;
     private String keySetOverride;
+    private boolean providerUnavailable;
     private int tokenCalls;
     private PartnerTokenEndpointRequest lastRequest;
 
@@ -181,18 +240,22 @@ class PartnerOAuthAuthorizationAdapterTest {
       this.mutation = mutation;
       this.authenticationMethod = authenticationMethod;
       this.profile = profile(1);
-      Map<String, String> values = new HashMap<>();
-      values.put("env:SYNTH_CLIENT_PRIVATE_JWK", clientPrivateKey.toJSONString());
-      values.put("env:SYNTH_CLIENT_SECRET", "synthetic-client-secret");
-      values.put(
+      secrets.put("env:SYNTH_CLIENT_PRIVATE_JWK", clientPrivateKey.toJSONString());
+      secrets.put("env:SYNTH_CLIENT_SECRET", "synthetic-client-secret");
+      secrets.put(
           "env:SYNTH_ACCESS_TOKEN_JWKS", new JWKSet(accessSigningKey.toPublicJWK()).toString());
       PartnerSecretProvider provider =
-          reference ->
+          reference -> {
+            if (providerUnavailable) {
+              throw new PartnerSecretProviderUnavailableException();
+            }
+            return
               Optional.ofNullable(
                       "env:SYNTH_ACCESS_TOKEN_JWKS".equals(reference) && keySetOverride != null
                           ? keySetOverride
-                          : values.get(reference))
+                          : secrets.get(reference))
                   .map(value -> new PartnerSecretMaterial(value.toCharArray()));
+          };
       PartnerTokenEndpointPort endpoint =
           (activeProfile, request) -> {
             try {
@@ -218,7 +281,7 @@ class PartnerOAuthAuthorizationAdapterTest {
                 String expectedCredentials =
                     Base64.getEncoder()
                         .encodeToString(
-                            "synthetic-client:synthetic-client-secret"
+                            (CLIENT_ID + ":" + secrets.get("env:SYNTH_CLIENT_SECRET"))
                                 .getBytes(StandardCharsets.UTF_8));
                 assertThat(request.basicAuthorization()).isEqualTo("Basic " + expectedCredentials);
               }
@@ -235,7 +298,7 @@ class PartnerOAuthAuthorizationAdapterTest {
           };
       adapter =
           new PartnerOAuthAuthorizationAdapter(
-              provider, endpoint, mapper, Clock.fixed(NOW, ZoneOffset.UTC));
+              provider, endpoint, mapper, clock);
     }
 
     private PartnerProfileVersion profile(int version) {
@@ -274,8 +337,8 @@ class PartnerOAuthAuthorizationAdapterTest {
     }
 
     private String accessToken(TokenMutation mutation) throws Exception {
-      Instant issue = NOW.minusSeconds(1);
-      Instant expiry = NOW.plusSeconds(300);
+      Instant issue = clock.instant().minusSeconds(1);
+      Instant expiry = clock.instant().plusSeconds(300);
       String issuer = ISSUER;
       String audience = AUDIENCE;
       String subject = CLIENT_ID;
@@ -341,6 +404,34 @@ class PartnerOAuthAuthorizationAdapterTest {
       return new RSAKeyGenerator(2_048).keyID(keyId).generate();
     } catch (Exception exception) {
       throw new AssertionError("synthetic token key generation failed", exception);
+    }
+  }
+
+  private static final class MutableClock extends Clock {
+
+    private Instant now;
+
+    private MutableClock(Instant now) {
+      this.now = now;
+    }
+
+    private void advance(Duration duration) {
+      now = now.plus(duration);
+    }
+
+    @Override
+    public ZoneId getZone() {
+      return ZoneOffset.UTC;
+    }
+
+    @Override
+    public Clock withZone(ZoneId zone) {
+      return Clock.fixed(now, zone);
+    }
+
+    @Override
+    public Instant instant() {
+      return now;
     }
   }
 }
