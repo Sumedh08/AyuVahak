@@ -1,6 +1,6 @@
 # Phase 12 Acceptance Record
 
-**Result:** PASS — Phase 12 implementation is accepted and ready to freeze locally.
+**Result:** PASS — Phase 12 implementation is frozen locally at `82668b7e3262e9783e6ab58cb8037a1dc77e8e06`.
 **Scope:** Aggregate Analytics and downstream DHIS2 integration through the existing Phase 9 secure-exchange boundary. Phase 12 does not alter operational ownership or export individual-level health data.
 
 ## Approved ticket graph
@@ -81,7 +81,7 @@ Corrected Phase 12 specification and standards reviews found zero unresolved BLO
 - **MINOR:** some Analytics service paths repeat authentication-mechanism-to-audit-evidence conversion; no behavior or boundary defect was identified.
 - **DOCUMENTATION:** contributor guidance had stale schema/program status; corrected in the Volume IV retro changes.
 
-No required pre-freeze issue remains. Phase 12 is accepted and ready for its local freeze commit.
+No required pre-freeze issue remains. Phase 12 passed its acceptance gate and was frozen locally.
 
 ## Scope and safety
 
