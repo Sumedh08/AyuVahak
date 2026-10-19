@@ -6,10 +6,12 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
+import java.util.Arrays;
 import java.util.concurrent.Executor;
 import org.flywaydb.core.Flyway;
 import org.flywaydb.core.api.MigrationInfo;
 import org.flywaydb.core.api.MigrationState;
+import org.flywaydb.core.api.configuration.FluentConfiguration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.flyway.autoconfigure.FlywayMigrationStrategy;
@@ -87,8 +89,17 @@ final class ProductionFlywayMigrationStrategy implements FlywayMigrationStrategy
   }
 
   private void validateHistory(Flyway flyway) {
-    flyway.validate();
-    for (MigrationInfo migration : flyway.info().all()) {
+    MigrationInfo[] migrations = flyway.info().all();
+    boolean hasAppliedHistory =
+        Arrays.stream(migrations).anyMatch(migration -> migration.getState().isApplied());
+    if (hasAppliedHistory) {
+      new FluentConfiguration()
+          .configuration(flyway.getConfiguration())
+          .ignoreMigrationPatterns("*:pending")
+          .load()
+          .validate();
+    }
+    for (MigrationInfo migration : migrations) {
       MigrationState state = migration.getState();
       if (state.isFailed()
           || state == MigrationState.MISSING_SUCCESS

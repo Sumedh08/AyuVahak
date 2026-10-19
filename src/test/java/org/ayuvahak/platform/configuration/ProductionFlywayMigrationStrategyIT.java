@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -35,6 +36,7 @@ class ProductionFlywayMigrationStrategyIT {
               DockerImageName.parse(
                       "postgis/postgis:18-3.6@sha256:60f6ad1d21ea86a67d47780b9a0d1e1d200500f62b19293fa834d0dea80b8677")
                   .asCompatibleSubstituteFor("postgres"))
+          .withStartupTimeout(Duration.ofMinutes(3))
           .withImagePullPolicy(image -> false)
           .withDatabaseName("ayuvahak")
           .withUsername("ayuvahak")
@@ -125,7 +127,8 @@ class ProductionFlywayMigrationStrategyIT {
     }
 
     assertThat(schemaTableExists(schema, "synthetic_migration_lock_probe")).isTrue();
-    assertThat(appliedMigrationCount(schema)).isEqualTo(1);
+    assertThat(appliedSqlMigrationCount(schema)).isEqualTo(1);
+    assertThat(syntheticMigrationProbeCount(schema)).isEqualTo(1);
   }
 
   @Test
@@ -207,17 +210,33 @@ class ProductionFlywayMigrationStrategyIT {
     }
   }
 
-  private static int appliedMigrationCount(String schema) {
+  private static int appliedSqlMigrationCount(String schema) {
     try (Connection connection = connection();
         PreparedStatement statement =
             connection.prepareStatement(
-                "SELECT COUNT(*) FROM " + schema + ".flyway_schema_history WHERE success")) {
+                "SELECT COUNT(*) FROM "
+                    + schema
+                    + ".flyway_schema_history WHERE success AND type = 'SQL'")) {
       try (var result = statement.executeQuery()) {
         result.next();
         return result.getInt(1);
       }
     } catch (Exception exception) {
       throw new AssertionError("synthetic migration history could not be inspected", exception);
+    }
+  }
+
+  private static int syntheticMigrationProbeCount(String schema) {
+    try (Connection connection = connection();
+        PreparedStatement statement =
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM " + schema + ".synthetic_migration_lock_probe")) {
+      try (var result = statement.executeQuery()) {
+        result.next();
+        return result.getInt(1);
+      }
+    } catch (Exception exception) {
+      throw new AssertionError("synthetic migration effect could not be inspected", exception);
     }
   }
 
