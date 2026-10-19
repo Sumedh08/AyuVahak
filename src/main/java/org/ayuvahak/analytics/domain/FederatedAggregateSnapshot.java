@@ -176,7 +176,8 @@ public record FederatedAggregateSnapshot(
 
   public static SourceMeasure.Attribution attribution(IndicatorDefinitionVersion definition) {
     Set<SourceMeasure.Attribution> transferAttributions =
-        definition.sourceMeasures().stream()
+        java.util.stream.Stream.concat(
+                definition.sourceMeasures().stream(), definition.denominatorMeasures().stream())
             .filter(measure -> measure.owner() == SourceMeasure.Owner.TRANSFER)
             .map(SourceMeasure::attribution)
             .collect(java.util.stream.Collectors.toUnmodifiableSet());

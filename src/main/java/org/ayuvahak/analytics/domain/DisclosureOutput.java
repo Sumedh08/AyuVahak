@@ -1,6 +1,5 @@
 package org.ayuvahak.analytics.domain;
 
-import java.math.BigInteger;
 import java.util.Map;
 import java.util.Objects;
 import java.util.regex.Pattern;

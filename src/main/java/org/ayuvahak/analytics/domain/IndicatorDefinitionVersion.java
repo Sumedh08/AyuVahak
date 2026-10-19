@@ -112,13 +112,23 @@ public record IndicatorDefinitionVersion(
     if (formula == AggregationFormula.RATIO_6DP_HALF_EVEN && denominatorMeasures.isEmpty()) {
       throw new IllegalArgumentException("ratio formula requires denominator measures");
     }
-    if (sourceMeasures.stream()
+    if (java.util.stream.Stream.concat(sourceMeasures.stream(), denominatorMeasures.stream())
             .anyMatch(measure -> measure.attribution() != SourceMeasure.Attribution.NONE)
         && !governance
             .allowedDimensions()
             .contains(IndicatorDefinitionGovernance.ReportingDimension.SOURCE_ATTRIBUTION)) {
       throw new IllegalArgumentException(
           "source attribution measures require an explicitly allowed bounded dimension");
+    }
+    long transferAttributionCount =
+        java.util.stream.Stream.concat(sourceMeasures.stream(), denominatorMeasures.stream())
+            .filter(measure -> measure.owner() == SourceMeasure.Owner.TRANSFER)
+            .map(SourceMeasure::attribution)
+            .distinct()
+            .count();
+    if (transferAttributionCount > 1) {
+      throw new IllegalArgumentException(
+          "a scalar indicator must use one Transfer attribution; origin and destination measures require separately defined outputs");
     }
   }
 

@@ -100,11 +100,7 @@ class DisclosureInferenceAnalyzerTest {
         candidate(
             Map.of("NUMERATOR_A", 0L, "NUMERATOR_B", 0L, "DENOMINATOR", 12L),
             new DisclosureOutput(
-                "ZERO_RATIO",
-                0,
-                Map.of("NUMERATOR_A", 1L, "NUMERATOR_B", 1L),
-                0,
-                false));
+                "ZERO_RATIO", 0, Map.of("NUMERATOR_A", 1L, "NUMERATOR_B", 1L), 0, false));
 
     assertThat(analyzer.evaluate(policy(false), zeroRatio, List.of(), Map.of(), true))
         .isEqualTo(DisclosureInferenceAnalyzer.Result.INFERENCE_RISK);
@@ -116,19 +112,11 @@ class DisclosureInferenceAnalyzerTest {
         candidate(
             Map.of("NUMERATOR_A", 0L, "NUMERATOR_B", 0L, "DENOMINATOR", 12L),
             new DisclosureOutput(
-                "ZERO_RATIO",
-                0,
-                Map.of("NUMERATOR_A", 1L, "NUMERATOR_B", 1L),
-                0,
-                false));
+                "ZERO_RATIO", 0, Map.of("NUMERATOR_A", 1L, "NUMERATOR_B", 1L), 0, false));
 
     assertThat(
             analyzer.evaluate(
-                policy(true),
-                zeroRatio,
-                zeroRatio.outputs(),
-                zeroRatio.cellValues(),
-                true))
+                policy(true), zeroRatio, zeroRatio.outputs(), zeroRatio.cellValues(), true))
         .isEqualTo(DisclosureInferenceAnalyzer.Result.SAFE);
   }
 
@@ -138,11 +126,7 @@ class DisclosureInferenceAnalyzerTest {
         candidate(
             Map.of("NUMERATOR_A", 0L, "NUMERATOR_B", 0L, "DENOMINATOR", 12L),
             new DisclosureOutput(
-                "ZERO_RATIO",
-                0,
-                Map.of("NUMERATOR_A", 1L, "NUMERATOR_B", 1L),
-                0,
-                false));
+                "ZERO_RATIO", 0, Map.of("NUMERATOR_A", 1L, "NUMERATOR_B", 1L), 0, false));
 
     assertThat(
             analyzer.evaluate(

@@ -222,11 +222,7 @@ public final class FederatedAggregatePublicationService {
       if (reviewed.state() == DisclosureReservationState.RESERVED) {
         publication =
             transition(
-                context,
-                publication,
-                State.READY,
-                "DISCLOSURE_REVIEW_APPROVED",
-                Optional.empty());
+                context, publication, State.READY, "DISCLOSURE_REVIEW_APPROVED", Optional.empty());
       }
     }
     if (publication.state() == State.READY) {

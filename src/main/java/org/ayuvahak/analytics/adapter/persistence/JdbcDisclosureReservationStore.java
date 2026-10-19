@@ -10,17 +10,17 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.UUID;
 import java.util.stream.Collectors;
 import org.ayuvahak.analytics.application.DisclosureReleaseContext;
-import org.ayuvahak.analytics.application.DisclosureReviewContext;
 import org.ayuvahak.analytics.application.DisclosureReservationException;
 import org.ayuvahak.analytics.application.DisclosureReservationStore;
+import org.ayuvahak.analytics.application.DisclosureReviewContext;
 import org.ayuvahak.analytics.domain.DisclosureCandidate;
 import org.ayuvahak.analytics.domain.DisclosureOutput;
 import org.ayuvahak.analytics.domain.DisclosurePolicyActivation;
@@ -225,10 +225,10 @@ public class JdbcDisclosureReservationStore implements DisclosureReservationStor
     jdbc.update(
         "INSERT INTO analytics.disclosure_reservation (reservation_id, policy_key, policy_version, "
             + "operation_id, operation_fingerprint, state, reason_code, origin, history_checkpoint, "
-                + "scope_indicator_key, scope_indicator_version, scope_organization_issuer, "
-                + "scope_organization_id, scope_facility_id, "
+            + "scope_indicator_key, scope_indicator_version, scope_organization_issuer, "
+            + "scope_organization_id, scope_facility_id, "
             + "scope_period_start_utc, scope_period_end_exclusive_utc, created_at, updated_at) "
-                + "VALUES (?, ?, ?, ?, ?, ?, ?, 'LOCAL_RELEASE', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            + "VALUES (?, ?, ?, ?, ?, ?, ?, 'LOCAL_RELEASE', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         reservationId,
         candidate.policyKey(),
         lockedHistory.policy().version(),
@@ -280,11 +280,11 @@ public class JdbcDisclosureReservationStore implements DisclosureReservationStor
     jdbc.update(
         "INSERT INTO analytics.disclosure_reservation (reservation_id, policy_key, policy_version, "
             + "operation_id, operation_fingerprint, state, reason_code, origin, history_checkpoint, "
-                + "scope_indicator_key, scope_indicator_version, scope_organization_issuer, "
-                + "scope_organization_id, scope_facility_id, "
+            + "scope_indicator_key, scope_indicator_version, scope_organization_issuer, "
+            + "scope_organization_id, scope_facility_id, "
             + "scope_period_start_utc, scope_period_end_exclusive_utc, "
             + "created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'DISCLOSED', 'KNOWN_EXTERNAL_BASELINE', "
-                + "'KNOWN_EXTERNAL_BASELINE', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            + "'KNOWN_EXTERNAL_BASELINE', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         reservationId,
         candidate.policyKey(),
         lockedHistory.policy().version(),
@@ -1264,13 +1264,9 @@ public class JdbcDisclosureReservationStore implements DisclosureReservationStor
       DisclosureReservationState state) {}
 
   private record StoredReviewOutput(
-      String outputKey,
-      long value,
-      long equationResult,
-      boolean appliesMinimumCellCount) {}
+      String outputKey, long value, long equationResult, boolean appliesMinimumCellCount) {}
 
-  private record ReviewResolution(
-      DisclosureReservationState state, UUID evidenceReference) {}
+  private record ReviewResolution(DisclosureReservationState state, UUID evidenceReference) {}
 
   private record OutputIdentity(UUID reservationId, String outputKey) {}
 

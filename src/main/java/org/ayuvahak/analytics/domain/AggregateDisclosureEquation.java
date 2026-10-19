@@ -47,7 +47,8 @@ public record AggregateDisclosureEquation(
             .sorted(java.util.Comparator.comparing(SourceMeasure::stableKey))
             .toList();
     if (requiredMeasures.size() != snapshot.inputs().size()
-        || !requiredMeasures.equals(snapshot.inputs().stream().map(AggregateInput::measure).toList())
+        || !requiredMeasures.equals(
+            snapshot.inputs().stream().map(AggregateInput::measure).toList())
         || snapshot.numericValue().isEmpty()) {
       throw new IllegalArgumentException(
           "snapshot is not eligible for source-cell disclosure analysis");
@@ -97,7 +98,8 @@ public record AggregateDisclosureEquation(
     try {
       scaledRatio = reported.movePointRight(6).longValueExact();
     } catch (ArithmeticException invalidScale) {
-      throw new IllegalArgumentException("ratio precision is outside disclosure bounds", invalidScale);
+      throw new IllegalArgumentException(
+          "ratio precision is outside disclosure bounds", invalidScale);
     }
     java.math.BigDecimal recomputed =
         java.math.BigDecimal.valueOf(numerator)

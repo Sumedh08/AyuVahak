@@ -34,7 +34,9 @@ public interface DisclosureReservationStore {
 
   Optional<ExternalReference> organizationForReservation(UUID reservationId);
 
-  /** Locks a pending review and restores its immutable candidate inputs for a release-safety check. */
+  /**
+   * Locks a pending review and restores its immutable candidate inputs for a release-safety check.
+   */
   Optional<DisclosureReviewContext> lockCandidateForReview(
       UUID reservationId, String expectedOperationFingerprint);
 

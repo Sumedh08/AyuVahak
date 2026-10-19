@@ -258,10 +258,7 @@ public final class AnalyticsDisclosureReservationService {
     DisclosureReservation existing = requireReservation(reservationId);
     DisclosurePolicyVersion policy = requireActivePolicy(existing.policyKey());
     requireOrganizationScope(
-        context,
-        policy.organization(),
-        reservationId,
-        "ANALYTICS_DISCLOSURE_REVIEW_DENIED");
+        context, policy.organization(), reservationId, "ANALYTICS_DISCLOSURE_REVIEW_DENIED");
     if (context == null
         || context.actor().kind() != ActorKind.HUMAN
         || !(context.sourceKind() == SourceKind.INTERACTIVE_REQUEST
@@ -306,7 +303,8 @@ public final class AnalyticsDisclosureReservationService {
             }
             InternalId auditId =
                 audit.recordMutation(
-                    mutationEvidence(context, "ANALYTICS_DISCLOSURE_" + reason, reservationId, reason));
+                    mutationEvidence(
+                        context, "ANALYTICS_DISCLOSURE_" + reason, reservationId, reason));
             return reservations.resolveReviewRequired(
                 reservationId,
                 expectedOperationFingerprint,

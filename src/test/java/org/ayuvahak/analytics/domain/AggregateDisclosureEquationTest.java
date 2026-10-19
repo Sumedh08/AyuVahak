@@ -2,8 +2,8 @@ package org.ayuvahak.analytics.domain;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import java.nio.charset.StandardCharsets;
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
@@ -102,11 +102,7 @@ class AggregateDisclosureEquationTest {
     DisclosureOutput output = equation.output("RATIO");
     DisclosureCandidate candidate =
         new DisclosureCandidate(
-            "SYN-SCOPE",
-            1,
-            UUID.randomUUID(),
-            equation.cellValues(),
-            List.of(output));
+            "SYN-SCOPE", 1, UUID.randomUUID(), equation.cellValues(), List.of(output));
     DisclosurePolicyVersion policy =
         new DisclosurePolicyVersion(
             "SYN-SCOPE",
@@ -129,7 +125,8 @@ class AggregateDisclosureEquationTest {
   @Test
   void ratioRelationParticipatesInDifferencingAnalysis() {
     AggregateSnapshot ratio = ratioSnapshot(1L, 100L, "0.010000");
-    AggregateDisclosureEquation equation = AggregateDisclosureEquation.from(ratio, ratioDefinition());
+    AggregateDisclosureEquation equation =
+        AggregateDisclosureEquation.from(ratio, ratioDefinition());
     String denominatorCell =
         equation.cellValues().keySet().stream()
             .filter(key -> equation.cellValues().get(key) == 100L)
@@ -139,7 +136,11 @@ class AggregateDisclosureEquationTest {
         new DisclosureOutput("KNOWN_DENOMINATOR", 100L, Map.of(denominatorCell, 1L));
     DisclosureCandidate candidate =
         new DisclosureCandidate(
-            "SYN-SCOPE", 1, UUID.randomUUID(), equation.cellValues(), List.of(equation.output("RATIO")));
+            "SYN-SCOPE",
+            1,
+            UUID.randomUUID(),
+            equation.cellValues(),
+            List.of(equation.output("RATIO")));
     DisclosurePolicyVersion policy =
         new DisclosurePolicyVersion(
             "SYN-SCOPE",
@@ -179,8 +180,7 @@ class AggregateDisclosureEquationTest {
         ReportingPeriod.resolve(
             LocalDate.of(2026, 3, 1), LocalDate.of(2026, 4, 1), ZoneId.of("UTC"));
     List<AggregateInput> inputs =
-        List.of(
-            ratioInput(SUBMITTED, numerator), ratioInput(RESOLVED, denominator)).stream()
+        List.of(ratioInput(SUBMITTED, numerator), ratioInput(RESOLVED, denominator)).stream()
             .sorted(java.util.Comparator.comparing(input -> input.measure().stableKey()))
             .toList();
     return new AggregateSnapshot(

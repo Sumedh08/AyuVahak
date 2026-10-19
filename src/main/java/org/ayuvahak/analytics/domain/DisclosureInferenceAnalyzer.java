@@ -63,8 +63,7 @@ public final class DisclosureInferenceAnalyzer {
     List<DisclosureOutput> incrementalOutputs =
         candidate.outputs().stream()
             .filter(
-                output ->
-                    priorOutputs.stream().noneMatch(prior -> sameDisclosure(prior, output)))
+                output -> priorOutputs.stream().noneMatch(prior -> sameDisclosure(prior, output)))
             .toList();
     if (incrementalOutputs.isEmpty()) {
       return Result.SAFE;
@@ -92,7 +91,8 @@ public final class DisclosureInferenceAnalyzer {
       return Result.SAFE;
     }
 
-    if (equations.stream().anyMatch(output -> revealsZeroNonNegativeCells(output, protectedCells))) {
+    if (equations.stream()
+        .anyMatch(output -> revealsZeroNonNegativeCells(output, protectedCells))) {
       return Result.INFERENCE_RISK;
     }
 
@@ -153,8 +153,10 @@ public final class DisclosureInferenceAnalyzer {
     if (output.equationResult() != 0) {
       return false;
     }
-    boolean allNonNegative = output.cellCoefficients().values().stream().allMatch(value -> value > 0);
-    boolean allNonPositive = output.cellCoefficients().values().stream().allMatch(value -> value < 0);
+    boolean allNonNegative =
+        output.cellCoefficients().values().stream().allMatch(value -> value > 0);
+    boolean allNonPositive =
+        output.cellCoefficients().values().stream().allMatch(value -> value < 0);
     return (allNonNegative || allNonPositive)
         && output.cellCoefficients().keySet().stream().anyMatch(protectedCells::contains);
   }

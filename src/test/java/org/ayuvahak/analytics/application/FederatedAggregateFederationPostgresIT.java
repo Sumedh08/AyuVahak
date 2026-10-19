@@ -446,8 +446,7 @@ class FederatedAggregateFederationPostgresIT {
     assertThat(published.operationId()).isEqualTo(held.operationId());
     assertThat(published.state()).isEqualTo(FederatedAggregatePublication.State.ACKNOWLEDGED);
     assertThat(sends[0]).isEqualTo(1);
-    assertThat(
-            disclosure.findReservation(releaseContext(), reservation.reservationId()).state())
+    assertThat(disclosure.findReservation(releaseContext(), reservation.reservationId()).state())
         .isEqualTo(DisclosureReservationState.DISCLOSED);
   }
 

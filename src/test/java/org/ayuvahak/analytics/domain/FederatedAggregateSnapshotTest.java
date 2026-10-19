@@ -102,31 +102,35 @@ class FederatedAggregateSnapshotTest {
         SourceMeasure.transfer("TRANSFER_ACCEPTED", SourceMeasure.Attribution.ORIGIN);
     SourceMeasure destination =
         SourceMeasure.transfer("TRANSFER_COMPLETED", SourceMeasure.Attribution.DESTINATION);
-    IndicatorDefinitionVersion mixed =
-        new IndicatorDefinitionVersion(
-            "SYN-INDICATOR-FEDERATED-001",
-            1,
-            "Synthetic mixed attribution",
-            ZoneId.of("UTC"),
-            List.of(origin, destination),
-            true);
-    AggregateSnapshot snapshot =
-        AggregateSnapshot.create(
-            InternalId.generate(),
-            mixed,
-            organization(),
-            ReportingPeriod.resolve(
-                LocalDate.parse("2026-01-01"), LocalDate.parse("2026-02-01"), ZoneId.of("UTC")),
-            AggregateCompleteness.COMPLETE,
-            OptionalLong.of(7),
-            List.of(completeInput(origin, 3), completeInput(destination, 4)),
-            COMPUTED_AT);
 
     assertThatThrownBy(
             () ->
-                FederatedAggregateSnapshot.from(
-                    snapshot, mixed, revision(snapshot.snapshotId(), 1), SOURCE))
+                new IndicatorDefinitionVersion(
+                    "SYN-INDICATOR-FEDERATED-001",
+                    1,
+                    "Synthetic mixed attribution",
+                    ZoneId.of("UTC"),
+                    List.of(origin, destination),
+                    true))
         .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void derivesFederatedAttributionFromDenominatorMeasuresToo() {
+    IndicatorDefinitionVersion ratio =
+        new IndicatorDefinitionVersion(
+            "SYN-INDICATOR-DENOMINATOR-ATTRIBUTION",
+            1,
+            "Synthetic ratio denominator attribution",
+            AggregationFormula.RATIO_6DP_HALF_EVEN,
+            ZoneId.of("UTC"),
+            List.of(SourceMeasure.referral("SUBMITTED_COUNT")),
+            true,
+            List.of(SourceMeasure.transfer("TRANSFER_ACCEPTED", SourceMeasure.Attribution.ORIGIN)),
+            IndicatorDefinitionGovernance.syntheticFixture("Synthetic ratio demonstration"));
+
+    assertThat(FederatedAggregateSnapshot.attribution(ratio))
+        .isEqualTo(SourceMeasure.Attribution.ORIGIN);
   }
 
   private static IndicatorDefinitionVersion definition(SourceMeasure.Attribution attribution) {
@@ -171,17 +175,6 @@ class FederatedAggregateSnapshotTest {
         optionalValue,
         List.of(input),
         COMPUTED_AT);
-  }
-
-  private static AggregateInput completeInput(SourceMeasure measure, long value) {
-    return new AggregateInput(
-        measure,
-        Optional.of(UUID.randomUUID()),
-        Optional.of(Instant.parse("2026-02-02T00:00:00Z")),
-        Optional.of("synthetic-transfer-reporting-v1"),
-        AggregateCompleteness.COMPLETE,
-        OptionalLong.of(value),
-        Optional.of(Instant.parse("2026-02-02T01:00:00Z")));
   }
 
   private static AggregateSnapshotRevision revision(UUID snapshotId, int version) {

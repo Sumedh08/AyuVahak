@@ -204,11 +204,9 @@ class AnalyticsDisclosureReservationPostgresIT {
     Instant start = Instant.parse("2026-01-01T00:00:00Z");
     Instant end = Instant.parse("2026-02-01T00:00:00Z");
     DisclosureScope organizationScope =
-        disclosureScope(
-            "SYN-INDICATOR-001", 1, Optional.empty(), start, end);
+        disclosureScope("SYN-INDICATOR-001", 1, Optional.empty(), start, end);
     DisclosureScope facilityScope =
-        disclosureScope(
-            "SYN-INDICATOR-001", 1, Optional.of(UUID.randomUUID()), start, end);
+        disclosureScope("SYN-INDICATOR-001", 1, Optional.of(UUID.randomUUID()), start, end);
 
     DisclosureReservation organizationRelease =
         service.reserve(
@@ -226,11 +224,7 @@ class AnalyticsDisclosureReservationPostgresIT {
                 facilityScope,
                 Map.of("NUMERATOR_A", 0L, "NUMERATOR_B", 0L, "DENOMINATOR", 12L),
                 new DisclosureOutput(
-                    "ZERO_RATIO",
-                    0,
-                    Map.of("NUMERATOR_A", 1L, "NUMERATOR_B", 1L),
-                    0,
-                    false)));
+                    "ZERO_RATIO", 0, Map.of("NUMERATOR_A", 1L, "NUMERATOR_B", 1L), 0, false)));
 
     assertThat(organizationRelease.state()).isEqualTo(DisclosureReservationState.RESERVED);
     assertThat(zeroRatio.state()).isEqualTo(DisclosureReservationState.WITHHELD);
@@ -294,10 +288,8 @@ class AnalyticsDisclosureReservationPostgresIT {
     Instant start = Instant.parse("2026-01-01T00:00:00Z");
     Instant end = Instant.parse("2026-02-01T00:00:00Z");
     Optional<UUID> facility = Optional.of(UUID.randomUUID());
-    DisclosureScope firstScope =
-        disclosureScope("SYN-INDICATOR-001", 1, facility, start, end);
-    DisclosureScope secondScope =
-        disclosureScope("SYN-INDICATOR-002", 1, facility, start, end);
+    DisclosureScope firstScope = disclosureScope("SYN-INDICATOR-001", 1, facility, start, end);
+    DisclosureScope secondScope = disclosureScope("SYN-INDICATOR-002", 1, facility, start, end);
 
     DisclosureReservation firstRelease =
         service.reserve(
@@ -336,10 +328,8 @@ class AnalyticsDisclosureReservationPostgresIT {
     Instant start = Instant.parse("2026-01-01T00:00:00Z");
     Instant end = Instant.parse("2026-02-01T00:00:00Z");
     Optional<UUID> facility = Optional.of(UUID.randomUUID());
-    DisclosureScope versionOne =
-        disclosureScope("SYN-INDICATOR-001", 1, facility, start, end);
-    DisclosureScope versionTwo =
-        disclosureScope("SYN-INDICATOR-001", 2, facility, start, end);
+    DisclosureScope versionOne = disclosureScope("SYN-INDICATOR-001", 1, facility, start, end);
+    DisclosureScope versionTwo = disclosureScope("SYN-INDICATOR-001", 2, facility, start, end);
 
     DisclosureReservation firstRelease =
         service.reserve(
@@ -876,8 +866,7 @@ class AnalyticsDisclosureReservationPostgresIT {
             UUID.randomUUID(),
             Map.of("CELL_A", 0L),
             List.of(zero),
-            disclosureScope(
-                "SYN-INDICATOR-001", 1, Optional.of(UUID.randomUUID()), start, end));
+            disclosureScope("SYN-INDICATOR-001", 1, Optional.of(UUID.randomUUID()), start, end));
     DisclosureReservation review = service.reserve(releaseContext(), facilityRepeat);
     assertThat(review.state()).isEqualTo(DisclosureReservationState.REVIEW_REQUIRED);
 
@@ -923,8 +912,8 @@ class AnalyticsDisclosureReservationPostgresIT {
             UUID.randomUUID(),
             Map.of("CELL_A", 9L),
             List.of(new DisclosureOutput("CELL_A", 9, Map.of("CELL_A", 1L))),
-            org.ayuvahak.analytics.domain.IndicatorDefinitionGovernance
-                .SensitivityClassification.LOW_SENSITIVITY_AGGREGATE,
+            org.ayuvahak.analytics.domain.IndicatorDefinitionGovernance.SensitivityClassification
+                .LOW_SENSITIVITY_AGGREGATE,
             scope);
 
     DisclosureReservation later = service.reserve(releaseContext(), relatedHighCell);
@@ -946,12 +935,7 @@ class AnalyticsDisclosureReservationPostgresIT {
   @Test
   void signedRatioDisclosureEquationSurvivesPostgresAndProtectsSmallSourceCell() {
     UUID broad = UUID.randomUUID();
-    activate(
-        policy(
-            1,
-            broad,
-            Map.of("RATIO", Set.of(broad), "DENOMINATOR", Set.of(broad)),
-            true));
+    activate(policy(1, broad, Map.of("RATIO", Set.of(broad), "DENOMINATOR", Set.of(broad)), true));
     Map<String, Long> cells = Map.of("SYN-NUMERATOR", 3L, "SYN-DENOMINATOR", 9L);
     DisclosureOutput ratio =
         new DisclosureOutput(
@@ -1137,11 +1121,7 @@ class AnalyticsDisclosureReservationPostgresIT {
         Map.of("NUMERATOR_A", 0L, "NUMERATOR_B", 0L, "DENOMINATOR", 12L),
         List.of(
             new DisclosureOutput(
-                "ZERO_RATIO",
-                0,
-                Map.of("NUMERATOR_A", 1L, "NUMERATOR_B", 1L),
-                0,
-                false)));
+                "ZERO_RATIO", 0, Map.of("NUMERATOR_A", 1L, "NUMERATOR_B", 1L), 0, false)));
   }
 
   private static DisclosureCandidate scopedCandidate(
@@ -1150,7 +1130,11 @@ class AnalyticsDisclosureReservationPostgresIT {
   }
 
   private static DisclosureScope disclosureScope(
-      String indicatorKey, int indicatorVersion, Optional<UUID> facilityId, Instant start, Instant end) {
+      String indicatorKey,
+      int indicatorVersion,
+      Optional<UUID> facilityId,
+      Instant start,
+      Instant end) {
     return new DisclosureScope(
         indicatorKey,
         indicatorVersion,

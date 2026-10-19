@@ -882,8 +882,7 @@ class Dhis2AggregateExportPostgresIT {
     assertThat(held.disclosureReservationId()).isPresent();
     assertThat(exchange.requestCount()).isZero();
     var reservation =
-        disclosure
-            .findReservation(serviceContext(), held.disclosureReservationId().orElseThrow());
+        disclosure.findReservation(serviceContext(), held.disclosureReservationId().orElseThrow());
     assertThat(reservation.state()).isEqualTo(DisclosureReservationState.REVIEW_REQUIRED);
 
     disclosure.resolveReviewRequired(
@@ -899,10 +898,7 @@ class Dhis2AggregateExportPostgresIT {
     assertThat(delivered.operationId()).isEqualTo(operationId);
     assertThat(delivered.state()).isEqualTo(Dhis2ExportState.ACKNOWLEDGED);
     assertThat(exchange.requestCount()).isEqualTo(1);
-    assertThat(
-            disclosure
-                .findReservation(serviceContext(), reservation.reservationId())
-                .state())
+    assertThat(disclosure.findReservation(serviceContext(), reservation.reservationId()).state())
         .isEqualTo(DisclosureReservationState.DISCLOSED);
   }
 
