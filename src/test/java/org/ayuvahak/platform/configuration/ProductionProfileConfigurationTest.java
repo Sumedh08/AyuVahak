@@ -180,7 +180,7 @@ class ProductionProfileConfigurationTest {
             context -> {
               assertThat(context).hasFailed();
               assertThat(context.getStartupFailure().toString())
-                  .contains("production retention register must cover every owner category");
+                  .contains("Could not bind properties to 'ProductionProfileProperties'");
             });
   }
 

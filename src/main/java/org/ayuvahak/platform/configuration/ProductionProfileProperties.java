@@ -216,7 +216,7 @@ public class ProductionProfileProperties {
 
     @NotBlank private String accountableAuthority;
 
-    @Valid @NotNull private Map<RetentionCategory, RetentionSchedule> register =
+    @NotNull private Map<RetentionCategory, @Valid RetentionSchedule> register =
         new EnumMap<>(RetentionCategory.class);
 
     public String getScheduleId() {
