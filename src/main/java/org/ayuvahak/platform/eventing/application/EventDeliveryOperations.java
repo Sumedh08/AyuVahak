@@ -22,6 +22,8 @@ import org.ayuvahak.platform.core.ActorKind;
 import org.ayuvahak.platform.core.CorrelationId;
 import org.ayuvahak.platform.core.InternalId;
 import org.ayuvahak.platform.event.EventEnvelopeJsonCodec;
+import org.ayuvahak.platform.retention.RetentionReapplicationProperties;
+import org.ayuvahak.platform.retention.PlatformRetentionAuthorities;
 import org.ayuvahak.platform.executioncontext.AuthenticationMechanism;
 import org.ayuvahak.platform.executioncontext.ExecutionContext;
 import org.ayuvahak.platform.idempotency.CommandReceiptKey;
@@ -45,6 +47,8 @@ public class EventDeliveryOperations {
   private static final int MAX_PAGE_SIZE = 100;
 
   private final EventDeliveryOperationsStore store;
+  private final PlatformOutboxRetentionReapplicationStore retentionReapplicationStore;
+  private final RetentionReapplicationProperties retentionReapplicationProperties;
   private final EventHandlerRegistry handlers;
   private final EventEnvelopeJsonCodec codec;
   private final ObjectProvider<AuthorizationService> authorization;
@@ -54,6 +58,8 @@ public class EventDeliveryOperations {
 
   public EventDeliveryOperations(
       @Lazy EventDeliveryOperationsStore store,
+      PlatformOutboxRetentionReapplicationStore retentionReapplicationStore,
+      RetentionReapplicationProperties retentionReapplicationProperties,
       EventHandlerRegistry handlers,
       EventEnvelopeJsonCodec codec,
       ObjectProvider<AuthorizationService> authorization,
@@ -61,6 +67,10 @@ public class EventDeliveryOperations {
       ObjectProvider<PlatformTransactionManager> transactionManagers,
       @Qualifier("auditClock") Clock clock) {
     this.store = Objects.requireNonNull(store, "store");
+    this.retentionReapplicationStore =
+        Objects.requireNonNull(retentionReapplicationStore, "retention reapplication store");
+    this.retentionReapplicationProperties =
+        Objects.requireNonNull(retentionReapplicationProperties, "retention reapplication properties");
     this.handlers = Objects.requireNonNull(handlers, "handlers");
     this.codec = Objects.requireNonNull(codec, "codec");
     this.authorization = Objects.requireNonNull(authorization, "authorization");
@@ -241,6 +251,206 @@ public class EventDeliveryOperations {
     }
   }
 
+  public RetentionHoldResult placeRetentionHold(
+      ExecutionContext context,
+      InternalId eventId,
+      RetentionHoldPurpose purpose,
+      Instant reviewBy) {
+    Objects.requireNonNull(eventId, "event id");
+    Objects.requireNonNull(purpose, "retention hold purpose");
+    Objects.requireNonNull(reviewBy, "review date");
+    requireAuthority(context, "EVENT_RETENTION_HOLD", Optional.of(eventId));
+    Instant now = clock.instant();
+    if (!reviewBy.isAfter(now)) {
+      throw problem(
+          HttpStatus.BAD_REQUEST,
+          PlatformErrorCode.VALIDATION_FAILED,
+          "A retention hold review time must be in the future.");
+    }
+    UUID holdId = UUID.randomUUID();
+    try {
+      return new TransactionTemplate(transactionManagers.getObject())
+          .execute(
+              status -> {
+                if (!store.createRetentionHold(
+                    holdId, eventId, purpose, reviewBy, context.actor(), now)) {
+                  throw problem(
+                      HttpStatus.NOT_FOUND,
+                      PlatformErrorCode.EVENT_NOT_FOUND,
+                      "The requested event delivery was not found.");
+                }
+                recordMutation(context, "EVENT_RETENTION_HOLD", eventId);
+                return new RetentionHoldResult(holdId, eventId, purpose, reviewBy, now);
+              });
+    } catch (AuditPersistenceUnavailableException auditFailure) {
+      throw problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          PlatformErrorCode.AUDIT_UNAVAILABLE,
+          "The retention hold was not accepted because its audit record is unavailable.");
+    } catch (DataAccessException unavailable) {
+      throw problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          PlatformErrorCode.EVENT_DELIVERY_UNAVAILABLE,
+          "The retention hold could not be committed safely.");
+    }
+  }
+
+  public void releaseRetentionHold(
+      ExecutionContext context,
+      InternalId eventId,
+      UUID holdId,
+      RetentionHoldReleaseReason reason) {
+    Objects.requireNonNull(eventId, "event id");
+    Objects.requireNonNull(holdId, "retention hold id");
+    Objects.requireNonNull(reason, "retention hold release reason");
+    requireAuthority(context, "EVENT_RETENTION_HOLD_RELEASE", Optional.of(eventId));
+    try {
+      new TransactionTemplate(transactionManagers.getObject())
+          .executeWithoutResult(
+              status -> {
+                if (!store.releaseRetentionHold(
+                    holdId, eventId, reason, context.actor(), clock.instant())) {
+                  throw problem(
+                      HttpStatus.NOT_FOUND,
+                      PlatformErrorCode.EVENT_NOT_FOUND,
+                      "The active retention hold was not found.");
+                }
+                recordMutation(context, "EVENT_RETENTION_HOLD_RELEASE", eventId);
+              });
+    } catch (AuditPersistenceUnavailableException auditFailure) {
+      throw problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          PlatformErrorCode.AUDIT_UNAVAILABLE,
+          "The retention hold remains active because its release audit record is unavailable.");
+    } catch (DataAccessException unavailable) {
+      throw problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          PlatformErrorCode.EVENT_DELIVERY_UNAVAILABLE,
+          "The retention hold could not be released safely.");
+    }
+  }
+
+  public PlatformOutboxRetentionManifest exportRetentionManifest(
+      ExecutionContext context, UUID restoreId, Instant backupCompletedAt) {
+    Objects.requireNonNull(restoreId, "restore id");
+    Objects.requireNonNull(backupCompletedAt, "backup completion time");
+    requireRetentionReapplicationAuthority(context, "RETENTION_MANIFEST_EXPORT");
+    Instant generatedAt = clock.instant();
+    if (!generatedAt.isAfter(backupCompletedAt)) {
+      throw problem(
+          HttpStatus.BAD_REQUEST,
+          PlatformErrorCode.VALIDATION_FAILED,
+          "Backup completion must precede retention manifest generation.");
+    }
+    try {
+      PlatformOutboxRetentionManifest manifest =
+          retentionReapplicationStore.exportSince(restoreId, backupCompletedAt, generatedAt);
+      recordRetentionManifestRead(context, "RETENTION_MANIFEST_EXPORT");
+      return manifest;
+    } catch (AuditPersistenceUnavailableException unavailable) {
+      throw problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          PlatformErrorCode.AUDIT_UNAVAILABLE,
+          "The retention manifest was not disclosed because its audit record is unavailable.");
+    } catch (DataAccessException unavailable) {
+      throw problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          PlatformErrorCode.EVENT_DELIVERY_UNAVAILABLE,
+          "The Platform retention manifest is temporarily unavailable.");
+    }
+  }
+
+  public void reapplyRetentionManifest(
+      ExecutionContext context, PlatformOutboxRetentionManifest manifest) {
+    Objects.requireNonNull(manifest, "retention manifest");
+    requireRetentionReapplicationAuthority(context, "RETENTION_MANIFEST_REAPPLY");
+    final UUID requiredRestoreId;
+    try {
+      requiredRestoreId =
+          retentionReapplicationProperties
+              .requiredRestoreId()
+              .orElseThrow(
+                  () ->
+                      problem(
+                          HttpStatus.CONFLICT,
+                          PlatformErrorCode.VALIDATION_FAILED,
+                          "A required restore id must be configured before reapplication."));
+    } catch (IllegalArgumentException invalid) {
+      throw problem(
+          HttpStatus.CONFLICT,
+          PlatformErrorCode.VALIDATION_FAILED,
+          "The configured restore id is invalid.");
+    }
+    if (!requiredRestoreId.equals(manifest.restoreId())) {
+      throw problem(
+          HttpStatus.CONFLICT,
+          PlatformErrorCode.VALIDATION_FAILED,
+          "The retention manifest does not match the configured restore id.");
+    }
+    try {
+      new TransactionTemplate(transactionManagers.getObject())
+          .executeWithoutResult(
+              status -> {
+                if (retentionReapplicationStore.hasCompleted(manifest.restoreId())) return;
+                retentionReapplicationStore.reapply(manifest, clock.instant());
+                recordRetentionManifestMutation(context, "RETENTION_MANIFEST_REAPPLY");
+              });
+    } catch (AuditPersistenceUnavailableException unavailable) {
+      throw problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          PlatformErrorCode.AUDIT_UNAVAILABLE,
+          "Retention controls were not reapplied because the required audit record is unavailable.");
+    } catch (DataAccessException unavailable) {
+      throw problem(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          PlatformErrorCode.EVENT_DELIVERY_UNAVAILABLE,
+          "Platform retention controls could not be reapplied safely.");
+    } catch (IllegalStateException conflict) {
+      throw problem(
+          HttpStatus.CONFLICT,
+          PlatformErrorCode.VALIDATION_FAILED,
+          "The retention manifest conflicts with restored Platform state.");
+    }
+  }
+
+  private void recordRetentionManifestRead(ExecutionContext context, String action) {
+    auditWriter
+        .getObject()
+        .recordNonMutating(
+            new AuditEvidence(
+                AuditActionKind.SENSITIVE_READ,
+                Optional.of(context.actor()),
+                Optional.of(context.scope()),
+                action,
+                "PlatformRetentionManifest",
+                Optional.empty(),
+                clock.instant(),
+                AuditOutcome.SUCCEEDED,
+                Optional.empty(),
+                auditAuthenticationEvidence(context.authenticationMechanism()),
+                AuditAuthorizationOutcome.ALLOWED,
+                context.correlationId()));
+  }
+
+  private void recordRetentionManifestMutation(ExecutionContext context, String action) {
+    auditWriter
+        .getObject()
+        .recordMutation(
+            new AuditEvidence(
+                AuditActionKind.PROTECTED_MUTATION,
+                Optional.of(context.actor()),
+                Optional.of(context.scope()),
+                action,
+                "PlatformRetentionManifest",
+                Optional.empty(),
+                clock.instant(),
+                AuditOutcome.SUCCEEDED,
+                Optional.empty(),
+                auditAuthenticationEvidence(context.authenticationMechanism()),
+                AuditAuthorizationOutcome.ALLOWED,
+                context.correlationId()));
+  }
+
   private boolean hasCompatibleHandler(ReplayCandidate candidate) {
     var registered = handlers.handlersFor(candidate.eventType());
     if (registered.isEmpty()) return false;
@@ -274,6 +484,24 @@ public class EventDeliveryOperations {
         HttpStatus.FORBIDDEN,
         PlatformErrorCode.AUTHORIZATION_DENIED,
         "The authenticated principal is not authorized for this operation.");
+  }
+
+  private void requireRetentionReapplicationAuthority(ExecutionContext context, String action) {
+    AuthorizationDecision decision =
+        authorization
+            .getObject()
+            .evaluate(context, PlatformRetentionAuthorities.reapplication().code());
+    if (decision.isAllowed()) return;
+    recordDenial(context, action, Optional.empty());
+    boolean unavailable =
+        decision.denialReason().orElse(null)
+            == AuthorizationDecision.DenialReason.GRANT_STORE_UNAVAILABLE;
+    throw problem(
+        unavailable ? HttpStatus.SERVICE_UNAVAILABLE : HttpStatus.FORBIDDEN,
+        unavailable
+            ? PlatformErrorCode.AUTHORIZATION_UNAVAILABLE
+            : PlatformErrorCode.AUTHORIZATION_DENIED,
+        "The authenticated principal is not authorized for retention reapplication.");
   }
 
   private void recordRead(ExecutionContext context) {
@@ -317,13 +545,17 @@ public class EventDeliveryOperations {
   }
 
   private void recordMutation(ExecutionContext context, InternalId eventId) {
+    recordMutation(context, "EVENT_DELIVERY_REPLAY", eventId);
+  }
+
+  private void recordMutation(ExecutionContext context, String action, InternalId eventId) {
     auditWriter
         .getObject()
         .recordMutation(
             evidence(
                 context,
                 AuditActionKind.PROTECTED_MUTATION,
-                "EVENT_DELIVERY_REPLAY",
+                  action,
                 Optional.of(eventId),
                 AuditOutcome.SUCCEEDED,
                 AuditAuthorizationOutcome.ALLOWED));
@@ -367,4 +599,11 @@ public class EventDeliveryOperations {
   }
 
   public record ReplayResult(InternalId eventId, int deliveryGeneration, boolean replayed) {}
+
+  public record RetentionHoldResult(
+      UUID holdId,
+      InternalId eventId,
+      RetentionHoldPurpose purpose,
+      Instant reviewBy,
+      Instant createdAt) {}
 }

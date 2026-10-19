@@ -85,7 +85,9 @@ public class ReferralQueries {
                           .map(
                               draft ->
                                   new ReferralCurrentView(
-                                      draft, drafts.findLatestSubmittedRevision(referralId)))),
+                                      draft,
+                                      drafts.findLatestSubmittedRevision(referralId),
+                                      drafts.isIdentifierRestricted(referralId)))),
               "Referral read transaction result");
     } catch (DataAccessException unavailable) {
       throw unavailable("Referral detail could not be read safely.");
@@ -136,7 +138,8 @@ public class ReferralQueries {
                     return Optional.of(
                         new ReferralCurrentView(
                             current.orElseThrow(),
-                            drafts.findSubmittedRevisionNumber(referralId, revisionNumber)));
+                            drafts.findSubmittedRevisionNumber(referralId, revisionNumber),
+                            drafts.isIdentifierRestricted(referralId)));
                   }),
               "Referral revision transaction result");
     } catch (DataAccessException unavailable) {

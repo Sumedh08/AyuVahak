@@ -28,6 +28,7 @@ import org.ayuvahak.platform.event.EventType;
 import org.ayuvahak.platform.eventing.adapter.api.PlatformEventDeliveryController;
 import org.ayuvahak.platform.eventing.application.InternalEvent;
 import org.ayuvahak.platform.eventing.application.InternalEventHandler;
+import org.ayuvahak.platform.retention.RetentionReapplicationProperties;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -49,6 +50,7 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
+import tools.jackson.databind.ObjectMapper;
 
 @SpringBootTest(
     properties = {
@@ -85,6 +87,8 @@ class EventDeliveryOperationsIT {
   @Autowired private MockMvc mvc;
   @Autowired private JdbcTemplate jdbc;
   @Autowired private BootstrapGrantService bootstrap;
+  @Autowired private ObjectMapper objectMapper;
+  @Autowired private RetentionReapplicationProperties retentionReapplicationProperties;
 
   @BeforeAll
   static void startJwks() throws Exception {
@@ -123,7 +127,11 @@ class EventDeliveryOperationsIT {
 
   @BeforeEach
   void reset() {
+    retentionReapplicationProperties.setRequiredRestoreId("");
+    jdbc.update("DELETE FROM platform_eventing.retention_reapplication_receipt");
     jdbc.update("DELETE FROM platform_eventing.delivery_command_receipt");
+    jdbc.update("DELETE FROM platform_eventing.retention_purge_receipt");
+    jdbc.update("DELETE FROM platform_eventing.retention_hold");
     jdbc.update("DELETE FROM identity_access.grant_command_receipt");
     jdbc.update("DELETE FROM identity_access.bootstrap_marker");
     jdbc.update("DELETE FROM audit.audit_record");
@@ -242,6 +250,124 @@ class EventDeliveryOperationsIT {
   }
 
   @Test
+  void retentionHoldAndReleaseAreAuthorizedAndAudited() throws Exception {
+    provisionOperator();
+    String eventId = createGrantEvent();
+
+    mvc.perform(
+            post("/api/v1/platform/event-deliveries/{id}/retention-holds", eventId)
+                .header("Authorization", token(ADMIN))
+                .header(PlatformEventDeliveryController.EXECUTION_SCOPE_HEADER, "PLATFORM")
+                .contentType("application/json")
+                .content(
+                    "{\"purposeCode\":\"LEGAL_REVIEW\",\"reviewBy\":\""
+                        + Instant.now().plusSeconds(3600)
+                        + "\"}"))
+        .andExpect(status().isForbidden());
+
+    var held =
+        mvc.perform(
+                post("/api/v1/platform/event-deliveries/{id}/retention-holds", eventId)
+                    .header("Authorization", token(OPERATOR))
+                    .header(PlatformEventDeliveryController.EXECUTION_SCOPE_HEADER, "PLATFORM")
+                    .contentType("application/json")
+                    .content(
+                        "{\"purposeCode\":\"LEGAL_REVIEW\",\"reviewBy\":\""
+                            + Instant.now().plusSeconds(3600)
+                            + "\"}"))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.holdId").isNotEmpty())
+            .andReturn();
+    String holdId =
+        objectMapper
+            .readTree(held.getResponse().getContentAsString())
+            .get("holdId")
+            .stringValue();
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM platform_eventing.retention_hold "
+                    + "WHERE hold_id = ? AND released_at IS NULL",
+                Integer.class,
+                java.util.UUID.fromString(holdId)))
+        .isEqualTo(1);
+
+    mvc.perform(
+            post(
+                    "/api/v1/platform/event-deliveries/{eventId}/retention-holds/{holdId}/release",
+                    eventId,
+                    holdId)
+                .header("Authorization", token(OPERATOR))
+                .header(PlatformEventDeliveryController.EXECUTION_SCOPE_HEADER, "PLATFORM")
+                .contentType("application/json")
+                .content("{\"reasonCode\":\"REVIEW_COMPLETE\"}"))
+        .andExpect(status().isNoContent());
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM platform_eventing.retention_hold "
+                    + "WHERE hold_id = ? AND released_at IS NOT NULL "
+                    + "AND release_reason_code = 'REVIEW_COMPLETE'",
+                Integer.class,
+                java.util.UUID.fromString(holdId)))
+        .isEqualTo(1);
+    assertThat(
+            count(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code IN "
+                    + "('EVENT_RETENTION_HOLD','EVENT_RETENTION_HOLD_RELEASE') "
+                    + "AND action_kind = 'PROTECTED_MUTATION' AND outcome = 'SUCCEEDED'"))
+        .isEqualTo(2);
+  }
+
+  @Test
+  void manifestOperationsRequireDedicatedAuthorityAndConfiguredRestoreIdentity() throws Exception {
+    provisionOperator();
+    java.util.UUID restoreId = java.util.UUID.randomUUID();
+    retentionReapplicationProperties.setRequiredRestoreId(restoreId.toString());
+    String backupCompletedAt = Instant.now().minusSeconds(60).toString();
+    String exportRequest =
+        "{\"restoreId\":\""
+            + restoreId
+            + "\",\"backupCompletedAt\":\""
+            + backupCompletedAt
+            + "\"}";
+
+    mvc.perform(
+            post("/api/v1/platform/event-deliveries/retention-reapplication/export")
+                .header("Authorization", token(ADMIN))
+                .header(PlatformEventDeliveryController.EXECUTION_SCOPE_HEADER, "PLATFORM")
+                .contentType("application/json")
+                .content(exportRequest))
+        .andExpect(status().isForbidden());
+
+    String manifest =
+        mvc.perform(
+                post("/api/v1/platform/event-deliveries/retention-reapplication/export")
+                    .header("Authorization", token(OPERATOR))
+                    .header(PlatformEventDeliveryController.EXECUTION_SCOPE_HEADER, "PLATFORM")
+                    .contentType("application/json")
+                    .content(exportRequest))
+            .andExpect(status().isOk())
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+
+    mvc.perform(
+            post("/api/v1/platform/event-deliveries/retention-reapplication")
+                .header("Authorization", token(OPERATOR))
+                .header(PlatformEventDeliveryController.EXECUTION_SCOPE_HEADER, "PLATFORM")
+                .contentType("application/json")
+                .content(manifest))
+        .andExpect(status().isNoContent());
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT EXISTS (SELECT 1 FROM platform_eventing.retention_reapplication_receipt "
+                    + "WHERE restore_id = ?)",
+                Boolean.class,
+                restoreId))
+        .isTrue();
+  }
+
+  @Test
   void rejectsIneligibleAndHandlerlessEventsWithoutClaimingReplay() throws Exception {
     provisionOperator();
     String eligibleTypeEvent = createGrantEvent();
@@ -332,6 +458,20 @@ class EventDeliveryOperationsIT {
                         + "\",\"subject\":\""
                         + OPERATOR
                         + "\"},\"authority\":\"EventDeliveryOperations\","
+                        + "\"scope\":{\"kind\":\"PLATFORM\"},\"reasonCode\":\"ACCESS_SETUP\"}"))
+        .andExpect(status().isCreated());
+    mvc.perform(
+            post("/api/v1/platform/access-grants")
+                .header("Authorization", token(ADMIN))
+                .header(PlatformAccessGrantController.EXECUTION_SCOPE_HEADER, "PLATFORM")
+                .header("Idempotency-Key", "retention-reapplication-grant-11")
+                .contentType("application/json")
+                .content(
+                    "{\"principal\":{\"kind\":\"HUMAN\",\"issuer\":\""
+                        + ISSUER
+                        + "\",\"subject\":\""
+                        + OPERATOR
+                        + "\"},\"authority\":\"PlatformRetentionReapplication\","
                         + "\"scope\":{\"kind\":\"PLATFORM\"},\"reasonCode\":\"ACCESS_SETUP\"}"))
         .andExpect(status().isCreated());
   }

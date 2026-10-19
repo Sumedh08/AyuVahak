@@ -60,6 +60,16 @@ public class ReferralAuthorityConfiguration {
   }
 
   @Bean
+  FunctionalAuthority referralRetentionAuthority() {
+    return ReferralAuthorities.retention();
+  }
+
+  @Bean
+  FunctionalAuthority referralRetentionReapplicationAuthority() {
+    return ReferralAuthorities.retentionReapplication();
+  }
+
+  @Bean
   @ConditionalOnBean(DirectoryScopeReferenceLookup.class)
   ReferralGrantTargetScopeValidator referralGrantTargetScopeValidator(
       DirectoryScopeReferenceLookup directoryScopeReferenceLookup) {

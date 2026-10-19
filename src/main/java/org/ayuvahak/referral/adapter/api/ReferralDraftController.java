@@ -5,6 +5,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import org.ayuvahak.platform.api.CorrelationIdFilter;
 import org.ayuvahak.platform.api.PlatformErrorCode;
 import org.ayuvahak.platform.api.PlatformProblemException;
@@ -28,6 +29,11 @@ import org.ayuvahak.referral.application.ReferralListPage;
 import org.ayuvahak.referral.application.ReferralQueries;
 import org.ayuvahak.referral.application.ReferralReadFilter;
 import org.ayuvahak.referral.application.ReferralResolutionCommandResult;
+import org.ayuvahak.referral.application.ReferralIdentifierRestrictionReason;
+import org.ayuvahak.referral.application.ReferralRetentionHoldPurpose;
+import org.ayuvahak.referral.application.ReferralRetentionHoldReleaseReason;
+import org.ayuvahak.referral.application.ReferralRetentionOperations;
+import org.ayuvahak.referral.application.ReferralRetentionManifest;
 import org.ayuvahak.referral.application.ReferralSubmissionCommandResult;
 import org.ayuvahak.referral.domain.CareRequirement;
 import org.ayuvahak.referral.domain.PatientReference;
@@ -51,6 +57,7 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import tools.jackson.annotation.JsonInclude;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ArrayNode;
@@ -85,16 +92,19 @@ public final class ReferralDraftController {
 
   private final ReferralDraftCommands commands;
   private final ReferralQueries queries;
+  private final ReferralRetentionOperations retention;
   private final ExecutionContextFactory contextFactory;
   private final ObjectMapper objectMapper;
 
   public ReferralDraftController(
       ReferralDraftCommands commands,
       ReferralQueries queries,
+      ReferralRetentionOperations retention,
       ExecutionContextFactory contextFactory,
       ObjectMapper objectMapper) {
     this.commands = commands;
     this.queries = queries;
+    this.retention = retention;
     this.contextFactory = contextFactory;
     this.objectMapper = objectMapper;
   }
@@ -123,7 +133,9 @@ public final class ReferralDraftController {
     ExecutionContext context = readContext(actor, scope, organizationId, facilityId);
     ReferralCurrentView view = queries.revision(context, parseReferralId(referralId), number);
     return ReferralRevisionRepresentation.from(
-        view.current().id().toString(), view.submittedRevision().orElseThrow());
+        view.current().id().toString(),
+        view.submittedRevision().orElseThrow(),
+        view.identifierRestricted());
   }
 
   @GetMapping
@@ -161,7 +173,8 @@ public final class ReferralDraftController {
     }
     headers.setLocation(URI.create("/api/v1/referrals/" + result.draft().id()));
     return new ResponseEntity<>(
-        ReferralDraftRepresentation.from(result.draft()),
+        ReferralDraftRepresentation.from(
+            result.draft(), retention.isIdentifierRestricted(result.draft().id())),
         headers,
         org.springframework.http.HttpStatusCode.valueOf(result.responseStatus()));
   }
@@ -193,7 +206,8 @@ public final class ReferralDraftController {
       headers.set("Idempotency-Replayed", "true");
     }
     return new ResponseEntity<>(
-        ReferralDraftRepresentation.from(result.draft()),
+        ReferralDraftRepresentation.from(
+            result.draft(), retention.isIdentifierRestricted(result.draft().id())),
         headers,
         org.springframework.http.HttpStatusCode.valueOf(result.responseStatus()));
   }
@@ -218,7 +232,8 @@ public final class ReferralDraftController {
       headers.set("Idempotency-Replayed", "true");
     }
     return new ResponseEntity<>(
-        SubmittedReferralRepresentation.from(result.revision()),
+        SubmittedReferralRepresentation.from(
+            result.revision(), retention.isIdentifierRestricted(result.revision().referralId())),
         headers,
         org.springframework.http.HttpStatusCode.valueOf(result.responseStatus()));
   }
@@ -252,7 +267,8 @@ public final class ReferralDraftController {
       headers.set("Idempotency-Replayed", "true");
     }
     return new ResponseEntity<>(
-        SubmittedReferralRepresentation.from(result.revision()),
+        SubmittedReferralRepresentation.from(
+            result.revision(), retention.isIdentifierRestricted(result.revision().referralId())),
         headers,
         org.springframework.http.HttpStatusCode.valueOf(result.responseStatus()));
   }
@@ -313,9 +329,172 @@ public final class ReferralDraftController {
       headers.set("Idempotency-Replayed", "true");
     }
     return new ResponseEntity<>(
-        ReferralDraftRepresentation.from(result.draft()),
+        ReferralDraftRepresentation.from(
+            result.draft(), retention.isIdentifierRestricted(result.draft().id())),
         headers,
         org.springframework.http.HttpStatusCode.valueOf(result.responseStatus()));
+  }
+
+  @PostMapping("/{referralId}/retention-holds")
+  public ResponseEntity<ReferralRetentionHoldAccepted> placeRetentionHold(
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
+      @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationId,
+      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityId,
+      @PathVariable String referralId,
+      @RequestBody JsonNode body) {
+    RetentionHoldRequest request = retentionHoldRequest(body);
+    var result =
+        retention.placeHold(
+            context(actor, scope, organizationId, facilityId),
+            parseReferralId(referralId),
+            request.purpose(),
+            request.reviewBy());
+    return ResponseEntity.status(HttpStatus.CREATED)
+        .body(
+            new ReferralRetentionHoldAccepted(
+                result.holdId().toString(), result.referralId().toString(), result.reviewBy()));
+  }
+
+  @PostMapping("/{referralId}/retention-holds/{holdId}/release")
+  public ResponseEntity<Void> releaseRetentionHold(
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
+      @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationId,
+      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityId,
+      @PathVariable String referralId,
+      @PathVariable String holdId,
+      @RequestBody JsonNode body) {
+    UUID parsedHoldId;
+    try {
+      parsedHoldId = UUID.fromString(holdId);
+    } catch (IllegalArgumentException invalid) {
+      throw invalid("A valid Referral retention hold id is required.");
+    }
+    ReferralRetentionHoldReleaseReason reason = retentionHoldReleaseReason(body);
+    retention.releaseHold(
+        context(actor, scope, organizationId, facilityId),
+        parseReferralId(referralId),
+        parsedHoldId,
+        reason);
+    return ResponseEntity.noContent().build();
+  }
+
+  @PostMapping("/{referralId}/identifier-restriction")
+  public ReferralIdentifierRestrictionAccepted restrictIdentifier(
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
+      @RequestHeader(value = ORGANIZATION_SCOPE_HEADER, required = false) String organizationId,
+      @RequestHeader(value = FACILITY_SCOPE_HEADER, required = false) String facilityId,
+      @PathVariable String referralId,
+      @RequestBody JsonNode body) {
+    ReferralIdentifierRestrictionReason reason = identifierRestrictionReason(body);
+    var result =
+        retention.restrictIdentifier(
+            context(actor, scope, organizationId, facilityId),
+            parseReferralId(referralId),
+            reason);
+    return new ReferralIdentifierRestrictionAccepted(
+        result.referralId().toString(),
+        result.patientReferenceAccessRestricted(),
+        result.created());
+  }
+
+  @PostMapping("/retention-reapplication/export")
+  public ReferralRetentionManifest exportRetentionManifest(
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
+      @RequestBody JsonNode body) {
+    if (body == null || !body.isObject() || body.size() != 2
+        || !body.has("restoreId") || !body.get("restoreId").isTextual()
+        || !body.has("backupCompletedAt") || !body.get("backupCompletedAt").isTextual()) {
+      throw invalid("A restoreId and backupCompletedAt are required.");
+    }
+    try {
+      return retention.exportManifest(
+          platformContext(actor, scope),
+          UUID.fromString(body.get("restoreId").stringValue()),
+          Instant.parse(body.get("backupCompletedAt").stringValue()));
+    } catch (IllegalArgumentException malformed) {
+      throw invalid("The Referral retention manifest export request is invalid.");
+    }
+  }
+
+  @PostMapping("/retention-reapplication")
+  public ResponseEntity<Void> reapplyRetentionManifest(
+      @AuthenticationPrincipal ActorReference actor,
+      @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String scope,
+      @RequestBody JsonNode body) {
+    if (body == null
+        || !body.isObject()
+        || body.size() != 5
+        || !body.has("restoreId")
+        || !body.has("backupCompletedAt")
+        || !body.has("generatedAt")
+        || !body.has("holds")
+        || !body.has("identifierRestrictions")) {
+      throw invalid("A Referral retention manifest object is required.");
+    }
+    final ReferralRetentionManifest manifest;
+    try {
+      manifest = objectMapper.treeToValue(body, ReferralRetentionManifest.class);
+    } catch (
+        tools.jackson.core.JacksonException
+            | IllegalArgumentException
+            | NullPointerException malformed) {
+      throw invalid("The Referral retention manifest is malformed.");
+    }
+    retention.reapplyManifest(platformContext(actor, scope), manifest);
+    return ResponseEntity.noContent().build();
+  }
+
+  private RetentionHoldRequest retentionHoldRequest(JsonNode body) {
+    if (body == null
+        || !body.isObject()
+        || body.size() != 2
+        || !body.has("purposeCode")
+        || !body.get("purposeCode").isTextual()
+        || !body.has("reviewBy")
+        || !body.get("reviewBy").isTextual()) {
+      throw invalid("A purposeCode and reviewBy are required for a Referral retention hold.");
+    }
+    try {
+      return new RetentionHoldRequest(
+          ReferralRetentionHoldPurpose.valueOf(body.get("purposeCode").stringValue()),
+          Instant.parse(body.get("reviewBy").stringValue()));
+    } catch (IllegalArgumentException malformed) {
+      throw invalid("The Referral retention hold purpose or review time is invalid.");
+    }
+  }
+
+  private ReferralRetentionHoldReleaseReason retentionHoldReleaseReason(JsonNode body) {
+    if (body == null
+        || !body.isObject()
+        || body.size() != 1
+        || !body.has("reasonCode")
+        || !body.get("reasonCode").isTextual()) {
+      throw invalid("A reasonCode is required to release a Referral retention hold.");
+    }
+    try {
+      return ReferralRetentionHoldReleaseReason.valueOf(body.get("reasonCode").stringValue());
+    } catch (IllegalArgumentException malformed) {
+      throw invalid("The Referral retention hold release reason is invalid.");
+    }
+  }
+
+  private ReferralIdentifierRestrictionReason identifierRestrictionReason(JsonNode body) {
+    if (body == null
+        || !body.isObject()
+        || body.size() != 1
+        || !body.has("reasonCode")
+        || !body.get("reasonCode").isTextual()) {
+      throw invalid("A reasonCode is required to restrict the Referral identifier.");
+    }
+    try {
+      return ReferralIdentifierRestrictionReason.valueOf(body.get("reasonCode").stringValue());
+    } catch (IllegalArgumentException malformed) {
+      throw invalid("The Referral identifier restriction reason is invalid.");
+    }
   }
 
   private long submissionExpectedVersion(JsonNode body) {
@@ -576,6 +755,20 @@ public final class ReferralDraftController {
       commands.recordInvalidScope(actor, correlationId);
       throw invalidScope();
     }
+  }
+
+  private ExecutionContext platformContext(ActorReference actor, String scope) {
+    CorrelationId correlationId = correlationId();
+    if (!"PLATFORM".equals(scope)) {
+      commands.recordInvalidScope(actor, correlationId);
+      throw invalidScope();
+    }
+    if (actor.kind() == ActorKind.HUMAN) {
+      return contextFactory.forInteractiveRequest(
+          actor, RequestedExecutionScope.platform(), correlationId);
+    }
+    return contextFactory.forIntegrationRequest(
+        actor, RequestedExecutionScope.platform(), correlationId);
   }
 
   private ExecutionContext readContext(
@@ -874,6 +1067,7 @@ public final class ReferralDraftController {
     }
   }
 
+  @JsonInclude(JsonInclude.Include.NON_NULL)
   public record ReferralDraftRepresentation(
       String id,
       String status,
@@ -881,18 +1075,19 @@ public final class ReferralDraftController {
       OriginRepresentation origin,
       PatientReferenceRepresentation patientReference,
       CareRequirementRepresentation careRequirement) {
-    static ReferralDraftRepresentation from(ReferralDraft draft) {
+    static ReferralDraftRepresentation from(ReferralDraft draft, boolean identifierRestricted) {
       return new ReferralDraftRepresentation(
           draft.id().toString(),
           draft.state().name(),
           draft.version(),
           OriginRepresentation.from(draft),
-          PatientReferenceRepresentation.from(draft.patientReference()),
+          identifierRestricted ? null : PatientReferenceRepresentation.from(draft.patientReference()),
           CareRequirementRepresentation.from(draft.careRequirement()));
     }
   }
 
   /** Current origin-scoped detail; PatientReference appears only on this authorized view. */
+  @JsonInclude(JsonInclude.Include.NON_NULL)
   public record ReferralCurrentRepresentation(
       String id,
       String status,
@@ -910,18 +1105,25 @@ public final class ReferralDraftController {
           current.state().name(),
           current.version(),
           OriginRepresentation.from(current),
-          PatientReferenceRepresentation.from(current.patientReference()),
+          view.identifierRestricted()
+              ? null
+              : PatientReferenceRepresentation.from(current.patientReference()),
           CareRequirementRepresentation.from(current.careRequirement()),
           current.createdAt(),
           current.updatedAt(),
-          view.submittedRevision().map(SubmittedRevisionRepresentation::from).orElse(null));
+          view.submittedRevision()
+              .map(revision -> SubmittedRevisionRepresentation.from(revision, view.identifierRestricted()))
+              .orElse(null));
     }
   }
 
+  @JsonInclude(JsonInclude.Include.NON_NULL)
   public record ReferralRevisionRepresentation(
       String id, SubmittedRevisionRepresentation submittedRevision) {
-    static ReferralRevisionRepresentation from(String id, SubmittedReferralRevision revision) {
-      return new ReferralRevisionRepresentation(id, SubmittedRevisionRepresentation.from(revision));
+    static ReferralRevisionRepresentation from(
+        String id, SubmittedReferralRevision revision, boolean identifierRestricted) {
+      return new ReferralRevisionRepresentation(
+          id, SubmittedRevisionRepresentation.from(revision, identifierRestricted));
     }
   }
 
@@ -977,17 +1179,20 @@ public final class ReferralDraftController {
     }
   }
 
+  @JsonInclude(JsonInclude.Include.NON_NULL)
   public record SubmittedReferralRepresentation(
       String id, String status, long version, SubmittedRevisionRepresentation submittedRevision) {
-    static SubmittedReferralRepresentation from(SubmittedReferralRevision revision) {
+    static SubmittedReferralRepresentation from(
+        SubmittedReferralRevision revision, boolean identifierRestricted) {
       return new SubmittedReferralRepresentation(
           revision.referralId().toString(),
           "SUBMITTED",
           revision.referralVersion(),
-          SubmittedRevisionRepresentation.from(revision));
+          SubmittedRevisionRepresentation.from(revision, identifierRestricted));
     }
   }
 
+  @JsonInclude(JsonInclude.Include.NON_NULL)
   public record SubmittedRevisionRepresentation(
       long revisionNumber,
       OriginRepresentation origin,
@@ -996,13 +1201,14 @@ public final class ReferralDraftController {
       SourceContextRepresentation sourceContext,
       Instant submittedAt,
       String reasonCode) {
-    static SubmittedRevisionRepresentation from(SubmittedReferralRevision revision) {
+    static SubmittedRevisionRepresentation from(
+        SubmittedReferralRevision revision, boolean identifierRestricted) {
       return new SubmittedRevisionRepresentation(
           revision.revisionNumber(),
           new OriginRepresentation(
               revision.originOrganization().value(),
               revision.originFacility().map(ExternalReference::value).orElse(null)),
-          PatientReferenceRepresentation.from(revision.patientReference()),
+          identifierRestricted ? null : PatientReferenceRepresentation.from(revision.patientReference()),
           CareRequirementRepresentation.from(revision.careRequirement()),
           SourceContextRepresentation.from(revision),
           revision.submittedAt(),
@@ -1030,4 +1236,12 @@ public final class ReferralDraftController {
           resolution.resolvedAt());
     }
   }
+
+  private record RetentionHoldRequest(
+      ReferralRetentionHoldPurpose purpose, Instant reviewBy) {}
+
+  public record ReferralRetentionHoldAccepted(String holdId, String referralId, Instant reviewBy) {}
+
+  public record ReferralIdentifierRestrictionAccepted(
+      String referralId, boolean patientReferenceAccessRestricted, boolean newlyApplied) {}
 }

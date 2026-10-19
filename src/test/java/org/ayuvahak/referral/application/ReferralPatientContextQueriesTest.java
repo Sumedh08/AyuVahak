@@ -151,6 +151,22 @@ class ReferralPatientContextQueriesTest {
   }
 
   @Test
+  void aClosedReferralIdentifierRestrictionBlocksPatientContextBeforePolicyAndSource() {
+    Fixture fixture = new Fixture();
+    fixture.identifierRestricted = true;
+
+    assertDenied(fixture, fixture.context(fixture.receivingFacility));
+
+    assertThat(fixture.policyCalls).hasValue(0);
+    assertThat(fixture.sourceCalls).hasValue(0);
+    assertThat(fixture.storeWrites).hasValue(0);
+    assertThat(fixture.audits)
+        .anySatisfy(
+            evidence ->
+                assertThat(evidence.reasonCode()).contains("PATIENT_REFERENCE_RESTRICTED"));
+  }
+
+  @Test
   void failsClosedWhenPolicyIsMissingDeniedIndeterminateOrUnavailable() {
     Fixture missing = new Fixture();
     missing.policy = Optional.empty();
@@ -412,6 +428,7 @@ class ReferralPatientContextQueriesTest {
     private final AtomicInteger storeWrites = new AtomicInteger();
     private final List<AuditEvidence> audits = new ArrayList<>();
     private boolean grantAllowed = true;
+    private boolean identifierRestricted;
     private int failAuditAt = -1;
     private final AuditWriter auditWriter =
         new AuditWriter(
@@ -448,6 +465,9 @@ class ReferralPatientContextQueriesTest {
                     }
                     if (method.getName().equals("findLatestSubmittedRevision")) {
                       return Optional.of(revision);
+                    }
+                    if (method.getName().equals("isIdentifierRestricted")) {
+                      return identifierRestricted;
                     }
                     if (method.getName().startsWith("insert")
                         || method.getName().startsWith("update")

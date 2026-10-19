@@ -30,6 +30,10 @@ public final class ReferralAuthorities {
       new FunctionalAuthority(
           "ReferralReportingSnapshot",
           Set.of(ExecutionScope.Kind.ORGANIZATION, ExecutionScope.Kind.FACILITY));
+  private static final FunctionalAuthority RETENTION =
+      new FunctionalAuthority("ReferralRetention", ORIGIN_SCOPES);
+  private static final FunctionalAuthority RETENTION_REAPPLICATION =
+      new FunctionalAuthority("ReferralRetentionReapplication", Set.of(ExecutionScope.Kind.PLATFORM));
 
   private ReferralAuthorities() {}
 
@@ -67,5 +71,13 @@ public final class ReferralAuthorities {
 
   public static FunctionalAuthority reportingSnapshot() {
     return REPORTING_SNAPSHOT;
+  }
+
+  public static FunctionalAuthority retention() {
+    return RETENTION;
+  }
+
+  public static FunctionalAuthority retentionReapplication() {
+    return RETENTION_REAPPLICATION;
   }
 }

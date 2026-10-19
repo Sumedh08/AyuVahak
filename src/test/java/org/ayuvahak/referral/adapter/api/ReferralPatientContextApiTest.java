@@ -160,6 +160,7 @@ class ReferralPatientContextApiTest {
                     switch (method.getName()) {
                       case "findDraft" -> Optional.of(current);
                       case "findLatestSubmittedRevision" -> Optional.of(revision);
+                      case "isIdentifierRestricted" -> false;
                       default -> throw new UnsupportedOperationException(method.getName());
                     });
     AuthorizationService authorization =

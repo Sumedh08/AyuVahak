@@ -252,11 +252,21 @@ public class PostgresOutboxStore implements OutboxStore {
                       + "ON d.event_id = e.event_id "
                       + "AND d.delivery_generation = e.current_delivery_generation "
                       + "WHERE d.state = 'DELIVERED' AND d.updated_at <= ? "
+                      + "AND NOT EXISTS (SELECT 1 FROM platform_eventing.retention_hold h "
+                      + "WHERE h.event_id = e.event_id AND h.released_at IS NULL) "
                       + "ORDER BY d.updated_at, e.event_id LIMIT ? FOR UPDATE OF e SKIP LOCKED",
                   (rs, rowNum) -> rs.getObject("event_id", UUID.class),
                   Timestamp.from(cutoff),
                   limit);
           for (UUID eventId : expired) {
+            jdbcTemplate.update(
+                "INSERT INTO platform_eventing.retention_purge_receipt "
+                    + "(event_id, delivery_generation, purged_at) "
+                    + "SELECT e.event_id, e.current_delivery_generation, ? "
+                    + "FROM platform_eventing.internal_event e WHERE e.event_id = ? "
+                    + "ON CONFLICT (event_id, delivery_generation) DO NOTHING",
+                Timestamp.from(clock.instant()),
+                eventId);
             jdbcTemplate.update(
                 "DELETE FROM platform_eventing.delivery_command_receipt WHERE event_id = ?",
                 eventId);

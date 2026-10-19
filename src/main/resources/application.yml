@@ -42,7 +42,7 @@ management:
         enabled: true
       group:
         readiness:
-          include: readinessState,db
+          include: readinessState,db,retentionReapplication
     prometheus:
       access: read-only
   tracing:
@@ -55,6 +55,9 @@ logging:
       console: logstash
 
 ayuvahak:
+  retention:
+    reapplication:
+      required-restore-id: ${AYUVAHAK_RETENTION_REQUIRED_RESTORE_ID:}
   database:
     url: ${AYUVAHAK_DATABASE_URL:}
     username: ${AYUVAHAK_DATABASE_USERNAME:}

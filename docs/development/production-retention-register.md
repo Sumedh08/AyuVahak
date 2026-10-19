@@ -14,6 +14,35 @@ hold, unresolved business/replay/reconciliation dependency, or audit/disclosure 
 Completed retention actions must be reapplied after restoring an older backup and before that
 restored deployment serves traffic.
 
+## Owner-scoped restore reapplication currently implemented
+
+The initial reapplication boundary covers only two owner-local actions: Platform's delivered
+outbox purge/hold state and Referral's closed-case identifier-access restriction/hold state. Each
+owner exports a payload-free manifest after the backup checkpoint and applies only its own
+manifest to its own schema. Stop owner writes before the checkpoint and keep them stopped through
+manifest export so the backup and manifests describe one stable recovery boundary. Platform owns
+the readiness contributor, which reads the configured restore identifier and requires
+completion receipts from both `platform-eventing` and `referral`; it does not invoke replayers or
+change any owner data. Set `AYUVAHAK_RETENTION_REQUIRED_RESTORE_ID` on the restored deployment
+before traffic is admitted, export each owner's manifest from the pre-restore source, reapply it
+through that owner's restricted operator route while the restored deployment remains out of
+service, and wait for the readiness gate to report complete. A missing owner receipt keeps
+readiness down. Platform reapplication treats a purge receipt as applying to the logical event:
+it removes an older restored delivery generation, but rejects a restored generation newer than
+the receipt and rejects active holds. The owner routes are:
+
+- `POST /api/v1/platform/event-deliveries/retention-reapplication/export`
+- `POST /api/v1/platform/event-deliveries/retention-reapplication`
+- `POST /api/v1/referrals/retention-reapplication/export`
+- `POST /api/v1/referrals/retention-reapplication`
+
+Referral's identifier restriction is an access-control overlay, not physical pseudonymization:
+closed-case responses and patient-context disclosure are blocked while immutable submitted
+revisions and audit history remain intact. Physical PatientReference rewriting/deletion is not
+implemented. Other owner data categories have no destructive retention path in this slice;
+their holds, purge, pseudonymization and restore behavior must remain owner-specific and must not
+be configured as implemented until that context supplies its own reviewed action and replayer.
+
 ## Required entries
 
 There must be exactly one entry for every category below. The `owner` must match the listed

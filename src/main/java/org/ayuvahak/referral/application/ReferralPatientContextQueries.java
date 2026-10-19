@@ -214,7 +214,10 @@ public final class ReferralPatientContextQueries {
                       return Optional.empty();
                     }
                     return Optional.of(
-                        new SubmittedRead(current.orElseThrow(), latest.orElseThrow()));
+                        new SubmittedRead(
+                            current.orElseThrow(),
+                            latest.orElseThrow(),
+                            drafts.isIdentifierRestricted(referralId)));
                   }),
               "Referral patient-context read result");
     } catch (DataAccessException | TransactionTimedOutException unavailable) {
@@ -230,6 +233,10 @@ public final class ReferralPatientContextQueries {
     }
 
     SubmittedRead read = found.orElseThrow();
+    if (read.identifierRestricted()) {
+      deny(context, referralId, "PATIENT_REFERENCE_RESTRICTED");
+      throw denied();
+    }
     ReferralDraft current = read.current();
     SubmittedReferralRevision revision = read.revision();
     if (current.state() != ReferralState.SUBMITTED
@@ -439,5 +446,6 @@ public final class ReferralPatientContextQueries {
         HttpStatus.SERVICE_UNAVAILABLE, PlatformErrorCode.REFERRAL_UNAVAILABLE, detail);
   }
 
-  private record SubmittedRead(ReferralDraft current, SubmittedReferralRevision revision) {}
+  private record SubmittedRead(
+      ReferralDraft current, SubmittedReferralRevision revision, boolean identifierRestricted) {}
 }

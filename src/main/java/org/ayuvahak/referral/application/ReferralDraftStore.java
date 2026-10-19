@@ -14,7 +14,7 @@ import org.ayuvahak.referral.domain.ReferralResolution;
 import org.ayuvahak.referral.domain.SubmittedReferralRevision;
 
 /** Referral-owned persistence boundary for current state, revisions, resolutions and receipts. */
-public interface ReferralDraftStore {
+public interface ReferralDraftStore extends ReferralRetentionStore {
 
   void insertDraft(ReferralDraft draft);
 

@@ -56,6 +56,7 @@ import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
 import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
 import org.ayuvahak.referral.application.ReferralMatchingRequirement;
 import org.ayuvahak.referral.application.ReferralQueries;
+import org.ayuvahak.platform.retention.RetentionReapplicationProperties;
 import org.ayuvahak.referral.application.ReferralTransferOutcomeEventHandler;
 import org.ayuvahak.transfer.application.TransferAmendmentStatusQuery;
 import org.ayuvahak.transfer.application.TransferStore;
@@ -131,6 +132,7 @@ class ReferralDraftCommandsApiIT {
   @Autowired private TransferStore transferStore;
   @Autowired private TransferAmendmentStatusQuery transferAmendmentStatusQuery;
   @Autowired private ObjectMapper objectMapper;
+  @Autowired private RetentionReapplicationProperties retentionReapplicationProperties;
 
   private String organizationId;
   private String facilityId;
@@ -175,8 +177,12 @@ class ReferralDraftCommandsApiIT {
 
   @BeforeEach
   void prepareSyntheticOrigin() throws Exception {
+    retentionReapplicationProperties.setRequiredRestoreId("");
     if (Boolean.TRUE.equals(
         jdbc.queryForObject("SELECT to_regclass('referral.draft') IS NOT NULL", Boolean.class))) {
+      jdbc.update("DELETE FROM referral.retention_reapplication_receipt");
+      jdbc.update("DELETE FROM referral.identifier_restriction");
+      jdbc.update("DELETE FROM referral.retention_hold");
       if (Boolean.TRUE.equals(
           jdbc.queryForObject(
               "SELECT to_regclass('referral.submitted_revision') IS NOT NULL", Boolean.class))) {
@@ -201,6 +207,7 @@ class ReferralDraftCommandsApiIT {
     clearDirectory();
 
     grant(ADMIN, "AccessGrantAdministration", "PLATFORM", null, null);
+    grant(ADMIN, "ReferralRetentionReapplication", "PLATFORM", null, null);
     grant(CURATOR, "DirectoryCuration", "PLATFORM", null, null);
     grant(CURATOR, "DirectoryVocabularyAdministration", "PLATFORM", null, null);
     organizationId = createOrganization();
@@ -213,6 +220,7 @@ class ReferralDraftCommandsApiIT {
     grant(ORIGINATOR, "ReferralResolve", "FACILITY", organizationId, facilityId);
     grant(ORIGINATOR, "ReferralCancel", "FACILITY", organizationId, facilityId);
     grant(ORIGINATOR, "ReferralRead", "FACILITY", organizationId, facilityId);
+    grant(ORIGINATOR, "ReferralRetention", "FACILITY", organizationId, facilityId);
     grantService(
         TRANSFER_AMENDMENT_GUARD, "TransferReferralAmendmentCheck", organizationId, facilityId);
   }
@@ -1980,6 +1988,193 @@ class ReferralDraftCommandsApiIT {
                 Integer.class,
                 patientReference))
         .isZero();
+  }
+
+  @Test
+  void closedReferralHoldMustBeReleasedBeforeIdentifierAccessRestriction() throws Exception {
+    String patientMarker = "SYN-PATIENT-RETENTION-MARKER-6D28";
+    String referralId = createDraft("retention-create", patientMarker);
+    performSubmission(referralId, ORIGINATOR, "retention-submit", "{\"expectedVersion\":1}")
+        .andExpect(status().isOk());
+
+    MvcResult hold =
+        mockMvc
+            .perform(
+                post("/api/v1/referrals/{referralId}/retention-holds", referralId)
+                    .header("Authorization", bearer(token(ORIGINATOR)))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", organizationId)
+                    .header("X-AyuVahak-Facility-Id", facilityId)
+                    .contentType("application/json")
+                    .content(
+                        "{\"purposeCode\":\"LEGAL_REVIEW\",\"reviewBy\":\""
+                            + Instant.now().plus(Duration.ofDays(7))
+                            + "\"}"))
+            .andExpect(status().isCreated())
+            .andReturn();
+    String holdId =
+        com.jayway.jsonpath.JsonPath.read(hold.getResponse().getContentAsString(), "$.holdId");
+
+    performResolution(
+            referralId,
+            ORIGINATOR,
+            "retention-resolve",
+            "{\"expectedVersion\":2,\"outcome\":\"UNFULFILLED\","
+                + "\"reasonCode\":\"SYNTHETIC_CLOSE\"}")
+        .andExpect(status().isOk());
+
+    mockMvc
+        .perform(
+            post("/api/v1/referrals/{referralId}/identifier-restriction", referralId)
+                .header("Authorization", bearer(token(ORIGINATOR)))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", organizationId)
+                .header("X-AyuVahak-Facility-Id", facilityId)
+                .contentType("application/json")
+                .content("{\"reasonCode\":\"RETENTION_REVIEW_COMPLETED\"}"))
+        .andExpect(status().isConflict());
+
+    mockMvc
+        .perform(
+            post(
+                    "/api/v1/referrals/{referralId}/retention-holds/{holdId}/release",
+                    referralId,
+                    holdId)
+                .header("Authorization", bearer(token(ORIGINATOR)))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", organizationId)
+                .header("X-AyuVahak-Facility-Id", facilityId)
+                .contentType("application/json")
+                .content("{\"reasonCode\":\"REVIEW_COMPLETE\"}"))
+        .andExpect(status().isNoContent());
+
+    mockMvc
+        .perform(
+            post("/api/v1/referrals/{referralId}/identifier-restriction", referralId)
+                .header("Authorization", bearer(token(ORIGINATOR)))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", organizationId)
+                .header("X-AyuVahak-Facility-Id", facilityId)
+                .contentType("application/json")
+                .content("{\"reasonCode\":\"RETENTION_REVIEW_COMPLETED\"}"))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.patientReferenceAccessRestricted").value(true));
+
+    mockMvc
+        .perform(
+            get("/api/v1/referrals/{referralId}", referralId)
+                .header("Authorization", bearer(token(ORIGINATOR)))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", organizationId)
+                .header("X-AyuVahak-Facility-Id", facilityId))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.patientReference").doesNotExist())
+        .andExpect(jsonPath("$.submittedRevision.patientReference").doesNotExist());
+
+    mockMvc
+        .perform(
+            get("/api/v1/referrals/{referralId}/revisions/{revisionNumber}", referralId, 1)
+                .header("Authorization", bearer(token(ORIGINATOR)))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", organizationId)
+                .header("X-AyuVahak-Facility-Id", facilityId))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.submittedRevision.patientReference").doesNotExist());
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT patient_identifier FROM referral.submitted_revision "
+                    + "WHERE referral_id = ?::uuid AND revision_number = 1",
+                String.class,
+                referralId))
+        .isEqualTo(patientMarker);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM audit.audit_record WHERE action_code IN "
+                    + "('REFERRAL_RETENTION_HOLD','REFERRAL_RETENTION_HOLD_RELEASE',"
+                    + "'REFERRAL_IDENTIFIER_RESTRICTION') AND outcome = 'SUCCEEDED'",
+                Integer.class))
+        .isEqualTo(3);
+  }
+
+  @Test
+  void referralManifestReappliesIdentifierRestrictionBeforeReadiness() throws Exception {
+    String patientMarker = "SYN-PATIENT-RESTORE-MARKER-1E53";
+    String referralId = createDraft("retention-restore-create", patientMarker);
+    performSubmission(referralId, ORIGINATOR, "retention-restore-submit", "{\"expectedVersion\":1}")
+        .andExpect(status().isOk());
+    performResolution(
+            referralId,
+            ORIGINATOR,
+            "retention-restore-resolve",
+            "{\"expectedVersion\":2,\"outcome\":\"UNFULFILLED\","
+                + "\"reasonCode\":\"SYNTHETIC_CLOSE\"}")
+        .andExpect(status().isOk());
+    mockMvc
+        .perform(
+            post("/api/v1/referrals/{referralId}/identifier-restriction", referralId)
+                .header("Authorization", bearer(token(ORIGINATOR)))
+                .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                .header("X-AyuVahak-Organization-Id", organizationId)
+                .header("X-AyuVahak-Facility-Id", facilityId)
+                .contentType("application/json")
+                .content("{\"reasonCode\":\"RETENTION_REVIEW_COMPLETED\"}"))
+        .andExpect(status().isOk());
+
+    UUID restoreId = UUID.randomUUID();
+    String backupCompletedAt = Instant.now().minus(Duration.ofDays(1)).toString();
+    String manifest =
+        mockMvc
+            .perform(
+                post("/api/v1/referrals/retention-reapplication/export")
+                    .header("Authorization", bearer(token(ADMIN)))
+                    .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                    .contentType("application/json")
+                    .content(
+                        "{\"restoreId\":\""
+                            + restoreId
+                            + "\",\"backupCompletedAt\":\""
+                            + backupCompletedAt
+                            + "\"}"))
+            .andExpect(status().isOk())
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+
+    assertThat(com.jayway.jsonpath.JsonPath.read(manifest, "$.identifierRestrictions[0].referralId"))
+        .isEqualTo(referralId);
+    jdbc.update("DELETE FROM referral.identifier_restriction WHERE referral_id = ?::uuid", referralId);
+    retentionReapplicationProperties.setRequiredRestoreId(restoreId.toString());
+
+    mockMvc
+        .perform(
+            post("/api/v1/referrals/retention-reapplication")
+                .header("Authorization", bearer(token(ADMIN)))
+                .header("X-AyuVahak-Execution-Scope", "PLATFORM")
+                .contentType("application/json")
+                .content(manifest))
+        .andExpect(status().isNoContent());
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM referral.identifier_restriction WHERE referral_id = ?::uuid",
+                Integer.class,
+                referralId))
+        .isEqualTo(1);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT EXISTS (SELECT 1 FROM referral.retention_reapplication_receipt "
+                    + "WHERE restore_id = ?)",
+                Boolean.class,
+                restoreId))
+        .isTrue();
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT patient_identifier FROM referral.submitted_revision "
+                    + "WHERE referral_id = ?::uuid AND revision_number = 1",
+                String.class,
+                referralId))
+        .isEqualTo(patientMarker);
   }
 
   @Test

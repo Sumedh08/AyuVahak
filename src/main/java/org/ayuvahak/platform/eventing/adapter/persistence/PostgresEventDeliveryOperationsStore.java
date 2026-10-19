@@ -5,12 +5,15 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import org.ayuvahak.platform.core.ActorReference;
 import org.ayuvahak.platform.core.InternalId;
 import org.ayuvahak.platform.event.EventType;
 import org.ayuvahak.platform.eventing.application.DeliveryReceiptClaim;
 import org.ayuvahak.platform.eventing.application.EventDeliveryOperationsStore;
 import org.ayuvahak.platform.eventing.application.EventDeliverySummary;
 import org.ayuvahak.platform.eventing.application.ReplayCandidate;
+import org.ayuvahak.platform.eventing.application.RetentionHoldPurpose;
+import org.ayuvahak.platform.eventing.application.RetentionHoldReleaseReason;
 import org.ayuvahak.platform.idempotency.configuration.CommandIdempotencyProperties;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -178,5 +181,61 @@ public class PostgresEventDeliveryOperationsStore implements EventDeliveryOperat
     if (updated != 1) {
       throw new IllegalStateException("event delivery command receipt could not be completed");
     }
+  }
+
+  @Override
+  public boolean createRetentionHold(
+      UUID holdId,
+      InternalId eventId,
+      RetentionHoldPurpose purpose,
+      Instant reviewBy,
+      ActorReference actor,
+      Instant createdAt) {
+    List<Integer> locked =
+        jdbc.query(
+            "SELECT 1 FROM platform_eventing.internal_event e "
+                + "JOIN platform_eventing.outbox_delivery d ON d.event_id = e.event_id "
+                + "AND d.delivery_generation = e.current_delivery_generation "
+                + "WHERE e.event_id = ? FOR UPDATE OF e",
+            (row, index) -> row.getInt(1),
+            eventId.value());
+    if (locked.isEmpty()) return false;
+    return jdbc.update(
+            "INSERT INTO platform_eventing.retention_hold "
+                + "(hold_id, event_id, purpose_code, review_by, created_at, created_by_kind, "
+                + "created_by_issuer, created_by_identifier_type, created_by_identifier) "
+                + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            holdId,
+            eventId.value(),
+            purpose.name(),
+            Timestamp.from(reviewBy),
+            Timestamp.from(createdAt),
+            actor.kind().name(),
+            actor.identity().issuer().value(),
+            actor.identity().resourceType(),
+            actor.identity().value())
+        == 1;
+  }
+
+  @Override
+  public boolean releaseRetentionHold(
+      UUID holdId,
+      InternalId eventId,
+      RetentionHoldReleaseReason reason,
+      ActorReference actor,
+      Instant releasedAt) {
+    return jdbc.update(
+            "UPDATE platform_eventing.retention_hold SET released_at = ?, release_reason_code = ?, "
+                + "released_by_kind = ?, released_by_issuer = ?, released_by_identifier_type = ?, "
+                + "released_by_identifier = ? WHERE hold_id = ? AND event_id = ? AND released_at IS NULL",
+            Timestamp.from(releasedAt),
+            reason.name(),
+            actor.kind().name(),
+            actor.identity().issuer().value(),
+            actor.identity().resourceType(),
+            actor.identity().value(),
+            holdId,
+            eventId.value())
+        == 1;
   }
 }

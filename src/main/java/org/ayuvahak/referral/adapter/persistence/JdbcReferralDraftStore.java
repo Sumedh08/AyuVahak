@@ -18,8 +18,12 @@ import org.ayuvahak.platform.idempotency.CommandReceiptKey;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
 import org.ayuvahak.platform.idempotency.configuration.CommandIdempotencyProperties;
 import org.ayuvahak.referral.application.ReferralDraftStore;
+import org.ayuvahak.referral.application.ReferralIdentifierRestrictionReason;
 import org.ayuvahak.referral.application.ReferralListItem;
 import org.ayuvahak.referral.application.ReferralReadFilter;
+import org.ayuvahak.referral.application.ReferralRetentionHoldPurpose;
+import org.ayuvahak.referral.application.ReferralRetentionHoldReleaseReason;
+import org.ayuvahak.referral.application.ReferralRetentionStore;
 import org.ayuvahak.referral.domain.CareRequirement;
 import org.ayuvahak.referral.domain.PatientReference;
 import org.ayuvahak.referral.domain.ReferralCancellation;
@@ -49,11 +53,57 @@ public class JdbcReferralDraftStore implements ReferralDraftStore {
 
   private final JdbcTemplate jdbc;
   private final CommandIdempotencyProperties idempotencyProperties;
+  private final ReferralRetentionStore retention;
 
   public JdbcReferralDraftStore(
-      JdbcTemplate jdbc, CommandIdempotencyProperties idempotencyProperties) {
+      JdbcTemplate jdbc,
+      CommandIdempotencyProperties idempotencyProperties,
+      JdbcReferralRetentionStore retention) {
     this.jdbc = jdbc;
     this.idempotencyProperties = idempotencyProperties;
+    this.retention = java.util.Objects.requireNonNull(retention, "Referral retention store");
+  }
+
+  @Override
+  public boolean isIdentifierRestricted(InternalId referralId) {
+    return retention.isIdentifierRestricted(referralId);
+  }
+
+  @Override
+  public boolean hasActiveHold(InternalId referralId) {
+    return retention.hasActiveHold(referralId);
+  }
+
+  @Override
+  public boolean createHold(
+      UUID holdId,
+      InternalId referralId,
+      ReferralRetentionHoldPurpose purpose,
+      Instant reviewBy,
+      ActorReference actor,
+      Instant createdAt) {
+    return retention.createHold(holdId, referralId, purpose, reviewBy, actor, createdAt);
+  }
+
+  @Override
+  public boolean releaseHold(
+      UUID holdId,
+      InternalId referralId,
+      ReferralRetentionHoldReleaseReason reason,
+      ActorReference actor,
+      Instant releasedAt) {
+    return retention.releaseHold(holdId, referralId, reason, actor, releasedAt);
+  }
+
+  @Override
+  public boolean restrictIdentifier(
+      UUID restrictionId,
+      InternalId referralId,
+      ReferralIdentifierRestrictionReason reason,
+      ActorReference actor,
+      Instant restrictedAt) {
+    return retention.restrictIdentifier(
+        restrictionId, referralId, reason, actor, restrictedAt);
   }
 
   @Override

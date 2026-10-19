@@ -38,6 +38,8 @@ import org.ayuvahak.platform.eventing.application.OutboxDispatcher;
 import org.ayuvahak.platform.eventing.application.OutboxStore;
 import org.ayuvahak.platform.eventing.application.OutboxWriter;
 import org.ayuvahak.platform.eventing.configuration.OutboxProperties;
+import org.ayuvahak.platform.eventing.application.PlatformOutboxRetentionManifest;
+import org.ayuvahak.platform.eventing.application.PlatformOutboxRetentionReapplicationStore;
 import org.ayuvahak.platform.executioncontext.ExecutionContext;
 import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
 import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
@@ -104,6 +106,7 @@ class OutboxTransactionPostgresIT {
   @Autowired private Flyway flyway;
   @Autowired private OutboxStore outboxStore;
   @Autowired private EventDeliveryOperationsStore deliveryOperationsStore;
+  @Autowired private PlatformOutboxRetentionReapplicationStore retentionReapplicationStore;
   @Autowired private OutboxDispatcher dispatcher;
   @Autowired private EventHandlerRegistry handlerRegistry;
   @Autowired private OutboxProperties outboxProperties;
@@ -119,6 +122,9 @@ class OutboxTransactionPostgresIT {
         "CREATE TABLE IF NOT EXISTS test_outbox_owner.synthetic_fact "
             + "(fact_id uuid PRIMARY KEY)");
     jdbcTemplate.update("DELETE FROM test_outbox_owner.synthetic_fact");
+    jdbcTemplate.update("DELETE FROM platform_eventing.retention_reapplication_receipt");
+    jdbcTemplate.update("DELETE FROM platform_eventing.retention_purge_receipt");
+    jdbcTemplate.update("DELETE FROM platform_eventing.retention_hold");
     jdbcTemplate.update("DELETE FROM platform_eventing.delivery_command_receipt");
     jdbcTemplate.update("DELETE FROM platform_eventing.outbox_delivery");
     jdbcTemplate.update("DELETE FROM platform_eventing.internal_event");
@@ -136,7 +142,13 @@ class OutboxTransactionPostgresIT {
                 "SELECT table_name FROM information_schema.tables "
                     + "WHERE table_schema = 'platform_eventing' AND table_type = 'BASE TABLE'",
                 String.class))
-        .containsExactlyInAnyOrder("internal_event", "outbox_delivery", "delivery_command_receipt");
+        .containsExactlyInAnyOrder(
+            "internal_event",
+            "outbox_delivery",
+            "delivery_command_receipt",
+            "retention_hold",
+            "retention_purge_receipt",
+            "retention_reapplication_receipt");
   }
 
   @Test
@@ -241,6 +253,129 @@ class OutboxTransactionPostgresIT {
     assertThat(deliveryState(unhandled.eventId())).isEqualTo("UNHANDLED");
     assertThat(eventCount(stalled.eventId())).isEqualTo(1);
     assertThat(deliveryState(stalled.eventId())).isEqualTo("STALLED");
+  }
+
+  @Test
+  void anActiveHoldBlocksOutboxPurgeUntilTheOwnerReleasesIt() {
+    EventEnvelope delivered =
+        event(InternalId.generate(), 1, "grant/retention-held", createdEventType());
+    record(delivered);
+    dispatcher.dispatchAvailable(clock.instant());
+    assertThat(deliveryState(delivered.eventId())).isEqualTo("DELIVERED");
+
+    UUID holdId = UUID.randomUUID();
+    jdbcTemplate.update(
+        "INSERT INTO platform_eventing.retention_hold "
+            + "(hold_id, event_id, purpose_code, review_by, created_at, created_by_kind, "
+            + "created_by_issuer, created_by_identifier_type, created_by_identifier) "
+            + "VALUES (?, ?, 'LEGAL_REVIEW', ?, ?, 'SERVICE', 'urn:synthetic:test', 'Client', 'SYN-RETENTION-OPERATOR')",
+        holdId,
+        delivered.eventId().value(),
+        java.sql.Timestamp.from(clock.instant().plus(Duration.ofDays(30))),
+        java.sql.Timestamp.from(clock.instant()));
+
+    clock.advance(Duration.ofHours(48));
+    dispatcher.dispatchAvailable(clock.instant());
+    assertThat(eventCount(delivered.eventId())).isEqualTo(1);
+    assertThat(
+            jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM platform_eventing.retention_purge_receipt WHERE event_id = ?",
+                Integer.class,
+                delivered.eventId().value()))
+        .isZero();
+
+    jdbcTemplate.update(
+        "UPDATE platform_eventing.retention_hold SET released_at = ?, "
+            + "release_reason_code = 'REVIEW_COMPLETE', released_by_kind = 'SERVICE', "
+            + "released_by_issuer = 'urn:synthetic:test', released_by_identifier_type = 'Client', "
+            + "released_by_identifier = 'SYN-RETENTION-OPERATOR' WHERE hold_id = ?",
+        java.sql.Timestamp.from(clock.instant()),
+        holdId);
+    dispatcher.dispatchAvailable(clock.instant());
+
+    assertThat(eventCount(delivered.eventId())).isZero();
+    assertThat(
+            jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM platform_eventing.retention_purge_receipt "
+                    + "WHERE event_id = ? AND delivery_generation = 1",
+                Integer.class,
+                delivered.eventId().value()))
+        .isEqualTo(1);
+  }
+
+  @Test
+  void platformManifestReappliesReleasedHoldAndCompletedPurgeBeforeReadiness() {
+    EventEnvelope delivered =
+        event(InternalId.generate(), 1, "grant/retention-restore", createdEventType());
+    record(delivered);
+    dispatcher.dispatchAvailable(clock.instant());
+    Instant backupCompletedAt = clock.instant();
+
+    UUID holdId = UUID.randomUUID();
+    clock.advance(Duration.ofSeconds(5));
+    jdbcTemplate.update(
+        "INSERT INTO platform_eventing.retention_hold "
+            + "(hold_id, event_id, purpose_code, review_by, created_at, created_by_kind, "
+            + "created_by_issuer, created_by_identifier_type, created_by_identifier) "
+            + "VALUES (?, ?, 'LEGAL_REVIEW', ?, ?, 'SERVICE', 'urn:synthetic:test', 'Client', "
+            + "'SYN-RETENTION-OPERATOR')",
+        holdId,
+        delivered.eventId().value(),
+        java.sql.Timestamp.from(clock.instant().plus(Duration.ofDays(30))),
+        java.sql.Timestamp.from(clock.instant()));
+    clock.advance(Duration.ofSeconds(5));
+    jdbcTemplate.update(
+        "UPDATE platform_eventing.retention_hold SET released_at = ?, "
+            + "release_reason_code = 'REVIEW_COMPLETE', released_by_kind = 'SERVICE', "
+            + "released_by_issuer = 'urn:synthetic:test', released_by_identifier_type = 'Client', "
+            + "released_by_identifier = 'SYN-RETENTION-OPERATOR' WHERE hold_id = ?",
+        java.sql.Timestamp.from(clock.instant()),
+        holdId);
+    // The live owner advanced the event to a later delivery generation after this backup.
+    jdbcTemplate.update(
+        "UPDATE platform_eventing.internal_event SET current_delivery_generation = 2 "
+            + "WHERE event_id = ?",
+        delivered.eventId().value());
+    jdbcTemplate.update(
+        "INSERT INTO platform_eventing.outbox_delivery "
+            + "(event_id, delivery_generation, state, attempt_count, next_attempt_at, created_at, updated_at) "
+            + "VALUES (?, 2, 'DELIVERED', 0, ?, ?, ?)",
+        delivered.eventId().value(),
+        java.sql.Timestamp.from(clock.instant()),
+        java.sql.Timestamp.from(clock.instant()),
+        java.sql.Timestamp.from(clock.instant()));
+    assertThat(outboxStore.purgeDeliveredBefore(clock.instant().plusSeconds(1), 10)).isEqualTo(1);
+
+    UUID restoreId = UUID.randomUUID();
+    PlatformOutboxRetentionManifest manifest =
+        retentionReapplicationStore.exportSince(
+            restoreId, backupCompletedAt, clock.instant().plusSeconds(1));
+    assertThat(manifest.purgedEvents()).hasSize(1);
+    assertThat(manifest.purgedEvents().getFirst().deliveryGeneration()).isEqualTo(2);
+    assertThat(manifest.holds()).hasSize(1);
+
+    // Simulate restoring the backup checkpoint: the delivered event exists and post-backup controls do not.
+    record(delivered);
+    jdbcTemplate.update(
+        "UPDATE platform_eventing.outbox_delivery SET state = 'DELIVERED', updated_at = ? "
+            + "WHERE event_id = ? AND delivery_generation = 1",
+        java.sql.Timestamp.from(backupCompletedAt),
+        delivered.eventId().value());
+    jdbcTemplate.update("DELETE FROM platform_eventing.retention_hold");
+    jdbcTemplate.update("DELETE FROM platform_eventing.retention_purge_receipt");
+
+    new TransactionTemplate(transactionManager)
+        .executeWithoutResult(
+            status -> retentionReapplicationStore.reapply(manifest, clock.instant()));
+
+    assertThat(eventCount(delivered.eventId())).isZero();
+    assertThat(
+            jdbcTemplate.queryForObject(
+                "SELECT released_at IS NOT NULL FROM platform_eventing.retention_hold WHERE hold_id = ?",
+                Boolean.class,
+                holdId))
+        .isTrue();
+    assertThat(retentionReapplicationStore.hasCompleted(restoreId)).isTrue();
   }
 
   @Test
