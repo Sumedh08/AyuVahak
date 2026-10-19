@@ -3,6 +3,7 @@ package org.ayuvahak.referral.application;
 import java.time.Instant;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.UUID;
 import org.ayuvahak.platform.core.ExternalReference;
@@ -10,6 +11,7 @@ import org.ayuvahak.platform.core.ExternalReference;
 /** Aggregate-only immutable owner snapshot; it contains no Referral or patient identifiers. */
 public record ReferralReportingSnapshot(
     ExternalReference organization,
+    Optional<ExternalReference> facility,
     Instant periodStart,
     Instant periodEnd,
     Instant sourceCutoff,
@@ -21,6 +23,7 @@ public record ReferralReportingSnapshot(
 
   public ReferralReportingSnapshot {
     Objects.requireNonNull(organization, "organization");
+    facility = Objects.requireNonNull(facility, "facility");
     Objects.requireNonNull(periodStart, "period start");
     Objects.requireNonNull(periodEnd, "period end");
     Objects.requireNonNull(sourceCutoff, "source cutoff");

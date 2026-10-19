@@ -62,7 +62,7 @@ class ReferralGrantTargetScopeValidatorTest {
   }
 
   @Test
-  void validatesReportingGrantOnlyForAnActiveOrganization() {
+  void validatesReportingGrantForAnActiveOrganizationOrFacility() {
     var validator =
         new ReferralGrantTargetScopeValidator(
             new DirectoryScopeReferenceLookup() {
@@ -74,7 +74,7 @@ class ReferralGrantTargetScopeValidatorTest {
               @Override
               public boolean isActiveFacilityInOrganization(
                   ExternalReference organization, ExternalReference facility) {
-                return false;
+                return ORGANIZATION.equals(organization) && FACILITY.equals(facility);
               }
             });
 
@@ -88,6 +88,13 @@ class ReferralGrantTargetScopeValidatorTest {
             validator.isValid(
                 ReferralAuthorities.reportingSnapshot(),
                 RequestedExecutionScope.facility(ORGANIZATION, FACILITY)))
+        .isTrue();
+    assertThat(
+            validator.isValid(
+                ReferralAuthorities.reportingSnapshot(),
+                RequestedExecutionScope.facility(
+                    ORGANIZATION,
+                    new ExternalReference(DIRECTORY, "Facility", "SYN-INACTIVE-FACILITY"))))
         .isFalse();
     assertThat(
             validator.isValid(

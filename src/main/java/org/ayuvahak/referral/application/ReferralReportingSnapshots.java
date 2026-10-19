@@ -54,11 +54,11 @@ public final class ReferralReportingSnapshots {
     this.clock = Objects.requireNonNull(clock, "audit clock");
   }
 
-  /** Returns a replay-stable owner snapshot for the organization in the validated service scope. */
+  /** Returns a replay-stable owner snapshot for the validated organization or facility scope. */
   public ReferralReportingSnapshot snapshot(
       ExecutionContext context, ReferralReportingSnapshotRequest request) {
     Objects.requireNonNull(request, "reporting snapshot request");
-    ExternalReference organization = requireOrganizationScope(context);
+    ReportingScope scope = requireReportingScope(context);
     if (context.actor().kind() != ActorKind.SERVICE || !isServiceExecution(context)) {
       deny(context, AuditAuthorizationOutcome.NOT_EVALUATED, "SERVICE_IDENTITY_REQUIRED");
       throw denied();
@@ -90,11 +90,13 @@ public final class ReferralReportingSnapshots {
       throw denied();
     }
 
-    UUID organizationId = parseOrganizationId(organization);
-    String fingerprint = fingerprint(organization, request);
+    UUID organizationId = parseIdentifier(scope.organization());
+    Optional<UUID> facilityId = scope.facility().map(ReferralReportingSnapshots::parseIdentifier);
+    String fingerprint = fingerprint(scope.organization(), scope.facility(), request);
     ReferralReportingSnapshot snapshot;
     try {
-      snapshot = store.getOrCreate(organizationId, request, fingerprint, clock.instant());
+      snapshot =
+          store.getOrCreate(organizationId, facilityId, request, fingerprint, clock.instant());
     } catch (ReferralReportingSnapshotException conflict) {
       deny(context, AuditAuthorizationOutcome.ALLOWED, "REQUEST_ID_CONFLICT");
       throw new PlatformProblemException(
@@ -112,13 +114,24 @@ public final class ReferralReportingSnapshots {
     return snapshot;
   }
 
-  private ExternalReference requireOrganizationScope(ExecutionContext context) {
-    if (context != null
-        && context.scope().kind() == ExecutionScope.Kind.ORGANIZATION
-        && context.scope().organization().isPresent()
-        && context.scope().organization().orElseThrow().issuer().value().equals(DIRECTORY_ISSUER)
-        && context.scope().organization().orElseThrow().resourceType().equals("Organization")) {
-      return context.scope().organization().orElseThrow();
+  private ReportingScope requireReportingScope(ExecutionContext context) {
+    if (context != null && context.scope().organization().isPresent()) {
+      ExternalReference organization = context.scope().organization().orElseThrow();
+      Optional<ExternalReference> facility = context.scope().facility();
+      boolean validOrganization =
+          organization.issuer().value().equals(DIRECTORY_ISSUER)
+              && organization.resourceType().equals("Organization");
+      boolean validFacility =
+          facility.isEmpty()
+              || (context.scope().kind() == ExecutionScope.Kind.FACILITY
+                  && facility.orElseThrow().issuer().value().equals(DIRECTORY_ISSUER)
+                  && facility.orElseThrow().resourceType().equals("Facility"));
+      boolean validKind =
+          context.scope().kind() == ExecutionScope.Kind.ORGANIZATION && facility.isEmpty()
+              || context.scope().kind() == ExecutionScope.Kind.FACILITY && facility.isPresent();
+      if (validOrganization && validFacility && validKind) {
+        return new ReportingScope(organization, facility);
+      }
     }
     if (context != null) {
       deny(context, AuditAuthorizationOutcome.NOT_EVALUATED, "INVALID_EXECUTION_SCOPE");
@@ -149,10 +162,10 @@ public final class ReferralReportingSnapshots {
     return value.getNano() % 1_000 == 0;
   }
 
-  private static UUID parseOrganizationId(ExternalReference organization) {
+  private static UUID parseIdentifier(ExternalReference reference) {
     try {
-      UUID parsed = UUID.fromString(organization.value());
-      if (!parsed.toString().equalsIgnoreCase(organization.value())) {
+      UUID parsed = UUID.fromString(reference.value());
+      if (!parsed.toString().equalsIgnoreCase(reference.value())) {
         throw new IllegalArgumentException("non-canonical identifier");
       }
       return parsed;
@@ -160,16 +173,28 @@ public final class ReferralReportingSnapshots {
       throw new PlatformProblemException(
           HttpStatus.FORBIDDEN,
           PlatformErrorCode.AUTHORIZATION_DENIED,
-          "Referral could not authorize the reporting organization safely.");
+          "Referral could not authorize the reporting scope safely.");
     }
   }
 
   private static String fingerprint(
-      ExternalReference organization, ReferralReportingSnapshotRequest request) {
+      ExternalReference organization,
+      Optional<ExternalReference> facility,
+      ReferralReportingSnapshotRequest request) {
     String canonical =
         organization.issuer().value()
             + "\nOrganization\n"
             + organization.value()
+            + facility
+                .map(
+                    value ->
+                        "\nFacility\n"
+                            + value.issuer().value()
+                            + "\n"
+                            + value.resourceType()
+                            + "\n"
+                            + value.value())
+                .orElse("")
             + "\n"
             + request.measureKeys().stream()
                 .sorted()
@@ -271,4 +296,7 @@ public final class ReferralReportingSnapshots {
   private static PlatformProblemException unavailable(PlatformErrorCode code, String message) {
     return new PlatformProblemException(HttpStatus.SERVICE_UNAVAILABLE, code, message);
   }
+
+  private record ReportingScope(
+      ExternalReference organization, Optional<ExternalReference> facility) {}
 }

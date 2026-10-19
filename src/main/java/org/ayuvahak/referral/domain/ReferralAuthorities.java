@@ -28,7 +28,8 @@ public final class ReferralAuthorities {
           "ReferralPatientContextDisclosure", Set.of(ExecutionScope.Kind.FACILITY));
   private static final FunctionalAuthority REPORTING_SNAPSHOT =
       new FunctionalAuthority(
-          "ReferralReportingSnapshot", Set.of(ExecutionScope.Kind.ORGANIZATION));
+          "ReferralReportingSnapshot",
+          Set.of(ExecutionScope.Kind.ORGANIZATION, ExecutionScope.Kind.FACILITY));
 
   private ReferralAuthorities() {}
 

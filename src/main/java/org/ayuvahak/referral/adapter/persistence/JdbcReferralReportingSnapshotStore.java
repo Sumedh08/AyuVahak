@@ -5,6 +5,7 @@ import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.UUID;
 import org.ayuvahak.platform.core.ExternalReference;
@@ -35,6 +36,7 @@ public class JdbcReferralReportingSnapshotStore implements ReferralReportingSnap
               row.getObject("request_id", UUID.class),
               row.getString("request_fingerprint"),
               row.getObject("origin_organization_id", UUID.class),
+              Optional.ofNullable(row.getObject("origin_facility_id", UUID.class)),
               row.getTimestamp("period_start").toInstant(),
               row.getTimestamp("period_end").toInstant(),
               row.getTimestamp("source_cutoff").toInstant(),
@@ -56,6 +58,7 @@ public class JdbcReferralReportingSnapshotStore implements ReferralReportingSnap
   @Override
   public ReferralReportingSnapshot getOrCreate(
       UUID organizationId,
+      Optional<UUID> facilityId,
       ReferralReportingSnapshotRequest request,
       String requestFingerprint,
       Instant generatedAt) {
@@ -63,24 +66,28 @@ public class JdbcReferralReportingSnapshotStore implements ReferralReportingSnap
         ignored -> {
           List<SnapshotHeader> existing = findHeader(request.requestId());
           if (!existing.isEmpty()) {
-            return replayOrConflict(existing.getFirst(), organizationId, requestFingerprint);
+            return replayOrConflict(
+                existing.getFirst(), organizationId, facilityId, requestFingerprint);
           }
 
           boolean complete = !request.sourceCutoff().isBefore(request.periodEnd());
           Map<String, OptionalLong> measureValues =
-              complete ? countMeasures(organizationId, request) : emptyMeasures(request);
+              complete
+                  ? countMeasures(organizationId, facilityId, request)
+                  : emptyMeasures(request);
           UUID snapshotId = UUID.randomUUID();
           int inserted =
               jdbc.update(
                   "INSERT INTO referral.reporting_snapshot (snapshot_id, request_id, "
-                      + "request_fingerprint, origin_organization_id, period_start, period_end, "
+                      + "request_fingerprint, origin_organization_id, origin_facility_id, period_start, period_end, "
                       + "source_cutoff, completeness, source_version, generated_at) "
-                      + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, nextval('referral.reporting_snapshot_version_seq'), ?) "
+                      + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, nextval('referral.reporting_snapshot_version_seq'), ?) "
                       + "ON CONFLICT (request_id) DO NOTHING",
                   snapshotId,
                   request.requestId(),
                   requestFingerprint,
                   organizationId,
+                  facilityId.orElse(null),
                   Timestamp.from(request.periodStart()),
                   Timestamp.from(request.periodEnd()),
                   Timestamp.from(request.sourceCutoff()),
@@ -91,7 +98,7 @@ public class JdbcReferralReportingSnapshotStore implements ReferralReportingSnap
           if (inserted == 0) {
             SnapshotHeader winner =
                 findHeader(request.requestId()).stream().findFirst().orElseThrow();
-            return replayOrConflict(winner, organizationId, requestFingerprint);
+            return replayOrConflict(winner, organizationId, facilityId, requestFingerprint);
           }
 
           for (Map.Entry<String, OptionalLong> measure : measureValues.entrySet()) {
@@ -109,8 +116,12 @@ public class JdbcReferralReportingSnapshotStore implements ReferralReportingSnap
   }
 
   private ReferralReportingSnapshot replayOrConflict(
-      SnapshotHeader header, UUID organizationId, String requestFingerprint) {
+      SnapshotHeader header,
+      UUID organizationId,
+      Optional<UUID> facilityId,
+      String requestFingerprint) {
     if (!header.originOrganizationId().equals(organizationId)
+        || !header.originFacilityId().equals(facilityId)
         || !header.requestFingerprint().equals(requestFingerprint)) {
       throw new ReferralReportingSnapshotException(
           ReferralReportingSnapshotException.Reason.REQUEST_ID_CONFLICT);
@@ -121,32 +132,40 @@ public class JdbcReferralReportingSnapshotStore implements ReferralReportingSnap
   private List<SnapshotHeader> findHeader(UUID requestId) {
     return jdbc.query(
         "SELECT snapshot_id, request_id, request_fingerprint, origin_organization_id, "
-            + "period_start, period_end, source_cutoff, completeness, source_version, generated_at "
+            + "origin_facility_id, period_start, period_end, source_cutoff, completeness, source_version, generated_at "
             + "FROM referral.reporting_snapshot WHERE request_id = ?",
         HEADER_ROW_MAPPER,
         requestId);
   }
 
   private Map<String, OptionalLong> countMeasures(
-      UUID organizationId, ReferralReportingSnapshotRequest request) {
-    List<Map<String, Object>> rows =
-        jdbc.queryForList(
-            "SELECT (SELECT count(*) FROM referral.submitted_revision revision "
-                + "WHERE revision.origin_organization_id = ? AND revision.revision_number = 1 "
-                + "AND revision.submitted_at >= ? AND revision.submitted_at < ? "
-                + "AND revision.submitted_at <= ?) AS submitted_count, "
-                + "(SELECT count(*) FROM referral.resolution resolution "
-                + "JOIN referral.draft draft ON draft.referral_id = resolution.referral_id "
-                + "WHERE draft.origin_organization_id = ? AND resolution.resolved_at >= ? "
-                + "AND resolution.resolved_at < ? AND resolution.resolved_at <= ?) AS resolved_count",
-            organizationId,
-            Timestamp.from(request.periodStart()),
-            Timestamp.from(request.periodEnd()),
-            Timestamp.from(request.sourceCutoff()),
-            organizationId,
-            Timestamp.from(request.periodStart()),
-            Timestamp.from(request.periodEnd()),
-            Timestamp.from(request.sourceCutoff()));
+      UUID organizationId, Optional<UUID> facilityId, ReferralReportingSnapshotRequest request) {
+    String facilityFilter = facilityId.isPresent() ? " AND %s.origin_facility_id = ? " : "";
+    String query =
+        "SELECT (SELECT count(*) FROM referral.submitted_revision revision "
+            + "WHERE revision.origin_organization_id = ? AND revision.revision_number = 1 "
+            + "AND revision.submitted_at >= ? AND revision.submitted_at < ? "
+            + "AND revision.submitted_at <= ?"
+            + (facilityId.isPresent() ? facilityFilter.formatted("revision") : "")
+            + ") AS submitted_count, "
+            + "(SELECT count(*) FROM referral.resolution resolution "
+            + "JOIN referral.draft draft ON draft.referral_id = resolution.referral_id "
+            + "WHERE draft.origin_organization_id = ? AND resolution.resolved_at >= ? "
+            + "AND resolution.resolved_at < ? AND resolution.resolved_at <= ?"
+            + (facilityId.isPresent() ? facilityFilter.formatted("draft") : "")
+            + ") AS resolved_count";
+    List<Object> parameters = new java.util.ArrayList<>();
+    parameters.add(organizationId);
+    parameters.add(Timestamp.from(request.periodStart()));
+    parameters.add(Timestamp.from(request.periodEnd()));
+    parameters.add(Timestamp.from(request.sourceCutoff()));
+    facilityId.ifPresent(parameters::add);
+    parameters.add(organizationId);
+    parameters.add(Timestamp.from(request.periodStart()));
+    parameters.add(Timestamp.from(request.periodEnd()));
+    parameters.add(Timestamp.from(request.sourceCutoff()));
+    facilityId.ifPresent(parameters::add);
+    List<Map<String, Object>> rows = jdbc.queryForList(query, parameters.toArray());
     Map<String, Object> row = rows.getFirst();
     Map<String, OptionalLong> result = new LinkedHashMap<>();
     for (String key : request.measureKeys().stream().sorted().toList()) {
@@ -186,6 +205,12 @@ public class JdbcReferralReportingSnapshotStore implements ReferralReportingSnap
             new IssuerId(DIRECTORY_ISSUER),
             "Organization",
             header.originOrganizationId().toString()),
+        header
+            .originFacilityId()
+            .map(
+                facilityId ->
+                    new ExternalReference(
+                        new IssuerId(DIRECTORY_ISSUER), "Facility", facilityId.toString())),
         header.periodStart(),
         header.periodEnd(),
         header.sourceCutoff(),
@@ -201,6 +226,7 @@ public class JdbcReferralReportingSnapshotStore implements ReferralReportingSnap
       UUID requestId,
       String requestFingerprint,
       UUID originOrganizationId,
+      Optional<UUID> originFacilityId,
       Instant periodStart,
       Instant periodEnd,
       Instant sourceCutoff,

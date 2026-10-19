@@ -114,6 +114,7 @@ class ReferralReportingSnapshotsIT {
         snapshots.snapshot(context, request(UUID.randomUUID(), PERIOD_END));
 
     assertThat(result.organization().value()).isEqualTo(organization.toString());
+    assertThat(result.facility()).isEmpty();
     assertThat(result.periodStart()).isEqualTo(PERIOD_START);
     assertThat(result.periodEnd()).isEqualTo(PERIOD_END);
     assertThat(result.sourceCutoff()).isEqualTo(PERIOD_END);
@@ -130,6 +131,105 @@ class ReferralReportingSnapshotsIT {
                     + "'REFERRAL_REPORTING_SNAPSHOT'",
                 Integer.class))
         .isEqualTo(1);
+  }
+
+  @Test
+  void facilityScopedReportCountsOnlyThatFacilitiesReferralFacts() {
+    UUID organization = UUID.randomUUID();
+    UUID facilityA = UUID.randomUUID();
+    UUID facilityB = UUID.randomUUID();
+    grantServiceFacility(ANALYTICS_CLIENT, "ReferralReportingSnapshot", organization, facilityA);
+    ExecutionContext context = serviceContext(ANALYTICS_CLIENT, organization, facilityA);
+
+    UUID resolvedAtA = insertReferral(organization, facilityA, "RESOLVED", PERIOD_START);
+    addResolution(resolvedAtA, "FULFILLED", PERIOD_START.plusSeconds(86_400));
+    insertReferral(organization, facilityA, "SUBMITTED", PERIOD_START.plusSeconds(10));
+
+    UUID resolvedAtB =
+        insertReferral(organization, facilityB, "RESOLVED", PERIOD_START.plusSeconds(20));
+    addResolution(resolvedAtB, "UNFULFILLED", PERIOD_START.plusSeconds(86_400));
+    insertReferral(organization, null, "SUBMITTED", PERIOD_START.plusSeconds(30));
+
+    UUID requestId = UUID.randomUUID();
+    ReferralReportingSnapshot result = snapshots.snapshot(context, request(requestId, PERIOD_END));
+
+    assertThat(result.organization().value()).isEqualTo(organization.toString());
+    assertThat(result.facility())
+        .contains(
+            new ExternalReference(
+                new IssuerId(DIRECTORY_ISSUER), "Facility", facilityA.toString()));
+    assertThat(result.measures().get("SUBMITTED_COUNT")).hasValue(2L);
+    assertThat(result.measures().get("RESOLVED_COUNT")).hasValue(1L);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT origin_facility_id FROM referral.reporting_snapshot WHERE request_id = ?",
+                UUID.class,
+                requestId))
+        .isEqualTo(facilityA);
+  }
+
+  @Test
+  void facilityScopedServiceGrantCannotReadAnotherFacility() {
+    UUID organization = UUID.randomUUID();
+    UUID facilityA = UUID.randomUUID();
+    UUID facilityB = UUID.randomUUID();
+    grantServiceFacility(ANALYTICS_CLIENT, "ReferralReportingSnapshot", organization, facilityA);
+    ExecutionContext wrongFacility = serviceContext(ANALYTICS_CLIENT, organization, facilityB);
+    UUID requestId = UUID.randomUUID();
+
+    assertThatThrownBy(() -> snapshots.snapshot(wrongFacility, request(requestId, PERIOD_END)))
+        .isInstanceOf(PlatformProblemException.class)
+        .satisfies(
+            problem ->
+                assertThat(((PlatformProblemException) problem).status())
+                    .isEqualTo(org.springframework.http.HttpStatus.FORBIDDEN));
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM referral.reporting_snapshot WHERE request_id = ?",
+                Integer.class,
+                requestId))
+        .isZero();
+  }
+
+  @Test
+  void stableRequestIdentityConflictsWhenScopeChangesBetweenOrganizationAndFacility() {
+    UUID organization = UUID.randomUUID();
+    UUID facility = UUID.randomUUID();
+    UUID anotherFacility = UUID.randomUUID();
+    grantService(ANALYTICS_CLIENT, "ReferralReportingSnapshot", organization);
+    grantServiceFacility(ANALYTICS_CLIENT, "ReferralReportingSnapshot", organization, facility);
+    grantServiceFacility(
+        ANALYTICS_CLIENT, "ReferralReportingSnapshot", organization, anotherFacility);
+    UUID requestId = UUID.randomUUID();
+
+    snapshots.snapshot(
+        serviceContext(ANALYTICS_CLIENT, organization), request(requestId, PERIOD_END));
+
+    assertThatThrownBy(
+            () ->
+                snapshots.snapshot(
+                    serviceContext(ANALYTICS_CLIENT, organization, facility),
+                    request(requestId, PERIOD_END)))
+        .isInstanceOf(PlatformProblemException.class)
+        .satisfies(
+            problem ->
+                assertThat(((PlatformProblemException) problem).status())
+                    .isEqualTo(org.springframework.http.HttpStatus.CONFLICT));
+
+    UUID facilityRequestId = UUID.randomUUID();
+    snapshots.snapshot(
+        serviceContext(ANALYTICS_CLIENT, organization, facility),
+        request(facilityRequestId, PERIOD_END));
+    assertThatThrownBy(
+            () ->
+                snapshots.snapshot(
+                    serviceContext(ANALYTICS_CLIENT, organization, anotherFacility),
+                    request(facilityRequestId, PERIOD_END)))
+        .isInstanceOf(PlatformProblemException.class)
+        .satisfies(
+            problem ->
+                assertThat(((PlatformProblemException) problem).status())
+                    .isEqualTo(org.springframework.http.HttpStatus.CONFLICT));
   }
 
   @Test
@@ -215,6 +315,18 @@ class ReferralReportingSnapshotsIT {
         Optional.empty());
   }
 
+  private ExecutionContext serviceContext(String clientId, UUID organization, UUID facility) {
+    var factory = new ExecutionContextFactory((actor, scope) -> true);
+    return factory.forBackgroundWork(
+        ActorReference.service(new IssuerId(ISSUER), clientId),
+        RequestedExecutionScope.facility(
+            new ExternalReference(
+                new IssuerId(DIRECTORY_ISSUER), "Organization", organization.toString()),
+            new ExternalReference(new IssuerId(DIRECTORY_ISSUER), "Facility", facility.toString())),
+        CorrelationId.generate(),
+        Optional.empty());
+  }
+
   private ExecutionContext humanContext(UUID organization) {
     var factory = new ExecutionContextFactory((actor, scope) -> true);
     return factory.forInteractiveRequest(
@@ -240,7 +352,30 @@ class ReferralReportingSnapshotsIT {
         organization.toString());
   }
 
+  private void grantServiceFacility(
+      String clientId, String authority, UUID organization, UUID facility) {
+    jdbc.update(
+        "INSERT INTO identity_access.authorization_grant (grant_id, principal_kind, "
+            + "principal_issuer, principal_identifier_type, principal_identifier, authority_code, "
+            + "scope_kind, organization_issuer, organization_identifier_type, "
+            + "organization_identifier, facility_issuer, facility_identifier_type, "
+            + "facility_identifier, grant_status, created_at) VALUES (gen_random_uuid(), "
+            + "'SERVICE', ?, 'client_id', ?, ?, 'FACILITY', ?, 'Organization', ?, ?, 'Facility', ?, "
+            + "'ACTIVE', CURRENT_TIMESTAMP)",
+        ISSUER,
+        clientId,
+        authority,
+        DIRECTORY_ISSUER,
+        organization.toString(),
+        DIRECTORY_ISSUER,
+        facility.toString());
+  }
+
   private UUID insertReferral(UUID organization, String state, Instant submittedAt) {
+    return insertReferral(organization, null, state, submittedAt);
+  }
+
+  private UUID insertReferral(UUID organization, UUID facility, String state, Instant submittedAt) {
     UUID referralId = UUID.randomUUID();
     jdbc.update(
         "INSERT INTO referral.draft (referral_id, state, origin_organization_id, "
@@ -248,11 +383,12 @@ class ReferralReportingSnapshotsIT {
             + "created_by_kind, created_by_issuer, created_by_identifier_type, "
             + "created_by_identifier, updated_by_kind, updated_by_issuer, "
             + "updated_by_identifier_type, updated_by_identifier, version, created_at, updated_at) "
-            + "VALUES (?, ?, ?, NULL, ?, 'Patient', ?, 'SERVICE', ?, 'client_id', ?, "
+            + "VALUES (?, ?, ?, ?, ?, 'Patient', ?, 'SERVICE', ?, 'client_id', ?, "
             + "'SERVICE', ?, 'client_id', ?, ?, ?, ?)",
         referralId,
         state,
         organization,
+        facility,
         ISSUER,
         "SYN-PATIENT-PHASE12-PRIVATE-91F4-" + referralId,
         ISSUER,
@@ -262,23 +398,29 @@ class ReferralReportingSnapshotsIT {
         state.equals("RESOLVED") ? 3L : 2L,
         Timestamp.from(submittedAt),
         Timestamp.from(submittedAt));
-    addRevision(referralId, organization, 1, submittedAt);
+    addRevision(referralId, organization, facility, 1, submittedAt);
     return referralId;
   }
 
   private void addRevision(UUID referralId, UUID organization, long revision, Instant submittedAt) {
+    addRevision(referralId, organization, null, revision, submittedAt);
+  }
+
+  private void addRevision(
+      UUID referralId, UUID organization, UUID facility, long revision, Instant submittedAt) {
     jdbc.update(
         "INSERT INTO referral.submitted_revision (referral_id, revision_number, referral_version, "
-            + "origin_organization_id, patient_issuer, patient_resource_type, patient_identifier, "
+            + "origin_organization_id, origin_facility_id, patient_issuer, patient_resource_type, patient_identifier, "
             + "source_actor_kind, source_actor_issuer, source_actor_identifier_type, "
             + "source_actor_identifier, submitted_by_kind, submitted_by_issuer, "
             + "submitted_by_identifier_type, submitted_by_identifier, submitted_at) "
-            + "VALUES (?, ?, ?, ?, ?, 'Patient', ?, 'SERVICE', ?, 'client_id', ?, 'SERVICE', ?, "
+            + "VALUES (?, ?, ?, ?, ?, ?, 'Patient', ?, 'SERVICE', ?, 'client_id', ?, 'SERVICE', ?, "
             + "'client_id', ?, ?)",
         referralId,
         revision,
         revision + 1,
         organization,
+        facility,
         ISSUER,
         "SYN-PATIENT-PHASE12-PRIVATE-91F4-" + referralId,
         ISSUER,

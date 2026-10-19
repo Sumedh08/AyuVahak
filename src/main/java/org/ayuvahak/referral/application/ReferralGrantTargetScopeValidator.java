@@ -28,8 +28,14 @@ public final class ReferralGrantTargetScopeValidator implements GrantTargetScope
       return false;
     }
     if (ReferralAuthorities.reportingSnapshot().equals(authority)) {
-      return targetScope instanceof RequestedExecutionScope.Organization organization
-          && directory.isActiveOrganization(organization.organization());
+      if (targetScope instanceof RequestedExecutionScope.Organization organization) {
+        return directory.isActiveOrganization(organization.organization());
+      }
+      if (targetScope instanceof RequestedExecutionScope.Facility facility) {
+        return directory.isActiveFacilityInOrganization(
+            facility.organization(), facility.facility());
+      }
+      return false;
     }
     if (!(targetScope instanceof RequestedExecutionScope.Facility facility)) {
       return false;
