@@ -27,6 +27,7 @@ Start with the [architecture constitution](constitution.md) for product boundari
 ## Volume V — design review; implementation not started
 
 - [Volume V architecture](volume-5-production-hardening-optimization-intelligence.md): production hardening, DPG evidence, measured optimization and optional non-authoritative intelligence.
+- [Retention and deletion governance matrix](volume-5-retention-governance.md): proposed owner-by-owner lifecycle and recovery-safe disposal requirements.
 - [Phase 13 specification](../specs/phase-13-production-hardening-dpg-readiness-spec.md)
 - [Phase 14 specification](../specs/phase-14-optimization-intelligence-spec.md)
 - [Production readiness gap analysis](../reviews/production-readiness-gap-analysis.md)
@@ -34,6 +35,6 @@ Start with the [architecture constitution](constitution.md) for product boundari
 - [Volume V threat model](volume-5-threat-model.md)
 - [Volume V design review](../reviews/volume-5-design-review.md)
 - [Volume V question disposition](../reviews/volume-5-open-questions.md)
-- [Official research: production/security/supply chain](../research/volume-5-production-security-supply-chain-research.md), [DPG Standard](../research/volume-5-dpg-standard-research.md), and [AI governance](../research/volume-5-ai-governance-research.md)
+- [Official research index](../research/README.md) and [design research notes](../research/volume-5-production-security-supply-chain-research.md), [DPG Standard](../research/volume-5-dpg-standard-research.md), and [AI governance](../research/volume-5-ai-governance-research.md)
 
 Root [AGENTS.md](../../AGENTS.md) is authoritative for program state and execution authorization. Volumes I–IV are implemented and frozen. Volume V design is in review; Phase 13/14 implementation requires separate human authorization.

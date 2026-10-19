@@ -47,12 +47,18 @@ The challenge used root `AGENTS.md`, product boundaries, constitution, frozen Vo
 
 ## Independent review
 
-The independent Standards and Spec reviews are recorded in the design-review addendum below. Findings are classified and tracked to resolution. Freeze is prohibited while a BLOCKER or MAJOR remains open.
+Two independent review passes covered the proposed Volume V changes from the authorization baseline `1223ecc9e3c89f57c8147efd8c8613fbef9a5cc2` through the specification/research draft, followed by targeted review of the remediation. Reviewers did not edit files, run tests, access external systems or create commits.
 
-### Independent review addendum
+| Finding | Classification | Resolution | Status |
+|---|---|---|---|
+| ADR index described proposed Phase 13/14 decisions/specifications as frozen while the ADRs were still under design review. | MAJOR | Clarified the ADR status policy, marked ADRs 0030–0033 Proposed in their frontmatter and index, and stated they remain proposed until Volume V freeze. The independent standards reviewer confirmed alignment. | RESOLVED |
+| Phase 13 required an owner/category retention matrix but did not provide the owner-level classifications needed to implement it. | MAJOR | Added [Volume V retention and deletion governance](../architecture/volume-5-retention-governance.md), covering current owner categories, purposes, expiry/minimization, preservation dependencies, deployment schedule fields and local acceptance evidence. Linked it from Phase 13 §10, acceptance criterion 8, production gap analysis and P13-Q14. The independent specification reviewer confirmed the gap is resolved. | RESOLVED |
 
-Pending until separate reviewers complete standards and specification passes against this baseline. This section must be updated before the Volume V freeze commit.
+### Classification
 
-## Final classification
+- **BLOCKER:** 0 unresolved.
+- **MAJOR:** 0 unresolved; both findings above are resolved.
+- **MINOR:** 0 unresolved; the ADR status ambiguity was corrected before freeze.
+- **DOCUMENTATION:** navigation now indexes the owner-specific retention matrix; all changed Markdown passes `git diff --check`, and independent review found no broken links in its review range.
 
-Pending independent review and remediation. No implementation may start based on this review alone.
+No implementation, tests, runtime configuration, dependencies or infrastructure were added during review. The design is eligible for freeze after the final status/index consistency update and documentation-only checks.

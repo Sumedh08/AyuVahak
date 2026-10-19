@@ -5,6 +5,7 @@ ADRs record durable AyuVahak architecture decisions, their context, and the rati
 ## Status and change policy
 
 - **Accepted** means the decision is the current baseline unless a later ADR says otherwise.
+- **Proposed** means a decision is drafted for review and is not yet the frozen current baseline.
 - **Superseded** means a later decision replaces all or part of the historical decision. Keep the old record and link the replacement; do not erase decision history.
 - **Amended** decisions retain their original ADR number and add a dated amendment note that explains the scope of change and links the current baseline.
 - **Rejected** or **withdrawn** proposals remain for context if they were durable enough to record; do not treat them as active requirements.
@@ -44,10 +45,10 @@ ADRs record durable AyuVahak architecture decisions, their context, and the rati
 | [0027](0027-federation-uses-explicit-peers-and-home-authority.md) | Federation uses explicit peers and home authority | Accepted |
 | [0028](0028-analytics-uses-versioned-owner-produced-aggregates.md) | Analytics uses versioned owner-produced aggregates | Accepted |
 | [0029](0029-dhis2-is-a-downstream-aggregate-export.md) | DHIS2 is a downstream aggregate export | Accepted |
-| [0030](0030-portable-production-profiles-and-recovery-evidence.md) | Portable production profiles require measured recovery evidence | Accepted |
-| [0031](0031-release-evidence-is-verifiable-not-a-security-claim.md) | Release evidence is verifiable, not a security claim | Accepted |
-| [0032](0032-intelligence-is-optional-and-non-authoritative.md) | Intelligence is optional and non-authoritative | Accepted |
-| [0033](0033-measured-optimization-preserves-domain-semantics.md) | Measured optimization preserves domain semantics | Accepted |
+| [0030](0030-portable-production-profiles-and-recovery-evidence.md) | Portable production profiles require measured recovery evidence | Proposed — pending Volume V design freeze |
+| [0031](0031-release-evidence-is-verifiable-not-a-security-claim.md) | Release evidence is verifiable, not a security claim | Proposed — pending Volume V design freeze |
+| [0032](0032-intelligence-is-optional-and-non-authoritative.md) | Intelligence is optional and non-authoritative | Proposed — pending Volume V design freeze |
+| [0033](0033-measured-optimization-preserves-domain-semantics.md) | Measured optimization preserves domain semantics | Proposed — pending Volume V design freeze |
 
 ADR 0005 and ADR 0007 have dated amendments for the Phase 2 identity/token boundary and at-least-once/per-aggregate event delivery semantics. These amendments clarify the existing decisions; they do not change the Phase 1 baseline or begin Phase 2 implementation.
 
@@ -65,5 +66,5 @@ ADRs 0023–0025 record the Volume III design decisions: Referral controls and t
 
 ADRs 0026–0029 record the frozen Volume IV decisions: realtime client delivery is a bounded hint channel; federation uses explicit revocable peers and home authority; Analytics consumes owner-produced versioned aggregates; and DHIS2 receives downstream aggregate DataValueSets through Phase 9. Phases 11–12 are implemented and frozen; see their acceptance records.
 
-ADRs 0030–0033 record the Volume V design decisions: portable production profiles require measured recovery evidence; release evidence is verifiable but not a security claim; intelligence is optional and non-authoritative; and optimization preserves domain semantics. They accompany the frozen Phase 13/14 specifications but do not authorize implementation. Volume V implementation requires separate human authorization.
+ADRs 0030–0033 are proposed Volume V decisions: portable production profiles require measured recovery evidence; release evidence is verifiable but not a security claim; intelligence is optional and non-authoritative; and optimization preserves domain semantics. They accompany proposed Phase 13/14 specifications pending independent review and design freeze. Their status remains Proposed until the Volume V design freeze; they do not authorize implementation, which requires separate human authorization.
 
