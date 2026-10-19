@@ -49,3 +49,6 @@ ayuvahak:
     secrets:
       database-password-reference: ${AYUVAHAK_DATABASE_PASSWORD_SECRET_REF:}
       tls-certificate-reference: ${AYUVAHAK_TLS_CERTIFICATE_SECRET_REF:}
+    migrations:
+      backup-evidence-reference: ${AYUVAHAK_MIGRATION_BACKUP_EVIDENCE_REFERENCE:}
+      backup-completed-at: ${AYUVAHAK_MIGRATION_BACKUP_COMPLETED_AT:}

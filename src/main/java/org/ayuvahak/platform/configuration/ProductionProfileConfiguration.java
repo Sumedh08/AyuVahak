@@ -3,6 +3,7 @@ package org.ayuvahak.platform.configuration;
 import java.util.List;
 import org.ayuvahak.platform.authentication.AuthenticationProperties;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.flyway.autoconfigure.FlywayMigrationStrategy;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
@@ -14,7 +15,11 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 /** Production-only configuration checks and the explicitly allowlisted browser-origin boundary. */
 @Configuration(proxyBeanMethods = false)
 @Profile({"production-single-site", "production-ha"})
-@EnableConfigurationProperties({ProductionProfileProperties.class, AuthenticationProperties.class})
+@EnableConfigurationProperties({
+  ProductionProfileProperties.class,
+  ProductionMigrationProperties.class,
+  AuthenticationProperties.class
+})
 public class ProductionProfileConfiguration {
 
   @Bean
@@ -40,5 +45,11 @@ public class ProductionProfileConfiguration {
     UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
     source.registerCorsConfiguration("/**", cors);
     return source;
+  }
+
+  @Bean
+  FlywayMigrationStrategy productionFlywayMigrationStrategy(
+      ProductionMigrationProperties properties) {
+    return new ProductionFlywayMigrationStrategy(properties);
   }
 }
