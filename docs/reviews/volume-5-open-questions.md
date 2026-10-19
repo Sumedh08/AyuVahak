@@ -21,7 +21,7 @@
 | P13-Q9 | SBOM format? | SPDX 3.0 as one initial canonical profile; implementation verifies generator/tool compatibility. |
 | P13-Q10 | Provenance/signing proportion? | Digest + machine-verifiable provenance + signed asset/manifest and verifier guidance. SLSA v1.2 is vocabulary; no level claim before evidence. Sigstore is a candidate, not mandatory. |
 | P13-Q11 | Vulnerability policy? | Contextual triage using severity, reachability/exposure, exploit evidence including KEV, fix availability and deployment context; time-bounded exceptions. |
-| P13-Q12 | Release/version policy? | Phase 13 documents stable artifact/version identity and compatibility support; no immutable release numbering scheme is guessed beyond repository governance. |
+| P13-Q12 | Release/version policy? | Stable application releases use immutable SemVer 2.0.0 IDs, prereleases identify candidates, and SNAPSHOT builds are never production releases. Define the public API surface and document migration/compatibility/support; API `/api/vN` evolves independently. |
 | P13-Q13 | Required runbooks? | Database, IdP, secrets/certificates, exchange/federation unknown outcome, outbox, audit, notification, exhaustion, migration, breach and dependency incident. |
 | P13-Q14 | Retention model? | Owner/category matrix with purpose, access, configurable duration, expiry/deletion/pseudonymization and history constraints; no universal duration. |
 | P13-Q15–18 | What is current DPG basis, status and external evidence? | Official public basis checked 2026-10-20; numbered release/current page/2025 AI update/2026 guide version discrepancy preserved. Matrix reports 0 satisfied, 5 partial, 2 not satisfied, 4 requiring governance evidence. No certification or submission. |

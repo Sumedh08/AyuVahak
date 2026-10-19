@@ -134,6 +134,26 @@ This note records versioned facts for architecture and specification decisions. 
 - **AyuVahak consequence:** Specify separate liveness/readiness semantics, minimal public health details, protected/isolated management surfaces, bounded shutdown/drain, and actual exported service SLIs. Keep durable work in the existing database/outbox, not an in-memory shutdown queue. Add tests that management endpoints are unavailable except by explicit protected configuration.
 - **Primary sources:** [Spring Boot 4.1.1 production-ready features](https://docs.spring.io/spring-boot/reference/actuator/); [Actuator endpoint exposure and security](https://docs.spring.io/spring-boot/reference/actuator/endpoints.html); [Actuator metrics](https://docs.spring.io/spring-boot/reference/actuator/metrics.html); [graceful shutdown](https://docs.spring.io/spring-boot/reference/web/graceful-shutdown.html).
 
+## Release identity and HTTP response hardening
+
+### Semantic Versioning 2.0.0
+
+- **Retrieved:** 2026-10-20.
+- **Version/basis:** Semantic Versioning Specification 2.0.0, current official specification page.
+- **Fact:** SemVer defines MAJOR.MINOR.PATCH compatibility claims for a declared public API and prerelease/build metadata. Its compatibility promise depends on the project actually defining what its public API is.
+- **What this does not imply:** A SemVer string is not evidence that compatibility was tested, that database migrations are reversible, or that an API URI version must equal the application release version.
+- **AyuVahak consequence:** Use SemVer for stable application releases after the project declares the supported public product/API surface. Keep API URI major version governed separately by the existing API version decision. Pre-release and `SNAPSHOT` builds are not production release identifiers. Each immutable release also binds source revision, migration compatibility, artifact digest, SBOM, provenance and signature.
+- **Primary source:** [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html).
+
+### OWASP Secure Headers Project
+
+- **Retrieved:** 2026-10-20.
+- **Version/basis:** OWASP Secure Headers Project current response-header and best-practice pages. The project identifies its broad recommendations as a working draft and marks individual headers active/deprecated.
+- **Fact:** The project distinguishes browser-enforced headers from general response behavior. It describes HSTS as a browser policy delivered over HTTPS and cautions against including the preload directive by default. It notes CSP applicability depends on the document execution context; in an API-only product, CSP is generally authored by the browser-consuming document rather than applied as if JSON were HTML. It discusses `nosniff`, cache directives, frame controls, CORS and removal of technology-disclosing headers.
+- **What this does not imply:** A bulk recommended-header list is not a drop-in policy for every JSON endpoint, proxy or browser. Adding irrelevant or misconfigured headers may have no value or may break clients. A working draft is not a normative application-specific requirement.
+- **AyuVahak consequence:** Specify a response-header policy by surface: HTTPS ingress may set HSTS after the operator confirms the complete hostname/subdomain HTTPS scope (no default preload); API responses use appropriate content type, `X-Content-Type-Options: nosniff`, no-store for sensitive responses, and avoid software/version disclosure; CORS is explicit and credential-aware. CSP/frame protections apply to any actual HTML/browser-delivered interface/docs surface with a tested policy, not mechanically to JSON. Validate the final deployment ingress/application combination.
+- **Primary sources:** [OWASP Secure Headers — response headers](https://secure-headers-project.owasp.org/response-headers/); [OWASP Secure Headers — best practices](https://secure-headers-project.owasp.org/best-practices/).
+
 ### Java SE 25 diagnostics
 
 - **Retrieved:** 2026-10-20.
