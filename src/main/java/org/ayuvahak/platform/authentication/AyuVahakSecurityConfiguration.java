@@ -12,6 +12,8 @@ import org.ayuvahak.platform.audit.domain.AuditAuthenticationEvidence;
 import org.ayuvahak.platform.audit.domain.AuditAuthorizationOutcome;
 import org.ayuvahak.platform.audit.domain.AuditEvidence;
 import org.ayuvahak.platform.audit.domain.AuditOutcome;
+import org.ayuvahak.platform.configuration.ProductionProfileProperties;
+import org.ayuvahak.platform.configuration.ProductionRequestAbuseFilter;
 import org.ayuvahak.platform.core.CorrelationId;
 import org.ayuvahak.platform.core.IssuerId;
 import org.springframework.beans.factory.ObjectProvider;
@@ -36,6 +38,7 @@ import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.JwtException;
 import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
+import org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter;
 import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.access.AccessDeniedHandler;
@@ -55,18 +58,27 @@ public class AyuVahakSecurityConfiguration {
       AuthenticationEntryPoint problemAuthenticationEntryPoint,
       AccessDeniedHandler problemAccessDeniedHandler,
       Converter<Jwt, ActorAuthentication> actorAuthenticationConverter,
-      ObjectProvider<CorsConfigurationSource> corsConfigurationSources)
+      ObjectProvider<CorsConfigurationSource> corsConfigurationSources,
+      ObjectProvider<ProductionProfileProperties> productionProfileProperties)
       throws Exception {
     http.csrf(AbstractHttpConfigurer::disable)
         .sessionManagement(
             session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
         .authorizeHttpRequests(
-            authorize ->
+            authorize -> {
+              authorize.requestMatchers("/api/v1/system-info").permitAll();
+              if (productionProfileProperties.getIfAvailable() != null) {
                 authorize
-                    .requestMatchers("/api/v1/system-info", "/actuator/**")
+                    .requestMatchers(
+                        "/actuator/health", "/actuator/health/**", "/actuator/prometheus")
                     .permitAll()
-                    .anyRequest()
-                    .authenticated())
+                    .requestMatchers("/actuator/**")
+                    .denyAll();
+              } else {
+                authorize.requestMatchers("/actuator/**").permitAll();
+              }
+              authorize.anyRequest().authenticated();
+            })
         .exceptionHandling(
             errors ->
                 errors
@@ -77,6 +89,11 @@ public class AyuVahakSecurityConfiguration {
                 resourceServer
                     .authenticationEntryPoint(problemAuthenticationEntryPoint)
                     .jwt(jwt -> jwt.jwtAuthenticationConverter(actorAuthenticationConverter)));
+    productionProfileProperties.ifAvailable(
+        properties ->
+            http.addFilterAfter(
+                new ProductionRequestAbuseFilter(properties),
+                BearerTokenAuthenticationFilter.class));
     corsConfigurationSources.ifAvailable(
         source -> http.cors(cors -> cors.configurationSource(source)));
     return http.build();
