@@ -16,6 +16,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import org.ayuvahak.platform.api.PlatformProblemException;
 import org.ayuvahak.platform.core.ActorReference;
 import org.ayuvahak.platform.core.CorrelationId;
 import org.ayuvahak.platform.core.ExternalReference;
@@ -91,6 +92,37 @@ class NotificationStreamServiceTest {
             "correlationId");
     assertThat(reader.requestedScopes).containsOnly(scope, scope);
     sink.close();
+  }
+
+  @Test
+  void shutdownClosesConnectedStreamsAndRejectsNewSubscriptions() throws Exception {
+    ExecutionScope scope = organizationScope("SYN-ORG-001");
+    service =
+        new NotificationStreamService(
+            new FakeReader(cursor(1)), new FakeAuthorizer(scope), properties(), Clock.systemUTC());
+    RecordingSink connectedClient = new RecordingSink();
+    RequestedExecutionScope requestedScope =
+        RequestedExecutionScope.organization(scope.organization().orElseThrow());
+
+    service.subscribe(
+        actor(),
+        requestedScope,
+        new CorrelationId("shutdown-sse-client"),
+        Optional.empty(),
+        connectedClient);
+
+    service.close();
+
+    assertThat(connectedClient.awaitClose()).isTrue();
+    assertThatThrownBy(
+            () ->
+                service.subscribe(
+                    actor(),
+                    requestedScope,
+                    new CorrelationId("shutdown-sse-reconnect"),
+                    Optional.empty(),
+                    new RecordingSink()))
+        .isInstanceOf(PlatformProblemException.class);
   }
 
   @Test

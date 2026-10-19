@@ -12,6 +12,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -24,6 +25,7 @@ import org.ayuvahak.platform.core.OccurredAt;
 import org.ayuvahak.platform.core.RecordedAt;
 import org.ayuvahak.platform.event.AggregatePosition;
 import org.ayuvahak.platform.event.EventEnvelope;
+import org.ayuvahak.platform.event.EventEnvelopeJsonCodec;
 import org.ayuvahak.platform.event.EventType;
 import org.ayuvahak.platform.eventing.application.DeliveryFailureResult;
 import org.ayuvahak.platform.eventing.application.DispatchReport;
@@ -35,6 +37,7 @@ import org.ayuvahak.platform.eventing.application.LeasedEvent;
 import org.ayuvahak.platform.eventing.application.OutboxDispatcher;
 import org.ayuvahak.platform.eventing.application.OutboxStore;
 import org.ayuvahak.platform.eventing.application.OutboxWriter;
+import org.ayuvahak.platform.eventing.configuration.OutboxProperties;
 import org.ayuvahak.platform.executioncontext.ExecutionContext;
 import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
 import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
@@ -102,6 +105,10 @@ class OutboxTransactionPostgresIT {
   @Autowired private OutboxStore outboxStore;
   @Autowired private EventDeliveryOperationsStore deliveryOperationsStore;
   @Autowired private OutboxDispatcher dispatcher;
+  @Autowired private EventHandlerRegistry handlerRegistry;
+  @Autowired private OutboxProperties outboxProperties;
+  @Autowired private EventEnvelopeJsonCodec eventEnvelopeJsonCodec;
+  @Autowired private ScheduledExecutorService outboxLeaseRenewalExecutor;
   @Autowired private MutableClock clock;
   @Autowired private DeterministicHandler handler;
 
@@ -412,6 +419,39 @@ class OutboxTransactionPostgresIT {
       handler.releaseBlockedCall();
       assertThat(firstWorker.get(5, TimeUnit.SECONDS).delivered()).isEqualTo(1);
     }
+  }
+
+  @Test
+  void duplicateReplicaWorkersCannotClaimTheSameLiveOutboxLease() throws Exception {
+    EventEnvelope event = event(InternalId.generate(), 1, "grant/two-replicas", createdEventType());
+    record(event);
+    handler.blockNextCall();
+    OutboxDispatcher secondReplicaDispatcher =
+        new OutboxDispatcher(
+            outboxStore,
+            handlerRegistry,
+            eventEnvelopeJsonCodec,
+            outboxProperties,
+            clock,
+            outboxLeaseRenewalExecutor);
+
+    try (var workers = Executors.newFixedThreadPool(2)) {
+      var firstReplica = workers.submit(() -> dispatcher.dispatchAvailable(clock.instant()));
+      assertThat(handler.awaitBlocked()).isTrue();
+
+      DispatchReport secondReplica = secondReplicaDispatcher.dispatchAvailable(clock.instant());
+
+      assertThat(secondReplica).isEqualTo(new DispatchReport(0, 0, 0, 0, 0));
+      assertThat(deliveryState(event.eventId())).isEqualTo("LEASED");
+      handler.releaseBlockedCall();
+
+      assertThat(firstReplica.get(5, TimeUnit.SECONDS).delivered()).isEqualTo(1);
+    } finally {
+      handler.releaseBlockedCall();
+    }
+
+    assertThat(handler.calls()).isEqualTo(1);
+    assertThat(deliveryState(event.eventId())).isEqualTo("DELIVERED");
   }
 
   private EventEnvelope event(InternalId id, long sequence) {

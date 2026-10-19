@@ -1,5 +1,10 @@
 server:
   server-header: ""
+  shutdown: graceful
+
+spring:
+  lifecycle:
+    timeout-per-shutdown-phase: ${AYUVAHAK_SHUTDOWN_PHASE_TIMEOUT:30s}
 
 management:
   server:
@@ -22,6 +27,9 @@ management:
       access: read-only
 
 ayuvahak:
+  operations:
+    shutdown:
+      worker-timeout: ${AYUVAHAK_WORKER_SHUTDOWN_TIMEOUT:20s}
   authentication:
     issuer: ${AYUVAHAK_OIDC_ISSUER:}
     jwk-set-uri: ${AYUVAHAK_OIDC_JWK_SET_URI:}
