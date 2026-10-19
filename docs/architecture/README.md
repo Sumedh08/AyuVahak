@@ -24,10 +24,10 @@ Start with the [architecture constitution](constitution.md) for product boundari
 - [Design review](../reviews/volume-4-design-review.md)
 - [Resolved design-question register](../reviews/volume-4-open-questions.md)
 
-## Volume V — design review; implementation not started
+## Volume V — design frozen; implementation not started
 
 - [Volume V architecture](volume-5-production-hardening-optimization-intelligence.md): production hardening, DPG evidence, measured optimization and optional non-authoritative intelligence.
-- [Retention and deletion governance matrix](volume-5-retention-governance.md): proposed owner-by-owner lifecycle and recovery-safe disposal requirements.
+- [Retention and deletion governance matrix](volume-5-retention-governance.md): frozen owner-by-owner lifecycle and recovery-safe disposal requirements.
 - [Phase 13 specification](../specs/phase-13-production-hardening-dpg-readiness-spec.md)
 - [Phase 14 specification](../specs/phase-14-optimization-intelligence-spec.md)
 - [Production readiness gap analysis](../reviews/production-readiness-gap-analysis.md)
@@ -37,4 +37,4 @@ Start with the [architecture constitution](constitution.md) for product boundari
 - [Volume V question disposition](../reviews/volume-5-open-questions.md)
 - [Official research index](../research/README.md) and [design research notes](../research/volume-5-production-security-supply-chain-research.md), [DPG Standard](../research/volume-5-dpg-standard-research.md), and [AI governance](../research/volume-5-ai-governance-research.md)
 
-Root [AGENTS.md](../../AGENTS.md) is authoritative for program state and execution authorization. Volumes I–IV are implemented and frozen. Volume V design is in review; Phase 13/14 implementation requires separate human authorization.
+Root [AGENTS.md](../../AGENTS.md) is authoritative for program state and execution authorization. Volumes I–IV are implemented and frozen. Volume V design and Phase 13/14 specifications are frozen; implementation requires separate human authorization.

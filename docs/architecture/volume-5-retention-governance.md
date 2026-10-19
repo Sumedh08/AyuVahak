@@ -1,6 +1,6 @@
 # Volume V retention and deletion governance
 
-**Status:** Proposed design input for Phase 13; deployment schedules and legal authority remain deployment-specific. This document authorizes no retention implementation or deletion.
+**Status:** Frozen Volume V design input for Phase 13; deployment schedules and legal authority remain deployment-specific. This document authorizes no retention implementation or deletion.
 
 ## Purpose and invariant
 

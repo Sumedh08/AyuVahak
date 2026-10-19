@@ -61,4 +61,4 @@ Two independent review passes covered the proposed Volume V changes from the aut
 - **MINOR:** 0 unresolved; the ADR status ambiguity was corrected before freeze.
 - **DOCUMENTATION:** navigation now indexes the owner-specific retention matrix; all changed Markdown passes `git diff --check`, and independent review found no broken links in its review range.
 
-No implementation, tests, runtime configuration, dependencies or infrastructure were added during review. The design is eligible for freeze after the final status/index consistency update and documentation-only checks.
+No implementation, tests, runtime configuration, dependencies or infrastructure were added during review. Final status/index consistency and documentation-only checks pass; the Volume V design freeze commit records the approved architecture and specifications.

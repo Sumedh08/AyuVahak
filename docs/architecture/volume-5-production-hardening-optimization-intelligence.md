@@ -1,6 +1,6 @@
 # Volume V — Production Hardening, Optimization and Intelligence
 
-**Status:** Proposed design; pending independent review and Volume V design freeze. This document adds no runtime behavior and does not amend Volumes I–IV.
+**Status:** Volume V design frozen. Phase 13 and Phase 14 specifications are frozen; implementation has not started and requires separate human authorization. This document adds no runtime behavior and does not amend Volumes I–IV.
 
 Volume V addresses two distinct needs: Phase 13 makes the existing modular care-coordination platform safer to adopt and operate; Phase 14 measures deterministic performance opportunities and defines a tightly governed, optional advisory capability. The frozen owner contexts and the PostgreSQL source-of-truth model remain unchanged.
 

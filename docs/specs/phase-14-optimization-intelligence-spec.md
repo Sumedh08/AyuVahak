@@ -1,6 +1,6 @@
 # Phase 14 — Optimization and Intelligence
 
-**Status:** Proposed specification; pending independent review and Volume V design freeze. This document authorizes no implementation, model integration, training, deployment or later phase.
+**Status:** Specification frozen with Volume V design. Phase 14 implementation has not started and requires separate human authorization. This document authorizes no model integration, training, deployment or later phase.
 
 ## 1. Objective and two independent tracks
 

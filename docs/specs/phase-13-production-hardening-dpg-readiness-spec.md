@@ -1,6 +1,6 @@
 # Phase 13 — Production Hardening and Digital Public Goods Readiness
 
-**Status:** Proposed specification; pending independent review and Volume V design freeze. No Phase 13 implementation or production deployment is authorized by this document.
+**Status:** Specification frozen with Volume V design. Phase 13 implementation has not started and requires separate human authorization; no production deployment is authorized by this document.
 
 ## 1. Objective
 
