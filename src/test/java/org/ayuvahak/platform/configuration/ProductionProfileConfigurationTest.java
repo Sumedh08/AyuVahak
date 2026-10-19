@@ -2,13 +2,19 @@ package org.ayuvahak.platform.configuration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
+import org.ayuvahak.platform.observability.ServiceLevelIndicator;
+import org.ayuvahak.platform.observability.ServiceLevelPlan;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.autoconfigure.context.ConfigurationPropertiesAutoConfiguration;
 import org.springframework.boot.test.context.ConfigDataApplicationContextInitializer;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.boot.validation.autoconfigure.ValidationAutoConfiguration;
+import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.test.context.support.TestPropertyValues;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 
@@ -53,7 +59,8 @@ class ProductionProfileConfigurationTest {
               "ayuvahak.production.limits.federation-requests-per-minute=120",
               "ayuvahak.production.limits.exchange-requests-per-minute=120",
               "ayuvahak.production.retention.schedule-id=synthetic-schedule-2026-01",
-              "ayuvahak.production.retention.reviewed-at=2026-10-20");
+              "ayuvahak.production.retention.reviewed-at=2026-10-20")
+          .withInitializer(ProductionProfileConfigurationTest::applySyntheticServiceLevelPlan);
 
   @Test
   void acceptsCompletePortableProfileAndAllowsOnlyConfiguredCorsOrigin() {
@@ -62,6 +69,7 @@ class ProductionProfileConfigurationTest {
           assertThat(context).hasNotFailed();
           assertThat(context.getBean(ProductionProfileProperties.class).getProfile())
               .isEqualTo(ProductionProfileProperties.Profile.SINGLE_SITE);
+          assertThat(context.getBean(ServiceLevelPlan.class).objectives()).hasSize(1);
 
           CorsConfigurationSource source = context.getBean(CorsConfigurationSource.class);
           MockHttpServletRequest allowedRequest =
@@ -163,11 +171,15 @@ class ProductionProfileConfigurationTest {
   @Test
   void loadsTheNamedSingleSiteProfileWithLoopbackOnlyManagementDefaults() {
     new ApplicationContextRunner()
-        .withInitializer(new ConfigDataApplicationContextInitializer())
         .withConfiguration(
             AutoConfigurations.of(
                 ConfigurationPropertiesAutoConfiguration.class, ValidationAutoConfiguration.class))
         .withUserConfiguration(ProductionProfileConfiguration.class)
+        .withInitializer(
+            context -> {
+              new ConfigDataApplicationContextInitializer().initialize(context);
+              applySyntheticServiceLevelPlan(context);
+            })
         .withPropertyValues(
             "spring.profiles.active=production-single-site",
             "ayuvahak.authentication.issuer=https://identity.example.test/issuer",
@@ -199,5 +211,31 @@ class ProductionProfileConfigurationTest {
                           .getProperty("management.endpoints.web.exposure.include"))
                   .isEqualTo("health,prometheus");
             });
+  }
+
+  private static void applySyntheticServiceLevelPlan(ConfigurableApplicationContext context) {
+    Map<String, String> values = new LinkedHashMap<>();
+    String prefix = "ayuvahak.production.sli.";
+    values.put(prefix + "objectives[0].indicator", "API_AVAILABILITY");
+    values.put(prefix + "objectives[0].target", "0.995");
+    values.put(prefix + "objectives[0].window", "P30D");
+    values.put(prefix + "objectives[0].service-scope", "API");
+    values.put(
+        prefix + "objectives[0].failure-definition",
+        "Eligible synthetic API requests returning 5xx.");
+    values.put(prefix + "objectives[0].alert-threshold", "0.98");
+    values.put(prefix + "objectives[0].accountable-owner", "Synthetic operations team");
+    values.put(prefix + "objectives[0].response", "Follow the synthetic API incident runbook.");
+    values.put(
+        prefix + "objectives[0].exclusions[0]",
+        "Synthetic client cancellation before request admission.");
+    for (ServiceLevelIndicator indicator : ServiceLevelIndicator.values()) {
+      if (indicator != ServiceLevelIndicator.API_AVAILABILITY) {
+        values.put(
+            prefix + "omitted-rationales." + indicator.name(),
+            "Synthetic deployment has not selected this indicator as an objective.");
+      }
+    }
+    TestPropertyValues.of(values).applyTo(context);
   }
 }

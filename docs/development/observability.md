@@ -40,6 +40,40 @@ Micrometer Tracing and the OpenTelemetry bridge provide trace-compatible request
 
 OTLP metrics export is disabled. Metrics remain available from `/actuator/prometheus` for an operator-selected scraper. AyuVahak does not include or require a telemetry backend.
 
+## Production SLI/SLO declarations and capacity evidence
+
+Production profiles require a complete deployment-owned SLI plan. The fixed `ServiceLevelIndicator` catalogue identifies the supported measurement, unit, direction, service scope, and bounded label vocabulary. It does not set a universal target or claim that every indicator has a deployment-specific SLO. Each catalogue item must be represented by either an objective or an explicit omission rationale; startup rejects incomplete or duplicate coverage. An objective records its target, measurement window, scope, failure definition, exclusions, alert threshold, accountable owner, and response. Targets belong to the operator's service and workload envelope, not to a platform-wide availability guarantee.
+
+The only catalogue label is `route_class`, and its values are fixed to `read`, `write`, `admin`, `integration`, or `other`. Resource, case, patient, facility, peer, snapshot, and credential identifiers are not permitted metric labels. The catalogue is metadata and an SLO configuration contract; it does not imply that a Prometheus time series or alert rule exists for every catalogue entry. Operators must verify the underlying signal and dashboard/alert before declaring it an active objective.
+
+Example configuration for one synthetic API availability objective:
+
+```yaml
+ayuvahak:
+  production:
+    sli:
+      objectives:
+        - indicator: API_AVAILABILITY
+          target: 0.995
+          window: 30d
+          service-scope: API
+          failure-definition: Eligible synthetic API requests returning 5xx.
+          exclusions:
+            - Synthetic client cancellation before request admission.
+          alert-threshold: 0.98
+          accountable-owner: Synthetic operations team
+          response: Follow the synthetic API incident runbook.
+      omitted-rationales:
+        # Every other catalogue entry needs a rationale or its own objective.
+        API_LATENCY: Synthetic profile has not selected this objective.
+```
+
+The sample is intentionally incomplete and cannot activate a production profile on its own. No target should be copied as a service guarantee. The complete configuration is deployment-specific.
+
+The local `SyntheticBenchmarkRunner` accepts a bounded declaration and a workload adapter supplied by a test or local benchmark harness. Use synthetic scenarios only. A declaration captures source revision, Java and database versions, CPU/memory, workload scale (organizations, facilities, active Referrals, Transfers/day, Capacity observations/minute, SSE clients, federation peers, Analytics indicators, periods, and exports), warm/cold condition, warm-up count, measured-operation count, and repetitions. The run result reports p50/p95/p99 latency, throughput, errors, peak CPU/memory/connections, query count, up to 100 query-plan SHA-256 fingerprints, and maximum durable-queue backlog age. It retains no operation exception text, case identifier, or SQL plan body. Elapsed duration uses a monotonic clock; wall-clock timestamps are provenance only.
+
+The runner is bounded to one million total operations and a finite plan-fingerprint set. It does not call external services, emit metrics, persist benchmark records, or claim scale. Store sanitized result evidence with the declaration and environment for the tested revision; compare only runs with stated workload and environment, and report no capacity beyond the measured envelope. Benchmark results are evidence for an operator-selected SLO, not a default target or a substitute for an isolated production-profile test.
+
 ## Local checks
 
 With the application and its disposable PostgreSQL/PostGIS dependency running, use:

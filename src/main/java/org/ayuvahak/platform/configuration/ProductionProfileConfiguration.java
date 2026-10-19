@@ -2,6 +2,8 @@ package org.ayuvahak.platform.configuration;
 
 import java.util.List;
 import org.ayuvahak.platform.authentication.AuthenticationProperties;
+import org.ayuvahak.platform.observability.ServiceLevelPlan;
+import org.ayuvahak.platform.observability.ServiceLevelPlanProperties;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.flyway.autoconfigure.FlywayMigrationStrategy;
 import org.springframework.context.annotation.Bean;
@@ -18,7 +20,8 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 @EnableConfigurationProperties({
   ProductionProfileProperties.class,
   ProductionMigrationProperties.class,
-  AuthenticationProperties.class
+  AuthenticationProperties.class,
+  ServiceLevelPlanProperties.class
 })
 public class ProductionProfileConfiguration {
 
@@ -28,6 +31,11 @@ public class ProductionProfileConfiguration {
       AuthenticationProperties authentication,
       Environment environment) {
     return new ProductionProfileStartupValidator(properties, authentication, environment);
+  }
+
+  @Bean
+  ServiceLevelPlan productionServiceLevelPlan(ServiceLevelPlanProperties properties) {
+    return properties.toPlan();
   }
 
   @Bean
