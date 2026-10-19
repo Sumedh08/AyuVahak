@@ -29,6 +29,7 @@ public final class DisclosureReservationException extends RuntimeException {
       case OPERATION_ID_REUSED -> "disclosure operation identity was reused with changed content";
       case RESERVATION_NOT_FOUND -> "disclosure reservation is unavailable";
       case INVALID_STATE -> "disclosure reservation state does not permit this transition";
+      case INFERENCE_RISK -> "disclosure review cannot approve an inferable output";
       case NO_SEND_UNPROVEN -> "no-send evidence does not prove that request bytes stayed local";
       case STORE_UNAVAILABLE -> "disclosure history is unavailable; release was not allowed";
     };
@@ -42,6 +43,7 @@ public final class DisclosureReservationException extends RuntimeException {
     OPERATION_ID_REUSED,
     RESERVATION_NOT_FOUND,
     INVALID_STATE,
+    INFERENCE_RISK,
     NO_SEND_UNPROVEN,
     STORE_UNAVAILABLE
   }

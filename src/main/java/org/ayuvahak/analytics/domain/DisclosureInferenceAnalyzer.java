@@ -22,6 +22,20 @@ public final class DisclosureInferenceAnalyzer {
       Collection<DisclosureOutput> priorOutputs,
       Map<String, Long> priorCellValues,
       boolean historyComplete) {
+    return evaluate(
+        policy, candidate, priorOutputs, priorOutputs, priorCellValues, historyComplete);
+  }
+
+  public Result evaluate(
+      DisclosurePolicyVersion policy,
+      DisclosureCandidate candidate,
+      Collection<DisclosureOutput> priorOutputs,
+      Collection<DisclosureOutput> priorPotentiallyDisclosedOutputs,
+      Map<String, Long> priorCellValues,
+      boolean historyComplete) {
+    if (hasUnambiguousZeroEquationRisk(policy, candidate, priorPotentiallyDisclosedOutputs)) {
+      return Result.INFERENCE_RISK;
+    }
     if (!historyComplete || priorOutputs.size() + candidate.outputs().size() > MAX_EQUATIONS) {
       return Result.REVIEW_REQUIRED;
     }
@@ -92,6 +106,46 @@ public final class DisclosureInferenceAnalyzer {
       }
     }
     return Result.SAFE;
+  }
+
+  /** Checks candidate equations whose risk is provable without relying on complete history. */
+  public boolean hasUnambiguousZeroEquationRisk(
+      DisclosurePolicyVersion policy,
+      DisclosureCandidate candidate,
+      Collection<DisclosureOutput> priorPotentiallyDisclosedOutputs) {
+    return candidate.outputs().stream()
+        .filter(
+            output ->
+                priorPotentiallyDisclosedOutputs.stream()
+                    .noneMatch(prior -> sameDisclosure(prior, output)))
+        .anyMatch(output -> revealsZeroNonNegativeCandidateCells(output, candidate, policy));
+  }
+
+  private static boolean revealsZeroNonNegativeCandidateCells(
+      DisclosureOutput output, DisclosureCandidate candidate, DisclosurePolicyVersion policy) {
+    Map<String, Long> coefficients = output.cellCoefficients();
+    if (output.equationResult() != 0 || coefficients.isEmpty()) {
+      return false;
+    }
+    boolean allPositive = coefficients.values().stream().allMatch(value -> value > 0);
+    boolean allNegative = coefficients.values().stream().allMatch(value -> value < 0);
+    if (!allPositive && !allNegative) {
+      return false;
+    }
+    BigInteger candidateResult = BigInteger.ZERO;
+    boolean hasProtectedNonNegativeCell = false;
+    for (Map.Entry<String, Long> coefficient : coefficients.entrySet()) {
+      Long cellValue = candidate.cellValues().get(coefficient.getKey());
+      if (cellValue == null || cellValue < 0) {
+        return false;
+      }
+      candidateResult =
+          candidateResult.add(
+              BigInteger.valueOf(coefficient.getValue()).multiply(BigInteger.valueOf(cellValue)));
+      hasProtectedNonNegativeCell |= cellValue < policy.minimumCellCount();
+    }
+    return hasProtectedNonNegativeCell
+        && candidateResult.equals(BigInteger.valueOf(output.equationResult()));
   }
 
   private static boolean revealsZeroNonNegativeCells(

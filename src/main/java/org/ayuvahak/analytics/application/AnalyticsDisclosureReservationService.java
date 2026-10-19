@@ -125,15 +125,21 @@ public final class AnalyticsDisclosureReservationService {
             if (locked.replay().isPresent()) {
               return replay(locked.replay().orElseThrow());
             }
+            boolean unambiguousZeroEquationRisk =
+                inference.hasUnambiguousZeroEquationRisk(
+                    locked.policy(), candidate, locked.priorPotentiallyDisclosedOutputs());
             DisclosureInferenceAnalyzer.Result result =
-                locked.scopeHistoryCompatible()
-                    ? inference.evaluate(
-                        locked.policy(),
-                        candidate,
-                        locked.priorOutputs(),
-                        locked.priorCellValues(),
-                        locked.historyComplete())
-                    : DisclosureInferenceAnalyzer.Result.REVIEW_REQUIRED;
+                unambiguousZeroEquationRisk
+                    ? DisclosureInferenceAnalyzer.Result.INFERENCE_RISK
+                    : locked.scopeHistoryCompatible()
+                        ? inference.evaluate(
+                            locked.policy(),
+                            candidate,
+                            locked.priorOutputs(),
+                            locked.priorPotentiallyDisclosedOutputs(),
+                            locked.priorCellValues(),
+                            locked.historyComplete())
+                        : DisclosureInferenceAnalyzer.Result.REVIEW_REQUIRED;
             DisclosureReservationState state =
                 switch (result) {
                   case SAFE -> DisclosureReservationState.RESERVED;
@@ -285,6 +291,19 @@ public final class AnalyticsDisclosureReservationService {
     try {
       return transactions.execute(
           status -> {
+            if (resolution == DisclosureReviewResolution.APPROVE
+                && existing.state() == DisclosureReservationState.REVIEW_REQUIRED) {
+              DisclosureReviewContext review =
+                  reservations
+                      .lockCandidateForReview(reservationId, expectedOperationFingerprint)
+                      .orElse(null);
+              if (review != null
+                  && inference.hasUnambiguousZeroEquationRisk(
+                      policy, review.candidate(), review.priorPotentiallyDisclosedOutputs())) {
+                throw new DisclosureReservationException(
+                    DisclosureReservationException.Reason.INFERENCE_RISK);
+              }
+            }
             InternalId auditId =
                 audit.recordMutation(
                     mutationEvidence(context, "ANALYTICS_DISCLOSURE_" + reason, reservationId, reason));

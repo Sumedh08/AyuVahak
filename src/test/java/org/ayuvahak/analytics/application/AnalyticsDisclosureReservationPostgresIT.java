@@ -193,6 +193,51 @@ class AnalyticsDisclosureReservationPostgresIT {
   }
 
   @Test
+  void scopeOverlapCannotRouteAnInferableZeroRatioThroughHumanReview() {
+    UUID broadLineage = UUID.randomUUID();
+    activate(
+        policy(
+            1,
+            broadLineage,
+            Map.of("ORG_OUTPUT", Set.of(broadLineage), "ZERO_RATIO", Set.of(broadLineage)),
+            true));
+    Instant start = Instant.parse("2026-01-01T00:00:00Z");
+    Instant end = Instant.parse("2026-02-01T00:00:00Z");
+    DisclosureScope organizationScope =
+        disclosureScope(
+            "SYN-INDICATOR-001", 1, Optional.empty(), start, end);
+    DisclosureScope facilityScope =
+        disclosureScope(
+            "SYN-INDICATOR-001", 1, Optional.of(UUID.randomUUID()), start, end);
+
+    DisclosureReservation organizationRelease =
+        service.reserve(
+            releaseContext(),
+            scopedCandidate(
+                UUID.randomUUID(),
+                organizationScope,
+                Map.of("ORG_CELL", 9L),
+                new DisclosureOutput("ORG_OUTPUT", 9, Map.of("ORG_CELL", 1L))));
+    DisclosureReservation zeroRatio =
+        service.reserve(
+            releaseContext(),
+            scopedCandidate(
+                UUID.randomUUID(),
+                facilityScope,
+                Map.of("NUMERATOR_A", 0L, "NUMERATOR_B", 0L, "DENOMINATOR", 12L),
+                new DisclosureOutput(
+                    "ZERO_RATIO",
+                    0,
+                    Map.of("NUMERATOR_A", 1L, "NUMERATOR_B", 1L),
+                    0,
+                    false)));
+
+    assertThat(organizationRelease.state()).isEqualTo(DisclosureReservationState.RESERVED);
+    assertThat(zeroRatio.state()).isEqualTo(DisclosureReservationState.WITHHELD);
+    assertThat(zeroRatio.reasonCode()).isEqualTo("INFERENCE_RISK");
+  }
+
+  @Test
   void overlappingPeriodsForSameFacilityRequireDisclosureReviewAcrossChannels() {
     UUID broadLineage = UUID.randomUUID();
     activate(policy(1, broadLineage, Map.of("TOTAL", Set.of(broadLineage)), true));
@@ -515,6 +560,52 @@ class AnalyticsDisclosureReservationPostgresIT {
   }
 
   @Test
+  void reviewApprovalAndPolicyRolloverCompleteWithoutLockOrderDeadlock() throws Exception {
+    UUID broad = UUID.randomUUID();
+    Map<String, Set<UUID>> lineages = Map.of("CELL_B", Set.of(broad));
+    activate(policy(1, broad, lineages, false));
+    DisclosureReservation review =
+        service.reserve(releaseContext(), candidate(UUID.randomUUID(), 1, outputB()));
+    assertThat(review.state()).isEqualTo(DisclosureReservationState.REVIEW_REQUIRED);
+
+    CountDownLatch start = new CountDownLatch(1);
+    try (ExecutorService workers = Executors.newFixedThreadPool(2)) {
+      Future<Object> approval =
+          workers.submit(
+              () -> {
+                await(start);
+                try {
+                  return service.resolveReviewRequired(
+                      adminContext(),
+                      review.reservationId(),
+                      review.operationFingerprint(),
+                      DisclosureReviewResolution.APPROVE,
+                      UUID.randomUUID());
+                } catch (DisclosureReservationException policyChangedFirst) {
+                  return policyChangedFirst;
+                }
+              });
+      Future<DisclosurePolicyVersion> activation =
+          workers.submit(
+              () -> {
+                await(start);
+                return service.activatePolicy(adminContext(), policy(2, broad, lineages, true));
+              });
+      start.countDown();
+
+      Object approvalResult = approval.get(20, TimeUnit.SECONDS);
+      assertThat(activation.get(20, TimeUnit.SECONDS).version()).isEqualTo(2);
+      if (approvalResult instanceof DisclosureReservationException conflict) {
+        assertThat(conflict.reason())
+            .isEqualTo(DisclosureReservationException.Reason.POLICY_VERSION_CONFLICT);
+      } else {
+        assertThat(((DisclosureReservation) approvalResult).state())
+            .isEqualTo(DisclosureReservationState.RESERVED);
+      }
+    }
+  }
+
+  @Test
   void aNewPolicyKeyForTheSameOrganizationCannotResetDisclosureHistory() {
     UUID broadLineage = UUID.randomUUID();
     activate(
@@ -733,6 +824,73 @@ class AnalyticsDisclosureReservationPostgresIT {
                     UUID.randomUUID())
                 .state())
         .isEqualTo(DisclosureReservationState.WITHHELD);
+  }
+
+  @Test
+  void newZeroEquationIsWithheldWhenKnownBaselineDoesNotMatchAfterPolicyRollover() {
+    UUID broad = UUID.randomUUID();
+    Map<String, Set<UUID>> lineages =
+        Map.of("DENOMINATOR", Set.of(broad), "ZERO_RATIO", Set.of(broad));
+    activate(policy(1, broad, lineages, true));
+    DisclosureCandidate knownExternalDenominator =
+        new DisclosureCandidate(
+            POLICY_KEY,
+            1,
+            UUID.randomUUID(),
+            Map.of("NUMERATOR_A", 0L, "NUMERATOR_B", 0L, "DENOMINATOR", 12L),
+            List.of(new DisclosureOutput("DENOMINATOR", 12, Map.of("DENOMINATOR", 1L))));
+    service.recordKnownExternalBaseline(adminContext(), knownExternalDenominator);
+
+    activate(policy(2, broad, lineages, false));
+    DisclosureCandidate candidate = zeroRatioCandidate(UUID.randomUUID(), 2);
+    DisclosureReservation result = service.reserve(releaseContext(), candidate);
+    assertThat(result.state()).isEqualTo(DisclosureReservationState.WITHHELD);
+    assertThat(result.reasonCode()).isEqualTo("INFERENCE_RISK");
+  }
+
+  @Test
+  void reviewApprovalAcceptsAnExactZeroEquationAlreadyDisclosed() {
+    UUID broad = UUID.randomUUID();
+    Map<String, Set<UUID>> lineages = Map.of("ZERO", Set.of(broad));
+    activate(new DisclosurePolicyVersion(POLICY_KEY, 1, ORGANIZATION, 5, true, broad, lineages));
+    Instant start = Instant.parse("2026-01-01T00:00:00Z");
+    Instant end = Instant.parse("2026-02-01T00:00:00Z");
+    DisclosureOutput zero = new DisclosureOutput("ZERO", 0, Map.of("CELL_A", 1L));
+    DisclosureCandidate organizationRelease =
+        new DisclosureCandidate(
+            POLICY_KEY,
+            1,
+            UUID.randomUUID(),
+            Map.of("CELL_A", 0L),
+            List.of(zero),
+            disclosureScope("SYN-INDICATOR-001", 1, Optional.empty(), start, end));
+    service.recordKnownExternalBaseline(adminContext(), organizationRelease);
+
+    service.activatePolicy(
+        adminContext(),
+        new DisclosurePolicyVersion(POLICY_KEY, 2, ORGANIZATION, 5, true, broad, lineages));
+    DisclosureCandidate facilityRepeat =
+        new DisclosureCandidate(
+            POLICY_KEY,
+            2,
+            UUID.randomUUID(),
+            Map.of("CELL_A", 0L),
+            List.of(zero),
+            disclosureScope(
+                "SYN-INDICATOR-001", 1, Optional.of(UUID.randomUUID()), start, end));
+    DisclosureReservation review = service.reserve(releaseContext(), facilityRepeat);
+    assertThat(review.state()).isEqualTo(DisclosureReservationState.REVIEW_REQUIRED);
+
+    DisclosureReservation approved =
+        service.resolveReviewRequired(
+            adminContext(),
+            review.reservationId(),
+            review.operationFingerprint(),
+            DisclosureReviewResolution.APPROVE,
+            UUID.randomUUID());
+
+    assertThat(approved.state()).isEqualTo(DisclosureReservationState.RESERVED);
+    assertThat(approved.reasonCode()).isEqualTo("AUTHORIZED_REVIEW_APPROVED");
   }
 
   @Test
@@ -969,6 +1127,21 @@ class AnalyticsDisclosureReservationPostgresIT {
     List<DisclosureOutput> outputList = new ArrayList<>(List.of(outputs));
     return new DisclosureCandidate(
         policyKey, policyVersion, operationId, Map.of("CELL_A", 9L, "CELL_B", 1L), outputList);
+  }
+
+  private static DisclosureCandidate zeroRatioCandidate(UUID operationId, int policyVersion) {
+    return new DisclosureCandidate(
+        POLICY_KEY,
+        policyVersion,
+        operationId,
+        Map.of("NUMERATOR_A", 0L, "NUMERATOR_B", 0L, "DENOMINATOR", 12L),
+        List.of(
+            new DisclosureOutput(
+                "ZERO_RATIO",
+                0,
+                Map.of("NUMERATOR_A", 1L, "NUMERATOR_B", 1L),
+                0,
+                false)));
   }
 
   private static DisclosureCandidate scopedCandidate(

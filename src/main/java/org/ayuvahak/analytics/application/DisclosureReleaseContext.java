@@ -18,7 +18,8 @@ public record DisclosureReleaseContext(
     boolean historyComplete,
     long historyCheckpoint,
     Optional<DisclosureReservation> replay,
-    boolean scopeHistoryCompatible) {
+    boolean scopeHistoryCompatible,
+    List<DisclosureOutput> priorPotentiallyDisclosedOutputs) {
 
   public DisclosureReleaseContext(
       DisclosurePolicyVersion policy,
@@ -36,12 +37,35 @@ public record DisclosureReleaseContext(
         historyComplete,
         historyCheckpoint,
         replay,
-        true);
+        true,
+        priorOutputs);
+  }
+
+  public DisclosureReleaseContext(
+      DisclosurePolicyVersion policy,
+      Set<UUID> lineageIds,
+      List<DisclosureOutput> priorOutputs,
+      Map<String, Long> priorCellValues,
+      boolean historyComplete,
+      long historyCheckpoint,
+      Optional<DisclosureReservation> replay,
+      boolean scopeHistoryCompatible) {
+    this(
+        policy,
+        lineageIds,
+        priorOutputs,
+        priorCellValues,
+        historyComplete,
+        historyCheckpoint,
+        replay,
+        scopeHistoryCompatible,
+        priorOutputs);
   }
 
   public DisclosureReleaseContext {
     lineageIds = Set.copyOf(lineageIds);
     priorOutputs = List.copyOf(priorOutputs);
+    priorPotentiallyDisclosedOutputs = List.copyOf(priorPotentiallyDisclosedOutputs);
     priorCellValues = Map.copyOf(priorCellValues);
     replay = replay == null ? Optional.empty() : replay;
   }

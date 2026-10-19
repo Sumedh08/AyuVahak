@@ -18,6 +18,7 @@ import java.util.TreeSet;
 import java.util.UUID;
 import java.util.stream.Collectors;
 import org.ayuvahak.analytics.application.DisclosureReleaseContext;
+import org.ayuvahak.analytics.application.DisclosureReviewContext;
 import org.ayuvahak.analytics.application.DisclosureReservationException;
 import org.ayuvahak.analytics.application.DisclosureReservationStore;
 import org.ayuvahak.analytics.domain.DisclosureCandidate;
@@ -30,6 +31,7 @@ import org.ayuvahak.analytics.domain.DisclosureScope;
 import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.IssuerId;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowCallbackHandler;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
 
@@ -163,31 +165,19 @@ public class JdbcDisclosureReservationStore implements DisclosureReservationStor
       return replayContext(candidate, prior.orElseThrow());
     }
 
-    PolicyHead initialHead =
-        findHead(candidate.policyKey(), false)
+    PolicyHead currentHead =
+        findHead(candidate.policyKey(), true)
             .orElseThrow(
                 () ->
                     new DisclosureReservationException(
                         DisclosureReservationException.Reason.POLICY_NOT_FOUND));
-    DisclosurePolicyVersion policy = loadPolicyVersion(initialHead);
+    DisclosurePolicyVersion policy = loadPolicyVersion(currentHead);
     if (policy.version() != candidate.expectedPolicyVersion()) {
       throw new DisclosureReservationException(
           DisclosureReservationException.Reason.POLICY_VERSION_CONFLICT);
     }
     Set<UUID> lineageIds = candidateLineages(policy, candidate);
     lockLineages(lineageIds);
-
-    PolicyHead currentHead =
-        findHead(candidate.policyKey(), false)
-            .orElseThrow(
-                () ->
-                    new DisclosureReservationException(
-                        DisclosureReservationException.Reason.POLICY_NOT_FOUND));
-    if (currentHead.activeVersion() != candidate.expectedPolicyVersion()
-        || !currentHead.conservativeLineageId().equals(policy.conservativeLineageId())) {
-      throw new DisclosureReservationException(
-          DisclosureReservationException.Reason.POLICY_VERSION_CONFLICT);
-    }
     Optional<DisclosureReservation> concurrent =
         findByOperation(candidate.policyKey(), candidate.operationId());
     if (concurrent.isPresent()) {
@@ -198,7 +188,7 @@ public class JdbcDisclosureReservationStore implements DisclosureReservationStor
     try {
       history = loadHistory(lineageIds);
     } catch (InconsistentHistoryException inconsistentHistory) {
-      history = new History(List.of(), Map.of(), false);
+      history = new History(List.of(), Map.of(), false, List.of());
     }
     return new DisclosureReleaseContext(
         policy,
@@ -208,7 +198,8 @@ public class JdbcDisclosureReservationStore implements DisclosureReservationStor
         history.complete(),
         currentHead.historyCheckpoint(),
         Optional.empty(),
-        scopeHistoryCompatible);
+        scopeHistoryCompatible,
+        history.potentiallyDisclosedOutputs());
   }
 
   @Override
@@ -361,6 +352,108 @@ public class JdbcDisclosureReservationStore implements DisclosureReservationStor
   }
 
   @Override
+  public Optional<DisclosureReviewContext> lockCandidateForReview(
+      UUID reservationId, String expectedOperationFingerprint) {
+    DisclosureReservation existing =
+        findReservation(reservationId)
+            .orElseThrow(
+                () ->
+                    new DisclosureReservationException(
+                        DisclosureReservationException.Reason.RESERVATION_NOT_FOUND));
+    PolicyHead head =
+        findHead(existing.policyKey(), true)
+            .orElseThrow(
+                () ->
+                    new DisclosureReservationException(
+                        DisclosureReservationException.Reason.POLICY_NOT_FOUND));
+    if (head.activeVersion() != existing.policyVersion()) {
+      throw new DisclosureReservationException(
+          DisclosureReservationException.Reason.POLICY_VERSION_CONFLICT);
+    }
+    lockLineages(existing.lineageIds());
+    DisclosureReservation locked =
+        findReservationForUpdate(reservationId)
+            .orElseThrow(
+                () ->
+                    new DisclosureReservationException(
+                        DisclosureReservationException.Reason.RESERVATION_NOT_FOUND));
+    if (!locked.operationFingerprint().equals(expectedOperationFingerprint)) {
+      throw new DisclosureReservationException(
+          DisclosureReservationException.Reason.OPERATION_ID_REUSED);
+    }
+    if (locked.state() != DisclosureReservationState.REVIEW_REQUIRED) {
+      return Optional.empty();
+    }
+
+    List<StoredReviewOutput> storedOutputs =
+        jdbc.query(
+            "SELECT output_key, output_value, equation_result, applies_minimum_cell_count "
+                + "FROM analytics.disclosure_reservation_output WHERE reservation_id = ? "
+                + "ORDER BY output_key",
+            (result, row) ->
+                new StoredReviewOutput(
+                    result.getString("output_key"),
+                    result.getLong("output_value"),
+                    result.getLong("equation_result"),
+                    result.getBoolean("applies_minimum_cell_count")),
+            reservationId);
+    if (storedOutputs.isEmpty()) {
+      throw new DisclosureReservationException(
+          DisclosureReservationException.Reason.LINEAGE_INVALID);
+    }
+    Map<String, Map<String, Long>> termsByOutput = new HashMap<>();
+    jdbc.query(
+        "SELECT output_key, cell_key, coefficient FROM analytics.disclosure_reservation_term "
+            + "WHERE reservation_id = ? ORDER BY output_key, cell_key",
+        (RowCallbackHandler)
+            result ->
+                termsByOutput
+                    .computeIfAbsent(result.getString("output_key"), ignored -> new TreeMap<>())
+                    .put(result.getString("cell_key"), result.getLong("coefficient")),
+        reservationId);
+    List<DisclosureOutput> outputs =
+        storedOutputs.stream()
+            .map(
+                output -> {
+                  Map<String, Long> terms = termsByOutput.get(output.outputKey());
+                  if (terms == null || terms.isEmpty()) {
+                    throw new DisclosureReservationException(
+                        DisclosureReservationException.Reason.LINEAGE_INVALID);
+                  }
+                  return new DisclosureOutput(
+                      output.outputKey(),
+                      output.value(),
+                      terms,
+                      output.equationResult(),
+                      output.appliesMinimumCellCount());
+                })
+            .toList();
+    Map<String, Long> cells = new TreeMap<>();
+    jdbc.query(
+        "SELECT cell_key, cell_value FROM analytics.disclosure_reservation_cell "
+            + "WHERE reservation_id = ? ORDER BY cell_key",
+        (RowCallbackHandler)
+            result -> cells.put(result.getString("cell_key"), result.getLong("cell_value")),
+        reservationId);
+    try {
+      DisclosureCandidate candidate =
+          new DisclosureCandidate(
+              locked.policyKey(), locked.policyVersion(), locked.operationId(), cells, outputs);
+      History history;
+      try {
+        history = loadHistory(locked.lineageIds());
+      } catch (InconsistentHistoryException inconsistentHistory) {
+        history = new History(List.of(), Map.of(), false, List.of());
+      }
+      return Optional.of(
+          new DisclosureReviewContext(candidate, history.potentiallyDisclosedOutputs()));
+    } catch (IllegalArgumentException malformedEvidence) {
+      throw new DisclosureReservationException(
+          DisclosureReservationException.Reason.LINEAGE_INVALID, malformedEvidence);
+    }
+  }
+
+  @Override
   public DisclosureReservation transition(
       UUID reservationId,
       DisclosureReservationState targetState,
@@ -372,6 +465,11 @@ public class JdbcDisclosureReservationStore implements DisclosureReservationStor
                 () ->
                     new DisclosureReservationException(
                         DisclosureReservationException.Reason.RESERVATION_NOT_FOUND));
+    findHead(existing.policyKey(), true)
+        .orElseThrow(
+            () ->
+                new DisclosureReservationException(
+                    DisclosureReservationException.Reason.POLICY_NOT_FOUND));
     lockLineages(existing.lineageIds());
     DisclosureReservation locked =
         findReservationForUpdate(reservationId)
@@ -433,21 +531,17 @@ public class JdbcDisclosureReservationStore implements DisclosureReservationStor
                 () ->
                     new DisclosureReservationException(
                         DisclosureReservationException.Reason.RESERVATION_NOT_FOUND));
-    lockLineages(existing.lineageIds());
-    List<Integer> activeVersions =
-        jdbc.query(
-            "SELECT active_version FROM analytics.disclosure_policy_head "
-                + "WHERE policy_key = ? FOR UPDATE",
-            (result, row) -> result.getInt("active_version"),
-            existing.policyKey());
-    if (activeVersions.size() != 1) {
-      throw new DisclosureReservationException(
-          DisclosureReservationException.Reason.POLICY_NOT_FOUND);
-    }
-    if (activeVersions.getFirst() != existing.policyVersion()) {
+    PolicyHead head =
+        findHead(existing.policyKey(), true)
+            .orElseThrow(
+                () ->
+                    new DisclosureReservationException(
+                        DisclosureReservationException.Reason.POLICY_NOT_FOUND));
+    if (head.activeVersion() != existing.policyVersion()) {
       throw new DisclosureReservationException(
           DisclosureReservationException.Reason.POLICY_VERSION_CONFLICT);
     }
+    lockLineages(existing.lineageIds());
     DisclosureReservation locked =
         findReservationForUpdate(reservationId)
             .orElseThrow(
@@ -753,6 +847,7 @@ public class JdbcDisclosureReservationStore implements DisclosureReservationStor
     }
   }
 
+  /** Mutation lock order is policy head, sorted disclosure lineages, then reservation rows. */
   private void lockLineages(Set<UUID> requestedLineages) {
     List<UUID> lineages = requestedLineages.stream().sorted().toList();
     if (lineages.isEmpty() || lineages.size() > MAX_LINEAGES_PER_POLICY) {
@@ -783,8 +878,8 @@ public class JdbcDisclosureReservationStore implements DisclosureReservationStor
     Object[] queryValues = values.toArray();
     List<StoredOutput> outputs =
         jdbc.query(
-            "SELECT DISTINCT r.reservation_id, o.output_key, o.output_value, o.equation_result, "
-                + "o.applies_minimum_cell_count "
+            "SELECT DISTINCT r.reservation_id, r.state, o.output_key, o.output_value, "
+                + "o.equation_result, o.applies_minimum_cell_count "
                 + "FROM analytics.disclosure_reservation r "
                 + "JOIN analytics.disclosure_reservation_output o ON o.reservation_id = r.reservation_id "
                 + "WHERE r.state IN ("
@@ -800,7 +895,8 @@ public class JdbcDisclosureReservationStore implements DisclosureReservationStor
                     result.getString("output_key"),
                     result.getLong("output_value"),
                     result.getLong("equation_result"),
-                    result.getBoolean("applies_minimum_cell_count")),
+                    result.getBoolean("applies_minimum_cell_count"),
+                    DisclosureReservationState.valueOf(result.getString("state"))),
             queryValues);
     boolean complete = outputs.size() <= MAX_HISTORY_OUTPUTS;
     if (!complete) {
@@ -856,6 +952,7 @@ public class JdbcDisclosureReservationStore implements DisclosureReservationStor
           cellValues.toArray());
     }
     List<DisclosureOutput> restored = new ArrayList<>();
+    List<DisclosureOutput> potentiallyDisclosed = new ArrayList<>();
     for (StoredOutput output : outputs) {
       Map<String, Long> outputTerms =
           terms.get(new OutputIdentity(output.reservationId(), output.outputKey()));
@@ -864,18 +961,26 @@ public class JdbcDisclosureReservationStore implements DisclosureReservationStor
         continue;
       }
       try {
-        restored.add(
+        DisclosureOutput disclosureOutput =
             new DisclosureOutput(
                 output.outputKey(),
                 output.value(),
                 outputTerms,
                 output.equationResult(),
-                output.appliesMinimumCellCount()));
+                output.appliesMinimumCellCount());
+        restored.add(disclosureOutput);
+        if (output.state() != DisclosureReservationState.REVIEW_REQUIRED) {
+          potentiallyDisclosed.add(disclosureOutput);
+        }
       } catch (IllegalArgumentException malformedHistory) {
         complete = false;
       }
     }
-    return new History(List.copyOf(restored), Map.copyOf(historicalCells), complete);
+    return new History(
+        List.copyOf(restored),
+        Map.copyOf(historicalCells),
+        complete,
+        List.copyOf(potentiallyDisclosed));
   }
 
   private boolean hasOverlappingScopeHistory(DisclosureCandidate candidate, Set<UUID> lineages) {
@@ -1155,6 +1260,13 @@ public class JdbcDisclosureReservationStore implements DisclosureReservationStor
       String outputKey,
       long value,
       long equationResult,
+      boolean appliesMinimumCellCount,
+      DisclosureReservationState state) {}
+
+  private record StoredReviewOutput(
+      String outputKey,
+      long value,
+      long equationResult,
       boolean appliesMinimumCellCount) {}
 
   private record ReviewResolution(
@@ -1163,7 +1275,10 @@ public class JdbcDisclosureReservationStore implements DisclosureReservationStor
   private record OutputIdentity(UUID reservationId, String outputKey) {}
 
   private record History(
-      List<DisclosureOutput> outputs, Map<String, Long> cellValues, boolean complete) {}
+      List<DisclosureOutput> outputs,
+      Map<String, Long> cellValues,
+      boolean complete,
+      List<DisclosureOutput> potentiallyDisclosedOutputs) {}
 
   private static final class InconsistentHistoryException extends RuntimeException {}
 }
