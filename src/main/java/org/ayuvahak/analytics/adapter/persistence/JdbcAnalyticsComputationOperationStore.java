@@ -26,7 +26,7 @@ public class JdbcAnalyticsComputationOperationStore implements AnalyticsComputat
   private static final String SELECT_OPERATION =
       "SELECT request_id, request_fingerprint, indicator_key, definition_version, "
           + "period_start_local, period_end_exclusive_local, referral_source_cutoff, "
-          + "organization_issuer, organization_reference_type, organization_id, requester_issuer, "
+          + "organization_issuer, organization_reference_type, organization_id, facility_id, requester_issuer, "
           + "requester_client_id, correlation_id, operation_state, attempt_count, available_at, "
           + "lease_until, snapshot_id, failure_class, created_at, updated_at "
           + "FROM analytics.computation_operation ";
@@ -44,9 +44,9 @@ public class JdbcAnalyticsComputationOperationStore implements AnalyticsComputat
             "INSERT INTO analytics.computation_operation (request_id, request_fingerprint, "
                 + "indicator_key, definition_version, period_start_local, period_end_exclusive_local, "
                 + "referral_source_cutoff, organization_issuer, organization_reference_type, "
-                + "organization_id, requester_issuer, requester_client_id, correlation_id, "
+                + "organization_id, facility_id, requester_issuer, requester_client_id, correlation_id, "
                 + "operation_state, attempt_count, available_at, lease_until, snapshot_id, failure_class, "
-                + "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                + "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 + "ON CONFLICT (request_id) DO NOTHING",
             proposed.requestId().value(),
             proposed.fingerprint(),
@@ -58,6 +58,7 @@ public class JdbcAnalyticsComputationOperationStore implements AnalyticsComputat
             proposed.organization().issuer().value(),
             proposed.organization().resourceType(),
             UUID.fromString(proposed.organization().value()),
+            proposed.facility().map(value -> UUID.fromString(value.value())).orElse(null),
             proposed.requester().identity().issuer().value(),
             proposed.requester().identity().value(),
             proposed.correlationId().value(),
@@ -109,7 +110,7 @@ public class JdbcAnalyticsComputationOperationStore implements AnalyticsComputat
                 + "operation.request_id, operation.request_fingerprint, operation.indicator_key, "
                 + "operation.definition_version, operation.period_start_local, operation.period_end_exclusive_local, "
                 + "operation.referral_source_cutoff, operation.organization_issuer, "
-                + "operation.organization_reference_type, operation.organization_id, "
+                + "operation.organization_reference_type, operation.organization_id, operation.facility_id, "
                 + "operation.requester_issuer, operation.requester_client_id, operation.correlation_id, "
                 + "operation.operation_state, operation.attempt_count, operation.available_at, "
                 + "operation.lease_until, operation.snapshot_id, operation.failure_class, "
@@ -197,6 +198,9 @@ public class JdbcAnalyticsComputationOperationStore implements AnalyticsComputat
             new IssuerId(result.getString("organization_issuer")),
             result.getString("organization_reference_type"),
             result.getObject("organization_id", UUID.class).toString());
+    Optional<ExternalReference> facility =
+        Optional.ofNullable(result.getObject("facility_id", UUID.class))
+            .map(id -> new ExternalReference(organization.issuer(), "Facility", id.toString()));
     ActorReference requester =
         ActorReference.service(
             new IssuerId(result.getString("requester_issuer")),
@@ -206,6 +210,7 @@ public class JdbcAnalyticsComputationOperationStore implements AnalyticsComputat
         result.getString("request_fingerprint"),
         request,
         organization,
+        facility,
         requester,
         new org.ayuvahak.platform.core.CorrelationId(result.getString("correlation_id")),
         State.valueOf(result.getString("operation_state")),

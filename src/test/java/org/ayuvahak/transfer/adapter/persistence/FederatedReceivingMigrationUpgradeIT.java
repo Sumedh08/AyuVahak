@@ -92,7 +92,12 @@ class FederatedReceivingMigrationUpgradeIT {
         legacyReceivingRequestId,
         RECORDED_AT);
 
-    Flyway.configure().dataSource(dataSource).locations("classpath:db/migration").load().migrate();
+    Flyway.configure()
+        .dataSource(dataSource)
+        .locations("classpath:db/migration")
+        .target(MigrationVersion.fromVersion("73"))
+        .load()
+        .migrate();
 
     assertThat(
             jdbc.queryForObject(

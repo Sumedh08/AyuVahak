@@ -63,6 +63,9 @@ class AnalyticsAggregateComputationPostgresIT {
   private static final ExternalReference ORGANIZATION =
       new ExternalReference(
           new IssuerId("urn:ayuvahak:directory"), "Organization", UUID.randomUUID().toString());
+  private static final ExternalReference FACILITY =
+      new ExternalReference(
+          new IssuerId("urn:ayuvahak:directory"), "Facility", UUID.randomUUID().toString());
   private static final Instant SOURCE_CUTOFF = Instant.parse("2026-03-30T00:00:00Z");
   private static final Clock CLOCK =
       Clock.fixed(Instant.parse("2026-03-31T12:00:00Z"), ZoneOffset.UTC);
@@ -295,6 +298,75 @@ class AnalyticsAggregateComputationPostgresIT {
   }
 
   @Test
+  void computesAndPersistsASeparateDenominatorRatioWithDocumentedRounding() {
+    IndicatorDefinitionVersion ratio =
+        new IndicatorDefinitionVersion(
+            "SYN-REFERRAL-RATIO",
+            1,
+            "Synthetic referral ratio",
+            org.ayuvahak.analytics.domain.AggregationFormula.RATIO_6DP_HALF_EVEN,
+            ZoneId.of("Europe/Berlin"),
+            List.of(referralSubmitted()),
+            true,
+            List.of(referralResolved()),
+            IndicatorDefinitionGovernance.syntheticFixture("Synthetic ratio demonstration"));
+    store.publishDefinition(ratio);
+    InternalId computationId = InternalId.generate();
+    AnalyticsComputationRequest request =
+        new AnalyticsComputationRequest(
+            computationId,
+            ratio.key(),
+            ratio.version(),
+            LocalDate.parse("2026-03-29"),
+            LocalDate.parse("2026-03-30"),
+            SOURCE_CUTOFF);
+    var reader =
+        new SyntheticOwnerReader(
+            List.of(input(referralSubmitted(), 1), input(referralResolved(), 6)));
+
+    AnalyticsAggregateComputationService service = service(reader, true);
+    AnalyticsComputationOperation completed = service.enqueue(context(), request);
+    assertThat(completed.state()).isEqualTo(AnalyticsComputationOperation.State.PENDING);
+    completed = service.processNext().orElseThrow();
+    AggregateSnapshot result =
+        store.findSnapshotById(completed.snapshotId().orElseThrow()).orElseThrow();
+
+    assertThat(result.completeness()).isEqualTo(AggregateCompleteness.COMPLETE);
+    assertThat(result.numericValue()).contains(new java.math.BigDecimal("0.166667"));
+    assertThat(result.value()).isEmpty();
+    assertThat(result.inputs()).hasSize(2);
+    assertThat(store.findDefinition(ratio.key(), ratio.version())).contains(ratio);
+  }
+
+  @Test
+  void persistsFacilityScopeWithoutCollapsingItIntoOrganizationScope() {
+    IndicatorDefinitionVersion definition = definition(1, List.of(transferCompleted()));
+    store.publishDefinition(definition);
+    InternalId computationId = InternalId.generate();
+    AnalyticsComputationRequest request = request(computationId);
+    var reader = new SyntheticOwnerReader(List.of(input(transferCompleted(), 2, FACILITY)));
+    AnalyticsAggregateComputationService service = service(reader, true);
+
+    AnalyticsComputationOperation accepted = service.enqueue(facilityContext(), request);
+    assertThat(accepted.facility()).contains(FACILITY);
+    AnalyticsComputationOperation completed = service.processNext().orElseThrow();
+    AggregateSnapshot snapshot =
+        store.findSnapshotById(completed.snapshotId().orElseThrow()).orElseThrow();
+    AnalyticsComputationOperation recovered = operations.find(computationId).orElseThrow();
+
+    assertThat(snapshot.organization()).isEqualTo(ORGANIZATION);
+    assertThat(snapshot.facility()).contains(FACILITY);
+    assertThat(snapshot.value()).hasValue(2L);
+    assertThat(recovered.facility()).contains(FACILITY);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT facility_id FROM analytics.aggregate_snapshot WHERE snapshot_id = ?",
+                UUID.class,
+                snapshot.snapshotId()))
+        .isEqualTo(UUID.fromString(FACILITY.value()));
+  }
+
+  @Test
   void changedDefinitionRequiresANewImmutableVersionAndRetainsTheOldVersion() {
     IndicatorDefinitionVersion first = definition(1, List.of(referralSubmitted()));
     IndicatorDefinitionVersion second = definition(2, List.of(referralResolved()));
@@ -423,6 +495,14 @@ class AnalyticsAggregateComputationPostgresIT {
         Optional.empty());
   }
 
+  private static ExecutionContext facilityContext() {
+    return contexts.forBackgroundWork(
+        ANALYTICS,
+        RequestedExecutionScope.facility(ORGANIZATION, FACILITY),
+        new CorrelationId(UUID.randomUUID().toString()),
+        Optional.empty());
+  }
+
   private static AnalyticsComputationRequest request(InternalId computationId) {
     return new AnalyticsComputationRequest(
         computationId,
@@ -461,9 +541,23 @@ class AnalyticsAggregateComputationPostgresIT {
 
   private static OwnerMeasureSnapshot input(
       SourceMeasure measure, long value, Instant generatedAt) {
+    return input(measure, value, generatedAt, Optional.empty());
+  }
+
+  private static OwnerMeasureSnapshot input(
+      SourceMeasure measure, long value, ExternalReference facility) {
+    return input(measure, value, Instant.parse("2026-03-31T11:30:00Z"), Optional.of(facility));
+  }
+
+  private static OwnerMeasureSnapshot input(
+      SourceMeasure measure,
+      long value,
+      Instant generatedAt,
+      Optional<ExternalReference> facility) {
     return new OwnerMeasureSnapshot(
         measure,
         ORGANIZATION,
+        facility,
         Instant.parse("2026-03-28T23:00:00Z"),
         Instant.parse("2026-03-29T22:00:00Z"),
         Optional.of(

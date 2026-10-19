@@ -11,7 +11,8 @@ public final class AnalyticsAuthorities {
 
   public static FunctionalAuthority aggregateComputation() {
     return new FunctionalAuthority(
-        "AnalyticsAggregateComputation", Set.of(ExecutionScope.Kind.ORGANIZATION));
+        "AnalyticsAggregateComputation",
+        Set.of(ExecutionScope.Kind.ORGANIZATION, ExecutionScope.Kind.FACILITY));
   }
 
   public static FunctionalAuthority lateAggregateRevision() {
@@ -42,6 +43,11 @@ public final class AnalyticsAuthorities {
   public static FunctionalAuthority disclosureReservationLifecycle() {
     return new FunctionalAuthority(
         "AnalyticsDisclosureReservationLifecycle", Set.of(ExecutionScope.Kind.ORGANIZATION));
+  }
+
+  public static FunctionalAuthority disclosureReview() {
+    return new FunctionalAuthority(
+        "AnalyticsDisclosureReview", Set.of(ExecutionScope.Kind.ORGANIZATION));
   }
 
   public static FunctionalAuthority dhis2MappingAdministration() {

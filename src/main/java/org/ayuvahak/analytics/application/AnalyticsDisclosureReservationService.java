@@ -126,12 +126,14 @@ public final class AnalyticsDisclosureReservationService {
               return replay(locked.replay().orElseThrow());
             }
             DisclosureInferenceAnalyzer.Result result =
-                inference.evaluate(
-                    locked.policy(),
-                    candidate,
-                    locked.priorOutputs(),
-                    locked.priorCellValues(),
-                    locked.historyComplete());
+                locked.scopeHistoryCompatible()
+                    ? inference.evaluate(
+                        locked.policy(),
+                        candidate,
+                        locked.priorOutputs(),
+                        locked.priorCellValues(),
+                        locked.historyComplete())
+                    : DisclosureInferenceAnalyzer.Result.REVIEW_REQUIRED;
             DisclosureReservationState state =
                 switch (result) {
                   case SAFE -> DisclosureReservationState.RESERVED;
@@ -143,6 +145,9 @@ public final class AnalyticsDisclosureReservationService {
                   case SAFE -> "NONE";
                   case INFERENCE_RISK -> "INFERENCE_RISK";
                   case REVIEW_REQUIRED -> {
+                    if (!locked.scopeHistoryCompatible()) {
+                      yield "SCOPE_OVERLAP_REVIEW_REQUIRED";
+                    }
                     if (!locked.historyComplete()) {
                       yield "HISTORY_UNAVAILABLE";
                     }
@@ -222,6 +227,75 @@ public final class AnalyticsDisclosureReservationService {
                         "KNOWN_EXTERNAL_BASELINE"));
             reservations.attachReservationAudit(result.reservationId(), auditId.value());
             return result;
+          });
+    } catch (DataAccessException | AuditPersistenceUnavailableException failure) {
+      throw new DisclosureReservationException(
+          DisclosureReservationException.Reason.STORE_UNAVAILABLE, failure);
+    }
+  }
+
+  /** Resolves an indeterminate disclosure decision with a separately authorized human review. */
+  public DisclosureReservation resolveReviewRequired(
+      ExecutionContext context,
+      UUID reservationId,
+      String expectedOperationFingerprint,
+      DisclosureReviewResolution resolution,
+      UUID evidenceReference) {
+    Objects.requireNonNull(reservationId, "reservation id");
+    Objects.requireNonNull(resolution, "review resolution");
+    Objects.requireNonNull(evidenceReference, "review evidence reference");
+    if (expectedOperationFingerprint == null
+        || !expectedOperationFingerprint.matches("[0-9a-f]{64}")) {
+      throw new DisclosureReservationException(
+          DisclosureReservationException.Reason.OPERATION_ID_REUSED);
+    }
+    DisclosureReservation existing = requireReservation(reservationId);
+    DisclosurePolicyVersion policy = requireActivePolicy(existing.policyKey());
+    requireOrganizationScope(
+        context,
+        policy.organization(),
+        reservationId,
+        "ANALYTICS_DISCLOSURE_REVIEW_DENIED");
+    if (context == null
+        || context.actor().kind() != ActorKind.HUMAN
+        || !(context.sourceKind() == SourceKind.INTERACTIVE_REQUEST
+            || context.sourceKind() == SourceKind.LOCAL_OPERATOR_COMMAND)) {
+      recordDenial(context, reservationId, "ANALYTICS_DISCLOSURE_REVIEW_DENIED");
+      throw new DisclosureReservationException(
+          DisclosureReservationException.Reason.NOT_AUTHORIZED);
+    }
+    requireAuthorized(
+        context,
+        AnalyticsAuthorities.disclosureReview().code(),
+        reservationId,
+        "ANALYTICS_DISCLOSURE_REVIEW_DENIED");
+    if (!existing.operationFingerprint().equals(expectedOperationFingerprint)) {
+      throw new DisclosureReservationException(
+          DisclosureReservationException.Reason.OPERATION_ID_REUSED);
+    }
+    DisclosureReservationState target =
+        resolution == DisclosureReviewResolution.APPROVE
+            ? DisclosureReservationState.RESERVED
+            : DisclosureReservationState.WITHHELD;
+    String reason =
+        resolution == DisclosureReviewResolution.APPROVE
+            ? "AUTHORIZED_REVIEW_APPROVED"
+            : "AUTHORIZED_REVIEW_WITHHELD";
+    Instant resolvedAt = clock.instant();
+    try {
+      return transactions.execute(
+          status -> {
+            InternalId auditId =
+                audit.recordMutation(
+                    mutationEvidence(context, "ANALYTICS_DISCLOSURE_" + reason, reservationId, reason));
+            return reservations.resolveReviewRequired(
+                reservationId,
+                expectedOperationFingerprint,
+                target,
+                evidenceReference,
+                context.actor(),
+                auditId.value(),
+                resolvedAt);
           });
     } catch (DataAccessException | AuditPersistenceUnavailableException failure) {
       throw new DisclosureReservationException(

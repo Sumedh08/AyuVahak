@@ -23,6 +23,7 @@ import org.ayuvahak.analytics.domain.DisclosureOutput;
 import org.ayuvahak.analytics.domain.DisclosurePolicyVersion;
 import org.ayuvahak.analytics.domain.DisclosureReservation;
 import org.ayuvahak.analytics.domain.DisclosureReservationState;
+import org.ayuvahak.analytics.domain.DisclosureScope;
 import org.ayuvahak.platform.audit.adapter.persistence.JdbcAuditRecordAppender;
 import org.ayuvahak.platform.audit.application.AuditWriter;
 import org.ayuvahak.platform.authorization.application.AuthorizationGrantLookup;
@@ -66,7 +67,8 @@ class AnalyticsDisclosureReservationPostgresIT {
       Set.of(
           AnalyticsAuthorities.disclosurePolicyAdministration().code(),
           AnalyticsAuthorities.disclosureRelease().code(),
-          AnalyticsAuthorities.disclosureReservationLifecycle().code());
+          AnalyticsAuthorities.disclosureReservationLifecycle().code(),
+          AnalyticsAuthorities.disclosureReview().code());
 
   @Container
   private static final PostgreSQLContainer POSTGRES =
@@ -136,6 +138,191 @@ class AnalyticsDisclosureReservationPostgresIT {
   }
 
   @Test
+  void organizationAndFacilityReleasesForSameMeasureCannotBypassSharedDisclosureHistory() {
+    UUID broadLineage = UUID.randomUUID();
+    activate(policy(1, broadLineage, Map.of("TOTAL", Set.of(broadLineage)), true));
+    Instant start = Instant.parse("2026-01-01T00:00:00Z");
+    Instant end = Instant.parse("2026-02-01T00:00:00Z");
+    DisclosureScope organizationScope =
+        new DisclosureScope(
+            "SYN-INDICATOR-001",
+            1,
+            ORGANIZATION.issuer().value(),
+            UUID.fromString(ORGANIZATION.value()),
+            Optional.empty(),
+            start,
+            end);
+    DisclosureScope facilityScope =
+        new DisclosureScope(
+            "SYN-INDICATOR-001",
+            1,
+            ORGANIZATION.issuer().value(),
+            UUID.fromString(ORGANIZATION.value()),
+            Optional.of(UUID.randomUUID()),
+            start,
+            end);
+
+    DisclosureReservation organizationRelease =
+        service.reserve(
+            releaseContext(),
+            scopedCandidate(
+                UUID.randomUUID(),
+                organizationScope,
+                Map.of("ORG_A", 9L, "ORG_B", 1L),
+                new DisclosureOutput("TOTAL", 10, Map.of("ORG_A", 1L, "ORG_B", 1L))));
+    DisclosureReservation facilityRelease =
+        service.reserve(
+            releaseContext(),
+            scopedCandidate(
+                UUID.randomUUID(),
+                facilityScope,
+                Map.of("FACILITY_A", 9L, "FACILITY_B", 1L),
+                new DisclosureOutput("TOTAL", 10, Map.of("FACILITY_A", 1L, "FACILITY_B", 1L))));
+
+    assertThat(organizationRelease.state()).isEqualTo(DisclosureReservationState.RESERVED);
+    assertThat(facilityRelease.state()).isEqualTo(DisclosureReservationState.REVIEW_REQUIRED);
+    assertThat(facilityRelease.reasonCode()).isEqualTo("SCOPE_OVERLAP_REVIEW_REQUIRED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT count(*) FROM analytics.disclosure_reservation_output o "
+                    + "JOIN analytics.disclosure_reservation r USING (reservation_id) "
+                    + "WHERE r.state IN ('RESERVED', 'POTENTIALLY_DISCLOSED', 'DISCLOSED')",
+                Integer.class))
+        .isEqualTo(1);
+  }
+
+  @Test
+  void overlappingPeriodsForSameFacilityRequireDisclosureReviewAcrossChannels() {
+    UUID broadLineage = UUID.randomUUID();
+    activate(policy(1, broadLineage, Map.of("TOTAL", Set.of(broadLineage)), true));
+    UUID facilityId = UUID.randomUUID();
+    DisclosureScope monthlyScope =
+        disclosureScope(
+            "SYN-INDICATOR-001",
+            1,
+            Optional.of(facilityId),
+            Instant.parse("2026-01-01T00:00:00Z"),
+            Instant.parse("2026-02-01T00:00:00Z"));
+    DisclosureScope quarterlyScope =
+        disclosureScope(
+            "SYN-INDICATOR-001",
+            1,
+            Optional.of(facilityId),
+            Instant.parse("2026-01-01T00:00:00Z"),
+            Instant.parse("2026-04-01T00:00:00Z"));
+
+    DisclosureReservation monthlyRelease =
+        service.reserve(
+            releaseContext(),
+            scopedCandidate(
+                UUID.randomUUID(),
+                monthlyScope,
+                Map.of("MONTH_VALUE", 10L),
+                new DisclosureOutput("TOTAL", 10, Map.of("MONTH_VALUE", 1L))));
+    DisclosureReservation quarterlyRelease =
+        service.reserve(
+            releaseContext(),
+            scopedCandidate(
+                UUID.randomUUID(),
+                quarterlyScope,
+                Map.of("QUARTER_VALUE", 12L),
+                new DisclosureOutput("TOTAL", 12, Map.of("QUARTER_VALUE", 1L))));
+
+    assertThat(monthlyRelease.state()).isEqualTo(DisclosureReservationState.RESERVED);
+    assertThat(quarterlyRelease.state()).isEqualTo(DisclosureReservationState.REVIEW_REQUIRED);
+    assertThat(quarterlyRelease.reasonCode()).isEqualTo("SCOPE_OVERLAP_REVIEW_REQUIRED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT count(*) FROM analytics.disclosure_reservation_output o "
+                    + "JOIN analytics.disclosure_reservation r USING (reservation_id) "
+                    + "WHERE r.state IN ('RESERVED', 'POTENTIALLY_DISCLOSED', 'DISCLOSED')",
+                Integer.class))
+        .isEqualTo(1);
+  }
+
+  @Test
+  void differentIndicatorKeyCannotResetSharedDisclosureScopeHistory() {
+    UUID broadLineage = UUID.randomUUID();
+    activate(policy(1, broadLineage, Map.of("TOTAL", Set.of(broadLineage)), true));
+    Instant start = Instant.parse("2026-01-01T00:00:00Z");
+    Instant end = Instant.parse("2026-02-01T00:00:00Z");
+    Optional<UUID> facility = Optional.of(UUID.randomUUID());
+    DisclosureScope firstScope =
+        disclosureScope("SYN-INDICATOR-001", 1, facility, start, end);
+    DisclosureScope secondScope =
+        disclosureScope("SYN-INDICATOR-002", 1, facility, start, end);
+
+    DisclosureReservation firstRelease =
+        service.reserve(
+            releaseContext(),
+            scopedCandidate(
+                UUID.randomUUID(),
+                firstScope,
+                Map.of("FIRST_INDICATOR_VALUE", 10L),
+                new DisclosureOutput("TOTAL", 10, Map.of("FIRST_INDICATOR_VALUE", 1L))));
+    DisclosureReservation secondRelease =
+        service.reserve(
+            releaseContext(),
+            scopedCandidate(
+                UUID.randomUUID(),
+                secondScope,
+                Map.of("SECOND_INDICATOR_VALUE", 11L),
+                new DisclosureOutput("TOTAL", 11, Map.of("SECOND_INDICATOR_VALUE", 1L))));
+
+    assertThat(firstRelease.state()).isEqualTo(DisclosureReservationState.RESERVED);
+    assertThat(secondRelease.state()).isEqualTo(DisclosureReservationState.REVIEW_REQUIRED);
+    assertThat(secondRelease.reasonCode()).isEqualTo("SCOPE_OVERLAP_REVIEW_REQUIRED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT count(*) FROM analytics.disclosure_reservation_output o "
+                    + "JOIN analytics.disclosure_reservation r USING (reservation_id) "
+                    + "WHERE r.state IN ('RESERVED', 'POTENTIALLY_DISCLOSED', 'DISCLOSED')",
+                Integer.class))
+        .isEqualTo(1);
+  }
+
+  @Test
+  void newIndicatorDefinitionCannotResetSharedDisclosureHistory() {
+    UUID broadLineage = UUID.randomUUID();
+    activate(policy(1, broadLineage, Map.of("TOTAL", Set.of(broadLineage)), true));
+    Instant start = Instant.parse("2026-01-01T00:00:00Z");
+    Instant end = Instant.parse("2026-02-01T00:00:00Z");
+    Optional<UUID> facility = Optional.of(UUID.randomUUID());
+    DisclosureScope versionOne =
+        disclosureScope("SYN-INDICATOR-001", 1, facility, start, end);
+    DisclosureScope versionTwo =
+        disclosureScope("SYN-INDICATOR-001", 2, facility, start, end);
+
+    DisclosureReservation firstRelease =
+        service.reserve(
+            releaseContext(),
+            scopedCandidate(
+                UUID.randomUUID(),
+                versionOne,
+                Map.of("SUBMITTED_VALUE", 10L),
+                new DisclosureOutput("TOTAL", 10, Map.of("SUBMITTED_VALUE", 1L))));
+    DisclosureReservation secondRelease =
+        service.reserve(
+            releaseContext(),
+            scopedCandidate(
+                UUID.randomUUID(),
+                versionTwo,
+                Map.of("RESOLVED_VALUE", 9L),
+                new DisclosureOutput("TOTAL", 9, Map.of("RESOLVED_VALUE", 1L))));
+
+    assertThat(firstRelease.state()).isEqualTo(DisclosureReservationState.RESERVED);
+    assertThat(secondRelease.state()).isEqualTo(DisclosureReservationState.REVIEW_REQUIRED);
+    assertThat(secondRelease.reasonCode()).isEqualTo("SCOPE_OVERLAP_REVIEW_REQUIRED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT count(*) FROM analytics.disclosure_reservation_output o "
+                    + "JOIN analytics.disclosure_reservation r USING (reservation_id) "
+                    + "WHERE r.state IN ('RESERVED', 'POTENTIALLY_DISCLOSED', 'DISCLOSED')",
+                Integer.class))
+        .isEqualTo(1);
+  }
+
+  @Test
   void releaseSetChecksCandidateCellsTogetherBeforeReservingAnything() {
     UUID broadLineage = UUID.randomUUID();
     activate(
@@ -153,6 +340,59 @@ class AnalyticsDisclosureReservationPostgresIT {
     assertThat(
             jdbc.queryForObject(
                 "SELECT count(*) FROM analytics.disclosure_reservation_output", Integer.class))
+        .isZero();
+  }
+
+  @Test
+  void aggregateBelowMinimumCellCountIsWithheldBySharedReservationGate() {
+    UUID broadLineage = UUID.randomUUID();
+    activate(
+        policy(
+            1,
+            broadLineage,
+            Map.of("CELL_A", Set.of(broadLineage), "TOTAL", Set.of(broadLineage)),
+            true));
+    DisclosureCandidate smallTotal =
+        new DisclosureCandidate(
+            POLICY_KEY,
+            1,
+            UUID.randomUUID(),
+            Map.of("CELL_A", 1L, "CELL_B", 1L),
+            List.of(new DisclosureOutput("TOTAL", 2, Map.of("CELL_A", 1L, "CELL_B", 1L))));
+
+    DisclosureReservation decision = service.reserve(releaseContext(), smallTotal);
+
+    assertThat(decision.state()).isEqualTo(DisclosureReservationState.WITHHELD);
+    assertThat(decision.reasonCode()).isEqualTo("INFERENCE_RISK");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT count(*) FROM analytics.disclosure_reservation "
+                    + "WHERE state = 'RESERVED'",
+                Integer.class))
+        .isZero();
+  }
+
+  @Test
+  void sensitiveAggregateWithIncompleteExternalBaselineRequiresReviewBeforeReservation() {
+    UUID broadLineage = UUID.randomUUID();
+    activate(policy(1, broadLineage, Map.of("TOTAL", Set.of(broadLineage)), false));
+    DisclosureCandidate highCountSensitiveTotal =
+        new DisclosureCandidate(
+            POLICY_KEY,
+            1,
+            UUID.randomUUID(),
+            Map.of("CELL_A", 9L, "CELL_B", 8L),
+            List.of(new DisclosureOutput("TOTAL", 17, Map.of("CELL_A", 1L, "CELL_B", 1L))));
+
+    DisclosureReservation decision = service.reserve(releaseContext(), highCountSensitiveTotal);
+
+    assertThat(decision.state()).isEqualTo(DisclosureReservationState.REVIEW_REQUIRED);
+    assertThat(decision.reasonCode()).isEqualTo("EXTERNAL_BASELINE_UNKNOWN");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT count(*) FROM analytics.disclosure_reservation "
+                    + "WHERE state = 'RESERVED'",
+                Integer.class))
         .isZero();
   }
 
@@ -399,6 +639,131 @@ class AnalyticsDisclosureReservationPostgresIT {
   }
 
   @Test
+  void privacyReviewerCanResolveReviewWithEvidenceAndSharedGateRetainsReleaseHistory() {
+    UUID broad = UUID.randomUUID();
+    activate(policy(1, broad, Map.of("CELL_B", Set.of(broad)), false));
+    DisclosureCandidate lowCount = candidate(UUID.randomUUID(), 1, outputB());
+    DisclosureReservation review = service.reserve(releaseContext(), lowCount);
+
+    assertThat(review.state()).isEqualTo(DisclosureReservationState.REVIEW_REQUIRED);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT count(*) FROM analytics.disclosure_reservation_output "
+                    + "WHERE reservation_id = ?",
+                Integer.class,
+                review.reservationId()))
+        .isEqualTo(1);
+    assertThatThrownBy(
+            () ->
+                service.resolveReviewRequired(
+                    releaseContext(),
+                    review.reservationId(),
+                    review.operationFingerprint(),
+                    DisclosureReviewResolution.APPROVE,
+                    UUID.randomUUID()))
+        .isInstanceOf(DisclosureReservationException.class)
+        .extracting(error -> ((DisclosureReservationException) error).reason())
+        .isEqualTo(DisclosureReservationException.Reason.NOT_AUTHORIZED);
+    assertThat(service.findReservation(releaseContext(), review.reservationId()).state())
+        .isEqualTo(DisclosureReservationState.REVIEW_REQUIRED);
+
+    UUID evidence = UUID.randomUUID();
+    DisclosureReservation approved =
+        service.resolveReviewRequired(
+            adminContext(),
+            review.reservationId(),
+            review.operationFingerprint(),
+            DisclosureReviewResolution.APPROVE,
+            evidence);
+    assertThat(approved.state()).isEqualTo(DisclosureReservationState.RESERVED);
+    assertThat(approved.reasonCode()).isEqualTo("AUTHORIZED_REVIEW_APPROVED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT evidence_reference FROM analytics.disclosure_reservation_review "
+                    + "WHERE reservation_id = ?",
+                UUID.class,
+                review.reservationId()))
+        .isEqualTo(evidence);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT count(*) FROM audit.audit_record WHERE action_code = ? "
+                    + "AND target_id = ?",
+                Integer.class,
+                "ANALYTICS_DISCLOSURE_AUTHORIZED_REVIEW_APPROVED",
+                review.reservationId()))
+        .isEqualTo(1);
+
+    DisclosureReservation replay = service.reserve(releaseContext(), lowCount);
+    assertThat(replay.state()).isEqualTo(DisclosureReservationState.RESERVED);
+    assertThat(replay.replayed()).isTrue();
+
+    activate(policy(2, broad, Map.of("CELL_B", Set.of(broad)), true));
+    DisclosureReservation exactRepeat =
+        service.reserve(releaseContext(), candidate(UUID.randomUUID(), 2, outputB()));
+    assertThat(exactRepeat.state()).isEqualTo(DisclosureReservationState.RESERVED);
+  }
+
+  @Test
+  void privacyReviewerMayWithholdButCannotResolveAChangedFingerprint() {
+    UUID broad = UUID.randomUUID();
+    activate(policy(1, broad, Map.of("CELL_B", Set.of(broad)), false));
+    DisclosureCandidate proposed = candidate(UUID.randomUUID(), 1, outputB());
+    DisclosureReservation review = service.reserve(releaseContext(), proposed);
+
+    assertThatThrownBy(
+            () ->
+                service.resolveReviewRequired(
+                    adminContext(),
+                    review.reservationId(),
+                    "0".repeat(64),
+                    DisclosureReviewResolution.WITHHOLD,
+                    UUID.randomUUID()))
+        .isInstanceOf(DisclosureReservationException.class);
+    assertThat(
+            service
+                .resolveReviewRequired(
+                    adminContext(),
+                    review.reservationId(),
+                    review.operationFingerprint(),
+                    DisclosureReviewResolution.WITHHOLD,
+                    UUID.randomUUID())
+                .state())
+        .isEqualTo(DisclosureReservationState.WITHHELD);
+  }
+
+  @Test
+  void signedRatioDisclosureEquationSurvivesPostgresAndProtectsSmallSourceCell() {
+    UUID broad = UUID.randomUUID();
+    activate(
+        policy(
+            1,
+            broad,
+            Map.of("RATIO", Set.of(broad), "DENOMINATOR", Set.of(broad)),
+            true));
+    Map<String, Long> cells = Map.of("SYN-NUMERATOR", 3L, "SYN-DENOMINATOR", 9L);
+    DisclosureOutput ratio =
+        new DisclosureOutput(
+            "RATIO", 333_333L, Map.of("SYN-NUMERATOR", 3L, "SYN-DENOMINATOR", -1L), 0L, false);
+    DisclosureReservation first =
+        service.reserve(
+            releaseContext(),
+            new DisclosureCandidate(POLICY_KEY, 1, UUID.randomUUID(), cells, List.of(ratio)));
+    assertThat(first.state()).isEqualTo(DisclosureReservationState.RESERVED);
+
+    DisclosureReservation denominatorRelease =
+        service.reserve(
+            releaseContext(),
+            new DisclosureCandidate(
+                POLICY_KEY,
+                1,
+                UUID.randomUUID(),
+                cells,
+                List.of(new DisclosureOutput("DENOMINATOR", 9L, Map.of("SYN-DENOMINATOR", 1L)))));
+    assertThat(denominatorRelease.state()).isEqualTo(DisclosureReservationState.WITHHELD);
+    assertThat(denominatorRelease.reasonCode()).isEqualTo("INFERENCE_RISK");
+  }
+
+  @Test
   void externalBaselineAndIncompleteBaselineAreConservative() {
     UUID broad = UUID.randomUUID();
     activate(policy(1, broad, Map.of("CELL_A", Set.of(broad), "TOTAL", Set.of(broad)), true));
@@ -488,7 +853,8 @@ class AnalyticsDisclosureReservationPostgresIT {
                 List.of(
                     AnalyticsAuthorities.disclosurePolicyAdministration(),
                     AnalyticsAuthorities.disclosureRelease(),
-                    AnalyticsAuthorities.disclosureReservationLifecycle())));
+                    AnalyticsAuthorities.disclosureReservationLifecycle(),
+                    AnalyticsAuthorities.disclosureReview())));
     AuditWriter audit =
         new AuditWriter(new JdbcAuditRecordAppender(jdbc, transactionManager), Clock.systemUTC());
     return new AnalyticsDisclosureReservationService(
@@ -551,8 +917,29 @@ class AnalyticsDisclosureReservationPostgresIT {
         policyKey, policyVersion, operationId, Map.of("CELL_A", 9L, "CELL_B", 1L), outputList);
   }
 
+  private static DisclosureCandidate scopedCandidate(
+      UUID operationId, DisclosureScope scope, Map<String, Long> cells, DisclosureOutput output) {
+    return new DisclosureCandidate(POLICY_KEY, 1, operationId, cells, List.of(output), scope);
+  }
+
+  private static DisclosureScope disclosureScope(
+      String indicatorKey, int indicatorVersion, Optional<UUID> facilityId, Instant start, Instant end) {
+    return new DisclosureScope(
+        indicatorKey,
+        indicatorVersion,
+        ORGANIZATION.issuer().value(),
+        UUID.fromString(ORGANIZATION.value()),
+        facilityId,
+        start,
+        end);
+  }
+
   private static DisclosureOutput outputA() {
     return new DisclosureOutput("CELL_A", 9, Map.of("CELL_A", 1L));
+  }
+
+  private static DisclosureOutput outputB() {
+    return new DisclosureOutput("CELL_B", 1, Map.of("CELL_B", 1L));
   }
 
   private static DisclosureOutput totalOutput() {

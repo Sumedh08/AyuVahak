@@ -3,6 +3,7 @@ package org.ayuvahak.analytics.domain;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.nio.charset.StandardCharsets;
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
@@ -83,6 +84,130 @@ class AggregateDisclosureEquationTest {
                     subtotalEquation.cellValues(),
                     true))
         .isEqualTo(DisclosureInferenceAnalyzer.Result.INFERENCE_RISK);
+  }
+
+  @Test
+  void snapshotStringRepresentationNeverIncludesAnAggregateValue() {
+    AggregateSnapshot snapshot = snapshot("SYN-PRIVATE-COUNT", List.of(SUBMITTED), List.of(9L));
+
+    assertThat(snapshot.toString()).contains("value=redacted").doesNotContain("value=9");
+  }
+
+  @Test
+  void ratioUsesConservativeExactRelationWithoutApplyingCountThresholdToRatioValue() {
+    AggregateSnapshot ratio = ratioSnapshot(10L, 100L, "0.100000");
+    IndicatorDefinitionVersion definition = ratioDefinition();
+
+    AggregateDisclosureEquation equation = AggregateDisclosureEquation.from(ratio, definition);
+    DisclosureOutput output = equation.output("RATIO");
+    DisclosureCandidate candidate =
+        new DisclosureCandidate(
+            "SYN-SCOPE",
+            1,
+            UUID.randomUUID(),
+            equation.cellValues(),
+            List.of(output));
+    DisclosurePolicyVersion policy =
+        new DisclosurePolicyVersion(
+            "SYN-SCOPE",
+            1,
+            ORGANIZATION,
+            5,
+            true,
+            UUID.fromString("00000000-0000-0000-0000-000000000001"),
+            Map.of("RATIO", Set.of(UUID.fromString("00000000-0000-0000-0000-000000000001"))));
+
+    assertThat(output.value()).isEqualTo(100_000L);
+    assertThat(output.cellCoefficients()).containsValues(10L, -1L);
+    assertThat(output.appliesMinimumCellCount()).isFalse();
+    assertThat(
+            new DisclosureInferenceAnalyzer()
+                .evaluate(policy, candidate, List.of(), Map.of(), true))
+        .isEqualTo(DisclosureInferenceAnalyzer.Result.SAFE);
+  }
+
+  @Test
+  void ratioRelationParticipatesInDifferencingAnalysis() {
+    AggregateSnapshot ratio = ratioSnapshot(1L, 100L, "0.010000");
+    AggregateDisclosureEquation equation = AggregateDisclosureEquation.from(ratio, ratioDefinition());
+    String denominatorCell =
+        equation.cellValues().keySet().stream()
+            .filter(key -> equation.cellValues().get(key) == 100L)
+            .findFirst()
+            .orElseThrow();
+    DisclosureOutput knownDenominator =
+        new DisclosureOutput("KNOWN_DENOMINATOR", 100L, Map.of(denominatorCell, 1L));
+    DisclosureCandidate candidate =
+        new DisclosureCandidate(
+            "SYN-SCOPE", 1, UUID.randomUUID(), equation.cellValues(), List.of(equation.output("RATIO")));
+    DisclosurePolicyVersion policy =
+        new DisclosurePolicyVersion(
+            "SYN-SCOPE",
+            1,
+            ORGANIZATION,
+            5,
+            true,
+            UUID.fromString("00000000-0000-0000-0000-000000000001"),
+            Map.of("RATIO", Set.of(UUID.fromString("00000000-0000-0000-0000-000000000001"))));
+
+    assertThat(
+            new DisclosureInferenceAnalyzer()
+                .evaluate(
+                    policy,
+                    candidate,
+                    List.of(knownDenominator),
+                    Map.of(denominatorCell, 100L),
+                    true))
+        .isEqualTo(DisclosureInferenceAnalyzer.Result.INFERENCE_RISK);
+  }
+
+  private static IndicatorDefinitionVersion ratioDefinition() {
+    return new IndicatorDefinitionVersion(
+        "SYN-RATIO",
+        1,
+        "Synthetic ratio",
+        AggregationFormula.RATIO_6DP_HALF_EVEN,
+        ZoneId.of("UTC"),
+        List.of(SUBMITTED),
+        true,
+        List.of(RESOLVED),
+        IndicatorDefinitionGovernance.syntheticFixture("Synthetic ratio"));
+  }
+
+  private static AggregateSnapshot ratioSnapshot(long numerator, long denominator, String value) {
+    var period =
+        ReportingPeriod.resolve(
+            LocalDate.of(2026, 3, 1), LocalDate.of(2026, 4, 1), ZoneId.of("UTC"));
+    List<AggregateInput> inputs =
+        List.of(
+            ratioInput(SUBMITTED, numerator), ratioInput(RESOLVED, denominator)).stream()
+            .sorted(java.util.Comparator.comparing(input -> input.measure().stableKey()))
+            .toList();
+    return new AggregateSnapshot(
+        UUID.randomUUID(),
+        InternalId.generate(),
+        "SYN-RATIO",
+        1,
+        ORGANIZATION,
+        Optional.empty(),
+        period,
+        AggregateCompleteness.COMPLETE,
+        OptionalLong.empty(),
+        Optional.of(new BigDecimal(value)),
+        inputs,
+        CUTOFF,
+        "b".repeat(64));
+  }
+
+  private static AggregateInput ratioInput(SourceMeasure measure, long value) {
+    return new AggregateInput(
+        measure,
+        Optional.of(UUID.randomUUID()),
+        Optional.of(CUTOFF),
+        Optional.of("SYN-OWNER-CONTRACT-V1"),
+        AggregateCompleteness.COMPLETE,
+        OptionalLong.of(value),
+        Optional.of(CUTOFF));
   }
 
   private static AggregateSnapshot snapshot(

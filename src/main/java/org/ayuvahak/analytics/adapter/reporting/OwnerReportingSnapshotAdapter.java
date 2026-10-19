@@ -71,6 +71,7 @@ public final class OwnerReportingSnapshotAdapter implements OwnerReportingSnapsh
       return new OwnerMeasureSnapshot(
           measure,
           snapshot.organization(),
+          snapshot.facility(),
           snapshot.periodStart(),
           snapshot.periodEnd(),
           Optional.of(snapshot.sourceSnapshotReference()),
@@ -105,6 +106,7 @@ public final class OwnerReportingSnapshotAdapter implements OwnerReportingSnapsh
               .scope()
               .organization()
               .orElseThrow(OwnerReportingSnapshotAdapter::invalidOwnerResponse);
+      Optional<ExternalReference> returnedFacility = snapshot.scope().facility();
       OptionalLong value =
           snapshot.completeness() == TransferReportingSnapshotPort.Completeness.COMPLETE
               ? OptionalLong.of(snapshot.value())
@@ -116,6 +118,7 @@ public final class OwnerReportingSnapshotAdapter implements OwnerReportingSnapsh
       return new OwnerMeasureSnapshot(
           measure,
           returnedOrganization,
+          returnedFacility,
           snapshot.periodStart(),
           snapshot.periodEnd(),
           Optional.of(snapshot.sourceSnapshotId().value()),
@@ -138,6 +141,7 @@ public final class OwnerReportingSnapshotAdapter implements OwnerReportingSnapsh
     return new OwnerMeasureSnapshot(
         measure,
         request.organization(),
+        request.facility(),
         request.period().startInclusiveUtc(),
         request.period().endExclusiveUtc(),
         Optional.empty(),
@@ -166,21 +170,44 @@ public final class OwnerReportingSnapshotAdapter implements OwnerReportingSnapsh
   }
 
   private static String requestIdentity(OwnerReportingRequest request, SourceMeasure measure) {
-    return request.computationRequestId()
-        + "\n"
-        + request.organization().issuer().value()
-        + "\n"
-        + request.organization().resourceType()
-        + "\n"
-        + request.organization().value()
-        + "\n"
-        + request.period().startInclusiveUtc()
-        + "\n"
-        + request.period().endExclusiveUtc()
-        + "\n"
-        + request.referralSourceCutoff()
-        + "\n"
-        + measure.stableKey();
+    String identity =
+        request.computationRequestId()
+            + "\n"
+            + request.organization().issuer().value()
+            + "\n"
+            + request.organization().resourceType()
+            + "\n"
+            + request.organization().value()
+            + "\n"
+            + request.period().startInclusiveUtc()
+            + "\n"
+            + request.period().endExclusiveUtc()
+            + "\n"
+            + request.referralSourceCutoff()
+            + "\n"
+            + measure.stableKey();
+    return request
+        .facility()
+        .map(
+            facility ->
+                request.computationRequestId()
+                    + "\n"
+                    + request.organization().issuer().value()
+                    + "\n"
+                    + request.organization().resourceType()
+                    + "\n"
+                    + request.organization().value()
+                    + "\n"
+                    + facility.value()
+                    + "\n"
+                    + request.period().startInclusiveUtc()
+                    + "\n"
+                    + request.period().endExclusiveUtc()
+                    + "\n"
+                    + request.referralSourceCutoff()
+                    + "\n"
+                    + measure.stableKey())
+        .orElse(identity);
   }
 
   private static InternalId stableInternalId(OwnerReportingRequest request, SourceMeasure measure) {

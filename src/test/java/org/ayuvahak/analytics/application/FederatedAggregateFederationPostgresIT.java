@@ -126,7 +126,8 @@ class FederatedAggregateFederationPostgresIT {
       Set.of(
           AnalyticsAuthorities.disclosurePolicyAdministration().code(),
           AnalyticsAuthorities.disclosureRelease().code(),
-          AnalyticsAuthorities.disclosureReservationLifecycle().code());
+          AnalyticsAuthorities.disclosureReservationLifecycle().code(),
+          AnalyticsAuthorities.disclosureReview().code());
 
   @Container
   private static final PostgreSQLContainer POSTGRES =
@@ -171,7 +172,8 @@ class FederatedAggregateFederationPostgresIT {
                 List.of(
                     AnalyticsAuthorities.disclosurePolicyAdministration(),
                     AnalyticsAuthorities.disclosureRelease(),
-                    AnalyticsAuthorities.disclosureReservationLifecycle())));
+                    AnalyticsAuthorities.disclosureReservationLifecycle(),
+                    AnalyticsAuthorities.disclosureReview())));
     AuditWriter audit =
         new AuditWriter(new JdbcAuditRecordAppender(jdbc, transactionManager), CLOCK);
     disclosure =
@@ -321,6 +323,132 @@ class FederatedAggregateFederationPostgresIT {
                             PartnerTrustConfiguration.Direction.INBOUND),
                         LOCAL_ORGANIZATION))
         .isInstanceOf(FederationPeerInboundAuthorizationException.class);
+  }
+
+  @Test
+  void reviewedDisclosureResumesTheSameFederatedPublication() {
+    IndicatorDefinitionVersion definition = sensitiveDefinition();
+    AnalyticsStore analytics = new JdbcAnalyticsStore(jdbc, transactionManager);
+    analytics.publishDefinition(definition);
+    SourceMeasure measure = SourceMeasure.referral("SUBMITTED_COUNT");
+    AggregateSnapshot sourceSnapshot =
+        analytics.saveOrReplay(
+            AggregateSnapshot.create(
+                InternalId.generate(),
+                definition,
+                LOCAL_ORGANIZATION,
+                ReportingPeriod.resolve(
+                    LocalDate.of(2026, 1, 1), LocalDate.of(2026, 2, 1), ZoneId.of("UTC")),
+                AggregateCompleteness.COMPLETE,
+                java.util.OptionalLong.of(8),
+                List.of(
+                    new AggregateInput(
+                        measure,
+                        Optional.of(UUID.randomUUID()),
+                        Optional.of(NOW.minusSeconds(3600)),
+                        Optional.of("referral-reporting-v1"),
+                        AggregateCompleteness.COMPLETE,
+                        java.util.OptionalLong.of(8),
+                        Optional.of(NOW.minusSeconds(60)))),
+                NOW));
+    JdbcAnalyticsRevisionStore revisions = new JdbcAnalyticsRevisionStore(jdbc);
+    var revision =
+        revisions.registerInitial(
+            sourceSnapshot, UUID.randomUUID(), NOW, NOW.plus(Duration.ofDays(7)));
+    ExternalReference receivingOrganization =
+        new ExternalReference(
+            new IssuerId(FederatedAggregateMappingVersion.deploymentNamespace(SOURCE_DEPLOYMENT)),
+            "Organization",
+            "SYN-ORG-RECEIVER-001");
+    FederatedAggregateMappingVersion mapping =
+        new FederatedAggregateMappingVersion(
+            "SYN-OUTBOUND-REVIEW-MAP",
+            1,
+            FederatedAggregateMappingVersion.Direction.OUTBOUND,
+            definition.key(),
+            definition.version(),
+            definition.fingerprint(),
+            LOCAL_ORGANIZATION,
+            PEER_KEY,
+            SOURCE_DEPLOYMENT,
+            1,
+            receivingOrganization,
+            POLICY_KEY,
+            FEDERATION_OUTPUT,
+            NOW.minusSeconds(3600),
+            Optional.empty());
+    JdbcFederatedAggregateMappingStore mappings =
+        new JdbcFederatedAggregateMappingStore(jdbc, transactionManager);
+    mappings.publish(mapping, NOW);
+    UUID lineage = UUID.randomUUID();
+    disclosure.activatePolicy(
+        adminContext(),
+        new DisclosurePolicyVersion(
+            POLICY_KEY,
+            1,
+            LOCAL_ORGANIZATION,
+            1,
+            false,
+            lineage,
+            Map.of(FEDERATION_OUTPUT, Set.of(lineage))));
+
+    FederatedAggregateSnapshot wire =
+        FederatedAggregateSnapshot.from(sourceSnapshot, definition, revision, LOCAL_DEPLOYMENT);
+    var mapper =
+        new org.ayuvahak.analytics.adapter.federation.FederatedAggregateEnvelopeJsonMapper(
+            new ObjectMapper());
+    int[] sends = {0};
+    FederationPeerOperationPort localPeer =
+        request -> {
+          sends[0]++;
+          return new PartnerOutboundOperationResponse(
+              200,
+              Optional.of("application/json"),
+              mapper.encodeAcknowledgement(
+                  new FederatedAggregateReceipt(
+                      UUID.randomUUID(),
+                      wire,
+                      request.operationId().value(),
+                      receivingOrganization,
+                      PEER_KEY,
+                      1,
+                      Optional.of(mapping.mappingKey()),
+                      Optional.of(mapping.version()),
+                      FederatedAggregateReceipt.State.COMBINABLE,
+                      "COMPATIBLE",
+                      NOW,
+                      false),
+                  SOURCE_DEPLOYMENT),
+              1);
+        };
+    FederatedAggregatePublicationService publisher =
+        publicationService(analytics, revisions, mappings, localPeer, mapper, CLOCK);
+    FederatedAggregatePublicationRequest request =
+        new FederatedAggregatePublicationRequest(sourceSnapshot.snapshotId(), mapping.mappingKey());
+
+    FederatedAggregatePublication held = publisher.publish(releaseContext(), request);
+
+    assertThat(held.state()).isEqualTo(FederatedAggregatePublication.State.WITHHELD);
+    assertThat(held.disclosureReservationId()).isPresent();
+    assertThat(sends[0]).isZero();
+    var reservation =
+        disclosure.findReservation(releaseContext(), held.disclosureReservationId().orElseThrow());
+    assertThat(reservation.state()).isEqualTo(DisclosureReservationState.REVIEW_REQUIRED);
+    disclosure.resolveReviewRequired(
+        adminContext(),
+        reservation.reservationId(),
+        reservation.operationFingerprint(),
+        DisclosureReviewResolution.APPROVE,
+        UUID.randomUUID());
+
+    FederatedAggregatePublication published = publisher.publish(releaseContext(), request);
+
+    assertThat(published.operationId()).isEqualTo(held.operationId());
+    assertThat(published.state()).isEqualTo(FederatedAggregatePublication.State.ACKNOWLEDGED);
+    assertThat(sends[0]).isEqualTo(1);
+    assertThat(
+            disclosure.findReservation(releaseContext(), reservation.reservationId()).state())
+        .isEqualTo(DisclosureReservationState.DISCLOSED);
   }
 
   @Test
@@ -765,6 +893,31 @@ class FederatedAggregateFederationPostgresIT {
             IndicatorDefinitionGovernance.SensitivityClassification.LOW_SENSITIVITY_AGGREGATE,
             Optional.empty(),
             Optional.empty()));
+  }
+
+  private static IndicatorDefinitionVersion sensitiveDefinition() {
+    IndicatorDefinitionVersion base = definition();
+    IndicatorDefinitionGovernance governance = base.governance();
+    return new IndicatorDefinitionVersion(
+        "SYN-INDICATOR-REVIEW-001",
+        base.version(),
+        base.description(),
+        base.formula(),
+        base.reportingTimeZone(),
+        base.sourceMeasures(),
+        base.zeroAllowed(),
+        base.denominatorMeasures(),
+        new IndicatorDefinitionGovernance(
+            governance.ownerApprovedPurpose(),
+            governance.effectiveFrom(),
+            governance.effectiveUntil(),
+            governance.reportingCalendar(),
+            governance.allowedDimensions(),
+            governance.completenessRequirement(),
+            governance.maximumSourceAge(),
+            IndicatorDefinitionGovernance.SensitivityClassification.SENSITIVE_AGGREGATE,
+            governance.requiredDisclosurePolicyKey(),
+            governance.authorityDefinition()));
   }
 
   private static FederatedAggregateEnvelope envelope(long value) {

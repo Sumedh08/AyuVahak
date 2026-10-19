@@ -25,7 +25,7 @@ public class JdbcDhis2MappingStore implements Dhis2MappingStore {
 
   private static final String SELECT_VERSION =
       "SELECT m.mapping_key, m.mapping_version, m.indicator_key, m.indicator_version, "
-          + "m.organization_issuer, m.organization_reference_type, m.organization_id, m.partner_key, "
+          + "m.organization_issuer, m.organization_reference_type, m.organization_id, m.facility_id, m.partner_key, "
           + "m.data_element_uid, m.org_unit_uid, m.data_set_uid, m.category_option_combo_uid, "
           + "m.attribute_option_combo_uid, m.period_format, m.disclosure_policy_key, "
           + "m.disclosure_output_key, m.exclusive_write_authority, m.zero_is_significant, "
@@ -77,11 +77,11 @@ public class JdbcDhis2MappingStore implements Dhis2MappingStore {
             }
             jdbc.update(
                 "INSERT INTO analytics.dhis2_mapping_version (mapping_key, mapping_version, indicator_key, "
-                    + "indicator_version, organization_issuer, organization_reference_type, organization_id, "
+                    + "indicator_version, organization_issuer, organization_reference_type, organization_id, facility_id, "
                     + "partner_key, data_element_uid, org_unit_uid, data_set_uid, category_option_combo_uid, "
                     + "attribute_option_combo_uid, period_format, disclosure_policy_key, disclosure_output_key, "
                     + "exclusive_write_authority, zero_is_significant, effective_from, effective_until, "
-                    + "mapping_fingerprint, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    + "mapping_fingerprint, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 mapping.mappingKey(),
                 mapping.version(),
                 mapping.indicatorKey(),
@@ -89,6 +89,7 @@ public class JdbcDhis2MappingStore implements Dhis2MappingStore {
                 mapping.organization().issuer().value(),
                 mapping.organization().resourceType(),
                 UUID.fromString(mapping.organization().value()),
+                mapping.facility().map(value -> UUID.fromString(value.value())).orElse(null),
                 mapping.partnerKey().value(),
                 mapping.dataElementUid(),
                 mapping.orgUnitUid(),
@@ -160,6 +161,16 @@ public class JdbcDhis2MappingStore implements Dhis2MappingStore {
   @Override
   public Optional<Dhis2MappingVersion> activeMapping(
       String indicatorKey, int indicatorVersion, ExternalReference organization, Instant at) {
+    return activeMapping(indicatorKey, indicatorVersion, organization, Optional.empty(), at);
+  }
+
+  @Override
+  public Optional<Dhis2MappingVersion> activeMapping(
+      String indicatorKey,
+      int indicatorVersion,
+      ExternalReference organization,
+      Optional<ExternalReference> facility,
+      Instant at) {
     return jdbc
         .query(
             SELECT_VERSION
@@ -167,6 +178,7 @@ public class JdbcDhis2MappingStore implements Dhis2MappingStore {
                 + "AND h.active_version = m.mapping_version AND h.lifecycle_state = 'ACTIVE' "
                 + "WHERE m.indicator_key = ? AND m.indicator_version = ? AND m.organization_issuer = ? "
                 + "AND m.organization_reference_type = ? AND m.organization_id = ? "
+                + "AND m.facility_id IS NOT DISTINCT FROM ? "
                 + "AND m.effective_from <= ? AND (m.effective_until IS NULL OR ? < m.effective_until)",
             MAPPER,
             indicatorKey,
@@ -174,6 +186,7 @@ public class JdbcDhis2MappingStore implements Dhis2MappingStore {
             organization.issuer().value(),
             organization.resourceType(),
             UUID.fromString(organization.value()),
+            facility.map(value -> UUID.fromString(value.value())).orElse(null),
             Timestamp.from(at),
             Timestamp.from(at))
         .stream()
@@ -204,15 +217,19 @@ public class JdbcDhis2MappingStore implements Dhis2MappingStore {
   }
 
   private static Dhis2MappingVersion fromRow(ResultSet result) throws SQLException {
+    UUID facilityId = result.getObject("facility_id", UUID.class);
+    IssuerId organizationIssuer = new IssuerId(result.getString("organization_issuer"));
     return new Dhis2MappingVersion(
         result.getString("mapping_key"),
         result.getInt("mapping_version"),
         result.getString("indicator_key"),
         result.getInt("indicator_version"),
         new ExternalReference(
-            new IssuerId(result.getString("organization_issuer")),
+            organizationIssuer,
             result.getString("organization_reference_type"),
             result.getObject("organization_id", UUID.class).toString()),
+        Optional.ofNullable(facilityId)
+            .map(id -> new ExternalReference(organizationIssuer, "Facility", id.toString())),
         new PartnerKey(result.getString("partner_key")),
         result.getString("data_element_uid"),
         result.getString("org_unit_uid"),
@@ -233,7 +250,7 @@ public class JdbcDhis2MappingStore implements Dhis2MappingStore {
     var existing =
         jdbc.query(
             "SELECT indicator_key, indicator_version, organization_issuer, "
-                + "organization_reference_type, organization_id FROM analytics.dhis2_mapping_version "
+                + "organization_reference_type, organization_id, facility_id FROM analytics.dhis2_mapping_version "
                 + "WHERE mapping_key = ? ORDER BY mapping_version LIMIT 1",
             (result, row) ->
                 new MappingScope(
@@ -241,7 +258,8 @@ public class JdbcDhis2MappingStore implements Dhis2MappingStore {
                     result.getInt("indicator_version"),
                     result.getString("organization_issuer"),
                     result.getString("organization_reference_type"),
-                    result.getObject("organization_id", UUID.class)),
+                    result.getObject("organization_id", UUID.class),
+                    Optional.ofNullable(result.getObject("facility_id", UUID.class))),
             proposed.mappingKey());
     if (!existing.isEmpty() && !existing.getFirst().matches(proposed)) {
       throw new Dhis2MappingConflictException();
@@ -281,14 +299,16 @@ public class JdbcDhis2MappingStore implements Dhis2MappingStore {
       int indicatorVersion,
       String organizationIssuer,
       String organizationReferenceType,
-      UUID organizationId) {
+      UUID organizationId,
+      Optional<UUID> facilityId) {
 
     private boolean matches(Dhis2MappingVersion mapping) {
       return indicatorKey.equals(mapping.indicatorKey())
           && indicatorVersion == mapping.indicatorVersion()
           && organizationIssuer.equals(mapping.organization().issuer().value())
           && organizationReferenceType.equals(mapping.organization().resourceType())
-          && organizationId.equals(UUID.fromString(mapping.organization().value()));
+          && organizationId.equals(UUID.fromString(mapping.organization().value()))
+          && facilityId.equals(mapping.facility().map(value -> UUID.fromString(value.value())));
     }
   }
 }

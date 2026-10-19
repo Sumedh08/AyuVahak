@@ -22,6 +22,7 @@ import org.ayuvahak.analytics.domain.Dhis2MappingVersion;
 import org.ayuvahak.analytics.domain.DisclosureCandidate;
 import org.ayuvahak.analytics.domain.DisclosureReservation;
 import org.ayuvahak.analytics.domain.DisclosureReservationState;
+import org.ayuvahak.analytics.domain.IndicatorDefinitionGovernance.SensitivityClassification;
 import org.ayuvahak.analytics.domain.IndicatorDefinitionVersion;
 import org.ayuvahak.platform.audit.application.AuditPersistenceUnavailableException;
 import org.ayuvahak.platform.audit.application.AuditWriter;
@@ -104,7 +105,7 @@ public final class Dhis2AggregateExportService {
     AggregateSnapshot snapshot = requireSnapshot(request.snapshotId());
     authorizeExport(context, snapshot, request.operationId());
     if (snapshot.completeness() != org.ayuvahak.analytics.domain.AggregateCompleteness.COMPLETE
-        || snapshot.value().isEmpty()) {
+        || snapshot.numericValue().isEmpty()) {
       throw new Dhis2ExportException(Dhis2ExportException.Reason.INCOMPLETE_SNAPSHOT);
     }
     AggregateSnapshotRevision current =
@@ -119,7 +120,11 @@ public final class Dhis2AggregateExportService {
     Dhis2MappingVersion mapping =
         mappings
             .activeMapping(
-                snapshot.indicatorKey(), snapshot.indicatorVersion(), snapshot.organization(), now)
+                snapshot.indicatorKey(),
+                snapshot.indicatorVersion(),
+                snapshot.organization(),
+                snapshot.facility(),
+                now)
             .orElseThrow(
                 () -> new Dhis2ExportException(Dhis2ExportException.Reason.MAPPING_NOT_FOUND));
     IndicatorDefinitionVersion definition =
@@ -145,7 +150,8 @@ public final class Dhis2AggregateExportService {
       tuple = mapping.tupleFor(snapshot.period());
       body = payloadMapper.map(snapshot, mapping);
     } catch (IllegalArgumentException invalidMappingOrSnapshot) {
-      if (snapshot.value().orElse(0) == 0 && !mapping.zeroIsSignificant()) {
+      if (snapshot.numericValue().orElse(java.math.BigDecimal.ZERO).signum() == 0
+          && !mapping.zeroIsSignificant()) {
         throw new Dhis2ExportException(Dhis2ExportException.Reason.ZERO_NOT_ALLOWED);
       }
       throw new Dhis2ExportException(Dhis2ExportException.Reason.MAPPING_NOT_EFFECTIVE);
@@ -159,6 +165,28 @@ public final class Dhis2AggregateExportService {
       operation = existing.orElseThrow();
       if (!operation.fingerprint().equals(fingerprint)) {
         throw new Dhis2ExportOperationConflictException();
+      }
+      if (operation.state() == Dhis2ExportState.WITHHELD
+          && operation.disclosureReservationId().isPresent()) {
+        DisclosureReservation reviewed =
+            disclosure.findReservation(context, operation.disclosureReservationId().orElseThrow());
+        if (reviewed.state() == DisclosureReservationState.RESERVED) {
+          int currentPartnerConfiguration = activePartnerConfigurationVersion(mapping);
+          if (!operation
+              .partnerConfigurationVersion()
+              .equals(Optional.of(currentPartnerConfiguration))) {
+            throw new Dhis2ExportOperationConflictException();
+          }
+          operation =
+              transition(
+                  context,
+                  operation,
+                  Dhis2ExportState.PREPARED,
+                  "DISCLOSURE_REVIEW_APPROVED",
+                  Optional.of(currentPartnerConfiguration),
+                  Optional.empty(),
+                  operation.disclosureReservationId());
+        }
       }
       if (operation.state() == Dhis2ExportState.PREPARED
           && !operation
@@ -210,7 +238,14 @@ public final class Dhis2AggregateExportService {
     }
     StartResult start;
     try {
-      start = claimReserveAndStart(context, mapping, operation, snapshot, cellEquation);
+      start =
+          claimReserveAndStart(
+              context,
+              mapping,
+              operation,
+              snapshot,
+              cellEquation,
+              definition.governance().sensitivity());
     } catch (RuntimeException failure) {
       activeAttempts.remove(operation.operationId());
       throw failure;
@@ -290,7 +325,8 @@ public final class Dhis2AggregateExportService {
       Dhis2MappingVersion mapping,
       Dhis2ExportOperation operation,
       AggregateSnapshot snapshot,
-      AggregateDisclosureEquation cellEquation) {
+      AggregateDisclosureEquation cellEquation,
+      SensitivityClassification sensitivity) {
     try {
       return transactions.execute(
           status -> {
@@ -347,7 +383,7 @@ public final class Dhis2AggregateExportService {
             }
 
             Optional<DisclosureReservation> reservationResult =
-                reserveDisclosure(context, mapping, operation, snapshot, cellEquation);
+                reserveDisclosure(context, mapping, operation, snapshot, cellEquation, sensitivity);
             if (reservationResult.isEmpty()) {
               return new StartResult(
                   transition(
@@ -436,7 +472,8 @@ public final class Dhis2AggregateExportService {
       Dhis2MappingVersion mapping,
       Dhis2ExportOperation operation,
       AggregateSnapshot snapshot,
-      AggregateDisclosureEquation cellEquation) {
+      AggregateDisclosureEquation cellEquation,
+      SensitivityClassification sensitivity) {
     try {
       return transactions.execute(
           status -> {
@@ -447,7 +484,8 @@ public final class Dhis2AggregateExportService {
             int policyVersion =
                 disclosure.activePolicyVersionForRelease(context, mapping.disclosurePolicyKey());
             DisclosureCandidate candidate =
-                disclosureCandidate(mapping, operation, cellEquation, policyVersion);
+                disclosureCandidate(
+                    mapping, operation, snapshot, cellEquation, sensitivity, policyVersion);
             return Optional.of(disclosure.reserve(context, candidate));
           });
     } catch (RuntimeException unavailable) {
@@ -465,14 +503,18 @@ public final class Dhis2AggregateExportService {
   private DisclosureCandidate disclosureCandidate(
       Dhis2MappingVersion mapping,
       Dhis2ExportOperation operation,
+      AggregateSnapshot snapshot,
       AggregateDisclosureEquation cellEquation,
+      SensitivityClassification sensitivity,
       int policyVersion) {
     return new DisclosureCandidate(
         mapping.disclosurePolicyKey(),
         policyVersion,
         operation.operationId(),
         cellEquation.cellValues(),
-        java.util.List.of(cellEquation.output(mapping.disclosureOutputKey())));
+        java.util.List.of(cellEquation.output(mapping.disclosureOutputKey())),
+        sensitivity,
+        org.ayuvahak.analytics.domain.DisclosureScope.from(snapshot));
   }
 
   private AggregateDisclosureEquation sourceCellEquation(AggregateSnapshot snapshot) {
@@ -691,13 +733,18 @@ public final class Dhis2AggregateExportService {
 
   private void authorizeExport(
       ExecutionContext context, AggregateSnapshot snapshot, UUID targetId) {
+    ExecutionScope.Kind expectedScope =
+        snapshot.facility().isPresent()
+            ? ExecutionScope.Kind.FACILITY
+            : ExecutionScope.Kind.ORGANIZATION;
     if (context == null
         || context.actor().kind() != ActorKind.SERVICE
         || !(context.sourceKind() == SourceKind.INTEGRATION
             || context.sourceKind() == SourceKind.BACKGROUND_WORK
             || context.sourceKind() == SourceKind.SCHEDULED_WORK)
-        || context.scope().kind() != ExecutionScope.Kind.ORGANIZATION
+        || context.scope().kind() != expectedScope
         || context.scope().organization().filter(snapshot.organization()::equals).isEmpty()
+        || !context.scope().facility().equals(snapshot.facility())
         || !DIRECTORY_ISSUER.equals(snapshot.organization().issuer().value())
         || !authorization
             .evaluate(context, AnalyticsAuthorities.dhis2Export().code())

@@ -25,6 +25,19 @@ public final class DisclosureInferenceAnalyzer {
     if (!historyComplete || priorOutputs.size() + candidate.outputs().size() > MAX_EQUATIONS) {
       return Result.REVIEW_REQUIRED;
     }
+    if (candidate.sensitivity()
+            == IndicatorDefinitionGovernance.SensitivityClassification.SENSITIVE_AGGREGATE
+        && !policy.externalBaselineComplete()) {
+      return Result.REVIEW_REQUIRED;
+    }
+    if (candidate.outputs().stream()
+        .anyMatch(
+            output ->
+                output.appliesMinimumCellCount()
+                    && output.value() < policy.minimumCellCount()
+                    && priorOutputs.stream().noneMatch(prior -> sameDisclosure(prior, output)))) {
+      return Result.INFERENCE_RISK;
+    }
 
     Map<String, Long> cells = new HashMap<>(priorCellValues);
     for (Map.Entry<String, Long> cell : candidate.cellValues().entrySet()) {
@@ -33,8 +46,17 @@ public final class DisclosureInferenceAnalyzer {
         return Result.REVIEW_REQUIRED;
       }
     }
+    List<DisclosureOutput> incrementalOutputs =
+        candidate.outputs().stream()
+            .filter(
+                output ->
+                    priorOutputs.stream().noneMatch(prior -> sameDisclosure(prior, output)))
+            .toList();
+    if (incrementalOutputs.isEmpty()) {
+      return Result.SAFE;
+    }
     List<DisclosureOutput> equations = new ArrayList<>(priorOutputs);
-    equations.addAll(candidate.outputs());
+    equations.addAll(incrementalOutputs);
     Set<String> variables = new TreeSet<>();
     equations.forEach(output -> variables.addAll(output.cellCoefficients().keySet()));
     if (variables.isEmpty() || variables.size() > MAX_VARIABLES) {
@@ -66,6 +88,12 @@ public final class DisclosureInferenceAnalyzer {
       }
     }
     return Result.SAFE;
+  }
+
+  private static boolean sameDisclosure(DisclosureOutput left, DisclosureOutput right) {
+    return left.value() == right.value()
+        && left.equationResult() == right.equationResult()
+        && left.cellCoefficients().equals(right.cellCoefficients());
   }
 
   private static Fraction[][] matrix(List<DisclosureOutput> outputs, List<String> variables) {

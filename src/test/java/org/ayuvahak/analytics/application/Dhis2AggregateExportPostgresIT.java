@@ -102,7 +102,8 @@ class Dhis2AggregateExportPostgresIT {
           AnalyticsAuthorities.dhis2ExportReconciliation().code(),
           AnalyticsAuthorities.disclosurePolicyAdministration().code(),
           AnalyticsAuthorities.disclosureRelease().code(),
-          AnalyticsAuthorities.disclosureReservationLifecycle().code());
+          AnalyticsAuthorities.disclosureReservationLifecycle().code(),
+          AnalyticsAuthorities.disclosureReview().code());
 
   @Container
   private static final PostgreSQLContainer POSTGRES =
@@ -859,6 +860,52 @@ class Dhis2AggregateExportPostgresIT {
         .isZero();
   }
 
+  @Test
+  void reviewedDisclosureResumesTheSameDhis2OperationThroughTheSharedGate() {
+    AggregateSnapshot snapshot = prepareSnapshotAndMapping();
+    UUID lineage =
+        jdbc.queryForObject(
+            "SELECT conservative_lineage_id FROM analytics.disclosure_policy_head "
+                + "WHERE policy_key = ?",
+            UUID.class,
+            POLICY_KEY);
+    disclosure.activatePolicy(
+        adminContext(),
+        new DisclosurePolicyVersion(
+            POLICY_KEY, 2, ORGANIZATION, 1, false, lineage, Map.of(OUTPUT_KEY, Set.of(lineage))));
+
+    UUID operationId = UUID.randomUUID();
+    Dhis2ExportRequest request = new Dhis2ExportRequest(operationId, snapshot.snapshotId());
+    Dhis2ExportOperation held = exporter.export(serviceContext(), request);
+
+    assertThat(held.state()).isEqualTo(Dhis2ExportState.WITHHELD);
+    assertThat(held.disclosureReservationId()).isPresent();
+    assertThat(exchange.requestCount()).isZero();
+    var reservation =
+        disclosure
+            .findReservation(serviceContext(), held.disclosureReservationId().orElseThrow());
+    assertThat(reservation.state()).isEqualTo(DisclosureReservationState.REVIEW_REQUIRED);
+
+    disclosure.resolveReviewRequired(
+        adminContext(),
+        reservation.reservationId(),
+        reservation.operationFingerprint(),
+        org.ayuvahak.analytics.application.DisclosureReviewResolution.APPROVE,
+        UUID.randomUUID());
+    exchange.respond(200, "application/json", imported());
+
+    Dhis2ExportOperation delivered = exporter.export(serviceContext(), request);
+
+    assertThat(delivered.operationId()).isEqualTo(operationId);
+    assertThat(delivered.state()).isEqualTo(Dhis2ExportState.ACKNOWLEDGED);
+    assertThat(exchange.requestCount()).isEqualTo(1);
+    assertThat(
+            disclosure
+                .findReservation(serviceContext(), reservation.reservationId())
+                .state())
+        .isEqualTo(DisclosureReservationState.DISCLOSED);
+  }
+
   private static Dhis2ExportOperation export(AggregateSnapshot snapshot) {
     return exporter.export(
         serviceContext(), new Dhis2ExportRequest(UUID.randomUUID(), snapshot.snapshotId()));
@@ -1108,7 +1155,8 @@ class Dhis2AggregateExportPostgresIT {
             AnalyticsAuthorities.dhis2ExportReconciliation(),
             AnalyticsAuthorities.disclosurePolicyAdministration(),
             AnalyticsAuthorities.disclosureRelease(),
-            AnalyticsAuthorities.disclosureReservationLifecycle()));
+            AnalyticsAuthorities.disclosureReservationLifecycle(),
+            AnalyticsAuthorities.disclosureReview()));
   }
 
   private record FailureExpectation(

@@ -14,6 +14,7 @@ import org.ayuvahak.platform.core.ExternalReference;
 public record OwnerMeasureSnapshot(
     SourceMeasure measure,
     ExternalReference organization,
+    Optional<ExternalReference> facility,
     Instant periodStart,
     Instant periodEnd,
     Optional<UUID> sourceSnapshotReference,
@@ -26,6 +27,14 @@ public record OwnerMeasureSnapshot(
   public OwnerMeasureSnapshot {
     Objects.requireNonNull(measure, "measure");
     Objects.requireNonNull(organization, "organization");
+    facility = Objects.requireNonNull(facility, "facility");
+    facility.ifPresent(
+        reference -> {
+          if (!"Facility".equals(reference.resourceType())
+              || !organization.issuer().equals(reference.issuer())) {
+            throw new IllegalArgumentException("owner snapshot facility scope is invalid");
+          }
+        });
     Objects.requireNonNull(periodStart, "period start");
     Objects.requireNonNull(periodEnd, "period end");
     Objects.requireNonNull(sourceSnapshotReference, "source snapshot reference");
@@ -46,6 +55,31 @@ public record OwnerMeasureSnapshot(
             || generatedAt.isEmpty())) {
       throw new IllegalArgumentException("complete owner snapshot requires provenance");
     }
+  }
+
+  public OwnerMeasureSnapshot(
+      SourceMeasure measure,
+      ExternalReference organization,
+      Instant periodStart,
+      Instant periodEnd,
+      Optional<UUID> sourceSnapshotReference,
+      Optional<Instant> sourceCutoff,
+      Optional<String> ownerContractVersion,
+      AggregateCompleteness completeness,
+      OptionalLong value,
+      Optional<Instant> generatedAt) {
+    this(
+        measure,
+        organization,
+        Optional.empty(),
+        periodStart,
+        periodEnd,
+        sourceSnapshotReference,
+        sourceCutoff,
+        ownerContractVersion,
+        completeness,
+        value,
+        generatedAt);
   }
 
   public AggregateInput toAggregateInput() {

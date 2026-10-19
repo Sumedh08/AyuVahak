@@ -17,7 +17,27 @@ public record DisclosureReleaseContext(
     Map<String, Long> priorCellValues,
     boolean historyComplete,
     long historyCheckpoint,
-    Optional<DisclosureReservation> replay) {
+    Optional<DisclosureReservation> replay,
+    boolean scopeHistoryCompatible) {
+
+  public DisclosureReleaseContext(
+      DisclosurePolicyVersion policy,
+      Set<UUID> lineageIds,
+      List<DisclosureOutput> priorOutputs,
+      Map<String, Long> priorCellValues,
+      boolean historyComplete,
+      long historyCheckpoint,
+      Optional<DisclosureReservation> replay) {
+    this(
+        policy,
+        lineageIds,
+        priorOutputs,
+        priorCellValues,
+        historyComplete,
+        historyCheckpoint,
+        replay,
+        true);
+  }
 
   public DisclosureReleaseContext {
     lineageIds = Set.copyOf(lineageIds);

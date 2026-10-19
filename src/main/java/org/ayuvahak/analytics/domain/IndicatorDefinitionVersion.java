@@ -93,9 +93,24 @@ public record IndicatorDefinitionVersion(
         sourceMeasures.stream()
             .sorted(java.util.Comparator.comparing(SourceMeasure::stableKey))
             .toList();
-    if (!denominatorMeasures.isEmpty()) {
-      throw new IllegalArgumentException(
-          "the initial SUM profile has numerator source measures and no denominator");
+    if (denominatorMeasures.stream().distinct().count() != denominatorMeasures.size()) {
+      throw new IllegalArgumentException("indicator denominator measures must be unique");
+    }
+    denominatorMeasures =
+        denominatorMeasures.stream()
+            .sorted(java.util.Comparator.comparing(SourceMeasure::stableKey))
+            .toList();
+    if (sourceMeasures.size() + denominatorMeasures.size() > 12) {
+      throw new IllegalArgumentException("indicator measure count exceeds the bound of twelve");
+    }
+    if (sourceMeasures.stream().anyMatch(denominatorMeasures::contains)) {
+      throw new IllegalArgumentException("numerator and denominator measures must be disjoint");
+    }
+    if (formula == AggregationFormula.SUM && !denominatorMeasures.isEmpty()) {
+      throw new IllegalArgumentException("SUM formula cannot define denominator measures");
+    }
+    if (formula == AggregationFormula.RATIO_6DP_HALF_EVEN && denominatorMeasures.isEmpty()) {
+      throw new IllegalArgumentException("ratio formula requires denominator measures");
     }
     if (sourceMeasures.stream()
             .anyMatch(measure -> measure.attribution() != SourceMeasure.Attribution.NONE)
@@ -107,7 +122,7 @@ public record IndicatorDefinitionVersion(
     }
   }
 
-  /** The bounded owner measures summed by the initial supported formula profile. */
+  /** The bounded owner measures summed as the numerator, or as the SUM result. */
   public List<SourceMeasure> numeratorMeasures() {
     return sourceMeasures;
   }

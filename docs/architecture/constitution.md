@@ -46,5 +46,5 @@ The permanent external-mutation policy in [AGENTS.md](../../AGENTS.md) applies i
 
 [System context](system-context.md) shows AyuVahak as one optional system interacting with people and external authorities. It is distinct from the internal [context map](bounded-contexts.md). Deployment-specific law, authorization mapping, terminology, retention, partner profiles, and federation agreements are explicit configuration/governance questions; they do not change the core ownership boundary.
 
-The current program status is maintained in root [AGENTS.md](../../AGENTS.md). Volume III is implemented and frozen. Volume IV design is frozen; Phase 11 is implemented and frozen, with evidence in the [Phase 11 acceptance record](../reviews/phase-11-acceptance.md). Phase 12 implementation has not started and requires separate human authorization.
+The current program status is maintained in root [AGENTS.md](../../AGENTS.md). Volumes I–III are implemented and frozen. Volume IV design is frozen; Phase 11 is implemented and frozen, while Phase 12 implementation is authorized and in progress. Volume IV is not yet complete. Analytics remains downstream and aggregate-only.
 

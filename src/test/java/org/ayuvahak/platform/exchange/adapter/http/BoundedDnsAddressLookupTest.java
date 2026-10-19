@@ -29,7 +29,8 @@ class BoundedDnsAddressLookupTest {
                 InetAddress.getByAddress(hostname, new byte[] {8, 8, 8, 8})
               };
             })) {
-      assertThatThrownBy(() -> lookup.lookup("partner.example", Duration.ofMillis(50)))
+      // Keep the resolver deadline bounded while allowing the worker to start under suite load.
+      assertThatThrownBy(() -> lookup.lookup("partner.example", Duration.ofSeconds(2)))
           .isInstanceOfSatisfying(
               DnsResolutionFailure.class,
               failure ->

@@ -25,11 +25,11 @@ public final class Dhis2DataValueSetMapper implements Dhis2DataValueSetPayloadMa
   public byte[] map(AggregateSnapshot snapshot, Dhis2MappingVersion mapping) {
     Objects.requireNonNull(snapshot, "aggregate snapshot");
     Objects.requireNonNull(mapping, "DHIS2 mapping");
-    if (snapshot.value().isEmpty()) {
+    if (snapshot.numericValue().isEmpty()) {
       throw new IllegalArgumentException("only complete aggregate snapshots can be exported");
     }
-    long value = snapshot.value().orElseThrow();
-    if (value == 0 && !mapping.zeroIsSignificant()) {
+    java.math.BigDecimal value = snapshot.numericValue().orElseThrow();
+    if (value.signum() == 0 && !mapping.zeroIsSignificant()) {
       throw new IllegalArgumentException("target profile does not store a significant zero");
     }
     ReportingPeriod period = snapshot.period();
@@ -43,7 +43,7 @@ public final class Dhis2DataValueSetMapper implements Dhis2DataValueSetPayloadMa
     ObjectNode dataValue = mapper.createObjectNode();
     dataValue.put("dataElement", tuple.dataElementUid());
     tuple.categoryOptionComboUid().ifPresent(uid -> dataValue.put("categoryOptionCombo", uid));
-    dataValue.put("value", Long.toString(value));
+    dataValue.put("value", value.stripTrailingZeros().toPlainString());
     values.add(dataValue);
     dataValueSet.set("dataValues", values);
     return mapper.writeValueAsBytes(dataValueSet);

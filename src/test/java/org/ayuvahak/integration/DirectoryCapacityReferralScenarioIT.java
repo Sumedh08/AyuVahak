@@ -945,13 +945,13 @@ class DirectoryCapacityReferralScenarioIT {
                     + "OR column_name = 'dimension_code')",
                 Integer.class))
         .isZero();
-    // Transport is a Phase 10 owner context; Analytics remains out of scope.
+    // Analytics owns reporting aggregates separately from the operational contexts.
     assertThat(
             jdbc.queryForList(
                 "SELECT schema_name FROM information_schema.schemata "
                     + "WHERE schema_name IN ('matching', 'transfer', 'transport', 'analytics')",
                 String.class))
-        .containsExactlyInAnyOrder("matching", "transfer", "transport");
+        .containsExactlyInAnyOrder("matching", "transfer", "transport", "analytics");
 
     createLocation(destinationFacilityId, "synthetic-cross-phase-destination-location", 73.0, 19.1);
     String destinationAssertionId = createFacilityCapabilityAssertion(destinationFacilityId);

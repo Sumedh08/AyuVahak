@@ -19,6 +19,18 @@ public interface Dhis2MappingStore {
   Optional<Dhis2MappingVersion> activeMapping(
       String indicatorKey, int indicatorVersion, ExternalReference organization, Instant at);
 
+  default Optional<Dhis2MappingVersion> activeMapping(
+      String indicatorKey,
+      int indicatorVersion,
+      ExternalReference organization,
+      Optional<ExternalReference> facility,
+      Instant at) {
+    if (facility.isPresent()) {
+      return Optional.empty();
+    }
+    return activeMapping(indicatorKey, indicatorVersion, organization, at);
+  }
+
   Optional<Dhis2MappingVersion> findVersion(String mappingKey, int version);
 
   Optional<Integer> findActiveVersion(String mappingKey);

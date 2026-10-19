@@ -1,5 +1,6 @@
 package org.ayuvahak.analytics.domain;
 
+import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -8,6 +9,7 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.TreeMap;
 import java.util.UUID;
 
@@ -18,6 +20,8 @@ public record DisclosureCandidate(
     UUID operationId,
     Map<String, Long> cellValues,
     List<DisclosureOutput> outputs,
+    IndicatorDefinitionGovernance.SensitivityClassification sensitivity,
+    Optional<DisclosureScope> scope,
     String fingerprint) {
 
   private static final int MAX_CELLS = 512;
@@ -29,7 +33,108 @@ public record DisclosureCandidate(
       UUID operationId,
       Map<String, Long> cellValues,
       List<DisclosureOutput> outputs) {
-    this(policyKey, expectedPolicyVersion, operationId, cellValues, outputs, "pending");
+    this(
+        policyKey,
+        expectedPolicyVersion,
+        operationId,
+        cellValues,
+        outputs,
+        IndicatorDefinitionGovernance.SensitivityClassification.SENSITIVE_AGGREGATE,
+        Optional.empty(),
+        "pending");
+  }
+
+  public DisclosureCandidate(
+      String policyKey,
+      int expectedPolicyVersion,
+      UUID operationId,
+      Map<String, Long> cellValues,
+      List<DisclosureOutput> outputs,
+      IndicatorDefinitionGovernance.SensitivityClassification sensitivity) {
+    this(
+        policyKey,
+        expectedPolicyVersion,
+        operationId,
+        cellValues,
+        outputs,
+        sensitivity,
+        Optional.empty(),
+        "pending");
+  }
+
+  public DisclosureCandidate(
+      String policyKey,
+      int expectedPolicyVersion,
+      UUID operationId,
+      Map<String, Long> cellValues,
+      List<DisclosureOutput> outputs,
+      DisclosureScope scope) {
+    this(
+        policyKey,
+        expectedPolicyVersion,
+        operationId,
+        cellValues,
+        outputs,
+        IndicatorDefinitionGovernance.SensitivityClassification.SENSITIVE_AGGREGATE,
+        Optional.of(Objects.requireNonNull(scope, "disclosure scope")),
+        "pending");
+  }
+
+  public DisclosureCandidate(
+      String policyKey,
+      int expectedPolicyVersion,
+      UUID operationId,
+      Map<String, Long> cellValues,
+      List<DisclosureOutput> outputs,
+      IndicatorDefinitionGovernance.SensitivityClassification sensitivity,
+      DisclosureScope scope) {
+    this(
+        policyKey,
+        expectedPolicyVersion,
+        operationId,
+        cellValues,
+        outputs,
+        sensitivity,
+        Optional.of(Objects.requireNonNull(scope, "disclosure scope")),
+        "pending");
+  }
+
+  /** Retain the original canonical constructor with the conservative sensitive default. */
+  public DisclosureCandidate(
+      String policyKey,
+      int expectedPolicyVersion,
+      UUID operationId,
+      Map<String, Long> cellValues,
+      List<DisclosureOutput> outputs,
+      IndicatorDefinitionGovernance.SensitivityClassification sensitivity,
+      String fingerprint) {
+    this(
+        policyKey,
+        expectedPolicyVersion,
+        operationId,
+        cellValues,
+        outputs,
+        sensitivity,
+        Optional.empty(),
+        fingerprint);
+  }
+
+  public DisclosureCandidate(
+      String policyKey,
+      int expectedPolicyVersion,
+      UUID operationId,
+      Map<String, Long> cellValues,
+      List<DisclosureOutput> outputs,
+      String fingerprint) {
+    this(
+        policyKey,
+        expectedPolicyVersion,
+        operationId,
+        cellValues,
+        outputs,
+        IndicatorDefinitionGovernance.SensitivityClassification.SENSITIVE_AGGREGATE,
+        Optional.empty(),
+        fingerprint);
   }
 
   public DisclosureCandidate {
@@ -42,6 +147,8 @@ public record DisclosureCandidate(
     Objects.requireNonNull(operationId, "disclosure operation id");
     Objects.requireNonNull(cellValues, "disclosure cell values");
     Objects.requireNonNull(outputs, "disclosure outputs");
+    Objects.requireNonNull(sensitivity, "indicator sensitivity classification");
+    scope = scope == null ? Optional.empty() : scope;
     if (cellValues.isEmpty()
         || cellValues.size() > MAX_CELLS
         || outputs.isEmpty()
@@ -63,25 +170,29 @@ public record DisclosureCandidate(
       throw new IllegalArgumentException("disclosure output keys must be unique in a release set");
     }
     for (DisclosureOutput output : outputs) {
-      long computed = 0;
+      BigInteger computed = BigInteger.ZERO;
       try {
         for (Map.Entry<String, Long> term : output.cellCoefficients().entrySet()) {
           Long cellValue = cellValues.get(term.getKey());
           if (cellValue == null) {
             throw new IllegalArgumentException("disclosure output refers to an unknown cell");
           }
-          computed = Math.addExact(computed, Math.multiplyExact(cellValue, term.getValue()));
+          computed =
+              computed.add(
+                  BigInteger.valueOf(cellValue).multiply(BigInteger.valueOf(term.getValue())));
         }
       } catch (ArithmeticException overflow) {
         throw new IllegalArgumentException(
             "disclosure output arithmetic exceeded safe bounds", overflow);
       }
-      if (computed != output.value()) {
+      if (!computed.equals(BigInteger.valueOf(output.equationResult()))) {
         throw new IllegalArgumentException(
             "disclosure output does not match its approved cell terms");
       }
     }
-    String calculated = calculateFingerprint(policyKey, expectedPolicyVersion, cellValues, outputs);
+    String calculated =
+        calculateFingerprint(
+            policyKey, expectedPolicyVersion, sensitivity, scope, cellValues, outputs);
     if (fingerprint == null || fingerprint.equals("pending")) {
       fingerprint = calculated;
     } else if (!fingerprint.equals(calculated)) {
@@ -90,8 +201,32 @@ public record DisclosureCandidate(
   }
 
   private static String calculateFingerprint(
-      String policyKey, int version, Map<String, Long> cells, List<DisclosureOutput> outputs) {
-    StringBuilder canonical = new StringBuilder(policyKey).append('\n').append(version);
+      String policyKey,
+      int version,
+      IndicatorDefinitionGovernance.SensitivityClassification sensitivity,
+      java.util.Optional<DisclosureScope> scope,
+      Map<String, Long> cells,
+      List<DisclosureOutput> outputs) {
+    StringBuilder canonical =
+        new StringBuilder(policyKey).append('\n').append(version).append('\n').append(sensitivity);
+    scope.ifPresent(
+        value ->
+            canonical
+                .append('\n')
+                .append("SCOPE|")
+                .append(value.indicatorKey())
+                .append('|')
+                .append(value.indicatorVersion())
+                .append('|')
+                .append(value.organizationIssuer())
+                .append('|')
+                .append(value.organizationId())
+                .append('|')
+                .append(value.facilityId().map(UUID::toString).orElse("ORGANIZATION"))
+                .append('|')
+                .append(value.periodStartInclusive())
+                .append('|')
+                .append(value.periodEndExclusive()));
     new TreeMap<>(cells)
         .forEach(
             (key, value) ->
@@ -103,7 +238,11 @@ public record DisclosureCandidate(
               .append("OUTPUT|")
               .append(output.outputKey())
               .append('|')
-              .append(output.value());
+              .append(output.value())
+              .append('|')
+              .append(output.equationResult())
+              .append('|')
+              .append(output.appliesMinimumCellCount());
           new TreeMap<>(output.cellCoefficients())
               .forEach(
                   (key, coefficient) ->

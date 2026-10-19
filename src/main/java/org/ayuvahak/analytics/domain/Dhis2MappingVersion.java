@@ -18,6 +18,7 @@ public record Dhis2MappingVersion(
     String indicatorKey,
     int indicatorVersion,
     ExternalReference organization,
+    Optional<ExternalReference> facility,
     PartnerKey partnerKey,
     String dataElementUid,
     String orgUnitUid,
@@ -61,6 +62,50 @@ public record Dhis2MappingVersion(
         indicatorKey,
         indicatorVersion,
         organization,
+        Optional.empty(),
+        partnerKey,
+        dataElementUid,
+        orgUnitUid,
+        dataSetUid,
+        categoryOptionComboUid,
+        attributeOptionComboUid,
+        periodFormat,
+        disclosurePolicyKey,
+        disclosureOutputKey,
+        exclusiveWriteAuthority,
+        zeroIsSignificant,
+        effectiveFrom,
+        effectiveUntil,
+        "pending");
+  }
+
+  public Dhis2MappingVersion(
+      String mappingKey,
+      int version,
+      String indicatorKey,
+      int indicatorVersion,
+      ExternalReference organization,
+      Optional<ExternalReference> facility,
+      PartnerKey partnerKey,
+      String dataElementUid,
+      String orgUnitUid,
+      Optional<String> dataSetUid,
+      Optional<String> categoryOptionComboUid,
+      Optional<String> attributeOptionComboUid,
+      Dhis2PeriodFormat periodFormat,
+      String disclosurePolicyKey,
+      String disclosureOutputKey,
+      boolean exclusiveWriteAuthority,
+      boolean zeroIsSignificant,
+      Instant effectiveFrom,
+      Optional<Instant> effectiveUntil) {
+    this(
+        mappingKey,
+        version,
+        indicatorKey,
+        indicatorVersion,
+        organization,
+        facility,
         partnerKey,
         dataElementUid,
         orgUnitUid,
@@ -92,6 +137,14 @@ public record Dhis2MappingVersion(
         || !"Organization".equals(organization.resourceType())) {
       throw new IllegalArgumentException("DHIS2 mapping organization must be Directory-owned");
     }
+    facility = Objects.requireNonNull(facility, "facility");
+    facility.ifPresent(
+        reference -> {
+          if (!"urn:ayuvahak:directory".equals(reference.issuer().value())
+              || !"Facility".equals(reference.resourceType())) {
+            throw new IllegalArgumentException("DHIS2 mapping facility must be Directory-owned");
+          }
+        });
     Objects.requireNonNull(partnerKey, "target partner key");
     requireMetadataIdentifier(dataElementUid, "data element UID");
     requireMetadataIdentifier(orgUnitUid, "organization unit UID");
@@ -125,6 +178,7 @@ public record Dhis2MappingVersion(
             indicatorKey,
             indicatorVersion,
             organization,
+            facility,
             partnerKey,
             dataElementUid,
             orgUnitUid,
@@ -174,6 +228,7 @@ public record Dhis2MappingVersion(
       String indicatorKey,
       int indicatorVersion,
       ExternalReference organization,
+      Optional<ExternalReference> facility,
       PartnerKey partnerKey,
       String dataElementUid,
       String orgUnitUid,
@@ -187,16 +242,20 @@ public record Dhis2MappingVersion(
       boolean zeroIsSignificant,
       Instant effectiveFrom,
       Optional<Instant> effectiveUntil) {
-    String canonical =
-        String.join(
-            "\n",
-            mappingKey,
-            Integer.toString(version),
-            indicatorKey,
-            Integer.toString(indicatorVersion),
-            organization.issuer().value(),
-            organization.resourceType(),
-            organization.value(),
+    java.util.ArrayList<String> parts =
+        new java.util.ArrayList<>(
+            java.util.List.of(
+                mappingKey,
+                Integer.toString(version),
+                indicatorKey,
+                Integer.toString(indicatorVersion),
+                organization.issuer().value(),
+                organization.resourceType(),
+                organization.value()));
+    // Keep the historical organization-only fingerprint canonical form stable across upgrades.
+    facility.ifPresent(value -> parts.add(value.issuer().value() + ":" + value.value()));
+    parts.addAll(
+        java.util.List.of(
             partnerKey.value(),
             dataElementUid,
             orgUnitUid,
@@ -209,7 +268,8 @@ public record Dhis2MappingVersion(
             Boolean.toString(exclusiveWriteAuthority),
             Boolean.toString(zeroIsSignificant),
             effectiveFrom.toString(),
-            effectiveUntil.map(Instant::toString).orElse(""));
+            effectiveUntil.map(Instant::toString).orElse("")));
+    String canonical = String.join("\n", parts);
     try {
       return HexFormat.of()
           .formatHex(

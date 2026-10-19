@@ -215,9 +215,24 @@ public final class FederatedAggregatePublicationService {
       AggregateSnapshot snapshot,
       IndicatorDefinitionVersion definition,
       byte[] body) {
+    if (publication.state() == State.WITHHELD
+        && publication.disclosureReservationId().isPresent()) {
+      DisclosureReservation reviewed =
+          disclosure.findReservation(context, publication.disclosureReservationId().orElseThrow());
+      if (reviewed.state() == DisclosureReservationState.RESERVED) {
+        publication =
+            transition(
+                context,
+                publication,
+                State.READY,
+                "DISCLOSURE_REVIEW_APPROVED",
+                Optional.empty());
+      }
+    }
     if (publication.state() == State.READY) {
       DisclosureReservation reservation =
           reserveDisclosure(context, publication, mapping, snapshot, definition);
+      publication = attachReservation(publication, reservation.reservationId());
       if (reservation.state() != DisclosureReservationState.RESERVED) {
         return transition(
             context,
@@ -226,7 +241,6 @@ public final class FederatedAggregatePublicationService {
             "DISCLOSURE_" + reservation.state().name(),
             Optional.empty());
       }
-      publication = attachReservation(publication, reservation.reservationId());
       Optional<FederatedAggregatePublication> claimed =
           publications.claimForSend(publication.operationId(), clock.instant());
       if (claimed.isEmpty()) {
@@ -360,7 +374,9 @@ public final class FederatedAggregatePublicationService {
             policyVersion,
             publication.operationId(),
             equation.cellValues(),
-            List.of(equation.output(mapping.disclosureOutputKey())));
+            List.of(equation.output(mapping.disclosureOutputKey())),
+            definition.governance().sensitivity(),
+            org.ayuvahak.analytics.domain.DisclosureScope.from(snapshot));
     return disclosure.reserve(context, candidate);
   }
 

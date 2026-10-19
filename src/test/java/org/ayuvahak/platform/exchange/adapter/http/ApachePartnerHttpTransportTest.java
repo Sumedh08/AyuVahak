@@ -136,7 +136,8 @@ class ApachePartnerHttpTransportTest {
               + "\"dataElement\":\"SYN-DATAELEMENT-001\",\"value\":\"4\"}]}";
       var response =
           transport.execute(
-              analyticsProfile("partner.test", partner.port()),
+              // Keep the local TLS wire-contract check distinct from the dedicated timeout case.
+              analyticsProfile("partner.test", partner.port(), 10_000),
               new PartnerOutboundOperationRequest(
                   PARTNER,
                   operation,
@@ -734,6 +735,11 @@ class ApachePartnerHttpTransportTest {
   }
 
   private static PartnerProfileVersion analyticsProfile(String hostname, int port) {
+    return analyticsProfile(hostname, port, 2_000);
+  }
+
+  private static PartnerProfileVersion analyticsProfile(
+      String hostname, int port, int operationTimeoutMillis) {
     PartnerTrustConfiguration configuration =
         new PartnerTrustConfiguration(
             PARTNER,
@@ -744,7 +750,7 @@ class ApachePartnerHttpTransportTest {
             PartnerTrustConfiguration.Authentication.none(),
             PartnerTrustConfiguration.TlsPolicy.SYSTEM_CA,
             Optional.empty(),
-            limits(2_000, 100_000, 200_000),
+            limits(operationTimeoutMillis, 100_000, 200_000),
             PartnerTrustConfiguration.RetryClass.NEVER,
             List.of(PartnerTrustConfiguration.AllowedOperation.analyticsDhis2DataValueSet()));
     Instant now = Instant.now();

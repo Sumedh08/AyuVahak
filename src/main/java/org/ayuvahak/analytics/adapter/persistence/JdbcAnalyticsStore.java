@@ -1,5 +1,6 @@
 package org.ayuvahak.analytics.adapter.persistence;
 
+import java.math.BigDecimal;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
@@ -55,6 +56,7 @@ public class JdbcAnalyticsStore implements AnalyticsStore {
               result.getString("organization_issuer"),
               result.getString("organization_resource_type"),
               result.getObject("organization_id", UUID.class),
+              Optional.ofNullable(result.getObject("facility_id", UUID.class)),
               result.getObject("period_start_local", LocalDate.class),
               result.getObject("period_end_exclusive_local", LocalDate.class),
               instant(result, "period_start_utc"),
@@ -63,6 +65,7 @@ public class JdbcAnalyticsStore implements AnalyticsStore {
               result.getString("time_zone_rules_version"),
               AggregateCompleteness.valueOf(result.getString("completeness")),
               nullableLong(result, "aggregate_value"),
+              Optional.ofNullable(result.getBigDecimal("aggregate_decimal_value")),
               instant(result, "computed_at"),
               result.getString("input_fingerprint"));
 
@@ -125,17 +128,29 @@ public class JdbcAnalyticsStore implements AnalyticsStore {
       return Optional.empty();
     }
     DefinitionHeader header = rows.getFirst();
-    List<SourceMeasure> measures =
+    List<DefinitionMeasure> measures =
         jdbc.query(
-            "SELECT source_owner, measure_key, attribution FROM analytics.indicator_definition_measure "
+            "SELECT source_owner, measure_key, attribution, measure_role FROM analytics.indicator_definition_measure "
                 + "WHERE indicator_key = ? AND definition_version = ? ORDER BY measure_position",
             (result, rowNumber) ->
-                measure(
-                    result.getString("source_owner"),
-                    result.getString("measure_key"),
-                    result.getString("attribution")),
+                new DefinitionMeasure(
+                    result.getString("measure_role"),
+                    measure(
+                        result.getString("source_owner"),
+                        result.getString("measure_key"),
+                        result.getString("attribution"))),
             key,
             version);
+    List<SourceMeasure> numeratorMeasures =
+        measures.stream()
+            .filter(measure -> measure.role().equals("NUMERATOR"))
+            .map(DefinitionMeasure::measure)
+            .toList();
+    List<SourceMeasure> denominatorMeasures =
+        measures.stream()
+            .filter(measure -> measure.role().equals("DENOMINATOR"))
+            .map(DefinitionMeasure::measure)
+            .toList();
     Set<ReportingDimension> dimensions =
         jdbc
             .query(
@@ -173,9 +188,9 @@ public class JdbcAnalyticsStore implements AnalyticsStore {
             header.description(),
             header.formula(),
             ZoneId.of(header.timeZone()),
-            measures,
+            numeratorMeasures,
             header.zeroAllowed(),
-            List.of(),
+            denominatorMeasures,
             governance));
   }
 
@@ -208,8 +223,9 @@ public class JdbcAnalyticsStore implements AnalyticsStore {
                     + "reporting_time_zone, zero_allowed, definition_fingerprint, "
                     + "owner_approved_purpose, effective_from, effective_until, reporting_calendar, "
                     + "completeness_requirement, maximum_source_age_seconds, sensitivity_classification, "
-                    + "required_disclosure_policy_key, authority_identifier, authority_definition_version) "
-                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    + "required_disclosure_policy_key, authority_identifier, authority_definition_version, "
+                    + "denominator_definition) "
+                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 definition.key(),
                 definition.version(),
                 definition.description(),
@@ -234,7 +250,8 @@ public class JdbcAnalyticsStore implements AnalyticsStore {
                     .governance()
                     .authorityDefinition()
                     .map(AuthorityDefinition::definitionVersion)
-                    .orElse(null));
+                    .orElse(null),
+                definition.denominatorMeasures().isEmpty() ? "NONE" : "SUM_OF_MEASURES");
             for (ReportingDimension dimension : definition.governance().allowedDimensions()) {
               jdbc.update(
                   "INSERT INTO analytics.indicator_definition_dimension "
@@ -243,18 +260,28 @@ public class JdbcAnalyticsStore implements AnalyticsStore {
                   definition.version(),
                   dimension.name());
             }
-            for (int index = 0; index < definition.sourceMeasures().size(); index++) {
-              SourceMeasure measure = definition.sourceMeasures().get(index);
+            List<DefinitionMeasure> definitionMeasures =
+                java.util.stream.Stream.concat(
+                        definition.sourceMeasures().stream()
+                            .map(measure -> new DefinitionMeasure("NUMERATOR", measure)),
+                        definition.denominatorMeasures().stream()
+                            .map(measure -> new DefinitionMeasure("DENOMINATOR", measure)))
+                    .sorted(java.util.Comparator.comparing(value -> value.measure().stableKey()))
+                    .toList();
+            for (int index = 0; index < definitionMeasures.size(); index++) {
+              DefinitionMeasure definitionMeasure = definitionMeasures.get(index);
+              SourceMeasure measure = definitionMeasure.measure();
               jdbc.update(
                   "INSERT INTO analytics.indicator_definition_measure "
-                      + "(indicator_key, definition_version, measure_position, source_owner, measure_key, attribution) "
-                      + "VALUES (?, ?, ?, ?, ?, ?)",
+                      + "(indicator_key, definition_version, measure_position, source_owner, measure_key, attribution, measure_role) "
+                      + "VALUES (?, ?, ?, ?, ?, ?, ?)",
                   definition.key(),
                   definition.version(),
                   index,
                   measure.owner().name(),
                   measure.key(),
-                  measure.attribution().name());
+                  measure.attribution().name(),
+                  definitionMeasure.role());
             }
             return definition;
           });
@@ -306,10 +333,10 @@ public class JdbcAnalyticsStore implements AnalyticsStore {
     List<AggregateHeader> rows =
         jdbc.query(
             "SELECT snapshot_id, computation_request_id, indicator_key, definition_version, "
-                + "organization_issuer, organization_resource_type, organization_id, "
+                + "organization_issuer, organization_resource_type, organization_id, facility_id, "
                 + "period_start_local, period_end_exclusive_local, period_start_utc, "
                 + "period_end_exclusive_utc, time_zone_id, time_zone_rules_version, completeness, "
-                + "aggregate_value, computed_at, input_fingerprint "
+                + "aggregate_value, aggregate_decimal_value, computed_at, input_fingerprint "
                 + "FROM analytics.aggregate_snapshot WHERE computation_request_id = ?",
             AGGREGATE_HEADER_MAPPER,
             computationRequestId.value());
@@ -325,10 +352,10 @@ public class JdbcAnalyticsStore implements AnalyticsStore {
     List<AggregateHeader> rows =
         jdbc.query(
             "SELECT snapshot_id, computation_request_id, indicator_key, definition_version, "
-                + "organization_issuer, organization_resource_type, organization_id, "
+                + "organization_issuer, organization_resource_type, organization_id, facility_id, "
                 + "period_start_local, period_end_exclusive_local, period_start_utc, "
                 + "period_end_exclusive_utc, time_zone_id, time_zone_rules_version, completeness, "
-                + "aggregate_value, computed_at, input_fingerprint "
+                + "aggregate_value, aggregate_decimal_value, computed_at, input_fingerprint "
                 + "FROM analytics.aggregate_snapshot WHERE snapshot_id = ?",
             AGGREGATE_HEADER_MAPPER,
             snapshotId);
@@ -351,10 +378,10 @@ public class JdbcAnalyticsStore implements AnalyticsStore {
     jdbc.update(
         "INSERT INTO analytics.aggregate_snapshot "
             + "(snapshot_id, computation_request_id, indicator_key, definition_version, organization_issuer, "
-            + "organization_resource_type, organization_id, period_start_local, period_end_exclusive_local, "
+            + "organization_resource_type, organization_id, facility_id, period_start_local, period_end_exclusive_local, "
             + "period_start_utc, period_end_exclusive_utc, time_zone_id, time_zone_rules_version, "
-            + "completeness, aggregate_value, computed_at, input_fingerprint) "
-            + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            + "completeness, aggregate_value, aggregate_decimal_value, computed_at, input_fingerprint) "
+            + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         snapshot.snapshotId(),
         snapshot.computationRequestId().value(),
         snapshot.indicatorKey(),
@@ -362,6 +389,7 @@ public class JdbcAnalyticsStore implements AnalyticsStore {
         snapshot.organization().issuer().value(),
         snapshot.organization().resourceType(),
         UUID.fromString(snapshot.organization().value()),
+        snapshot.facility().map(value -> UUID.fromString(value.value())).orElse(null),
         snapshot.period().startInclusiveLocal(),
         snapshot.period().endExclusiveLocal(),
         Timestamp.from(snapshot.period().startInclusiveUtc()),
@@ -370,6 +398,7 @@ public class JdbcAnalyticsStore implements AnalyticsStore {
         snapshot.period().timeZoneRulesVersion(),
         snapshot.completeness().name(),
         snapshot.value().isPresent() ? snapshot.value().getAsLong() : null,
+        snapshot.value().isPresent() ? null : snapshot.numericValue().orElse(null),
         Timestamp.from(snapshot.computedAt()),
         snapshot.inputFingerprint());
   }
@@ -419,6 +448,8 @@ public class JdbcAnalyticsStore implements AnalyticsStore {
       Optional<String> authorityIdentifier,
       Optional<String> authorityDefinitionVersion) {}
 
+  private record DefinitionMeasure(String role, SourceMeasure measure) {}
+
   private record AggregateHeader(
       UUID snapshotId,
       UUID computationRequestId,
@@ -427,6 +458,7 @@ public class JdbcAnalyticsStore implements AnalyticsStore {
       String organizationIssuer,
       String organizationResourceType,
       UUID organizationId,
+      Optional<UUID> facilityId,
       LocalDate periodStartLocal,
       LocalDate periodEndExclusiveLocal,
       Instant periodStartUtc,
@@ -435,6 +467,7 @@ public class JdbcAnalyticsStore implements AnalyticsStore {
       String timeZoneRulesVersion,
       AggregateCompleteness completeness,
       OptionalLong value,
+      Optional<BigDecimal> preciseValue,
       Instant computedAt,
       String inputFingerprint) {
 
@@ -448,6 +481,10 @@ public class JdbcAnalyticsStore implements AnalyticsStore {
               new IssuerId(organizationIssuer),
               organizationResourceType,
               organizationId.toString()),
+          facilityId.map(
+              id ->
+                  new ExternalReference(
+                      new IssuerId(organizationIssuer), "Facility", id.toString())),
           ReportingPeriod.restore(
               periodStartLocal,
               periodEndExclusiveLocal,
@@ -457,6 +494,11 @@ public class JdbcAnalyticsStore implements AnalyticsStore {
               timeZoneRulesVersion),
           completeness,
           value,
+          preciseValue.isPresent()
+              ? preciseValue
+              : value.isPresent()
+                  ? Optional.of(BigDecimal.valueOf(value.getAsLong()))
+                  : Optional.empty(),
           inputs,
           computedAt,
           inputFingerprint);

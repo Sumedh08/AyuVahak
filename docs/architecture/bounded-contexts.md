@@ -6,7 +6,7 @@ FHIR, IPS, SMART, mCSD, DHIS2, HAPI, Spring, PostgreSQL/PostGIS, a routing provi
 
 ## Context definitions
 
-Volume II's implemented business contexts are Directory, Capacity, Referral, Matching, and Transfer. They were implemented sequentially in Phases 3–7. Volume III adds standards/exchange adapters and Transport as a distinct business context. Phases 8–10 are implemented and frozen. Phase 11 implements Volume IV's technical realtime notification and federation capabilities; Phase 12 Analytics remains designed but unimplemented. The [Volume II context map](volume-2-core-care-coordination.md#context-model) shows the frozen five-context collaboration; [Volume III architecture](volume-3-interoperability-security-transport.md) and [Volume IV architecture](volume-4-resilient-operations-federation-public-health.md) define the approved extensions.
+Volume II's implemented business contexts are Directory, Capacity, Referral, Matching, and Transfer. They were implemented sequentially in Phases 3–7. Volume III adds standards/exchange adapters and Transport as a distinct business context. Phases 8–10 are implemented and frozen. Volume IV adds Phase 11's technical realtime notification and federation capabilities and Phase 12's Analytics context for reproducible aggregate reporting and downstream DHIS2 exchange. The [Volume II context map](volume-2-core-care-coordination.md#context-model) shows the frozen five-context collaboration; [Volume III architecture](volume-3-interoperability-security-transport.md) and [Volume IV architecture](volume-4-resilient-operations-federation-public-health.md) define the approved extensions.
 
 ### Directory
 
@@ -115,7 +115,7 @@ Volume II's implemented business contexts are Directory, Capacity, Referral, Mat
 
 ### Analytics
 
-**Volume IV status:** Analytics is formally designed for Phase 12, but not implemented. No analytics context, export, DHIS2 integration, or business metrics are implemented or required by Phases 3–10.
+**Volume IV status:** Analytics is implemented for Phase 12 as an aggregate-only reporting context. It owns versioned indicator definitions, reproducible aggregate snapshots/revisions, disclosure decisions and reservations, approved DHIS2 mappings, and technical export operations. It consumes bounded owner reporting contracts; it does not own operational facts or patient records and does not query private owner schemas directly.
 
 - **Purpose:** Compute reproducible, minimized aggregate operational reporting and deliver approved values to configured DHIS2 targets.
 - **Owns:** Immutable indicator versions, derived aggregate snapshots/revisions, source completeness, privacy/suppression decisions, target mapping versions, and export-operation outcomes.

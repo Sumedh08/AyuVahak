@@ -44,6 +44,11 @@ class AnalyticsAuthorizationConfiguration {
   }
 
   @Bean
+  FunctionalAuthority analyticsDisclosureReviewAuthority() {
+    return AnalyticsAuthorities.disclosureReview();
+  }
+
+  @Bean
   FunctionalAuthority analyticsDhis2MappingAdministrationAuthority() {
     return AnalyticsAuthorities.dhis2MappingAdministration();
   }

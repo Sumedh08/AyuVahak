@@ -11,6 +11,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
@@ -25,6 +26,7 @@ import org.ayuvahak.analytics.domain.DisclosurePolicyActivation;
 import org.ayuvahak.analytics.domain.DisclosurePolicyVersion;
 import org.ayuvahak.analytics.domain.DisclosureReservation;
 import org.ayuvahak.analytics.domain.DisclosureReservationState;
+import org.ayuvahak.analytics.domain.DisclosureScope;
 import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.IssuerId;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -189,6 +191,7 @@ public class JdbcDisclosureReservationStore implements DisclosureReservationStor
     if (concurrent.isPresent()) {
       return replayContext(candidate, concurrent.orElseThrow());
     }
+    boolean scopeHistoryCompatible = !hasOverlappingScopeHistory(candidate, lineageIds);
     History history;
     try {
       history = loadHistory(lineageIds);
@@ -202,7 +205,8 @@ public class JdbcDisclosureReservationStore implements DisclosureReservationStor
         history.cellValues(),
         history.complete(),
         currentHead.historyCheckpoint(),
-        Optional.empty());
+        Optional.empty(),
+        scopeHistoryCompatible);
   }
 
   @Override
@@ -228,7 +232,10 @@ public class JdbcDisclosureReservationStore implements DisclosureReservationStor
     jdbc.update(
         "INSERT INTO analytics.disclosure_reservation (reservation_id, policy_key, policy_version, "
             + "operation_id, operation_fingerprint, state, reason_code, origin, history_checkpoint, "
-            + "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'LOCAL_RELEASE', ?, ?, ?)",
+                + "scope_indicator_key, scope_indicator_version, scope_organization_issuer, "
+                + "scope_organization_id, scope_facility_id, "
+            + "scope_period_start_utc, scope_period_end_exclusive_utc, created_at, updated_at) "
+                + "VALUES (?, ?, ?, ?, ?, ?, ?, 'LOCAL_RELEASE', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         reservationId,
         candidate.policyKey(),
         lockedHistory.policy().version(),
@@ -237,10 +244,18 @@ public class JdbcDisclosureReservationStore implements DisclosureReservationStor
         state.name(),
         reasonCode,
         checkpoint,
+        candidate.scope().map(DisclosureScope::indicatorKey).orElse(null),
+        candidate.scope().map(DisclosureScope::indicatorVersion).orElse(null),
+        candidate.scope().map(DisclosureScope::organizationIssuer).orElse(null),
+        candidate.scope().map(DisclosureScope::organizationId).orElse(null),
+        candidate.scope().flatMap(DisclosureScope::facilityId).orElse(null),
+        candidate.scope().map(scope -> Timestamp.from(scope.periodStartInclusive())).orElse(null),
+        candidate.scope().map(scope -> Timestamp.from(scope.periodEndExclusive())).orElse(null),
         Timestamp.from(recordedAt),
         Timestamp.from(recordedAt));
     insertReservationLineages(reservationId, lockedHistory.lineageIds());
-    if (state == DisclosureReservationState.RESERVED) {
+    if (state == DisclosureReservationState.RESERVED
+        || state == DisclosureReservationState.REVIEW_REQUIRED) {
       insertOutputs(reservationId, candidate.outputs(), candidate.cellValues());
     }
     return new DisclosureReservation(
@@ -272,14 +287,24 @@ public class JdbcDisclosureReservationStore implements DisclosureReservationStor
     jdbc.update(
         "INSERT INTO analytics.disclosure_reservation (reservation_id, policy_key, policy_version, "
             + "operation_id, operation_fingerprint, state, reason_code, origin, history_checkpoint, "
+                + "scope_indicator_key, scope_indicator_version, scope_organization_issuer, "
+                + "scope_organization_id, scope_facility_id, "
+            + "scope_period_start_utc, scope_period_end_exclusive_utc, "
             + "created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'DISCLOSED', 'KNOWN_EXTERNAL_BASELINE', "
-            + "'KNOWN_EXTERNAL_BASELINE', ?, ?, ?)",
+                + "'KNOWN_EXTERNAL_BASELINE', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         reservationId,
         candidate.policyKey(),
         lockedHistory.policy().version(),
         candidate.operationId(),
         candidate.fingerprint(),
         checkpoint,
+        candidate.scope().map(DisclosureScope::indicatorKey).orElse(null),
+        candidate.scope().map(DisclosureScope::indicatorVersion).orElse(null),
+        candidate.scope().map(DisclosureScope::organizationIssuer).orElse(null),
+        candidate.scope().map(DisclosureScope::organizationId).orElse(null),
+        candidate.scope().flatMap(DisclosureScope::facilityId).orElse(null),
+        candidate.scope().map(scope -> Timestamp.from(scope.periodStartInclusive())).orElse(null),
+        candidate.scope().map(scope -> Timestamp.from(scope.periodEndExclusive())).orElse(null),
         Timestamp.from(recordedAt),
         Timestamp.from(recordedAt));
     insertReservationLineages(reservationId, lockedHistory.lineageIds());
@@ -380,6 +405,123 @@ public class JdbcDisclosureReservationStore implements DisclosureReservationStor
         locked.createdAt(),
         changedAt,
         false);
+  }
+
+  @Override
+  public DisclosureReservation resolveReviewRequired(
+      UUID reservationId,
+      String expectedOperationFingerprint,
+      DisclosureReservationState targetState,
+      UUID evidenceReference,
+      org.ayuvahak.platform.core.ActorReference reviewer,
+      UUID auditRecordId,
+      Instant resolvedAt) {
+    if (targetState != DisclosureReservationState.RESERVED
+        && targetState != DisclosureReservationState.WITHHELD) {
+      throw new IllegalArgumentException("review resolution state is invalid");
+    }
+    Objects.requireNonNull(evidenceReference, "review evidence reference");
+    Objects.requireNonNull(reviewer, "reviewer");
+    Objects.requireNonNull(auditRecordId, "review audit record id");
+    Objects.requireNonNull(resolvedAt, "review time");
+
+    DisclosureReservation existing =
+        findReservation(reservationId)
+            .orElseThrow(
+                () ->
+                    new DisclosureReservationException(
+                        DisclosureReservationException.Reason.RESERVATION_NOT_FOUND));
+    lockLineages(existing.lineageIds());
+    List<Integer> activeVersions =
+        jdbc.query(
+            "SELECT active_version FROM analytics.disclosure_policy_head "
+                + "WHERE policy_key = ? FOR UPDATE",
+            (result, row) -> result.getInt("active_version"),
+            existing.policyKey());
+    if (activeVersions.size() != 1) {
+      throw new DisclosureReservationException(
+          DisclosureReservationException.Reason.POLICY_NOT_FOUND);
+    }
+    if (activeVersions.getFirst() != existing.policyVersion()) {
+      throw new DisclosureReservationException(
+          DisclosureReservationException.Reason.POLICY_VERSION_CONFLICT);
+    }
+    DisclosureReservation locked =
+        findReservationForUpdate(reservationId)
+            .orElseThrow(
+                () ->
+                    new DisclosureReservationException(
+                        DisclosureReservationException.Reason.RESERVATION_NOT_FOUND));
+    if (!locked.operationFingerprint().equals(expectedOperationFingerprint)) {
+      throw new DisclosureReservationException(
+          DisclosureReservationException.Reason.OPERATION_ID_REUSED);
+    }
+    Optional<ReviewResolution> prior = findReviewResolution(reservationId);
+    if (prior.isPresent()) {
+      ReviewResolution recorded = prior.orElseThrow();
+      if (locked.state() == targetState
+          && recorded.state() == targetState
+          && recorded.evidenceReference().equals(evidenceReference)) {
+        return withLineages(locked, locked.lineageIds(), true);
+      }
+      throw new DisclosureReservationException(DisclosureReservationException.Reason.INVALID_STATE);
+    }
+    if (locked.state() != DisclosureReservationState.REVIEW_REQUIRED) {
+      throw new DisclosureReservationException(DisclosureReservationException.Reason.INVALID_STATE);
+    }
+    long checkpoint = bumpCheckpoint(locked.policyKey(), resolvedAt);
+    String reason =
+        targetState == DisclosureReservationState.RESERVED
+            ? "AUTHORIZED_REVIEW_APPROVED"
+            : "AUTHORIZED_REVIEW_WITHHELD";
+    jdbc.update(
+        "UPDATE analytics.disclosure_reservation SET state = ?, reason_code = ?, "
+            + "history_checkpoint = ?, updated_at = ? WHERE reservation_id = ?",
+        targetState.name(),
+        reason,
+        checkpoint,
+        Timestamp.from(resolvedAt),
+        reservationId);
+    jdbc.update(
+        "INSERT INTO analytics.disclosure_reservation_review (reservation_id, decision, "
+            + "evidence_reference, reviewer_issuer, reviewer_resource_type, reviewer_identity, "
+            + "audit_record_id, resolved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        reservationId,
+        targetState == DisclosureReservationState.RESERVED ? "APPROVED" : "WITHHELD",
+        evidenceReference,
+        reviewer.identity().issuer().value(),
+        reviewer.identity().resourceType(),
+        reviewer.identity().value(),
+        auditRecordId,
+        Timestamp.from(resolvedAt));
+    return new DisclosureReservation(
+        locked.reservationId(),
+        locked.policyKey(),
+        locked.policyVersion(),
+        locked.operationId(),
+        locked.operationFingerprint(),
+        locked.lineageIds(),
+        checkpoint,
+        targetState,
+        reason,
+        locked.createdAt(),
+        resolvedAt,
+        false);
+  }
+
+  private Optional<ReviewResolution> findReviewResolution(UUID reservationId) {
+    return jdbc
+        .query(
+            "SELECT decision, evidence_reference FROM analytics.disclosure_reservation_review "
+                + "WHERE reservation_id = ?",
+            (result, row) ->
+                new ReviewResolution(
+                    DisclosureReservationState.valueOf(
+                        result.getString("decision").equals("APPROVED") ? "RESERVED" : "WITHHELD"),
+                    result.getObject("evidence_reference", UUID.class)),
+            reservationId)
+        .stream()
+        .findFirst();
   }
 
   @Override
@@ -639,7 +781,8 @@ public class JdbcDisclosureReservationStore implements DisclosureReservationStor
     Object[] queryValues = values.toArray();
     List<StoredOutput> outputs =
         jdbc.query(
-            "SELECT DISTINCT r.reservation_id, o.output_key, o.output_value "
+            "SELECT DISTINCT r.reservation_id, o.output_key, o.output_value, o.equation_result, "
+                + "o.applies_minimum_cell_count "
                 + "FROM analytics.disclosure_reservation r "
                 + "JOIN analytics.disclosure_reservation_output o ON o.reservation_id = r.reservation_id "
                 + "WHERE r.state IN ("
@@ -653,7 +796,9 @@ public class JdbcDisclosureReservationStore implements DisclosureReservationStor
                 new StoredOutput(
                     result.getObject("reservation_id", UUID.class),
                     result.getString("output_key"),
-                    result.getLong("output_value")),
+                    result.getLong("output_value"),
+                    result.getLong("equation_result"),
+                    result.getBoolean("applies_minimum_cell_count")),
             queryValues);
     boolean complete = outputs.size() <= MAX_HISTORY_OUTPUTS;
     if (!complete) {
@@ -717,12 +862,67 @@ public class JdbcDisclosureReservationStore implements DisclosureReservationStor
         continue;
       }
       try {
-        restored.add(new DisclosureOutput(output.outputKey(), output.value(), outputTerms));
+        restored.add(
+            new DisclosureOutput(
+                output.outputKey(),
+                output.value(),
+                outputTerms,
+                output.equationResult(),
+                output.appliesMinimumCellCount()));
       } catch (IllegalArgumentException malformedHistory) {
         complete = false;
       }
     }
     return new History(List.copyOf(restored), Map.copyOf(historicalCells), complete);
+  }
+
+  private boolean hasOverlappingScopeHistory(DisclosureCandidate candidate, Set<UUID> lineages) {
+    Optional<DisclosureScope> candidateScope = candidate.scope();
+    if (candidateScope.isEmpty()) {
+      return false;
+    }
+    DisclosureScope scope = candidateScope.orElseThrow();
+    String lineagePlaceholders =
+        String.join(",", java.util.Collections.nCopies(lineages.size(), "?"));
+    String statePlaceholders =
+        String.join(",", java.util.Collections.nCopies(ACTIVE_HISTORY_STATES.size(), "?"));
+    List<Object> values = new ArrayList<>();
+    ACTIVE_HISTORY_STATES.stream().map(Enum::name).sorted().forEach(values::add);
+    values.add(candidate.operationId());
+    values.addAll(lineages.stream().sorted().toList());
+    values.add(scope.organizationIssuer());
+    values.add(scope.organizationId());
+    values.add(Timestamp.from(scope.periodEndExclusive()));
+    values.add(Timestamp.from(scope.periodStartInclusive()));
+    values.add(scope.indicatorKey());
+    values.add(scope.indicatorVersion());
+    values.add(scope.facilityId().orElse(null));
+    values.add(Timestamp.from(scope.periodStartInclusive()));
+    values.add(Timestamp.from(scope.periodEndExclusive()));
+    Boolean blocked =
+        jdbc.queryForObject(
+            "SELECT EXISTS (SELECT 1 FROM analytics.disclosure_reservation prior "
+                + "WHERE prior.state IN ("
+                + statePlaceholders
+                + ") AND prior.operation_id <> ? "
+                + "AND EXISTS (SELECT 1 FROM analytics.disclosure_reservation_lineage prior_lineage "
+                + "WHERE prior_lineage.reservation_id = prior.reservation_id "
+                + "AND prior_lineage.lineage_id IN ("
+                + lineagePlaceholders
+                + ")) AND (prior.scope_indicator_key IS NULL "
+                + "OR prior.scope_indicator_version IS NULL OR ("
+                + "prior.scope_organization_issuer = ? "
+                + "AND prior.scope_organization_id = ? "
+                + "AND prior.scope_period_start_utc < ? "
+                + "AND prior.scope_period_end_exclusive_utc > ? "
+                + "AND (prior.scope_indicator_key <> ? "
+                + "OR prior.scope_indicator_version <> ? "
+                + "OR prior.scope_facility_id IS DISTINCT FROM ? "
+                + "OR prior.scope_period_start_utc <> ? "
+                + "OR prior.scope_period_end_exclusive_utc <> ?))))",
+            Boolean.class,
+            values.toArray());
+    return Boolean.TRUE.equals(blocked);
   }
 
   private void insertReservationLineages(UUID reservationId, Set<UUID> lineageIds) {
@@ -745,10 +945,13 @@ public class JdbcDisclosureReservationStore implements DisclosureReservationStor
             output -> {
               jdbc.update(
                   "INSERT INTO analytics.disclosure_reservation_output "
-                      + "(reservation_id, output_key, output_value) VALUES (?, ?, ?)",
+                      + "(reservation_id, output_key, output_value, equation_result, "
+                      + "applies_minimum_cell_count) VALUES (?, ?, ?, ?, ?)",
                   reservationId,
                   output.outputKey(),
-                  output.value());
+                  output.value(),
+                  output.equationResult(),
+                  output.appliesMinimumCellCount());
               output.cellCoefficients().entrySet().stream()
                   .sorted(Map.Entry.comparingByKey())
                   .forEach(
@@ -945,7 +1148,15 @@ public class JdbcDisclosureReservationStore implements DisclosureReservationStor
   private record PolicyVersionHeader(
       long minimumCellCount, boolean externalBaselineComplete, String requestedFingerprint) {}
 
-  private record StoredOutput(UUID reservationId, String outputKey, long value) {}
+  private record StoredOutput(
+      UUID reservationId,
+      String outputKey,
+      long value,
+      long equationResult,
+      boolean appliesMinimumCellCount) {}
+
+  private record ReviewResolution(
+      DisclosureReservationState state, UUID evidenceReference) {}
 
   private record OutputIdentity(UUID reservationId, String outputKey) {}
 

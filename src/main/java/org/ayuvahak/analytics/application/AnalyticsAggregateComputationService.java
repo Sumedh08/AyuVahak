@@ -1,5 +1,7 @@
 package org.ayuvahak.analytics.application;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -17,6 +19,7 @@ import org.ayuvahak.analytics.domain.AggregateInput;
 import org.ayuvahak.analytics.domain.AggregateSnapshot;
 import org.ayuvahak.analytics.domain.AggregationFormula;
 import org.ayuvahak.analytics.domain.AnalyticsAuthorities;
+import org.ayuvahak.analytics.domain.IndicatorDefinitionGovernance;
 import org.ayuvahak.analytics.domain.IndicatorDefinitionVersion;
 import org.ayuvahak.analytics.domain.ReportingPeriod;
 import org.ayuvahak.platform.authorization.application.AuthorizationService;
@@ -64,7 +67,7 @@ public final class AnalyticsAggregateComputationService {
   public AnalyticsComputationOperation enqueue(
       ExecutionContext context, AnalyticsComputationRequest request) {
     Objects.requireNonNull(request, "computation request");
-    ExternalReference organization = authorizedOrganization(context);
+    ReportingScope scope = authorizedScope(context);
     authorizeComputation(context);
     Instant now = clock.instant();
     if (request.referralSourceCutoff().isAfter(now)) {
@@ -73,9 +76,10 @@ public final class AnalyticsAggregateComputationService {
     AnalyticsComputationOperation proposed =
         new AnalyticsComputationOperation(
             request.computationRequestId(),
-            fingerprint(request, organization, context.actor()),
+            fingerprint(request, scope, context.actor()),
             request,
-            organization,
+            scope.organization(),
+            scope.facility(),
             context.actor(),
             context.correlationId(),
             AnalyticsComputationOperation.State.PENDING,
@@ -111,12 +115,15 @@ public final class AnalyticsAggregateComputationService {
                 prior.orElseThrow().snapshotId(),
                 clock.instant()));
       }
+      RequestedExecutionScope operationScope =
+          operation
+              .facility()
+              .<RequestedExecutionScope>map(
+                  facility -> RequestedExecutionScope.facility(operation.organization(), facility))
+              .orElseGet(() -> RequestedExecutionScope.organization(operation.organization()));
       ExecutionContext workerContext =
           contexts.forBackgroundWork(
-              operation.requester(),
-              RequestedExecutionScope.organization(operation.organization()),
-              operation.correlationId(),
-              Optional.empty());
+              operation.requester(), operationScope, operation.correlationId(), Optional.empty());
       AggregateSnapshot snapshot = computeSnapshot(workerContext, operation.request());
       return Optional.of(
           operations.complete(
@@ -143,7 +150,7 @@ public final class AnalyticsAggregateComputationService {
   private AggregateSnapshot computeSnapshot(
       ExecutionContext context, AnalyticsComputationRequest request) {
     Objects.requireNonNull(request, "computation request");
-    ExternalReference organization = authorizedOrganization(context);
+    ReportingScope scope = authorizedScope(context);
     authorizeComputation(context);
     if (request.referralSourceCutoff().isAfter(clock.instant())) {
       throw new IllegalArgumentException("source cutoff cannot be in the future");
@@ -170,21 +177,37 @@ public final class AnalyticsAggregateComputationService {
           AnalyticsComputationException.Reason.REPORTING_PERIOD_INVALID,
           "The requested period does not match the indicator reporting calendar.");
     }
+    if (scope.facility().isPresent()
+        && !definition
+            .governance()
+            .allowedDimensions()
+            .contains(IndicatorDefinitionGovernance.ReportingDimension.FACILITY)) {
+      throw new AnalyticsComputationException(
+          AnalyticsComputationException.Reason.REPORTING_PERIOD_INVALID,
+          "The indicator definition does not allow facility-scoped reporting.");
+    }
     OwnerReportingRequest ownerRequest =
         new OwnerReportingRequest(
-            request.computationRequestId(), organization, period, request.referralSourceCutoff());
+            request.computationRequestId(),
+            scope.organization(),
+            scope.facility(),
+            period,
+            request.referralSourceCutoff());
 
+    List<org.ayuvahak.analytics.domain.SourceMeasure> requiredMeasures =
+        java.util.stream.Stream.concat(
+                definition.sourceMeasures().stream(), definition.denominatorMeasures().stream())
+            .sorted(
+                java.util.Comparator.comparing(
+                    org.ayuvahak.analytics.domain.SourceMeasure::stableKey))
+            .toList();
     List<OwnerMeasureSnapshot> ownerInputs =
-        definition.sourceMeasures().stream()
+        requiredMeasures.stream()
             .map(measure -> ownerSnapshots.snapshot(context, measure, ownerRequest))
             .toList();
     for (int index = 0; index < ownerInputs.size(); index++) {
       validateOwnerInput(
-          ownerInputs.get(index),
-          definition.sourceMeasures().get(index),
-          organization,
-          period,
-          ownerRequest);
+          ownerInputs.get(index), requiredMeasures.get(index), scope, period, ownerRequest);
     }
 
     List<AggregateInput> inputs =
@@ -193,15 +216,18 @@ public final class AnalyticsAggregateComputationService {
             .map(input -> applyFreshnessPolicy(input, definition))
             .toList();
     AggregateCompleteness completeness = completeness(inputs);
-    OptionalLong value =
-        completeness == AggregateCompleteness.COMPLETE
-            ? OptionalLong.of(aggregate(definition, inputs))
-            : OptionalLong.empty();
+    Optional<BigDecimal> value = Optional.empty();
+    if (completeness == AggregateCompleteness.COMPLETE) {
+      ComputedResult result = aggregate(definition, inputs);
+      completeness = result.completeness();
+      value = result.value();
+    }
     return store.saveOrReplay(
-        AggregateSnapshot.create(
+        AggregateSnapshot.createNumeric(
             request.computationRequestId(),
             definition,
-            organization,
+            scope.organization(),
+            scope.facility(),
             period,
             completeness,
             value,
@@ -241,9 +267,7 @@ public final class AnalyticsAggregateComputationService {
   }
 
   private static String fingerprint(
-      AnalyticsComputationRequest request,
-      ExternalReference organization,
-      ActorReference requester) {
+      AnalyticsComputationRequest request, ReportingScope scope, ActorReference requester) {
     String canonical =
         String.join(
             "\n",
@@ -252,11 +276,18 @@ public final class AnalyticsAggregateComputationService {
             request.startInclusive().toString(),
             request.endExclusive().toString(),
             request.referralSourceCutoff().toString(),
-            organization.issuer().value(),
-            organization.resourceType(),
-            organization.value(),
+            scope.organization().issuer().value(),
+            scope.organization().resourceType(),
+            scope.organization().value(),
             requester.identity().issuer().value(),
             requester.identity().value());
+    if (scope.facility().isPresent()) {
+      canonical +=
+          "\nFACILITY\n"
+              + scope.facility().orElseThrow().issuer().value()
+              + "\n"
+              + scope.facility().orElseThrow().value();
+    }
     try {
       return HexFormat.of()
           .formatHex(
@@ -274,13 +305,14 @@ public final class AnalyticsAggregateComputationService {
     return "COMPUTATION_UNAVAILABLE";
   }
 
-  private ExternalReference authorizedOrganization(ExecutionContext context) {
+  private ReportingScope authorizedScope(ExecutionContext context) {
     if (context == null
         || context.actor().kind() != ActorKind.SERVICE
         || !(context.sourceKind() == SourceKind.INTEGRATION
             || context.sourceKind() == SourceKind.BACKGROUND_WORK
             || context.sourceKind() == SourceKind.SCHEDULED_WORK)
-        || context.scope().kind() != ExecutionScope.Kind.ORGANIZATION) {
+        || !(context.scope().kind() == ExecutionScope.Kind.ORGANIZATION
+            || context.scope().kind() == ExecutionScope.Kind.FACILITY)) {
       throw notAuthorized();
     }
     ExternalReference organization = context.scope().organization().orElse(null);
@@ -290,18 +322,27 @@ public final class AnalyticsAggregateComputationService {
         || !isCanonicalUuid(organization.value())) {
       throw notAuthorized();
     }
-    return organization;
+    Optional<ExternalReference> facility = context.scope().facility();
+    if (context.scope().kind() == ExecutionScope.Kind.FACILITY
+        && (facility.isEmpty()
+            || !DIRECTORY_ISSUER.equals(facility.orElseThrow().issuer().value())
+            || !"Facility".equals(facility.orElseThrow().resourceType())
+            || !isCanonicalUuid(facility.orElseThrow().value()))) {
+      throw notAuthorized();
+    }
+    return new ReportingScope(organization, facility);
   }
 
   private void validateOwnerInput(
       OwnerMeasureSnapshot input,
       org.ayuvahak.analytics.domain.SourceMeasure expectedMeasure,
-      ExternalReference organization,
+      ReportingScope scope,
       ReportingPeriod period,
       OwnerReportingRequest request) {
     if (input == null
         || !expectedMeasure.equals(input.measure())
-        || !organization.equals(input.organization())
+        || !scope.organization().equals(input.organization())
+        || !scope.facility().equals(input.facility())
         || !period.startInclusiveUtc().equals(input.periodStart())
         || !period.endExclusiveUtc().equals(input.periodEnd())
         || (expectedMeasure.owner() == org.ayuvahak.analytics.domain.SourceMeasure.Owner.REFERRAL
@@ -341,33 +382,70 @@ public final class AnalyticsAggregateComputationService {
     return AggregateCompleteness.PARTIAL;
   }
 
-  private static long aggregate(
+  private static ComputedResult aggregate(
       IndicatorDefinitionVersion definition, List<AggregateInput> inputs) {
-    if (definition.formula() != AggregationFormula.SUM) {
-      throw new IllegalStateException("unsupported Analytics formula");
-    }
-    long total = 0;
     try {
-      for (AggregateInput input : inputs) {
-        total = Math.addExact(total, input.value().orElseThrow());
+      List<AggregateInput> numerator = inputsFor(definition.sourceMeasures(), inputs);
+      long numeratorTotal = sum(numerator);
+      BigDecimal result;
+      if (definition.formula() == AggregationFormula.SUM) {
+        result = BigDecimal.valueOf(numeratorTotal);
+      } else if (definition.formula() == AggregationFormula.RATIO_6DP_HALF_EVEN) {
+        long denominatorTotal = sum(inputsFor(definition.denominatorMeasures(), inputs));
+        if (denominatorTotal == 0) {
+          return new ComputedResult(AggregateCompleteness.NOT_APPLICABLE, Optional.empty());
+        }
+        result =
+            BigDecimal.valueOf(numeratorTotal)
+                .divide(BigDecimal.valueOf(denominatorTotal), 6, RoundingMode.HALF_EVEN);
+      } else {
+        throw new IllegalStateException("unsupported Analytics formula");
       }
+      if (result.signum() == 0 && !definition.zeroAllowed()) {
+        throw new AnalyticsComputationException(
+            AnalyticsComputationException.Reason.ZERO_NOT_ALLOWED,
+            "The indicator definition does not permit a zero result.");
+      }
+      return new ComputedResult(AggregateCompleteness.COMPLETE, Optional.of(result));
     } catch (ArithmeticException overflow) {
       throw new AnalyticsComputationException(
           AnalyticsComputationException.Reason.VALUE_OVERFLOW,
           "The aggregate result is outside the supported numeric range.",
           overflow);
     }
-    if (total == 0 && !definition.zeroAllowed()) {
-      throw new AnalyticsComputationException(
-          AnalyticsComputationException.Reason.ZERO_NOT_ALLOWED,
-          "The indicator definition does not permit a zero result.");
-    }
-    return total;
   }
+
+  private static List<AggregateInput> inputsFor(
+      List<org.ayuvahak.analytics.domain.SourceMeasure> measures, List<AggregateInput> inputs) {
+    return measures.stream()
+        .map(
+            measure ->
+                inputs.stream()
+                    .filter(input -> input.measure().equals(measure))
+                    .findFirst()
+                    .orElseThrow(
+                        () ->
+                            new IllegalArgumentException(
+                                "required source measure is missing from computation inputs")))
+        .toList();
+  }
+
+  private static long sum(List<AggregateInput> inputs) {
+    long result = 0;
+    for (AggregateInput input : inputs) {
+      result = Math.addExact(result, input.value().orElseThrow());
+    }
+    return result;
+  }
+
+  private record ComputedResult(AggregateCompleteness completeness, Optional<BigDecimal> value) {}
 
   private static AnalyticsComputationException notAuthorized() {
     return new AnalyticsComputationException(
         AnalyticsComputationException.Reason.NOT_AUTHORIZED,
         "Analytics computation is not authorized.");
   }
+
+  private record ReportingScope(
+      ExternalReference organization, Optional<ExternalReference> facility) {}
 }

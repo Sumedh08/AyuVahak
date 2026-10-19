@@ -57,6 +57,43 @@ class DisclosureInferenceAnalyzerTest {
         .isEqualTo(DisclosureInferenceAnalyzer.Result.SAFE);
   }
 
+  @Test
+  void sensitiveAggregateWithIncompleteExternalBaselineRequiresReview() {
+    DisclosureCandidate candidate =
+        candidate(
+            Map.of("CELL_A", 9L, "CELL_B", 8L),
+            new DisclosureOutput("TOTAL", 17, Map.of("CELL_A", 1L, "CELL_B", 1L)));
+
+    assertThat(analyzer.evaluate(policy(false), candidate, List.of(), Map.of(), true))
+        .isEqualTo(DisclosureInferenceAnalyzer.Result.REVIEW_REQUIRED);
+  }
+
+  @Test
+  void lowSensitivityAggregateMayUseConfiguredCellControlsWithoutExternalBaseline() {
+    DisclosureCandidate candidate =
+        new DisclosureCandidate(
+            POLICY_KEY,
+            1,
+            UUID.randomUUID(),
+            Map.of("CELL_A", 9L, "CELL_B", 8L),
+            List.of(new DisclosureOutput("TOTAL", 17, Map.of("CELL_A", 1L, "CELL_B", 1L))),
+            IndicatorDefinitionGovernance.SensitivityClassification.LOW_SENSITIVITY_AGGREGATE);
+
+    assertThat(analyzer.evaluate(policy(false), candidate, List.of(), Map.of(), true))
+        .isEqualTo(DisclosureInferenceAnalyzer.Result.SAFE);
+  }
+
+  @Test
+  void aggregateOutputBelowMinimumCellCountIsNotReleased() {
+    DisclosureCandidate candidate =
+        candidate(
+            Map.of("CELL_A", 1L, "CELL_B", 1L),
+            new DisclosureOutput("TOTAL", 2, Map.of("CELL_A", 1L, "CELL_B", 1L)));
+
+    assertThat(analyzer.evaluate(policy(true), candidate, List.of(), Map.of(), true))
+        .isEqualTo(DisclosureInferenceAnalyzer.Result.INFERENCE_RISK);
+  }
+
   private static DisclosurePolicyVersion policy(boolean baselineComplete) {
     return new DisclosurePolicyVersion(
         POLICY_KEY,

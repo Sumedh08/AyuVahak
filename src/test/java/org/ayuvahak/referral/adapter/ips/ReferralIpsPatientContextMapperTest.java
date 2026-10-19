@@ -3,6 +3,7 @@ package org.ayuvahak.referral.adapter.ips;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import ca.uhn.fhir.context.FhirContext;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Date;
 import java.util.Optional;
@@ -48,9 +49,14 @@ class ReferralIpsPatientContextMapperTest {
   private static final String CONDITION_URL = "urn:uuid:00000000-0000-4000-8000-000000000003";
   private static final String PATIENT_URL = "urn:uuid:00000000-0000-4000-8000-000000000002";
 
+  // Semantic mapper tests use a generous but still bounded budget; production defaults stay
+  // unchanged.
+  private static final FhirPayloadLimits TEST_PAYLOAD_LIMITS =
+      new FhirPayloadLimits(4 * 1024 * 1024, 64, 250, 1000, Duration.ofSeconds(8));
+
   private final ReferralIpsPatientContextMapper mapper =
       new ReferralIpsPatientContextMapper(
-          FhirR4PayloadParser.withCoreProfiles(FhirPayloadLimits.conservativeDefaults()));
+          FhirR4PayloadParser.withCoreProfiles(TEST_PAYLOAD_LIMITS));
 
   @Test
   void validatesIpsBundleAndProjectsOnlyAllowedSourceScopedCodes() {
@@ -78,8 +84,7 @@ class ReferralIpsPatientContextMapperTest {
 
   @Test
   void syntheticIpsBundleAndItsNestedProfilesPassTheirPinnedProfiles() {
-    FhirR4PayloadParser parser =
-        FhirR4PayloadParser.withCoreProfiles(FhirPayloadLimits.conservativeDefaults());
+    FhirR4PayloadParser parser = FhirR4PayloadParser.withCoreProfiles(TEST_PAYLOAD_LIMITS);
     Bundle bundle =
         FhirContext.forR4Cached()
             .newJsonParser()

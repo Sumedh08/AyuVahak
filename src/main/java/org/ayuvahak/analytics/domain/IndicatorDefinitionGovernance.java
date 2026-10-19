@@ -71,7 +71,10 @@ public record IndicatorDefinitionGovernance(
         Instant.EPOCH,
         Optional.empty(),
         ReportingCalendar.CUSTOM_HALF_OPEN,
-        EnumSet.of(ReportingDimension.ORGANIZATION, ReportingDimension.SOURCE_ATTRIBUTION),
+        EnumSet.of(
+            ReportingDimension.ORGANIZATION,
+            ReportingDimension.FACILITY,
+            ReportingDimension.SOURCE_ATTRIBUTION),
         CompletenessRequirement.ALL_REQUIRED_SOURCES_COMPLETE_FOR_NUMERIC_VALUE,
         Optional.empty(),
         SensitivityClassification.SENSITIVE_AGGREGATE,
@@ -112,6 +115,7 @@ public record IndicatorDefinitionGovernance(
 
   public enum ReportingDimension {
     ORGANIZATION,
+    FACILITY,
     SOURCE_ATTRIBUTION
   }
 

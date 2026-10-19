@@ -1,15 +1,25 @@
 package org.ayuvahak.analytics.domain;
 
+import java.math.BigInteger;
 import java.util.Map;
 import java.util.Objects;
 import java.util.regex.Pattern;
 
 /** One proposed aggregate and its approved linear relationship to bounded synthetic cells. */
-public record DisclosureOutput(String outputKey, long value, Map<String, Long> cellCoefficients) {
+public record DisclosureOutput(
+    String outputKey,
+    long value,
+    Map<String, Long> cellCoefficients,
+    long equationResult,
+    boolean appliesMinimumCellCount) {
 
   private static final Pattern KEY = Pattern.compile("[A-Z0-9][A-Z0-9._:-]{0,127}");
   private static final int MAX_TERMS = 256;
   private static final long MAX_COEFFICIENT = 1_000_000;
+
+  public DisclosureOutput(String outputKey, long value, Map<String, Long> cellCoefficients) {
+    this(outputKey, value, cellCoefficients, value, true);
+  }
 
   public DisclosureOutput {
     requireKey(outputKey, "output key");
@@ -21,10 +31,16 @@ public record DisclosureOutput(String outputKey, long value, Map<String, Long> c
     cellCoefficients.forEach(
         (cellKey, coefficient) -> {
           requireKey(cellKey, "cell key");
-          if (coefficient == null || coefficient < 1 || coefficient > MAX_COEFFICIENT) {
+          if (coefficient == null
+              || coefficient == 0
+              || coefficient < -MAX_COEFFICIENT
+              || coefficient > MAX_COEFFICIENT) {
             throw new IllegalArgumentException("disclosure output coefficient is invalid");
           }
         });
+    if (equationResult < 0) {
+      throw new IllegalArgumentException("disclosure equation result cannot be negative");
+    }
   }
 
   public static void requireKey(String key, String label) {
