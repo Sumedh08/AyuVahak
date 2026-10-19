@@ -2,7 +2,9 @@ package org.ayuvahak.platform.configuration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import org.ayuvahak.platform.observability.ServiceLevelIndicator;
 import org.ayuvahak.platform.observability.ServiceLevelPlan;
@@ -60,6 +62,7 @@ class ProductionProfileConfigurationTest {
               "ayuvahak.production.limits.exchange-requests-per-minute=120",
               "ayuvahak.production.retention.schedule-id=synthetic-schedule-2026-01",
               "ayuvahak.production.retention.reviewed-at=2026-10-20")
+          .withPropertyValues(completeRetentionRegisterProperties())
           .withInitializer(ProductionProfileConfigurationTest::applySyntheticServiceLevelPlan);
 
   @Test
@@ -169,6 +172,19 @@ class ProductionProfileConfigurationTest {
   }
 
   @Test
+  void rejectsAProductionRegisterWithAnIncompleteOwnerCategory() {
+    productionRunner
+        .withPropertyValues(
+            "ayuvahak.production.retention.register[PHASE_12_ANALYTICS].verification-method=")
+        .run(
+            context -> {
+              assertThat(context).hasFailed();
+              assertThat(context.getStartupFailure().toString())
+                  .contains("production retention register must cover every owner category");
+            });
+  }
+
+  @Test
   void loadsTheNamedSingleSiteProfileWithLoopbackOnlyManagementDefaults() {
     new ApplicationContextRunner()
         .withConfiguration(
@@ -198,6 +214,7 @@ class ProductionProfileConfigurationTest {
             "ayuvahak.production.limits.exchange-requests-per-minute=120",
             "ayuvahak.production.retention.schedule-id=synthetic-schedule-2026-01",
             "ayuvahak.production.retention.reviewed-at=2026-10-20")
+        .withPropertyValues(completeRetentionRegisterProperties())
         .run(
             context -> {
               assertThat(context).hasNotFailed();
@@ -237,5 +254,30 @@ class ProductionProfileConfigurationTest {
       }
     }
     TestPropertyValues.of(values).applyTo(context);
+  }
+
+  private static String[] completeRetentionRegisterProperties() {
+    List<String> properties = new ArrayList<>();
+    properties.add("ayuvahak.production.retention.accountable-authority=SYN-RECORDS-AUTHORITY");
+    for (ProductionProfileProperties.RetentionCategory category :
+        ProductionProfileProperties.RetentionCategory.values()) {
+      String prefix = "ayuvahak.production.retention.register[" + category.name() + "]";
+      properties.add(prefix + ".owner=" + category.owner().name());
+      properties.add(prefix + ".purpose=Synthetic deployment purpose");
+      properties.add(prefix + ".data-class=SYNTHETIC_OPERATIONAL");
+      properties.add(prefix + ".access-policy=OWNER_RESTRICTED");
+      properties.add(prefix + ".lifecycle-trigger=OWNER_DEFINED_CLOSED_OR_DELIVERED");
+      properties.add(prefix + ".retention-period=PT2160H");
+      properties.add(prefix + ".governance-basis=SYN-APPROVED-POLICY-001");
+      properties.add(prefix + ".hold-review-authority=SYN-REVIEWER-001");
+      properties.add(prefix + ".expiry-action=OWNER_REVIEW");
+      properties.add(prefix + ".evidence-dependencies=UNRESOLVED_WORK_AND_AUDIT");
+      properties.add(prefix + ".backup-propagation=REAPPLY_BEFORE_READINESS");
+      properties.add(prefix + ".verification-method=SYNTHETIC_OWNER_ACCEPTANCE");
+      properties.add(prefix + ".block-while-held=true");
+      properties.add(prefix + ".block-while-unresolved=true");
+      properties.add(prefix + ".reapply-completed-actions-before-serving=true");
+    }
+    return properties.toArray(String[]::new);
   }
 }

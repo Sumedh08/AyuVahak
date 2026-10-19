@@ -54,6 +54,9 @@ ayuvahak:
     retention:
       schedule-id: ${AYUVAHAK_RETENTION_SCHEDULE_ID:}
       reviewed-at: ${AYUVAHAK_RETENTION_REVIEWED_AT:}
+      accountable-authority: ${AYUVAHAK_RETENTION_ACCOUNTABLE_AUTHORITY:}
+      # A deployment must provide one complete entry for every RetentionCategory.
+      register: {}
     secrets:
       database-password-reference: ${AYUVAHAK_DATABASE_PASSWORD_SECRET_REF:}
       tls-certificate-reference: ${AYUVAHAK_TLS_CERTIFICATE_SECRET_REF:}

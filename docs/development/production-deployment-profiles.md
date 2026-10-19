@@ -25,7 +25,8 @@ Before activating a production profile, record and approve:
 - secret references only, never resolved secret values;
 - management listener address, port, endpoint allowlist, and operator-plane access method;
 - configured request and SSE limits;
-- the reviewed retention schedule identifier and review date;
+- the reviewed retention schedule identifier, review date, accountable authority, and complete
+  [owner/category register](production-retention-register.md);
 - SLI/SLO definitions, workload envelope, and deployment-specific RPO/RTO;
 - logging/metrics destinations, backup topology, and accountable operations owner.
 
