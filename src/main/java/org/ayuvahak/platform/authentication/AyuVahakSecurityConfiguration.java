@@ -41,6 +41,7 @@ import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.access.AccessDeniedHandler;
 import org.springframework.web.client.RestOperations;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.web.cors.CorsConfigurationSource;
 import tools.jackson.databind.ObjectMapper;
 
 @Configuration(proxyBeanMethods = false)
@@ -53,7 +54,8 @@ public class AyuVahakSecurityConfiguration {
       HttpSecurity http,
       AuthenticationEntryPoint problemAuthenticationEntryPoint,
       AccessDeniedHandler problemAccessDeniedHandler,
-      Converter<Jwt, ActorAuthentication> actorAuthenticationConverter)
+      Converter<Jwt, ActorAuthentication> actorAuthenticationConverter,
+      ObjectProvider<CorsConfigurationSource> corsConfigurationSources)
       throws Exception {
     http.csrf(AbstractHttpConfigurer::disable)
         .sessionManagement(
@@ -75,6 +77,8 @@ public class AyuVahakSecurityConfiguration {
                 resourceServer
                     .authenticationEntryPoint(problemAuthenticationEntryPoint)
                     .jwt(jwt -> jwt.jwtAuthenticationConverter(actorAuthenticationConverter)));
+    corsConfigurationSources.ifAvailable(
+        source -> http.cors(cors -> cors.configurationSource(source)));
     return http.build();
   }
 

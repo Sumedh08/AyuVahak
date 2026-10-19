@@ -1,0 +1,48 @@
+management:
+  server:
+    port: ${AYUVAHAK_MANAGEMENT_PORT:9091}
+    address: ${AYUVAHAK_MANAGEMENT_ADDRESS:127.0.0.1}
+  endpoints:
+    access:
+      default: none
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      access: read-only
+      show-details: never
+      show-components: never
+      probes:
+        enabled: true
+    prometheus:
+      access: read-only
+
+ayuvahak:
+  authentication:
+    issuer: ${AYUVAHAK_OIDC_ISSUER:}
+    jwk-set-uri: ${AYUVAHAK_OIDC_JWK_SET_URI:}
+    audience: ${AYUVAHAK_OIDC_AUDIENCE:}
+    service-client-ids: ${AYUVAHAK_OIDC_SERVICE_CLIENT_IDS:}
+    allow-http: false
+  production:
+    public-origin: ${AYUVAHAK_PUBLIC_ORIGIN:}
+    tls:
+      termination: ${AYUVAHAK_TLS_TERMINATION:REVERSE_PROXY}
+    cors:
+      enabled: ${AYUVAHAK_CORS_ENABLED:false}
+      allowed-origins: ${AYUVAHAK_CORS_ALLOWED_ORIGINS:}
+    limits:
+      anonymous-requests-per-minute: ${AYUVAHAK_LIMIT_ANONYMOUS_PER_MINUTE:}
+      authenticated-read-requests-per-minute: ${AYUVAHAK_LIMIT_AUTHENTICATED_READ_PER_MINUTE:}
+      sensitive-write-requests-per-minute: ${AYUVAHAK_LIMIT_SENSITIVE_WRITE_PER_MINUTE:}
+      admin-requests-per-minute: ${AYUVAHAK_LIMIT_ADMIN_PER_MINUTE:}
+      sse-connections-per-principal: ${AYUVAHAK_LIMIT_SSE_PER_PRINCIPAL:}
+      federation-requests-per-minute: ${AYUVAHAK_LIMIT_FEDERATION_PER_MINUTE:}
+      exchange-requests-per-minute: ${AYUVAHAK_LIMIT_EXCHANGE_PER_MINUTE:}
+    retention:
+      schedule-id: ${AYUVAHAK_RETENTION_SCHEDULE_ID:}
+      reviewed-at: ${AYUVAHAK_RETENTION_REVIEWED_AT:}
+    secrets:
+      database-password-reference: ${AYUVAHAK_DATABASE_PASSWORD_SECRET_REF:}
+      tls-certificate-reference: ${AYUVAHAK_TLS_CERTIFICATE_SECRET_REF:}

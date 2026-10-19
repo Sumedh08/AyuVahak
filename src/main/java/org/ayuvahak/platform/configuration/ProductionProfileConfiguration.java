@@ -1,0 +1,44 @@
+package org.ayuvahak.platform.configuration;
+
+import java.util.List;
+import org.ayuvahak.platform.authentication.AuthenticationProperties;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Profile;
+import org.springframework.core.env.Environment;
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.CorsConfigurationSource;
+import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
+
+/** Production-only configuration checks and the explicitly allowlisted browser-origin boundary. */
+@Configuration(proxyBeanMethods = false)
+@Profile({"production-single-site", "production-ha"})
+@EnableConfigurationProperties({ProductionProfileProperties.class, AuthenticationProperties.class})
+public class ProductionProfileConfiguration {
+
+  @Bean
+  ProductionProfileStartupValidator productionProfileStartupValidator(
+      ProductionProfileProperties properties,
+      AuthenticationProperties authentication,
+      Environment environment) {
+    return new ProductionProfileStartupValidator(properties, authentication, environment);
+  }
+
+  @Bean
+  CorsConfigurationSource productionCorsConfigurationSource(
+      ProductionProfileProperties properties) {
+    CorsConfiguration cors = new CorsConfiguration();
+    cors.setAllowedOrigins(
+        properties.getCors().isEnabled() ? properties.getCors().getAllowedOrigins() : List.of());
+    cors.setAllowedMethods(List.of("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
+    cors.setAllowedHeaders(
+        List.of("Authorization", "Content-Type", "Idempotency-Key", "If-Match", "If-None-Match"));
+    cors.setAllowCredentials(false);
+    cors.setMaxAge(600L);
+
+    UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+    source.registerCorsConfiguration("/**", cors);
+    return source;
+  }
+}

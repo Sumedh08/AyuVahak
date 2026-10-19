@@ -1,6 +1,12 @@
 spring:
   application:
     name: ayuvahak
+  profiles:
+    group:
+      production-single-site:
+        - production
+      production-ha:
+        - production
   jdbc:
     template:
       query-timeout: 30s
