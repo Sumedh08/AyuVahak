@@ -79,7 +79,7 @@ class ProductionRequestAbuseFilterTest {
 
   @Test
   void sseConnectionsAreBoundedPerPrincipalUntilAsyncCompletion() throws Exception {
-    var filter = new ProductionRequestAbuseFilter(properties(10, 10, 1), 10);
+    var filter = new ProductionRequestAbuseFilter(properties(10, 10, 1, 10), 10);
     SecurityContextHolder.getContext()
         .setAuthentication(
             new ActorAuthentication(
@@ -103,6 +103,37 @@ class ProductionRequestAbuseFilterTest {
     MockHttpServletResponse afterCompletion =
         invoke(filter, request("GET", "/api/v1/notifications/stream", "192.0.2.2"));
     assertThat(afterCompletion.getStatus()).isEqualTo(200);
+  }
+
+  @Test
+  void sseConnectionsAreBoundedAcrossPrincipalsUntilAsyncCompletion() throws Exception {
+    var filter = new ProductionRequestAbuseFilter(properties(10, 10, 10, 1), 10);
+    SecurityContextHolder.getContext()
+        .setAuthentication(
+            new ActorAuthentication(
+                ActorReference.human(
+                    new IssuerId("https://identity.example.test/issuer"), "SYN-USER-1")));
+
+    MockHttpServletRequest firstRequest =
+        request("GET", "/api/v1/notifications/stream", "192.0.2.1");
+    firstRequest.setAsyncSupported(true);
+    MockHttpServletResponse firstResponse = new MockHttpServletResponse();
+    filter.doFilter(
+        firstRequest,
+        firstResponse,
+        (request, response) -> ((MockHttpServletRequest) request).startAsync());
+
+    SecurityContextHolder.getContext()
+        .setAuthentication(
+            new ActorAuthentication(
+                ActorReference.human(
+                    new IssuerId("https://identity.example.test/issuer"), "SYN-USER-2")));
+    assertRateLimited(invoke(filter, request("GET", "/api/v1/notifications/stream", "192.0.2.2")));
+
+    firstRequest.getAsyncContext().complete();
+    assertThat(
+            invoke(filter, request("GET", "/api/v1/notifications/stream", "192.0.2.2")).getStatus())
+        .isEqualTo(200);
   }
 
   @Test
@@ -152,16 +183,21 @@ class ProductionRequestAbuseFilterTest {
   }
 
   private static ProductionProfileProperties properties(int authenticatedReadLimit) {
-    return properties(authenticatedReadLimit, 100, 3);
+    return properties(authenticatedReadLimit, 100, 3, 100);
   }
 
   private static ProductionProfileProperties properties(
       int authenticatedReadLimit, int anonymousLimit) {
-    return properties(authenticatedReadLimit, anonymousLimit, 3);
+    return properties(authenticatedReadLimit, anonymousLimit, 3, 100);
   }
 
   private static ProductionProfileProperties properties(
       int authenticatedReadLimit, int anonymousLimit, int sseLimit) {
+    return properties(authenticatedReadLimit, anonymousLimit, sseLimit, 100);
+  }
+
+  private static ProductionProfileProperties properties(
+      int authenticatedReadLimit, int anonymousLimit, int sseLimit, int sseTotalLimit) {
     ProductionProfileProperties properties = new ProductionProfileProperties();
     ProductionProfileProperties.Limits limits = new ProductionProfileProperties.Limits();
     limits.setAnonymousRequestsPerMinute(anonymousLimit);
@@ -169,6 +205,7 @@ class ProductionRequestAbuseFilterTest {
     limits.setSensitiveWriteRequestsPerMinute(1);
     limits.setAdminRequestsPerMinute(1);
     limits.setSseConnectionsPerPrincipal(sseLimit);
+    limits.setSseConnectionsTotal(sseTotalLimit);
     limits.setFederationRequestsPerMinute(1);
     limits.setExchangeRequestsPerMinute(1);
     properties.setLimits(limits);

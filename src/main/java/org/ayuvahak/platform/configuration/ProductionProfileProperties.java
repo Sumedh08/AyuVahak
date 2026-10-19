@@ -147,6 +147,8 @@ public class ProductionProfileProperties {
 
     @NotNull @Positive private Integer sseConnectionsPerPrincipal;
 
+    @NotNull @Positive private Integer sseConnectionsTotal;
+
     @NotNull @Positive private Integer federationRequestsPerMinute;
 
     @NotNull @Positive private Integer exchangeRequestsPerMinute;
@@ -191,6 +193,14 @@ public class ProductionProfileProperties {
       sseConnectionsPerPrincipal = value;
     }
 
+    public Integer getSseConnectionsTotal() {
+      return sseConnectionsTotal;
+    }
+
+    public void setSseConnectionsTotal(Integer value) {
+      sseConnectionsTotal = value;
+    }
+
     public Integer getFederationRequestsPerMinute() {
       return federationRequestsPerMinute;
     }
@@ -216,7 +226,8 @@ public class ProductionProfileProperties {
 
     @NotBlank private String accountableAuthority;
 
-    @NotNull private Map<RetentionCategory, @Valid RetentionSchedule> register =
+    @NotNull
+    private Map<RetentionCategory, @Valid RetentionSchedule> register =
         new EnumMap<>(RetentionCategory.class);
 
     public String getScheduleId() {
@@ -248,8 +259,7 @@ public class ProductionProfileProperties {
     }
 
     public void setRegister(Map<RetentionCategory, RetentionSchedule> register) {
-      EnumMap<RetentionCategory, RetentionSchedule> copy =
-          new EnumMap<>(RetentionCategory.class);
+      EnumMap<RetentionCategory, RetentionSchedule> copy = new EnumMap<>(RetentionCategory.class);
       if (register != null) {
         copy.putAll(register);
       }

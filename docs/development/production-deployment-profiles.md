@@ -24,7 +24,7 @@ Before activating a production profile, record and approve:
 - public HTTPS origin, issuer, audience, TLS termination owner, and explicit CORS origins if browser access is enabled;
 - secret references only, never resolved secret values;
 - management listener address, port, endpoint allowlist, and operator-plane access method;
-- configured request and SSE limits;
+- configured request limits plus per-principal and per-process SSE connection limits;
 - the reviewed retention schedule identifier, review date, accountable authority, and complete
   [owner/category register](production-retention-register.md);
 - SLI/SLO definitions, workload envelope, and deployment-specific RPO/RTO;
@@ -52,6 +52,11 @@ Production management endpoints are exposed only on a separate loopback listener
 read-only Prometheus surfaces. An operator agent sharing the process network namespace can scrape this listener; public
 ingress must not proxy it. Liveness is process-local. Readiness includes required local dependencies; optional remote peer
 outages do not by themselves require process restart.
+
+Application request and SSE limits are bounded per process. In the HA profile, an operator must account for replica count
+when selecting each per-process budget and configure an ingress/gateway limit if a deployment-wide aggregate ceiling is
+required. IP-based edge limits supplement authenticated principal/service limits; neither replaces authorization. AyuVahak
+does not depend on a distributed cache for these controls.
 
 The ingress operator terminates TLS, enforces HTTPS, and must apply a reviewed forwarding-header policy. CORS is disabled
 unless an explicit HTTPS origin allowlist is configured, and production API CORS never enables credentials. The production

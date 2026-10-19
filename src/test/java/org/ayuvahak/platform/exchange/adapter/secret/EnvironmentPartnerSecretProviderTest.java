@@ -7,8 +7,8 @@ import java.util.Arrays;
 import org.ayuvahak.platform.exchange.application.PartnerSecretMaterial;
 import org.ayuvahak.platform.exchange.application.PartnerSecretProviderUnavailableException;
 import org.junit.jupiter.api.Test;
-import org.springframework.mock.env.MockEnvironment;
 import org.springframework.core.env.PropertySource;
+import org.springframework.mock.env.MockEnvironment;
 
 class EnvironmentPartnerSecretProviderTest {
 
@@ -81,7 +81,8 @@ class EnvironmentPartnerSecretProviderTest {
         .hasNoCause()
         .satisfies(
             exception -> {
-              assertThat(exception.toString()).isEqualTo("PartnerSecretProviderUnavailableException");
+              assertThat(exception.toString())
+                  .isEqualTo("PartnerSecretProviderUnavailableException");
               assertThat(exception.getSuppressed()).isEmpty();
             });
   }

@@ -49,6 +49,7 @@ ayuvahak:
       sensitive-write-requests-per-minute: ${AYUVAHAK_LIMIT_SENSITIVE_WRITE_PER_MINUTE:}
       admin-requests-per-minute: ${AYUVAHAK_LIMIT_ADMIN_PER_MINUTE:}
       sse-connections-per-principal: ${AYUVAHAK_LIMIT_SSE_PER_PRINCIPAL:}
+      sse-connections-total: ${AYUVAHAK_LIMIT_SSE_TOTAL_CONNECTIONS:}
       federation-requests-per-minute: ${AYUVAHAK_LIMIT_FEDERATION_PER_MINUTE:}
       exchange-requests-per-minute: ${AYUVAHAK_LIMIT_EXCHANGE_PER_MINUTE:}
     retention:

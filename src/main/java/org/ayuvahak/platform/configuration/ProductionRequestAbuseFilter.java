@@ -42,6 +42,7 @@ public final class ProductionRequestAbuseFilter extends OncePerRequestFilter {
   private final Map<BucketKey, TokenBucket> buckets = new ConcurrentHashMap<>();
   private final Map<String, AtomicInteger> sseConnections = new ConcurrentHashMap<>();
   private final AtomicLong requestsSinceCleanup = new AtomicLong();
+  private final AtomicInteger totalSseConnections = new AtomicInteger();
 
   public ProductionRequestAbuseFilter(ProductionProfileProperties properties) {
     this(properties, PRODUCTION_BUCKET_CAPACITY);
@@ -71,7 +72,9 @@ public final class ProductionRequestAbuseFilter extends OncePerRequestFilter {
     TrafficClass trafficClass = classify(request);
     String identity = requestIdentity(request);
     if (trafficClass == TrafficClass.SSE) {
-      SseLease lease = reserveSse(identity, limits.getSseConnectionsPerPrincipal());
+      SseLease lease =
+          reserveSse(
+              identity, limits.getSseConnectionsPerPrincipal(), limits.getSseConnectionsTotal());
       if (lease == null) {
         writeRateLimited(response);
         return;
@@ -123,7 +126,11 @@ public final class ProductionRequestAbuseFilter extends OncePerRequestFilter {
         .removeIf(entry -> now - entry.getValue().lastAccessNanos() > BUCKET_IDLE_NANOS);
   }
 
-  private SseLease reserveSse(String identity, int maximumPerPrincipal) {
+  private SseLease reserveSse(
+      String identity, int maximumPerPrincipal, int maximumTotalConnections) {
+    if (!reserveTotalSseConnection(maximumTotalConnections)) {
+      return null;
+    }
     String key = fingerprint(identity);
     AtomicBoolean reserved = new AtomicBoolean();
     sseConnections.compute(
@@ -140,6 +147,7 @@ public final class ProductionRequestAbuseFilter extends OncePerRequestFilter {
           return current;
         });
     if (!reserved.get()) {
+      totalSseConnections.decrementAndGet();
       return null;
     }
     AtomicBoolean closed = new AtomicBoolean();
@@ -151,8 +159,21 @@ public final class ProductionRequestAbuseFilter extends OncePerRequestFilter {
               int remaining = current.decrementAndGet();
               return remaining <= 0 ? null : current;
             });
+        totalSseConnections.decrementAndGet();
       }
     };
+  }
+
+  private boolean reserveTotalSseConnection(int maximumTotalConnections) {
+    while (true) {
+      int current = totalSseConnections.get();
+      if (current >= maximumTotalConnections) {
+        return false;
+      }
+      if (totalSseConnections.compareAndSet(current, current + 1)) {
+        return true;
+      }
+    }
   }
 
   private String requestIdentity(HttpServletRequest request) {

@@ -43,12 +43,15 @@ class ProductionFlywayMigrationStrategyIT {
   @Test
   void appliesSupportedForwardUpgradeAfterPreUpgradeBackupEvidenceAndPreservesExistingRows() {
     String schema = schemaName();
-    Flyway v1 = flyway(schema, "db/phase13-upgrade").target(MigrationVersion.fromVersion("1")).load();
+    Flyway v1 =
+        flyway(schema, "db/phase13-upgrade").target(MigrationVersion.fromVersion("1")).load();
     v1.migrate();
     try (Connection connection = connection();
         PreparedStatement statement =
             connection.prepareStatement(
-                "INSERT INTO " + schema + ".synthetic_record (record_id, record_value) VALUES (?, ?)")) {
+                "INSERT INTO "
+                    + schema
+                    + ".synthetic_record (record_id, record_value) VALUES (?, ?)")) {
       statement.setString(1, "SYN-MIGRATION-001");
       statement.setString(2, "preserve-me");
       statement.executeUpdate();
@@ -86,8 +89,7 @@ class ProductionFlywayMigrationStrategyIT {
     Flyway flyway = flyway(schema, "db/phase13-upgrade").load();
     ProductionMigrationProperties properties = new ProductionMigrationProperties();
 
-    assertThatThrownBy(
-            () -> new ProductionFlywayMigrationStrategy(properties).migrate(flyway))
+    assertThatThrownBy(() -> new ProductionFlywayMigrationStrategy(properties).migrate(flyway))
         .isInstanceOf(IllegalStateException.class)
         .satisfies(
             exception -> {
@@ -114,7 +116,8 @@ class ProductionFlywayMigrationStrategyIT {
 
     try (ExecutorService workers = Executors.newFixedThreadPool(2)) {
       Future<String> firstResult = workers.submit(() -> runMigration(start, firstStrategy, first));
-      Future<String> secondResult = workers.submit(() -> runMigration(start, secondStrategy, second));
+      Future<String> secondResult =
+          workers.submit(() -> runMigration(start, secondStrategy, second));
       start.countDown();
       List<String> results = List.of(firstResult.get(), secondResult.get());
 
@@ -137,7 +140,8 @@ class ProductionFlywayMigrationStrategyIT {
     assertThat(schemaTableExists(schema, "synthetic_failure_probe")).isFalse();
 
     try (Connection connection = connection();
-        PreparedStatement statement = connection.prepareStatement("SELECT pg_try_advisory_lock(1096379734, 1296648018)");
+        PreparedStatement statement =
+            connection.prepareStatement("SELECT pg_try_advisory_lock(1096379734, 1296648018)");
         var result = statement.executeQuery()) {
       assertThat(result.next()).isTrue();
       assertThat(result.getBoolean(1)).isTrue();
@@ -145,9 +149,7 @@ class ProductionFlywayMigrationStrategyIT {
   }
 
   private static String runMigration(
-      CountDownLatch start,
-      ProductionFlywayMigrationStrategy strategy,
-      Flyway flyway) {
+      CountDownLatch start, ProductionFlywayMigrationStrategy strategy, Flyway flyway) {
     try {
       start.await();
       strategy.migrate(flyway);
@@ -208,7 +210,8 @@ class ProductionFlywayMigrationStrategyIT {
   private static int appliedMigrationCount(String schema) {
     try (Connection connection = connection();
         PreparedStatement statement =
-            connection.prepareStatement("SELECT COUNT(*) FROM " + schema + ".flyway_schema_history WHERE success")) {
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM " + schema + ".flyway_schema_history WHERE success")) {
       try (var result = statement.executeQuery()) {
         result.next();
         return result.getInt(1);

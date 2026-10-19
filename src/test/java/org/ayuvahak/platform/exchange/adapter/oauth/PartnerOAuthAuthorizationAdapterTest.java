@@ -249,12 +249,11 @@ class PartnerOAuthAuthorizationAdapterTest {
             if (providerUnavailable) {
               throw new PartnerSecretProviderUnavailableException();
             }
-            return
-              Optional.ofNullable(
-                      "env:SYNTH_ACCESS_TOKEN_JWKS".equals(reference) && keySetOverride != null
-                          ? keySetOverride
-                          : secrets.get(reference))
-                  .map(value -> new PartnerSecretMaterial(value.toCharArray()));
+            return Optional.ofNullable(
+                    "env:SYNTH_ACCESS_TOKEN_JWKS".equals(reference) && keySetOverride != null
+                        ? keySetOverride
+                        : secrets.get(reference))
+                .map(value -> new PartnerSecretMaterial(value.toCharArray()));
           };
       PartnerTokenEndpointPort endpoint =
           (activeProfile, request) -> {
@@ -296,9 +295,7 @@ class PartnerOAuthAuthorizationAdapterTest {
               throw new AssertionError("synthetic token endpoint validation failed", exception);
             }
           };
-      adapter =
-          new PartnerOAuthAuthorizationAdapter(
-              provider, endpoint, mapper, clock);
+      adapter = new PartnerOAuthAuthorizationAdapter(provider, endpoint, mapper, clock);
     }
 
     private PartnerProfileVersion profile(int version) {
