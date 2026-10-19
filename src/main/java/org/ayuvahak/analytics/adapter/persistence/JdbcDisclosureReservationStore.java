@@ -43,7 +43,9 @@ public class JdbcDisclosureReservationStore implements DisclosureReservationStor
       Set.of(
           DisclosureReservationState.RESERVED,
           DisclosureReservationState.POTENTIALLY_DISCLOSED,
-          DisclosureReservationState.DISCLOSED);
+          DisclosureReservationState.DISCLOSED,
+          // A later related release must remain safe if this pending review is approved.
+          DisclosureReservationState.REVIEW_REQUIRED);
 
   private static final RowMapper<DisclosureReservation> RESERVATION_MAPPER =
       (result, rowNumber) -> reservation(result, false, Set.of());

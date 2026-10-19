@@ -186,9 +186,10 @@ class AnalyticsDisclosureReservationPostgresIT {
             jdbc.queryForObject(
                 "SELECT count(*) FROM analytics.disclosure_reservation_output o "
                     + "JOIN analytics.disclosure_reservation r USING (reservation_id) "
-                    + "WHERE r.state IN ('RESERVED', 'POTENTIALLY_DISCLOSED', 'DISCLOSED')",
+                    + "WHERE r.state IN ('RESERVED', 'POTENTIALLY_DISCLOSED', "
+                    + "'DISCLOSED', 'REVIEW_REQUIRED')",
                 Integer.class))
-        .isEqualTo(1);
+        .isEqualTo(2);
   }
 
   @Test
@@ -235,9 +236,10 @@ class AnalyticsDisclosureReservationPostgresIT {
             jdbc.queryForObject(
                 "SELECT count(*) FROM analytics.disclosure_reservation_output o "
                     + "JOIN analytics.disclosure_reservation r USING (reservation_id) "
-                    + "WHERE r.state IN ('RESERVED', 'POTENTIALLY_DISCLOSED', 'DISCLOSED')",
+                    + "WHERE r.state IN ('RESERVED', 'POTENTIALLY_DISCLOSED', "
+                    + "'DISCLOSED', 'REVIEW_REQUIRED')",
                 Integer.class))
-        .isEqualTo(1);
+        .isEqualTo(2);
   }
 
   @Test
@@ -276,9 +278,10 @@ class AnalyticsDisclosureReservationPostgresIT {
             jdbc.queryForObject(
                 "SELECT count(*) FROM analytics.disclosure_reservation_output o "
                     + "JOIN analytics.disclosure_reservation r USING (reservation_id) "
-                    + "WHERE r.state IN ('RESERVED', 'POTENTIALLY_DISCLOSED', 'DISCLOSED')",
+                    + "WHERE r.state IN ('RESERVED', 'POTENTIALLY_DISCLOSED', "
+                    + "'DISCLOSED', 'REVIEW_REQUIRED')",
                 Integer.class))
-        .isEqualTo(1);
+        .isEqualTo(2);
   }
 
   @Test
@@ -317,9 +320,10 @@ class AnalyticsDisclosureReservationPostgresIT {
             jdbc.queryForObject(
                 "SELECT count(*) FROM analytics.disclosure_reservation_output o "
                     + "JOIN analytics.disclosure_reservation r USING (reservation_id) "
-                    + "WHERE r.state IN ('RESERVED', 'POTENTIALLY_DISCLOSED', 'DISCLOSED')",
+                    + "WHERE r.state IN ('RESERVED', 'POTENTIALLY_DISCLOSED', "
+                    + "'DISCLOSED', 'REVIEW_REQUIRED')",
                 Integer.class))
-        .isEqualTo(1);
+        .isEqualTo(2);
   }
 
   @Test
@@ -729,6 +733,56 @@ class AnalyticsDisclosureReservationPostgresIT {
                     UUID.randomUUID())
                 .state())
         .isEqualTo(DisclosureReservationState.WITHHELD);
+  }
+
+  @Test
+  void pendingReviewIsIncludedWhenEvaluatingLaterRelatedReleases() {
+    UUID broad = UUID.randomUUID();
+    activate(policy(1, broad, Map.of("TOTAL", Set.of(broad), "CELL_A", Set.of(broad)), false));
+    DisclosureScope scope =
+        disclosureScope(
+            "SYN-INDICATOR-001",
+            1,
+            Optional.empty(),
+            Instant.parse("2026-01-01T00:00:00Z"),
+            Instant.parse("2026-02-01T00:00:00Z"));
+    DisclosureCandidate pendingTotal =
+        new DisclosureCandidate(
+            POLICY_KEY,
+            1,
+            UUID.randomUUID(),
+            Map.of("CELL_A", 9L, "CELL_B", 1L),
+            List.of(new DisclosureOutput("TOTAL", 10, Map.of("CELL_A", 1L, "CELL_B", 1L))),
+            scope);
+
+    DisclosureReservation review = service.reserve(releaseContext(), pendingTotal);
+    assertThat(review.state()).isEqualTo(DisclosureReservationState.REVIEW_REQUIRED);
+
+    DisclosureCandidate relatedHighCell =
+        new DisclosureCandidate(
+            POLICY_KEY,
+            1,
+            UUID.randomUUID(),
+            Map.of("CELL_A", 9L),
+            List.of(new DisclosureOutput("CELL_A", 9, Map.of("CELL_A", 1L))),
+            org.ayuvahak.analytics.domain.IndicatorDefinitionGovernance
+                .SensitivityClassification.LOW_SENSITIVITY_AGGREGATE,
+            scope);
+
+    DisclosureReservation later = service.reserve(releaseContext(), relatedHighCell);
+
+    assertThat(later.state()).isEqualTo(DisclosureReservationState.REVIEW_REQUIRED);
+    assertThat(later.reasonCode()).isEqualTo("EXTERNAL_BASELINE_UNKNOWN");
+    assertThat(
+            service
+                .resolveReviewRequired(
+                    adminContext(),
+                    review.reservationId(),
+                    review.operationFingerprint(),
+                    DisclosureReviewResolution.APPROVE,
+                    UUID.randomUUID())
+                .state())
+        .isEqualTo(DisclosureReservationState.RESERVED);
   }
 
   @Test

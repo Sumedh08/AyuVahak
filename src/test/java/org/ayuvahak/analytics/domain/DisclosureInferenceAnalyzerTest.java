@@ -94,6 +94,22 @@ class DisclosureInferenceAnalyzerTest {
         .isEqualTo(DisclosureInferenceAnalyzer.Result.INFERENCE_RISK);
   }
 
+  @Test
+  void zeroRatioCannotRevealThatEveryNonNegativeNumeratorCellIsZero() {
+    DisclosureCandidate zeroRatio =
+        candidate(
+            Map.of("NUMERATOR_A", 0L, "NUMERATOR_B", 0L, "DENOMINATOR", 12L),
+            new DisclosureOutput(
+                "ZERO_RATIO",
+                0,
+                Map.of("NUMERATOR_A", 1L, "NUMERATOR_B", 1L),
+                0,
+                false));
+
+    assertThat(analyzer.evaluate(policy(true), zeroRatio, List.of(), Map.of(), true))
+        .isEqualTo(DisclosureInferenceAnalyzer.Result.INFERENCE_RISK);
+  }
+
   private static DisclosurePolicyVersion policy(boolean baselineComplete) {
     return new DisclosurePolicyVersion(
         POLICY_KEY,

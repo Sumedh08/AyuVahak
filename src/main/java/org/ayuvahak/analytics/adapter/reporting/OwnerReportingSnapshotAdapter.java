@@ -170,44 +170,26 @@ public final class OwnerReportingSnapshotAdapter implements OwnerReportingSnapsh
   }
 
   private static String requestIdentity(OwnerReportingRequest request, SourceMeasure measure) {
-    String identity =
-        request.computationRequestId()
-            + "\n"
-            + request.organization().issuer().value()
-            + "\n"
-            + request.organization().resourceType()
-            + "\n"
-            + request.organization().value()
-            + "\n"
-            + request.period().startInclusiveUtc()
-            + "\n"
-            + request.period().endExclusiveUtc()
-            + "\n"
-            + request.referralSourceCutoff()
-            + "\n"
-            + measure.stableKey();
-    return request
-        .facility()
-        .map(
-            facility ->
-                request.computationRequestId()
-                    + "\n"
-                    + request.organization().issuer().value()
-                    + "\n"
-                    + request.organization().resourceType()
-                    + "\n"
-                    + request.organization().value()
-                    + "\n"
-                    + facility.value()
-                    + "\n"
-                    + request.period().startInclusiveUtc()
-                    + "\n"
-                    + request.period().endExclusiveUtc()
-                    + "\n"
-                    + request.referralSourceCutoff()
-                    + "\n"
-                    + measure.stableKey())
-        .orElse(identity);
+    StringBuilder identity =
+        new StringBuilder()
+            .append(request.computationRequestId())
+            .append('\n')
+            .append(request.organization().issuer().value())
+            .append('\n')
+            .append(request.organization().resourceType())
+            .append('\n')
+            .append(request.organization().value())
+            .append('\n');
+    request.facility().ifPresent(facility -> identity.append(facility.value()).append('\n'));
+    return identity
+        .append(request.period().startInclusiveUtc())
+        .append('\n')
+        .append(request.period().endExclusiveUtc())
+        .append('\n')
+        .append(request.referralSourceCutoff())
+        .append('\n')
+        .append(measure.stableKey())
+        .toString();
   }
 
   private static InternalId stableInternalId(OwnerReportingRequest request, SourceMeasure measure) {

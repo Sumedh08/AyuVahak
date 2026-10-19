@@ -78,6 +78,10 @@ public final class DisclosureInferenceAnalyzer {
       return Result.SAFE;
     }
 
+    if (equations.stream().anyMatch(output -> revealsZeroNonNegativeCells(output, protectedCells))) {
+      return Result.INFERENCE_RISK;
+    }
+
     Fraction[][] matrix = matrix(equations, orderedVariables);
     int baseRank = rank(matrix);
     for (String protectedCell : protectedCells) {
@@ -88,6 +92,17 @@ public final class DisclosureInferenceAnalyzer {
       }
     }
     return Result.SAFE;
+  }
+
+  private static boolean revealsZeroNonNegativeCells(
+      DisclosureOutput output, List<String> protectedCells) {
+    if (output.equationResult() != 0) {
+      return false;
+    }
+    boolean allNonNegative = output.cellCoefficients().values().stream().allMatch(value -> value > 0);
+    boolean allNonPositive = output.cellCoefficients().values().stream().allMatch(value -> value < 0);
+    return (allNonNegative || allNonPositive)
+        && output.cellCoefficients().keySet().stream().anyMatch(protectedCells::contains);
   }
 
   private static boolean sameDisclosure(DisclosureOutput left, DisclosureOutput right) {
