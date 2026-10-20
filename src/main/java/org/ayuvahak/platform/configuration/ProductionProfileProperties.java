@@ -549,12 +549,25 @@ public class ProductionProfileProperties {
           && hasText(governanceBasis)
           && hasText(holdReviewAuthority)
           && expiryAction != null
+          && supportsConfiguredExpiryAction(category)
           && hasText(evidenceDependencies)
           && hasText(backupPropagation)
           && hasText(verificationMethod)
           && blockWhileHeld
           && blockWhileUnresolved
           && reapplyCompletedActionsBeforeServing;
+    }
+
+    private boolean supportsConfiguredExpiryAction(RetentionCategory category) {
+      if (expiryAction == RetentionExpiryAction.OWNER_REVIEW) {
+        return true;
+      }
+      return switch (category) {
+        case PLATFORM_EVENT_OUTBOX -> expiryAction == RetentionExpiryAction.PURGE;
+        case PLATFORM_NOTIFICATION_PROJECTION ->
+            expiryAction == RetentionExpiryAction.EXPIRE_PROJECTION;
+        default -> false;
+      };
     }
 
     private static boolean hasText(String value) {

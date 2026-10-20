@@ -60,6 +60,44 @@ class ProductionRetentionRegisterTest {
     assertThat(retention.isValidRegister()).isFalse();
   }
 
+  @Test
+  void rejectsAutomatedExpiryActionsWithoutOwnerImplementationSupport() {
+    ProductionProfileProperties.Retention retention = completeRegister();
+    retention
+        .getRegister()
+        .get(ProductionProfileProperties.RetentionCategory.DIRECTORY_PROJECTIONS)
+        .setExpiryAction(ProductionProfileProperties.RetentionExpiryAction.PURGE);
+
+    assertThat(retention.isValidRegister()).isFalse();
+  }
+
+  @Test
+  void rejectsTreatingReferralAccessRestrictionAsPhysicalMinimization() {
+    ProductionProfileProperties.Retention retention = completeRegister();
+    retention
+        .getRegister()
+        .get(ProductionProfileProperties.RetentionCategory.REFERRAL_CASES)
+        .setExpiryAction(
+            ProductionProfileProperties.RetentionExpiryAction.MINIMIZE_OR_PSEUDONYMIZE);
+
+    assertThat(retention.isValidRegister()).isFalse();
+  }
+
+  @Test
+  void acceptsOnlyTheExistingAutomatedOwnerExpiryActions() {
+    ProductionProfileProperties.Retention retention = completeRegister();
+    retention
+        .getRegister()
+        .get(ProductionProfileProperties.RetentionCategory.PLATFORM_EVENT_OUTBOX)
+        .setExpiryAction(ProductionProfileProperties.RetentionExpiryAction.PURGE);
+    retention
+        .getRegister()
+        .get(ProductionProfileProperties.RetentionCategory.PLATFORM_NOTIFICATION_PROJECTION)
+        .setExpiryAction(ProductionProfileProperties.RetentionExpiryAction.EXPIRE_PROJECTION);
+
+    assertThat(retention.isValidRegister()).isTrue();
+  }
+
   private static ProductionProfileProperties.Retention completeRegister() {
     ProductionProfileProperties.Retention retention = new ProductionProfileProperties.Retention();
     retention.setScheduleId("SYN-RETENTION-2026-01");

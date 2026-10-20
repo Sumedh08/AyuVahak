@@ -138,7 +138,12 @@ public class JdbcNotificationProjectionStore implements NotificationProjectionSt
       throw new IllegalArgumentException("notification replay bounds must be positive");
     }
     return transaction.execute(
-        status -> readAfter(scope, cursor, maximumReplayCount, maximumReplayBytes, now));
+        status -> {
+          ensureScope(scope, now, true);
+          pruneScope(scope.key(), now);
+          pruneReceipts(now);
+          return readAfter(scope, cursor, maximumReplayCount, maximumReplayBytes, now);
+        });
   }
 
   @Override

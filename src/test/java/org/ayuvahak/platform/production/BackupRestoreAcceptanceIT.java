@@ -74,6 +74,7 @@ class BackupRestoreAcceptanceIT {
   private static final String OPERATOR = "SYN-RESTORE-OPERATOR";
   private static final UUID ORGANIZATION_ID =
       UUID.fromString("00000000-0000-4000-8000-000000000013");
+  private static final UUID GRANT_ID = UUID.fromString("00000000-0000-4000-8000-000000000023");
   private static final UUID REFERRAL_ID = UUID.fromString("00000000-0000-4000-8000-000000000014");
   private static final UUID EVENT_ID = UUID.fromString("00000000-0000-4000-8000-000000000015");
   private static final UUID SNAPSHOT_ID = UUID.fromString("00000000-0000-4000-8000-000000000016");
@@ -87,6 +88,24 @@ class BackupRestoreAcceptanceIT {
   private static final UUID RESTORE_ID = UUID.fromString("00000000-0000-4000-8000-000000000021");
   private static final UUID RESTRICTION_ID =
       UUID.fromString("00000000-0000-4000-8000-000000000022");
+  private static final UUID JOURNEY_ID = UUID.fromString("00000000-0000-4000-8000-000000000026");
+  private static final UUID REQUEST_ATTEMPT_ID =
+      UUID.fromString("00000000-0000-4000-8000-000000000027");
+  private static final UUID TRANSFER_ID = UUID.fromString("00000000-0000-4000-8000-000000000028");
+  private static final UUID DECISION_ID = UUID.fromString("00000000-0000-4000-8000-000000000029");
+  private static final UUID CLINICAL_ASSESSMENT_ID =
+      UUID.fromString("00000000-0000-4000-8000-000000000030");
+  private static final UUID OPERATIONAL_ASSESSMENT_ID =
+      UUID.fromString("00000000-0000-4000-8000-000000000031");
+  private static final UUID TRANSPORT_REQUEST_ID =
+      UUID.fromString("00000000-0000-4000-8000-000000000032");
+  private static final UUID FEDERATED_ATTEMPT_ID =
+      UUID.fromString("00000000-0000-4000-8000-000000000033");
+  private static final UUID FEDERATED_OPERATION_ID =
+      UUID.fromString("00000000-0000-4000-8000-000000000034");
+  private static final UUID HELD_REFERRAL_ID =
+      UUID.fromString("00000000-0000-4000-8000-000000000035");
+  private static final UUID HOLD_ID = UUID.fromString("00000000-0000-4000-8000-000000000036");
   private static final String INDICATOR_KEY = "SYN-INDICATOR-P13";
   private static final String MAPPING_KEY = "SYN-MAPPING-P13";
   private static final String SYNTHETIC_PRIVATE_MARKER = "SYN-PATIENT-PHASE13-RESTORE-91A2";
@@ -170,6 +189,17 @@ class BackupRestoreAcceptanceIT {
             + "VALUES (?, ?, 'RETENTION_REVIEW_COMPLETED', ?, 'HUMAN', ?, 'subject', ?)",
         REFERRAL_ID,
         RESTRICTION_ID,
+        Timestamp.from(postBackupActionAt),
+        ISSUER,
+        OPERATOR);
+    source.update(
+        "INSERT INTO referral.retention_hold "
+            + "(hold_id, referral_id, purpose_code, review_by, created_at, created_by_kind, "
+            + "created_by_issuer, created_by_identifier_type, created_by_identifier) "
+            + "VALUES (?, ?, 'UNRESOLVED_RECONCILIATION', ?, ?, 'HUMAN', ?, 'subject', ?)",
+        HOLD_ID,
+        HELD_REFERRAL_ID,
+        Timestamp.from(postBackupActionAt.plus(Duration.ofDays(30))),
         Timestamp.from(postBackupActionAt),
         ISSUER,
         OPERATOR);
@@ -289,6 +319,12 @@ class BackupRestoreAcceptanceIT {
                 Integer.class,
                 REFERRAL_ID))
         .isZero();
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM referral.retention_hold WHERE hold_id = ?",
+                Integer.class,
+                HOLD_ID))
+        .isZero();
 
     new TransactionTemplate(transactionManager)
         .executeWithoutResult(
@@ -329,6 +365,63 @@ class BackupRestoreAcceptanceIT {
                 REFERRAL_ID,
                 RESTRICTION_ID))
         .isEqualTo(1);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM referral.retention_hold "
+                    + "WHERE hold_id = ? AND referral_id = ? AND released_at IS NULL",
+                Integer.class,
+                HOLD_ID,
+                HELD_REFERRAL_ID))
+        .isEqualTo(1);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM referral.identifier_restriction WHERE referral_id = ?",
+                Integer.class,
+                HELD_REFERRAL_ID))
+        .isZero();
+
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM transfer.command_receipt "
+                    + "WHERE result_reference = ? AND receipt_state = 'COMPLETED'",
+                Integer.class,
+                JOURNEY_ID))
+        .isEqualTo(1);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM identity_access.grant_command_receipt "
+                    + "WHERE result_reference = ? AND receipt_state = 'COMPLETED'",
+                Integer.class,
+                GRANT_ID))
+        .isEqualTo(1);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
+                String.class,
+                TRANSFER_ID))
+        .isEqualTo("AWAITING_RESERVATION");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT request_status FROM transport.transport_request "
+                    + "WHERE transport_request_id = ?",
+                String.class,
+                TRANSPORT_REQUEST_ID))
+        .isEqualTo("REQUESTED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM transport.command_receipt "
+                    + "WHERE result_reference = ? AND receipt_state = 'COMPLETED'",
+                Integer.class,
+                TRANSPORT_REQUEST_ID))
+        .isEqualTo(1);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT operation_state FROM transfer.federated_origin_receiving_attempt "
+                    + "WHERE origin_attempt_id = ? AND operation_id = ?",
+                String.class,
+                FEDERATED_ATTEMPT_ID,
+                FEDERATED_OPERATION_ID))
+        .isEqualTo("OUTCOME_UNKNOWN");
 
     assertThat(
             jdbc.queryForObject(
@@ -385,6 +478,7 @@ class BackupRestoreAcceptanceIT {
         DECLARED_RTO);
     assertThat(platformManifest.purgedEvents()).hasSize(1);
     assertThat(referralManifest.identifierRestrictions()).hasSize(1);
+    assertThat(referralManifest.holds()).hasSize(1);
     assertThat(platformManifest.toString()).doesNotContain(SYNTHETIC_PRIVATE_MARKER);
     assertThat(referralManifest.toString()).doesNotContain(SYNTHETIC_PRIVATE_MARKER);
     assertThat(
@@ -416,9 +510,19 @@ class BackupRestoreAcceptanceIT {
             + "(grant_id, principal_kind, principal_issuer, principal_identifier_type, "
             + "principal_identifier, authority_code, scope_kind, grant_status, created_at) "
             + "VALUES (?, 'HUMAN', ?, 'subject', ?, 'DirectoryRead', 'PLATFORM', 'ACTIVE', ?)",
-        UUID.fromString("00000000-0000-4000-8000-000000000023"),
+        GRANT_ID,
         ISSUER,
         OPERATOR,
+        Timestamp.from(now));
+    jdbc.update(
+        "INSERT INTO identity_access.grant_command_receipt "
+            + "(scope_digest, idempotency_key_digest, request_fingerprint, receipt_state, "
+            + "response_status, result_reference, recorded_at) "
+            + "VALUES (?, ?, ?, 'COMPLETED', 201, ?, ?)",
+        "4".repeat(64),
+        "5".repeat(64),
+        "6".repeat(64),
+        GRANT_ID,
         Timestamp.from(now));
 
     jdbc.update(
@@ -470,7 +574,184 @@ class BackupRestoreAcceptanceIT {
         Timestamp.from(now.minus(Duration.ofDays(2))));
 
     seedReferral(jdbc, now);
+    seedHeldReferral(jdbc, now);
+    seedTransferTransportAndFederation(jdbc, now);
     seedUnresolvedAnalyticsExport(jdbc, now);
+  }
+
+  private static void seedHeldReferral(JdbcTemplate jdbc, Instant now) {
+    jdbc.update(
+        "INSERT INTO referral.draft "
+            + "(referral_id, state, origin_organization_id, patient_issuer, patient_resource_type, "
+            + "patient_identifier, created_by_kind, created_by_issuer, created_by_identifier_type, "
+            + "created_by_identifier, updated_by_kind, updated_by_issuer, updated_by_identifier_type, "
+            + "updated_by_identifier, version, created_at, updated_at) "
+            + "VALUES (?, 'RESOLVED', ?, 'urn:synthetic:patient', 'Patient', 'SYN-PATIENT-HELD-001', "
+            + "'SERVICE', 'urn:synthetic:restore', 'client_id', 'synthetic-phase13-fixture', "
+            + "'SERVICE', 'urn:synthetic:restore', 'client_id', 'synthetic-phase13-fixture', 3, ?, ?)",
+        HELD_REFERRAL_ID,
+        ORGANIZATION_ID,
+        Timestamp.from(now.minus(Duration.ofDays(3))),
+        Timestamp.from(now.minus(Duration.ofDays(1))));
+    jdbc.update(
+        "INSERT INTO referral.resolution "
+            + "(referral_id, outcome, reason_code, resolved_by_kind, resolved_by_issuer, "
+            + "resolved_by_identifier_type, resolved_by_identifier, referral_version, resolved_at) "
+            + "VALUES (?, 'FULFILLED', 'SYNTHETIC_RESTORE_FIXTURE', 'SERVICE', "
+            + "'urn:synthetic:restore', 'client_id', 'synthetic-phase13-fixture', 3, ?)",
+        HELD_REFERRAL_ID,
+        Timestamp.from(now.minus(Duration.ofDays(1))));
+  }
+
+  private static void seedTransferTransportAndFederation(JdbcTemplate jdbc, Instant now) {
+    UUID recommendationId = UUID.fromString("00000000-0000-4000-8000-000000000037");
+    UUID destinationOrganizationId =
+        UUID.fromString("00000000-0000-4000-8000-000000000038");
+    UUID originFacilityId = UUID.fromString("00000000-0000-4000-8000-000000000039");
+    UUID destinationFacilityId = UUID.fromString("00000000-0000-4000-8000-000000000040");
+    jdbc.update(
+        "INSERT INTO transfer.journey "
+            + "(journey_id, referral_id, origin_organization_id, origin_facility_id, "
+            + "created_by_kind, created_by_issuer, created_by_identifier_type, created_by_identifier, "
+            + "created_at, version) VALUES (?, ?, ?, ?, 'SERVICE', 'urn:synthetic:restore', "
+            + "'client_id', 'synthetic-phase13-fixture', ?, 1)",
+        JOURNEY_ID,
+        REFERRAL_ID,
+        ORGANIZATION_ID,
+        originFacilityId,
+        Timestamp.from(now.minus(Duration.ofHours(5))));
+    jdbc.update(
+        "INSERT INTO transfer.request_attempt "
+            + "(request_attempt_id, journey_id, attempt_number, referral_id, referral_revision, "
+            + "recommendation_id, destination_facility_id, request_status, requested_by_kind, "
+            + "requested_by_issuer, requested_by_identifier_type, requested_by_identifier, "
+            + "requested_at, expires_at, version) VALUES (?, ?, 1, ?, 3, ?, ?, 'PENDING', 'HUMAN', "
+            + "?, 'subject', ?, ?, ?, 1)",
+        REQUEST_ATTEMPT_ID,
+        JOURNEY_ID,
+        REFERRAL_ID,
+        recommendationId,
+        destinationFacilityId,
+        ISSUER,
+        OPERATOR,
+        Timestamp.from(now.minus(Duration.ofHours(5))),
+        Timestamp.from(now.plus(Duration.ofHours(19))));
+    jdbc.update(
+        "UPDATE transfer.request_attempt SET request_status = 'ACCEPTED', version = 2 "
+            + "WHERE request_attempt_id = ?",
+        REQUEST_ATTEMPT_ID);
+    jdbc.update(
+        "INSERT INTO transfer.receiving_assessment "
+            + "(assessment_id, request_attempt_id, assessment_kind, outcome, reason_code, "
+            + "recorded_by_kind, recorded_by_issuer, recorded_by_identifier_type, "
+            + "recorded_by_identifier, authority_code, receiving_organization_id, "
+            + "receiving_facility_id, occurred_at, recorded_at, request_version) "
+            + "VALUES (?, ?, 'CLINICAL_SUITABILITY', 'SUPPORTS', 'SYNTHETIC_REVIEW', 'HUMAN', ?, "
+            + "'subject', ?, 'ClinicalSuitabilityAuthority', ?, ?, ?, ?, 2)",
+        CLINICAL_ASSESSMENT_ID,
+        REQUEST_ATTEMPT_ID,
+        ISSUER,
+        OPERATOR,
+        destinationOrganizationId,
+        destinationFacilityId,
+        Timestamp.from(now.minus(Duration.ofHours(4))),
+        Timestamp.from(now.minus(Duration.ofHours(4))));
+    jdbc.update(
+        "INSERT INTO transfer.receiving_assessment "
+            + "(assessment_id, request_attempt_id, assessment_kind, outcome, reason_code, "
+            + "recorded_by_kind, recorded_by_issuer, recorded_by_identifier_type, "
+            + "recorded_by_identifier, authority_code, receiving_organization_id, "
+            + "receiving_facility_id, occurred_at, recorded_at, request_version) "
+            + "VALUES (?, ?, 'OPERATIONAL_READINESS', 'SUPPORTS', 'SYNTHETIC_REVIEW', 'HUMAN', ?, "
+            + "'subject', ?, 'OperationalReadinessAuthority', ?, ?, ?, ?, 2)",
+        OPERATIONAL_ASSESSMENT_ID,
+        REQUEST_ATTEMPT_ID,
+        ISSUER,
+        OPERATOR,
+        destinationOrganizationId,
+        destinationFacilityId,
+        Timestamp.from(now.minus(Duration.ofHours(4))),
+        Timestamp.from(now.minus(Duration.ofHours(4))));
+    jdbc.update(
+        "INSERT INTO transfer.transfer_record "
+            + "(transfer_id, journey_id, request_attempt_id, transfer_status, created_at, version) "
+            + "VALUES (?, ?, ?, 'AWAITING_RESERVATION', ?, 1)",
+        TRANSFER_ID,
+        JOURNEY_ID,
+        REQUEST_ATTEMPT_ID,
+        Timestamp.from(now.minus(Duration.ofHours(4))));
+    jdbc.update(
+        "INSERT INTO transfer.request_decision "
+            + "(decision_id, request_attempt_id, decision_kind, transfer_id, recorded_by_kind, "
+            + "recorded_by_issuer, recorded_by_identifier_type, recorded_by_identifier, "
+            + "authority_code, receiving_organization_id, receiving_facility_id, occurred_at, "
+            + "recorded_at, request_version) VALUES (?, ?, 'ACCEPTED', ?, 'HUMAN', ?, 'subject', ?, "
+            + "'AcceptanceAuthority', ?, ?, ?, ?, 2)",
+        DECISION_ID,
+        REQUEST_ATTEMPT_ID,
+        TRANSFER_ID,
+        ISSUER,
+        OPERATOR,
+        destinationOrganizationId,
+        destinationFacilityId,
+        Timestamp.from(now.minus(Duration.ofHours(4))),
+        Timestamp.from(now.minus(Duration.ofHours(4))));
+    jdbc.update(
+        "INSERT INTO transfer.command_receipt "
+            + "(scope_digest, idempotency_key_digest, request_fingerprint, receipt_state, "
+            + "response_status, result_reference, result_version, recorded_at) "
+            + "VALUES (?, ?, ?, 'COMPLETED', 201, ?, 1, ?)",
+        "b".repeat(64),
+        "c".repeat(64),
+        "d".repeat(64),
+        JOURNEY_ID,
+        Timestamp.from(now.minus(Duration.ofHours(5))));
+    jdbc.update(
+        "INSERT INTO transport.transport_request "
+            + "(transport_request_id, transfer_id, origin_facility_id, destination_facility_id, "
+            + "initiated_by_kind, initiated_by_issuer, initiated_by_identifier_type, "
+            + "initiated_by_identifier, recorded_by_kind, recorded_by_issuer, "
+            + "recorded_by_identifier_type, recorded_by_identifier, request_status, requested_at, "
+            + "correlation_id, version) VALUES (?, ?, ?, ?, 'HUMAN', ?, 'subject', ?, 'SERVICE', "
+            + "'urn:synthetic:restore', 'client_id', 'synthetic-phase13-fixture', 'REQUESTED', ?, "
+            + "'synthetic-restore-transport-001', 1)",
+        TRANSPORT_REQUEST_ID,
+        TRANSFER_ID,
+        originFacilityId,
+        destinationFacilityId,
+        ISSUER,
+        OPERATOR,
+        Timestamp.from(now.minus(Duration.ofHours(3))));
+    jdbc.update(
+        "INSERT INTO transport.command_receipt "
+            + "(scope_digest, idempotency_key_digest, request_fingerprint, receipt_state, "
+            + "response_status, result_reference, result_version, recorded_at) "
+            + "VALUES (?, ?, ?, 'COMPLETED', 201, ?, 1, ?)",
+        "e".repeat(64),
+        "f".repeat(64),
+        "1".repeat(64),
+        TRANSPORT_REQUEST_ID,
+        Timestamp.from(now.minus(Duration.ofHours(3))));
+    byte[] receivingRequest =
+        "{\"operationId\":\"SYN-FEDERATION-OP-001\",\"facility\":\"SYN-FACILITY-B\"}"
+            .getBytes(StandardCharsets.UTF_8);
+    jdbc.update(
+        "INSERT INTO transfer.federated_origin_receiving_attempt "
+            + "(origin_attempt_id, journey_id, attempt_number, origin_deployment_id, "
+            + "peer_deployment_id, partner_key, partner_configuration_version, operation_id, "
+            + "request_fingerprint, command_fingerprint, request_body, operation_state, "
+            + "remote_outcome, remote_receiving_request_id, remote_capacity_reservation_id, "
+            + "remote_version, attempt_version, created_at, updated_at) "
+            + "VALUES (?, ?, 1, 'SYN-DEPLOYMENT-A', 'SYN-DEPLOYMENT-B', 'SYN-PARTNER-B', 1, ?, ?, ?, ?, "
+            + "'OUTCOME_UNKNOWN', NULL, NULL, NULL, 0, 1, ?, ?)",
+        FEDERATED_ATTEMPT_ID,
+        JOURNEY_ID,
+        FEDERATED_OPERATION_ID,
+        "2".repeat(64),
+        "3".repeat(64),
+        receivingRequest,
+        Timestamp.from(now.minus(Duration.ofHours(2))),
+        Timestamp.from(now.minus(Duration.ofHours(2))));
   }
 
   private static void seedReferral(JdbcTemplate jdbc, Instant now) {

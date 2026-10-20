@@ -10,6 +10,7 @@ import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicReference;
 import org.ayuvahak.platform.core.ActorReference;
@@ -315,6 +316,41 @@ class NotificationProjectionPostgresIT {
             jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM platform_notification.notification_projection",
                 Integer.class))
+        .isZero();
+  }
+
+  @Test
+  void expiresProjectionOnReadEvenWhenNoLaterEventTriggersPruning() throws Exception {
+    ExecutionScope scope = organizationScope("SYN-ORG-001");
+    String originalCursor = query.currentCursor(scope);
+    handler.handle(
+        internalEvent(
+            event(
+                "transfer.completed.v1",
+                "transfer-journey/00000000-0000-0000-0000-000000000001",
+                1,
+                scope,
+                "SYN-PATIENT-FEDERATION-PRIVATE-4B71")));
+
+    clock.advance(Duration.ofHours(25));
+
+    NotificationProjectionPage replay =
+        query.listAfter(scope, Optional.of(originalCursor), 20);
+
+    assertThat(replay.refreshRequired()).isTrue();
+    assertThat(replay.hints()).isEmpty();
+    assertThat(
+            jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM platform_notification.notification_projection",
+                Integer.class))
+        .isZero();
+    assertThat(
+            jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM platform_notification.cursor_position "
+                    + "WHERE cursor_id = ?",
+                Integer.class,
+                UUID.fromString(originalCursor)))
+        .withFailMessage("an expired replay cursor must not remain usable")
         .isZero();
   }
 
