@@ -23,10 +23,10 @@ operator/DPG documentation, and integrated acceptance/freeze. No external tracke
 | P13-05 Migration recovery | Implemented | Controlled migration/readiness behavior and PostgreSQL migration integration tests; production upgrade evidence remains deployment-specific. |
 | P13-06 Replica/worker/shutdown | Partial | Bounded shutdown and duplicate PostgreSQL outbox-worker claim tests exist. A two-process/two-application-replica acceptance run is not yet evidenced. |
 | P13-07 Retention | Partial | Owner-scoped Platform outbox purge and Referral identifier restriction/reapplication are implemented. Other matrix owners do not yet have complete purge/minimization adapters or restore replayers. |
-| P13-08 Backup/restore | Local acceptance passed | Isolated synthetic `pg_dump`/`pg_restore`, Flyway, restored application, retention reapplication, and unresolved Analytics export barrier are exercised. The post-backup Directory update is intentionally lost at the dump recovery point. |
+| P13-08 Backup/restore | Partial | Isolated synthetic `pg_dump`/`pg_restore`, Flyway, restored application, Platform/Referral retention reapplication, and an unresolved Analytics export barrier are exercised. The post-backup Directory update is intentionally lost at the dump recovery point. The fixture omits idempotency and representative Transfer, Transport, and federation invariants required by the frozen acceptance spec. |
 | P13-09 Release evidence | Partial | Pinned cdxgen 13.4.0 generated an SPDX 3.0.1 SBOM from the local runtime dependency tree; normalized output passed the pinned official JSON Schema and SHACL model plus local SPDX License List 3.29.0 validation. The actual AyuVahak JAR digest is bound. A local manifest/provenance/signed bundle was generated with an ephemeral synthetic signer and verified; the release remains ineligible because no reviewed dependency vulnerability inventory is bound. Release-evidence helpers have 19 passing Python tests. |
 | P13-10 Operations/DPG evidence | Partial | Local runbooks, ASVS 5.0.0 matrix, standards register, and evidence-based readiness matrix are present; governance and live deployment evidence remain open. |
-| P13-11 Integrated acceptance | Not complete | Canonical clean verification passes, but complete retention coverage, true multi-replica acceptance, valid SPDX 3.0 evidence, and blocker remediation remain outstanding. |
+| P13-11 Integrated acceptance | Not complete | A prior canonical clean verification passed, and local SPDX 3.0.1 generation/validation now passes. The current canonical verification attempt failed before Maven startup because `JAVA_HOME` points to an inaccessible JDK 25 path. Complete retention coverage, true multi-replica acceptance, measured deployment-profile workload baselines, vulnerability inventory review, and blocker remediation remain outstanding. |
 
 ## Backup and restore acceptance
 
@@ -37,11 +37,14 @@ outbox event, Referral restriction, and unresolved DHIS2 export/target-tuple cla
 retention action must be reapplied before readiness becomes healthy. A privacy marker is checked
 against retention manifests, audit, event, and Analytics export operation state.
 
-The test declares synthetic 15-minute RPO and RTO targets. In the canonical clean run on
-2026-10-20, measured RPO was 0.195s from backup completion to disaster declaration and measured
-RTO was 8.121s from disaster declaration through restore reapplication, readiness, and authorized
-read. Both were within the declared test targets. The method is a logical snapshot; it does not
-exercise WAL/PITR, scheduled backups, encryption, or off-host storage. No general production
+The test declares synthetic 15-minute RPO and RTO targets. In the recorded canonical clean run on
+2026-10-20, the interval from the completed logical dump (the last recoverable point) to simulated
+disaster declaration was 0.195s; restore elapsed time from disaster declaration through target
+database recreation, dump transfer/restore, retention reapplication, readiness, and authorized read
+was 8.121s. Both were within the synthetic targets. A later repeat canonical command at HEAD
+`689e0f8` could not start because the configured `JAVA_HOME` points to an inaccessible JDK 25 path;
+these values are prior-run evidence, not a verification of that attempt. The method is a logical
+snapshot; it does not exercise WAL/PITR, scheduled backups, encryption, or off-host storage. No general production
 RPO/RTO claim follows from this test.
 
 ## Local verification so far
@@ -61,7 +64,7 @@ RPO/RTO claim follows from this test.
 - Local release-evidence Python tests: 19 passed, 0 failures/errors/skips in 4.99 seconds.
 - Local SBOM generation/validation: cdxgen 13.4.0 (official pinned Windows AMD64 asset SHA-256 `0b4a6ec411a70127d72e2f6fc45277f03fa64d4237a40325d0ff117634b76375`) generated 195 runtime package nodes and 133 declared-license relationships for the local JAR. The SPDX 3.0.1 output SHA-256 is `0e5230a50e0dd4615b7b0fbf4beb87a3582fdd943e1a10498d1505130d3f5a76`; the application JAR SHA-256 is `5ae4598d12c8f660915ab556869becad57b93cacf833d5bdcf89a638037fc9f4`. Validation used pinned official schema, SHACL model/context, and SPDX License List 3.29.0 assets. Maven ran offline with repository-owned credential-free settings and a preverified cached wrapper distribution; cdxgen was loopback-only and its execution trace contained no external host activity. This is local acceptance evidence, not a published release.
 - Local manifest/provenance/evidence-pack check: a local manifest revalidated and bound the SPDX SBOM to the application JAR. A provenance record and bundle containing the JAR, manifest, SBOM, validation report and provenance verified with a two-day ephemeral synthetic PKCS#12 identity (fingerprint `2c381e4e5183906b37aecbd8b70338a121f64992a9373eb91711281cf0e62f0a`; bundle SHA-256 `dd0495d594ccd3dd16da482b09ca0b9a122f32f9566a66e8b545423be83de5e7`). The manifest remained release-ineligible because it had no reviewed dependency vulnerability inventory or production signer. The bundle stayed under ignored `.scratch` and was not published.
-- The canonical full clean verification passed before the latest local Python/doc-only release-evidence changes. The frozen integrated Phase 13 acceptance gate remains incomplete because retention, two-replica acceptance, and measured workload evidence are still missing; release-pack review remains partial.
+- The canonical full clean verification passed before the latest local Python/doc-only release-evidence changes. Its repeat at `689e0f8` exited before the Maven build with `JAVA_HOME` pointing to an inaccessible JDK 25 location; JDK 17 is available but cannot compile the Java 25 project. No JDK was fetched. The frozen integrated Phase 13 acceptance gate remains incomplete because owner retention/recovery coverage, two-replica acceptance, measured workload evidence, and vulnerability-inventory review are still missing.
 
 ## Readiness and DPG evidence
 
