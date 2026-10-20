@@ -75,7 +75,6 @@ import org.springframework.context.annotation.Primary;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.containers.wait.strategy.Wait;
-import org.testcontainers.containers.wait.strategy.WaitAllStrategy;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
@@ -386,11 +385,8 @@ class TwoApplicationReplicaWorkerAcceptanceIT {
           .withPassword(TEST_PASSWORD)
           .withCommand("postgres", "-c", "shared_preload_libraries=pg_stat_statements")
           .waitingFor(
-              new WaitAllStrategy()
-                  .withStrategy(
-                      Wait.forSuccessfulCommand(
-                          "pg_isready -U ayuvahak -d ayuvahak_replica_acceptance"))
-                  .withStrategy(Wait.forListeningPort())
+              Wait.forSuccessfulCommand(
+                      "pg_isready -U ayuvahak -d ayuvahak_replica_acceptance")
                   .withStartupTimeout(Duration.ofMinutes(3)))
           .withStartupTimeout(Duration.ofMinutes(3));
 

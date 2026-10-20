@@ -132,6 +132,82 @@ class ProductionRequestBudgetStorePostgresIT {
   }
 
   @Test
+  void anonymousAddressBudgetIsSharedAcrossIndependentFilters() throws Exception {
+    jdbc.update("TRUNCATE TABLE platform_security.request_budget_bucket");
+    ProductionProfileProperties properties = properties();
+    properties.getLimits().setAnonymousRequestsPerMinute(1);
+    ProductionRequestAbuseFilter firstInstance = newFilter(properties);
+    ProductionRequestAbuseFilter secondInstance = newFilter(properties);
+
+    assertThat(invokeAnonymous(firstInstance, "192.0.2.31").getStatus()).isEqualTo(200);
+    assertThat(invokeAnonymous(secondInstance, "192.0.2.31").getStatus()).isEqualTo(429);
+    assertThat(invokeAnonymous(secondInstance, "198.51.100.31").getStatus()).isEqualTo(200);
+  }
+
+  @Test
+  void operationClassBudgetsAreSharedAcrossReplicasButRemainDistinct() throws Exception {
+    jdbc.update("TRUNCATE TABLE platform_security.request_budget_bucket");
+    ProductionProfileProperties properties = properties();
+    properties.getLimits().setPrincipalRequestsPerMinute(20);
+    properties.getLimits().setAuthenticatedReadRequestsPerMinute(1);
+    properties.getLimits().setSensitiveWriteRequestsPerMinute(1);
+    ProductionRequestAbuseFilter firstInstance = newFilter(properties);
+    ProductionRequestAbuseFilter secondInstance = newFilter(properties);
+    ActorReference actor = actor("SYN-OPERATION-CLASS-USER");
+
+    assertThat(
+            invokeRoute(firstInstance, actor, "GET", "/api/v1/directory", "192.0.2.32")
+                .getStatus())
+        .isEqualTo(200);
+    assertThat(
+            invokeRoute(secondInstance, actor, "GET", "/api/v1/directory", "198.51.100.32")
+                .getStatus())
+        .isEqualTo(429);
+    assertThat(
+            invokeRoute(secondInstance, actor, "POST", "/api/v1/referrals", "198.51.100.32")
+                .getStatus())
+        .isEqualTo(200);
+    assertThat(
+            invokeRoute(firstInstance, actor, "POST", "/api/v1/referrals", "192.0.2.32")
+                .getStatus())
+        .isEqualTo(429);
+    assertThat(
+            jdbc.queryForList(
+                "SELECT budget_class FROM platform_security.request_budget_bucket "
+                    + "WHERE budget_dimension = 'OPERATION'",
+                String.class))
+        .containsExactlyInAnyOrder("READ", "SENSITIVE_WRITE");
+  }
+
+  @Test
+  void exhaustedSharedBudgetRefillsAfterTheConfiguredWindow() throws Exception {
+    jdbc.update("TRUNCATE TABLE platform_security.request_budget_bucket");
+    ProductionProfileProperties properties = properties();
+    properties.getLimits().setPrincipalRequestsPerMinute(1);
+    properties.getLimits().setAuthenticatedReadRequestsPerMinute(1);
+    ProductionRequestAbuseFilter firstInstance = newFilter(properties);
+    ProductionRequestAbuseFilter secondInstance = newFilter(properties);
+    ActorReference actor = actor("SYN-RATE-REFILL-USER");
+
+    assertThat(
+            invokeRoute(firstInstance, actor, "GET", "/api/v1/directory", "192.0.2.33")
+                .getStatus())
+        .isEqualTo(200);
+    assertThat(
+            invokeRoute(secondInstance, actor, "GET", "/api/v1/directory", "198.51.100.33")
+                .getStatus())
+        .isEqualTo(429);
+
+    jdbc.update(
+        "UPDATE platform_security.request_budget_bucket "
+            + "SET tokens_micros = 0, last_refill_at = clock_timestamp() - interval '61 seconds'");
+    assertThat(
+            invokeRoute(secondInstance, actor, "GET", "/api/v1/directory", "198.51.100.33")
+                .getStatus())
+        .isEqualTo(200);
+  }
+
+  @Test
   void twoIndependentFiltersShareRequestedOrganizationScopeBudget() throws Exception {
     jdbc.update("TRUNCATE TABLE platform_security.request_budget_bucket");
     ProductionProfileProperties properties = properties();
@@ -146,6 +222,43 @@ class ProductionRequestBudgetStorePostgresIT {
     assertThat(invoke(secondInstance, secondActor, "SYN-ORG-001", "198.51.100.21").getStatus())
         .isEqualTo(429);
     assertThat(invoke(secondInstance, secondActor, "SYN-ORG-002", "198.51.100.21").getStatus())
+        .isEqualTo(200);
+  }
+
+  @Test
+  void facilityScopeBudgetIsSharedOnlyForTheSameFacilityAcrossReplicas() throws Exception {
+    jdbc.update("TRUNCATE TABLE platform_security.request_budget_bucket");
+    ProductionProfileProperties properties = properties();
+    properties.getLimits().setScopeRequestsPerMinute(1);
+    ProductionRequestAbuseFilter firstInstance = newFilter(properties);
+    ProductionRequestAbuseFilter secondInstance = newFilter(properties);
+
+    assertThat(
+            invokeFacilityScope(
+                    firstInstance,
+                    actor("SYN-FACILITY-OPERATOR-A"),
+                    "SYN-ORG-001",
+                    "SYN-FACILITY-A",
+                    "192.0.2.24")
+                .getStatus())
+        .isEqualTo(200);
+    assertThat(
+            invokeFacilityScope(
+                    secondInstance,
+                    actor("SYN-FACILITY-OPERATOR-B"),
+                    "SYN-ORG-001",
+                    "SYN-FACILITY-A",
+                    "198.51.100.24")
+                .getStatus())
+        .isEqualTo(429);
+    assertThat(
+            invokeFacilityScope(
+                    secondInstance,
+                    actor("SYN-FACILITY-OPERATOR-B"),
+                    "SYN-ORG-001",
+                    "SYN-FACILITY-B",
+                    "198.51.100.24")
+                .getStatus())
         .isEqualTo(200);
   }
 
@@ -220,12 +333,46 @@ class ProductionRequestBudgetStorePostgresIT {
     }
   }
 
-  private static MockHttpServletResponse invokeRoute(
-      ProductionRequestAbuseFilter filter, ActorReference actor, String path, String remoteAddress)
+  private static MockHttpServletResponse invokeFacilityScope(
+      ProductionRequestAbuseFilter filter,
+      ActorReference actor,
+      String organizationId,
+      String facilityId,
+      String remoteAddress)
       throws Exception {
     SecurityContextHolder.getContext().setAuthentication(new ActorAuthentication(actor));
     try {
-      MockHttpServletRequest request = new MockHttpServletRequest("POST", path);
+      MockHttpServletRequest request =
+          new MockHttpServletRequest("GET", "/api/v1/directory/SYN-FACILITY-A/summary");
+      request.setRequestURI("/api/v1/directory/SYN-FACILITY-A/summary");
+      request.setRemoteAddr(remoteAddress);
+      request.addHeader("X-AyuVahak-Execution-Scope", "FACILITY");
+      request.addHeader("X-AyuVahak-Organization-Id", organizationId);
+      request.addHeader("X-AyuVahak-Facility-Id", facilityId);
+      MockHttpServletResponse response = new MockHttpServletResponse();
+      filter.doFilter(request, response, (req, res) -> {});
+      return response;
+    } finally {
+      SecurityContextHolder.clearContext();
+    }
+  }
+
+  private static MockHttpServletResponse invokeRoute(
+      ProductionRequestAbuseFilter filter, ActorReference actor, String path, String remoteAddress)
+      throws Exception {
+    return invokeRoute(filter, actor, "POST", path, remoteAddress);
+  }
+
+  private static MockHttpServletResponse invokeRoute(
+      ProductionRequestAbuseFilter filter,
+      ActorReference actor,
+      String method,
+      String path,
+      String remoteAddress)
+      throws Exception {
+    SecurityContextHolder.getContext().setAuthentication(new ActorAuthentication(actor));
+    try {
+      MockHttpServletRequest request = new MockHttpServletRequest(method, path);
       request.setRequestURI(path);
       request.setRemoteAddr(remoteAddress);
       MockHttpServletResponse response = new MockHttpServletResponse();
@@ -234,6 +381,18 @@ class ProductionRequestBudgetStorePostgresIT {
     } finally {
       SecurityContextHolder.clearContext();
     }
+  }
+
+  private static MockHttpServletResponse invokeAnonymous(
+      ProductionRequestAbuseFilter filter, String remoteAddress) throws Exception {
+    SecurityContextHolder.clearContext();
+    MockHttpServletRequest request =
+        new MockHttpServletRequest("GET", "/api/v1/system-info");
+    request.setRequestURI("/api/v1/system-info");
+    request.setRemoteAddr(remoteAddress);
+    MockHttpServletResponse response = new MockHttpServletResponse();
+    filter.doFilter(request, response, (req, res) -> {});
+    return response;
   }
 
   private static MockHttpServletResponse invokeSse(

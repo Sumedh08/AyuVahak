@@ -57,6 +57,7 @@ def reviewed_vulnerability_report(*, sbom_sha256: str, artifact_sha256: str) -> 
             "status": "VERIFIED",
             "databaseSha256": "7" * 64,
             "scanResultSha256": "8" * 64,
+            "scannedSbomSha256": sbom_sha256,
         },
         "findings": [],
         "review": {
@@ -74,10 +75,13 @@ class ReleaseEvidenceTests(unittest.TestCase):
             root = Path(tmp)
             database = root / "osv-maven-snapshot.zip"
             scan_result = root / "osv-scan.json"
+            scanned_sbom = root / "ayuvahak.cdx.json"
             database.write_bytes(b"synthetic local OSV database snapshot\n")
             scan_result.write_bytes(b'{"synthetic":"local scan result"}\n')
+            scanned_sbom.write_bytes(b'{"synthetic":"exact local scanner input"}\n')
             raw_report = reviewed_vulnerability_report(
-                sbom_sha256="a" * 64, artifact_sha256="b" * 64
+                sbom_sha256=hashlib.sha256(scanned_sbom.read_bytes()).hexdigest(),
+                artifact_sha256="b" * 64,
             )
             raw_report["database"]["sha256"] = hashlib.sha256(database.read_bytes()).hexdigest()
             raw_report["scan"]["resultSha256"] = hashlib.sha256(scan_result.read_bytes()).hexdigest()
@@ -86,7 +90,10 @@ class ReleaseEvidenceTests(unittest.TestCase):
             report_path.write_bytes(report_bytes)
 
             report = load_vulnerability_report(
-                report_path, database_path=database, scan_result_path=scan_result
+                report_path,
+                database_path=database,
+                scan_result_path=scan_result,
+                scanned_sbom_path=scanned_sbom,
             )
 
         self.assertEqual(hashlib.sha256(report_bytes).hexdigest(), report["reportSha256"])
@@ -97,10 +104,13 @@ class ReleaseEvidenceTests(unittest.TestCase):
             root = Path(tmp)
             database = root / "osv-maven-snapshot.zip"
             scan_result = root / "osv-scan.json"
+            scanned_sbom = root / "ayuvahak.cdx.json"
             database.write_bytes(b"synthetic local OSV database snapshot\n")
             scan_result.write_bytes(b'{"synthetic":"local scan result"}\n')
+            scanned_sbom.write_bytes(b'{"synthetic":"exact local scanner input"}\n')
             report = reviewed_vulnerability_report(
-                sbom_sha256="a" * 64, artifact_sha256="b" * 64
+                sbom_sha256=hashlib.sha256(scanned_sbom.read_bytes()).hexdigest(),
+                artifact_sha256="b" * 64,
             )
             report["database"]["sha256"] = hashlib.sha256(database.read_bytes()).hexdigest()
             report["scan"]["resultSha256"] = hashlib.sha256(scan_result.read_bytes()).hexdigest()
@@ -108,31 +118,52 @@ class ReleaseEvidenceTests(unittest.TestCase):
                 "status": "VERIFIED",
                 "databaseSha256": "0" * 64,
                 "scanResultSha256": "0" * 64,
+                "scannedSbomSha256": "0" * 64,
             }
             report_path = root / "reviewed-inventory.json"
             report_path.write_text(json.dumps(report), encoding="utf-8")
 
             verified = load_vulnerability_report(
-                report_path, database_path=database, scan_result_path=scan_result
+                report_path,
+                database_path=database,
+                scan_result_path=scan_result,
+                scanned_sbom_path=scanned_sbom,
             )
             self.assertEqual("VERIFIED", verified["inputVerification"]["status"])
             self.assertEqual(report["database"]["sha256"], verified["inputVerification"]["databaseSha256"])
             self.assertEqual(report["scan"]["resultSha256"], verified["inputVerification"]["scanResultSha256"])
+            self.assertEqual(report["scan"]["sbomSha256"], verified["inputVerification"]["scannedSbomSha256"])
 
             database.write_bytes(b"different snapshot\n")
             with self.assertRaisesRegex(ValueError, "database digest does not match"):
                 load_vulnerability_report(
-                    report_path, database_path=database, scan_result_path=scan_result
+                    report_path,
+                    database_path=database,
+                    scan_result_path=scan_result,
+                    scanned_sbom_path=scanned_sbom,
                 )
 
             database.write_bytes(b"synthetic local OSV database snapshot\n")
             scan_result.write_bytes(b"changed local scan result\n")
             with self.assertRaisesRegex(ValueError, "scan result digest does not match"):
                 load_vulnerability_report(
-                    report_path, database_path=database, scan_result_path=scan_result
+                    report_path,
+                    database_path=database,
+                    scan_result_path=scan_result,
+                    scanned_sbom_path=scanned_sbom,
                 )
 
-    def test_vulnerability_report_loader_requires_both_scan_inputs(self):
+            scan_result.write_bytes(b'{"synthetic":"local scan result"}\n')
+            scanned_sbom.write_bytes(b'{"synthetic":"changed scanner input"}\n')
+            with self.assertRaisesRegex(ValueError, "scanned SBOM digest does not match"):
+                load_vulnerability_report(
+                    report_path,
+                    database_path=database,
+                    scan_result_path=scan_result,
+                    scanned_sbom_path=scanned_sbom,
+                )
+
+    def test_vulnerability_report_loader_requires_all_scan_inputs(self):
         with tempfile.TemporaryDirectory(prefix="ayuvahak-vulnerability-inputs-") as tmp:
             root = Path(tmp)
             report = reviewed_vulnerability_report(
@@ -454,7 +485,7 @@ class ReleaseEvidenceTests(unittest.TestCase):
             "licenseList": {"sha256": license_list_digest},
         }
         vulnerability_report = reviewed_vulnerability_report(
-            sbom_sha256=digest, artifact_sha256="1" * 64
+            sbom_sha256="c" * 64, artifact_sha256="1" * 64
         )
         result = release_eligibility(
             {

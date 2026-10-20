@@ -69,8 +69,9 @@ def load_vulnerability_report(
     *,
     database_path: Path | None = None,
     scan_result_path: Path | None = None,
+    scanned_sbom_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Load a reviewed inventory and verify its local scan inputs when supplied."""
+    """Load a reviewed inventory and verify the exact local bytes used by the scan."""
     try:
         source_bytes = path.read_bytes()
         report = json.loads(source_bytes)
@@ -78,9 +79,12 @@ def load_vulnerability_report(
         raise ReleaseEvidenceError("vulnerability report is unreadable or not valid JSON") from error
     if not isinstance(report, dict):
         raise ReleaseEvidenceError("vulnerability report must be a JSON object")
-    if (database_path is None) != (scan_result_path is None):
+    provided_inputs = (database_path, scan_result_path, scanned_sbom_path)
+    if any(value is not None for value in provided_inputs) and any(
+        value is None for value in provided_inputs
+    ):
         raise ReleaseEvidenceError(
-            "vulnerability database and scan result must be supplied together"
+            "vulnerability database, scan result, and scanned SBOM must be supplied together"
         )
     database = report.get("database")
     scan = report.get("scan")
@@ -89,16 +93,22 @@ def load_vulnerability_report(
             "vulnerability report must identify its database and scan result"
         )
     input_verification: dict[str, str] = {"status": "UNVERIFIED"}
-    if database_path is not None and scan_result_path is not None:
+    if (
+        database_path is not None
+        and scan_result_path is not None
+        and scanned_sbom_path is not None
+    ):
         try:
             database_digest = sha256_file(database_path)
             scan_result_digest = sha256_file(scan_result_path)
+            scanned_sbom_digest = sha256_file(scanned_sbom_path)
         except OSError as error:
             raise ReleaseEvidenceError(
-                "vulnerability database or scan result is unreadable"
+                "vulnerability database, scan result, or scanned SBOM is unreadable"
             ) from error
         expected_database_digest = database.get("sha256")
         expected_scan_digest = scan.get("resultSha256")
+        expected_scanned_sbom_digest = scan.get("sbomSha256")
         if database_digest != expected_database_digest:
             raise ReleaseEvidenceError(
                 "vulnerability database digest does not match reviewed inventory"
@@ -107,10 +117,15 @@ def load_vulnerability_report(
             raise ReleaseEvidenceError(
                 "vulnerability scan result digest does not match reviewed inventory"
             )
+        if scanned_sbom_digest != expected_scanned_sbom_digest:
+            raise ReleaseEvidenceError(
+                "scanned SBOM digest does not match reviewed inventory"
+            )
         input_verification = {
             "status": "VERIFIED",
             "databaseSha256": database_digest,
             "scanResultSha256": scan_result_digest,
+            "scannedSbomSha256": scanned_sbom_digest,
         }
     # Never trust an inventory's self-asserted verification field. It is
     # replaced only after the corresponding local bytes have been hashed.
@@ -382,7 +397,9 @@ def release_eligibility(evidence: dict[str, Any]) -> dict[str, Any]:
         and input_verification.get("databaseSha256") == vulnerability_database.get("sha256")
         and input_verification.get("scanResultSha256")
         == vulnerability_scan.get("resultSha256")
-        and vulnerability_scan.get("sbomSha256") == sbom.get("sha256")
+        and input_verification.get("scannedSbomSha256")
+        == vulnerability_scan.get("sbomSha256")
+        and re.fullmatch(r"[0-9a-f]{64}", str(vulnerability_scan.get("sbomSha256", "")))
         and vulnerability_scan.get("artifactSha256") == artifact_digest
         and re.fullmatch(r"[0-9a-f]{64}", str(vulnerability_scan.get("resultSha256", "")))
         and isinstance(component_count, int)
@@ -732,6 +749,7 @@ def _command() -> argparse.ArgumentParser:
     manifest.add_argument("--vulnerability-report", type=Path)
     manifest.add_argument("--vulnerability-database", type=Path)
     manifest.add_argument("--vulnerability-scan-result", type=Path)
+    manifest.add_argument("--vulnerability-scan-sbom", type=Path)
     manifest.add_argument("--validator-python", type=Path, default=Path(sys.executable))
     manifest.add_argument("--output", required=True, type=Path)
 
@@ -810,25 +828,28 @@ def main(argv: list[str] | None = None) -> int:
                 raise ReleaseEvidenceError("--sbom and --sbom-report must be supplied together")
             if arguments.vulnerability_report is not None and arguments.sbom is None:
                 raise ReleaseEvidenceError("--vulnerability-report requires a validated --sbom")
-            if (arguments.vulnerability_database is None) != (
-                arguments.vulnerability_scan_result is None
+            vulnerability_inputs = (
+                arguments.vulnerability_database,
+                arguments.vulnerability_scan_result,
+                arguments.vulnerability_scan_sbom,
+            )
+            if any(value is not None for value in vulnerability_inputs) and any(
+                value is None for value in vulnerability_inputs
             ):
                 raise ReleaseEvidenceError(
-                    "--vulnerability-database and --vulnerability-scan-result must be supplied together"
+                    "--vulnerability-database, --vulnerability-scan-result, and --vulnerability-scan-sbom must be supplied together"
                 )
-            if arguments.vulnerability_report is None and (
-                arguments.vulnerability_database is not None
-                or arguments.vulnerability_scan_result is not None
+            if arguments.vulnerability_report is None and any(
+                value is not None for value in vulnerability_inputs
             ):
                 raise ReleaseEvidenceError(
                     "vulnerability input paths require --vulnerability-report"
                 )
             if arguments.vulnerability_report is not None and (
-                arguments.vulnerability_database is None
-                or arguments.vulnerability_scan_result is None
+                any(value is None for value in vulnerability_inputs)
             ):
                 raise ReleaseEvidenceError(
-                    "--vulnerability-report requires the local database and scan-result bytes"
+                    "--vulnerability-report requires the local database, scan-result, and scanned-SBOM bytes"
                 )
             parameters: dict[str, str] = {}
             for pair in arguments.parameter:
@@ -881,6 +902,7 @@ def main(argv: list[str] | None = None) -> int:
                         arguments.vulnerability_report,
                         database_path=arguments.vulnerability_database,
                         scan_result_path=arguments.vulnerability_scan_result,
+                        scanned_sbom_path=arguments.vulnerability_scan_sbom,
                     )
                 sbom_evidence = {
                     "requiredFormat": "SPDX-3.0",
