@@ -42,6 +42,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -74,6 +75,17 @@ class BackupRestoreAcceptanceIT {
   private static final String OPERATOR = "SYN-RESTORE-OPERATOR";
   private static final UUID ORGANIZATION_ID =
       UUID.fromString("00000000-0000-4000-8000-000000000013");
+  private static final UUID FACILITY_ID = UUID.fromString("00000000-0000-4000-8000-000000000041");
+  private static final UUID CAPACITY_OBSERVATION_ID =
+      UUID.fromString("00000000-0000-4000-8000-000000000042");
+  private static final UUID CAPACITY_OPERATION_ID =
+      UUID.fromString("00000000-0000-4000-8000-000000000043");
+  private static final UUID CAPACITY_RESERVATION_ID =
+      UUID.fromString("00000000-0000-4000-8000-000000000044");
+  private static final UUID CAPACITY_DIMENSION_REVISION_ID =
+      UUID.fromString("00000000-0000-4000-8000-000000000045");
+  private static final UUID CAPACITY_POLICY_REVISION_ID =
+      UUID.fromString("00000000-0000-4000-8000-000000000046");
   private static final UUID GRANT_ID = UUID.fromString("00000000-0000-4000-8000-000000000023");
   private static final UUID REFERRAL_ID = UUID.fromString("00000000-0000-4000-8000-000000000014");
   private static final UUID EVENT_ID = UUID.fromString("00000000-0000-4000-8000-000000000015");
@@ -305,6 +317,31 @@ class BackupRestoreAcceptanceIT {
                 String.class,
                 ORGANIZATION_ID))
         .isEqualTo("SYN Restore Organization");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM directory.facility WHERE facility_id = ?",
+                Integer.class,
+                FACILITY_ID))
+        .isEqualTo(1);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT quantity FROM capacity.capacity_observation WHERE observation_id = ?",
+                java.math.BigDecimal.class,
+                CAPACITY_OBSERVATION_ID))
+        .isEqualByComparingTo("3");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT outcome FROM capacity.reservation_operation WHERE operation_id = ?",
+                String.class,
+                CAPACITY_OPERATION_ID))
+        .isEqualTo("RESERVED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT reservation_status FROM capacity.coordination_reservation "
+                    + "WHERE reservation_id = ?",
+                String.class,
+                CAPACITY_RESERVATION_ID))
+        .isEqualTo("ACTIVE");
 
     assertThat(readiness.health().getStatus().getCode()).isEqualTo("DOWN");
     assertThat(
@@ -452,11 +489,19 @@ class BackupRestoreAcceptanceIT {
     assertThat(
             jdbc.queryForObject(
                 "SELECT COUNT(*) FROM flyway_schema_history WHERE success", Integer.class))
-        .isEqualTo(92);
+        .isEqualTo(
+            database(SOURCE)
+                .jdbc()
+                .queryForObject(
+                    "SELECT COUNT(*) FROM flyway_schema_history WHERE success", Integer.class));
     assertThat(
             jdbc.queryForObject(
                 "SELECT MAX(installed_rank) FROM flyway_schema_history", Integer.class))
-        .isEqualTo(92);
+        .isEqualTo(
+            database(SOURCE)
+                .jdbc()
+                .queryForObject(
+                    "SELECT MAX(installed_rank) FROM flyway_schema_history", Integer.class));
 
     Duration recoveryTime = Duration.ofNanos(System.nanoTime() - restoreStartedNanos);
     Instant recoveryCompletedAt = Instant.now();
@@ -541,6 +586,24 @@ class BackupRestoreAcceptanceIT {
         OPERATOR,
         Timestamp.from(now),
         Timestamp.from(now));
+    jdbc.update(
+        "INSERT INTO directory.facility "
+            + "(facility_id, managing_organization_id, name, source_issuer, "
+            + "source_resource_type, source_reference, provenance_method, provenance_observed_at, "
+            + "provenance_recorded_at, provenance_actor_kind, provenance_actor_issuer, "
+            + "provenance_actor_identifier_type, provenance_actor_identifier, provenance_reason_code, "
+            + "lifecycle_status, version, created_at, updated_at) "
+            + "VALUES (?, ?, 'SYN Restore Facility', 'urn:synthetic:registry', 'Location', "
+            + "'SYN-FACILITY-RESTORE-001', 'SYNTHETIC_FIXTURE', ?, ?, 'HUMAN', ?, 'subject', ?, "
+            + "'SYNTHETIC_RESTORE_ACCEPTANCE', 'ACTIVE', 1, ?, ?)",
+        FACILITY_ID,
+        ORGANIZATION_ID,
+        Timestamp.from(now),
+        Timestamp.from(now),
+        ISSUER,
+        OPERATOR,
+        Timestamp.from(now),
+        Timestamp.from(now));
 
     jdbc.update(
         "INSERT INTO audit.audit_record "
@@ -575,6 +638,7 @@ class BackupRestoreAcceptanceIT {
 
     seedReferral(jdbc, now);
     seedHeldReferral(jdbc, now);
+    seedCapacity(jdbc, now);
     seedTransferTransportAndFederation(jdbc, now);
     seedUnresolvedAnalyticsExport(jdbc, now);
   }
@@ -603,11 +667,105 @@ class BackupRestoreAcceptanceIT {
         Timestamp.from(now.minus(Duration.ofDays(1))));
   }
 
+  private static void seedCapacity(JdbcTemplate jdbc, Instant now) {
+    new org.springframework.transaction.support.TransactionTemplate(
+            new DataSourceTransactionManager(jdbc.getDataSource()))
+        .executeWithoutResult(
+            status -> {
+              jdbc.update(
+                  "INSERT INTO capacity.capacity_dimension "
+                      + "(dimension_code, current_version, created_at) VALUES "
+                      + "('SYN_RESTORE_BEDS', 1, ?)",
+                  Timestamp.from(now));
+              jdbc.update(
+                  "INSERT INTO capacity.capacity_dimension_version "
+                      + "(revision_id, dimension_code, version, display_name, meaning, value_kind, "
+                      + "unit_code, minimum_value, maximum_value, used_for_readiness, reservable, "
+                      + "reason_code, changed_by_kind, changed_by_issuer, changed_by_identifier_type, "
+                      + "changed_by_identifier, changed_at) VALUES (?, 'SYN_RESTORE_BEDS', 1, "
+                      + "'Synthetic available beds', 'Synthetic restore fixture only', 'QUANTITY', "
+                      + "'bed', 0, 10, TRUE, TRUE, 'SYNTHETIC_RESTORE_FIXTURE', 'SERVICE', "
+                      + "'urn:synthetic:restore', 'client_id', 'synthetic-phase13-fixture', ?)",
+                  CAPACITY_DIMENSION_REVISION_ID,
+                  Timestamp.from(now));
+              jdbc.update(
+                  "INSERT INTO capacity.capacity_policy "
+                      + "(dimension_code, current_version, created_at) VALUES "
+                      + "('SYN_RESTORE_BEDS', 1, ?)",
+                  Timestamp.from(now));
+              jdbc.update(
+                  "INSERT INTO capacity.capacity_policy_version "
+                      + "(revision_id, dimension_code, version, dimension_version, "
+                      + "maximum_observation_age_seconds, default_validity_seconds, "
+                      + "future_skew_tolerance_seconds, minimum_passing_quantity, reason_code, "
+                      + "changed_by_kind, changed_by_issuer, changed_by_identifier_type, "
+                      + "changed_by_identifier, changed_at) VALUES (?, 'SYN_RESTORE_BEDS', 1, 1, "
+                      + "3600, 3600, 60, 1, 'SYNTHETIC_RESTORE_FIXTURE', 'SERVICE', "
+                      + "'urn:synthetic:restore', 'client_id', 'synthetic-phase13-fixture', ?)",
+                  CAPACITY_POLICY_REVISION_ID,
+                  Timestamp.from(now));
+              jdbc.update(
+                  "INSERT INTO capacity.capacity_policy_source "
+                      + "(dimension_code, policy_version, source_code, priority, "
+                      + "fallback_when_higher_priority_absent, fallback_when_higher_priority_stale) "
+                      + "VALUES ('SYN_RESTORE_BEDS', 1, 'restore-fixture', 1, FALSE, FALSE)");
+              jdbc.update(
+                  "INSERT INTO capacity.capacity_observation "
+                      + "(observation_id, facility_issuer, facility_identifier_type, "
+                      + "facility_identifier, dimension_code, dimension_version, observation_kind, "
+                      + "value_kind, quantity, state_code, unit_code, source_code, source_issuer, "
+                      + "source_identifier_type, source_identifier, reporting_method, reported_by_kind, "
+                      + "reported_by_issuer, reported_by_identifier_type, reported_by_identifier, "
+                      + "observed_at, received_at, source_valid_until, valid_until, policy_version, "
+                      + "future_skewed, reason_code) VALUES (?, 'urn:ayuvahak:directory', 'Facility', "
+                      + "?, 'SYN_RESTORE_BEDS', 1, 'VALUE', 'QUANTITY', 3, NULL, 'bed', "
+                      + "'restore-fixture', 'urn:synthetic:restore', 'CapacityObservation', "
+                      + "'SYN-CAPACITY-OBSERVATION-001', 'MANUAL_ENTRY', 'SERVICE', "
+                      + "'urn:synthetic:restore', 'client_id', 'synthetic-phase13-fixture', ?, ?, ?, ?, "
+                      + "1, FALSE, 'SYNTHETIC_RESTORE_FIXTURE')",
+                  CAPACITY_OBSERVATION_ID,
+                  FACILITY_ID.toString(),
+                  Timestamp.from(now.minus(Duration.ofMinutes(10))),
+                  Timestamp.from(now.minus(Duration.ofMinutes(10))),
+                  Timestamp.from(now.plus(Duration.ofHours(1))),
+                  Timestamp.from(now.plus(Duration.ofHours(1))));
+              jdbc.update(
+                  "INSERT INTO capacity.reservation_operation "
+                      + "(operation_id, transfer_id, subject_type, subject_id, request_fingerprint, "
+                      + "outcome, reservation_id, recorded_at) VALUES (?, ?, 'TRANSFER', ?, ?, "
+                      + "'RESERVED', ?, ?)",
+                  CAPACITY_OPERATION_ID,
+                  TRANSFER_ID,
+                  TRANSFER_ID,
+                  "7".repeat(64),
+                  CAPACITY_RESERVATION_ID,
+                  Timestamp.from(now.minus(Duration.ofMinutes(5))));
+              jdbc.update(
+                  "INSERT INTO capacity.coordination_reservation "
+                      + "(reservation_id, operation_id, transfer_id, subject_type, subject_id, "
+                      + "facility_issuer, facility_identifier_type, facility_identifier, "
+                      + "dimension_code, dimension_version, policy_version, unit_code, quantity, "
+                      + "interval_start, interval_end, expires_at, basis_observation_ids, created_at) "
+                      + "VALUES (?, ?, ?, 'TRANSFER', ?, 'urn:ayuvahak:directory', 'Facility', ?, "
+                      + "'SYN_RESTORE_BEDS', 1, 1, 'bed', 1, ?, ?, ?, ?::jsonb, ?)",
+                  CAPACITY_RESERVATION_ID,
+                  CAPACITY_OPERATION_ID,
+                  TRANSFER_ID,
+                  TRANSFER_ID,
+                  FACILITY_ID,
+                  Timestamp.from(now.minus(Duration.ofMinutes(5))),
+                  Timestamp.from(now.plus(Duration.ofMinutes(55))),
+                  Timestamp.from(now.plus(Duration.ofMinutes(55))),
+                  "[\"" + CAPACITY_OBSERVATION_ID + "\"]",
+                  Timestamp.from(now.minus(Duration.ofMinutes(5))));
+            });
+  }
+
   private static void seedTransferTransportAndFederation(JdbcTemplate jdbc, Instant now) {
     UUID recommendationId = UUID.fromString("00000000-0000-4000-8000-000000000037");
     UUID destinationOrganizationId = UUID.fromString("00000000-0000-4000-8000-000000000038");
     UUID originFacilityId = UUID.fromString("00000000-0000-4000-8000-000000000039");
-    UUID destinationFacilityId = UUID.fromString("00000000-0000-4000-8000-000000000040");
+    UUID destinationFacilityId = FACILITY_ID;
     jdbc.update(
         "INSERT INTO transfer.journey "
             + "(journey_id, referral_id, origin_organization_id, origin_facility_id, "

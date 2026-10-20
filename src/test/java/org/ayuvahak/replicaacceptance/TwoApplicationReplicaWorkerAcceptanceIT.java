@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.zaxxer.hikari.HikariDataSource;
 import java.lang.management.ManagementFactory;
 import java.net.URI;
+import java.net.ServerSocket;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -12,6 +13,8 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.sql.Connection;
 import java.sql.SQLException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.HexFormat;
@@ -87,6 +90,259 @@ class TwoApplicationReplicaWorkerAcceptanceIT {
   private static final HttpClient HTTP =
       HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build();
   private static volatile ProjectionControl projectionControl;
+
+  @Test
+  void separateApplicationProcessesCoordinateAndRecoverAfterProcessTermination() throws Exception {
+    projectionControl = new ProjectionControl();
+    ConfigurableApplicationContext seedContext = startReplica("SYN-PROCESS-SEEDER");
+    Process replicaA = null;
+    Process replicaB = null;
+    Connection crashGate = null;
+    Path logDirectory = Path.of(".scratch", "phase-13-production-hardening-dpg-readiness", "process-acceptance");
+    Files.createDirectories(logDirectory);
+    try {
+      Path applicationJar = Path.of("target", "ayuvahak-platform-0.1.0-SNAPSHOT.jar");
+      assertThat(applicationJar).as("packaged application JAR for process acceptance").exists();
+      int portA = freePort();
+      replicaA = startPackagedReplica("SYN-PHASE13-REPLICA-A", portA, logDirectory.resolve("replica-a.log"));
+      awaitProcessHealth(replicaA, portA);
+      int portB = freePort();
+      replicaB = startPackagedReplica("SYN-PHASE13-REPLICA-B", portB, logDirectory.resolve("replica-b.log"));
+      awaitProcessHealth(replicaB, portB);
+      assertThat(replicaA.pid()).isNotEqualTo(replicaB.pid());
+      EventEnvelope normal = notificationOnlyEvent("SYN-RECEIVING-REQUEST-PROCESS-001", 1);
+      record(seedContext, normal);
+      awaitOutboxState(seedContext, normal.eventId().toString(), "DELIVERED", Duration.ofSeconds(8));
+      assertThat(notificationCount(seedContext, normal.eventId().toString())).isEqualTo(1);
+
+      EventEnvelope crashRecovery = notificationOnlyEvent("SYN-RECEIVING-REQUEST-PROCESS-002", 1);
+      crashGate = installProcessCrashGate(seedContext);
+      record(seedContext, crashRecovery);
+      String pausedReplica = awaitPausedDatabaseSession(seedContext, Duration.ofSeconds(30));
+      Process claimedProcess = pausedReplica.equals("SYN-PHASE13-REPLICA-A") ? replicaA : replicaB;
+      Process survivingProcess = claimedProcess == replicaA ? replicaB : replicaA;
+      claimedProcess.destroyForcibly();
+      assertThat(claimedProcess.waitFor(10, TimeUnit.SECONDS)).isTrue();
+      releaseProcessCrashGate(crashGate);
+      crashGate.close();
+      crashGate = null;
+
+      awaitOutboxState(seedContext, crashRecovery.eventId().toString(), "DELIVERED", Duration.ofSeconds(30));
+      assertThat(notificationCount(seedContext, crashRecovery.eventId().toString()))
+          .as("the surviving application process recovers the leased event exactly once")
+          .isEqualTo(1);
+      assertThat(survivingProcess.isAlive()).isTrue();
+    } finally {
+      stopProcess(replicaA);
+      stopProcess(replicaB);
+      if (crashGate != null) {
+        try {
+          releaseProcessCrashGate(crashGate);
+          crashGate.close();
+        } catch (SQLException ignored) {
+          // The disposable test database is discarded after this acceptance.
+        }
+      }
+      dropProcessCrashGate(seedContext);
+      seedContext.close();
+      projectionControl = null;
+    }
+  }
+
+  private static Process startPackagedReplica(String applicationName, int port, Path logFile)
+      throws Exception {
+    String java = Path.of(System.getProperty("java.home"), "bin", "java.exe").toString();
+    String jdbcUrl = POSTGRES.getJdbcUrl() + "?ApplicationName=" + applicationName;
+    ProcessBuilder builder =
+        new ProcessBuilder(
+                java,
+                "-Duser.timezone=UTC",
+                "-jar",
+                Path.of("target", "ayuvahak-platform-0.1.0-SNAPSHOT.jar").toAbsolutePath().toString(),
+                "--server.port=" + port,
+                "--spring.flyway.enabled=false",
+                "--spring.datasource.url=" + jdbcUrl,
+                "--spring.datasource.username=" + POSTGRES.getUsername(),
+                "--spring.datasource.password=" + POSTGRES.getPassword(),
+                "--spring.datasource.hikari.data-source-properties.ApplicationName=" + applicationName,
+                "--ayuvahak.database.url=" + jdbcUrl,
+                "--ayuvahak.database.username=" + POSTGRES.getUsername(),
+                "--ayuvahak.database.password=" + POSTGRES.getPassword(),
+                "--ayuvahak.authentication.issuer=https://identity.example.test/realms/test",
+                "--ayuvahak.authentication.jwk-set-uri=http://127.0.0.1:9/jwks",
+                "--ayuvahak.authentication.audience=ayuvahak-api",
+                "--ayuvahak.authentication.service-client-ids=synthetic-worker",
+                "--ayuvahak.authentication.allow-http=true",
+                "--ayuvahak.transfer.owner-event-consumer-client-id=ayuvahak-transfer-owner-event-consumer",
+                "--ayuvahak.eventing.outbox.dispatcher-enabled=true",
+                "--ayuvahak.eventing.outbox.poll-interval=PT0.2S",
+                "--ayuvahak.eventing.outbox.lease-duration=PT3S",
+                "--ayuvahak.eventing.outbox.lease-renewal-interval=PT0.5S",
+                "--ayuvahak.eventing.outbox.delivered-event-retention=PT24H",
+                "--ayuvahak.eventing.outbox.batch-size=10",
+                "--ayuvahak.transfer.expiry-polling-enabled=false",
+                "--ayuvahak.transfer.reservation-polling-enabled=false",
+                "--ayuvahak.capacity.reservation-lifecycle.enabled=false",
+                "--management.endpoints.web.exposure.include=health",
+                "--logging.level.root=WARN")
+            .redirectErrorStream(true)
+            .redirectOutput(logFile.toFile());
+    return builder.start();
+  }
+
+  private static int freePort() throws Exception {
+    try (ServerSocket socket = new ServerSocket(0)) {
+      return socket.getLocalPort();
+    }
+  }
+
+  private static void awaitProcessHealth(Process process, int port) throws Exception {
+    Instant deadline = Instant.now().plusSeconds(90);
+    while (Instant.now().isBefore(deadline)) {
+      if (!process.isAlive()) {
+        throw new AssertionError("packaged AyuVahak process exited during startup: " + process.pid());
+      }
+      try {
+        HttpRequest request =
+            HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/actuator/health/liveness"))
+                .timeout(Duration.ofSeconds(2))
+                .GET()
+                .build();
+        if (HTTP.send(request, HttpResponse.BodyHandlers.discarding()).statusCode() == 200) {
+          return;
+        }
+      } catch (Exception notReadyYet) {
+        Thread.sleep(250);
+      }
+    }
+    throw new AssertionError("packaged AyuVahak process did not become healthy: " + process.pid());
+  }
+
+  private static Connection installProcessCrashGate(ConfigurableApplicationContext context)
+      throws SQLException {
+    Connection connection = context.getBean(DataSource.class).getConnection();
+    try (var statement = connection.createStatement()) {
+      statement.execute("CREATE SCHEMA IF NOT EXISTS replica_acceptance");
+      statement.execute(
+          "CREATE OR REPLACE FUNCTION replica_acceptance.pause_projection() RETURNS trigger "
+              + "LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock(81313001); "
+              + "RETURN NEW; END $$");
+      statement.execute(
+          "CREATE TABLE IF NOT EXISTS replica_acceptance.blocked_event (event_id uuid PRIMARY KEY)");
+      statement.execute(
+          "CREATE OR REPLACE TRIGGER pause_projection_before_insert BEFORE INSERT ON "
+              + "platform_notification.notification_projection FOR EACH ROW EXECUTE FUNCTION "
+              + "replica_acceptance.pause_projection()");
+      statement.execute("SELECT pg_advisory_lock(81313001)");
+      return connection;
+    } catch (SQLException failure) {
+      connection.close();
+      throw failure;
+    }
+  }
+
+  private static void releaseProcessCrashGate(Connection gate) throws SQLException {
+    try (var statement = gate.createStatement()) {
+      statement.execute("SELECT pg_advisory_unlock(81313001)");
+    }
+  }
+
+  private static String awaitPausedDatabaseSession(
+      ConfigurableApplicationContext context, Duration timeout) throws Exception {
+    Instant deadline = Instant.now().plus(timeout);
+    while (Instant.now().isBefore(deadline)) {
+      try (Connection connection = context.getBean(DataSource.class).getConnection();
+          var statement =
+              connection.prepareStatement(
+                  "SELECT application_name FROM pg_stat_activity WHERE wait_event = 'advisory' "
+                      + "AND application_name IN ('SYN-PHASE13-REPLICA-A', 'SYN-PHASE13-REPLICA-B') LIMIT 1");
+          var result = statement.executeQuery()) {
+        if (result.next()) {
+          return result.getString(1);
+        }
+      }
+      Thread.sleep(100);
+    }
+    throw new AssertionError("no packaged replica entered the controlled PostgreSQL crash gate");
+  }
+
+  private static void dropProcessCrashGate(ConfigurableApplicationContext context) {
+    if (!context.isActive()) {
+      return;
+    }
+    try (Connection connection = context.getBean(DataSource.class).getConnection();
+        var statement = connection.createStatement()) {
+      statement.execute("DROP TRIGGER IF EXISTS pause_projection_before_insert ON platform_notification.notification_projection");
+      statement.execute("DROP FUNCTION IF EXISTS replica_acceptance.pause_projection()");
+      statement.execute("DROP SCHEMA IF EXISTS replica_acceptance CASCADE");
+    } catch (SQLException ignored) {
+      // The acceptance database is disposable; cleanup must not mask the original assertion.
+    }
+  }
+
+  private static void stopProcess(Process process) throws InterruptedException {
+    if (process == null || !process.isAlive()) {
+      return;
+    }
+    process.destroy();
+    if (!process.waitFor(5, TimeUnit.SECONDS)) {
+      process.destroyForcibly();
+      process.waitFor(10, TimeUnit.SECONDS);
+    }
+  }
+
+  private static void awaitOutboxState(
+      ConfigurableApplicationContext context, String eventId, String expected, Duration timeout)
+      throws Exception {
+    Instant deadline = Instant.now().plus(timeout);
+    while (Instant.now().isBefore(deadline)) {
+      try (Connection connection = context.getBean(DataSource.class).getConnection();
+          var statement =
+              connection.prepareStatement(
+                  "SELECT state FROM platform_eventing.outbox_delivery WHERE event_id = ?")) {
+        statement.setObject(1, java.util.UUID.fromString(eventId));
+        try (var result = statement.executeQuery()) {
+          if (result.next() && expected.equals(result.getString(1))) {
+            return;
+          }
+        }
+      }
+      Thread.sleep(100);
+    }
+    String diagnostic = "missing";
+    try (Connection connection = context.getBean(DataSource.class).getConnection();
+        var statement =
+            connection.prepareStatement(
+                "SELECT state, attempt_count, last_failure_category FROM platform_eventing.outbox_delivery WHERE event_id = ?")) {
+      statement.setObject(1, java.util.UUID.fromString(eventId));
+      try (var result = statement.executeQuery()) {
+        if (result.next()) {
+          diagnostic =
+              result.getString("state")
+                  + "/attempts="
+                  + result.getInt("attempt_count")
+                  + "/failure="
+                  + result.getString("last_failure_category");
+        }
+      }
+    }
+    throw new AssertionError(
+        "outbox delivery did not reach " + expected + " for " + eventId + ": " + diagnostic);
+  }
+
+  private static int notificationCount(ConfigurableApplicationContext context, String eventId)
+      throws SQLException {
+    try (Connection connection = context.getBean(DataSource.class).getConnection();
+        var statement =
+            connection.prepareStatement(
+                "SELECT count(*) FROM platform_notification.notification_projection WHERE event_id = ?")) {
+      statement.setObject(1, java.util.UUID.fromString(eventId));
+      try (var result = statement.executeQuery()) {
+        result.next();
+        return result.getInt(1);
+      }
+    }
+  }
 
   @Container
   private static final PostgreSQLContainer POSTGRES =
@@ -514,7 +770,11 @@ class TwoApplicationReplicaWorkerAcceptanceIT {
                 RequestedExecutionScope.organization(organization),
                 new CorrelationId("synthetic-replica-correlation"));
     var payload = new ObjectMapper().createObjectNode();
-    payload.put("coordinationReference", syntheticReferralId);
+    payload.put(
+        "referralReference",
+        java.util.UUID.nameUUIDFromBytes(
+                syntheticReferralId.getBytes(java.nio.charset.StandardCharsets.UTF_8))
+            .toString());
     return new EventEnvelope(
         InternalId.generate(),
         EVENT_TYPE,
@@ -523,6 +783,37 @@ class TwoApplicationReplicaWorkerAcceptanceIT {
         new RecordedAt(SYNTHETIC_TIME.plusSeconds(1)),
         context,
         Optional.of(new AggregatePosition("referral/" + java.util.UUID.randomUUID(), sequence)),
+        payload);
+  }
+
+  private static EventEnvelope notificationOnlyEvent(String syntheticResourceId, long sequence) {
+    ExternalReference organization =
+        new ExternalReference(
+            new IssuerId("urn:ayuvahak:directory"), "Organization", "SYN-ORG-001");
+    ExecutionContext context =
+        new ExecutionContextFactory((actor, scope) -> true)
+            .forInteractiveRequest(
+                ActorReference.human(
+                    new IssuerId("https://identity.example.test/realms/test"), "SYN-USER-001"),
+                RequestedExecutionScope.organization(organization),
+                new CorrelationId("synthetic-process-replica-correlation"));
+    var payload = new ObjectMapper().createObjectNode();
+    payload.put("requestVersion", sequence);
+    payload.put("requestState", "ACCEPTED");
+    EventType eventType = EventType.parse("transfer.federated-receiving-request-changed.v1");
+    return new EventEnvelope(
+        InternalId.generate(),
+        eventType,
+        "transfer",
+        new OccurredAt(SYNTHETIC_TIME),
+        new RecordedAt(SYNTHETIC_TIME.plusSeconds(1)),
+        context,
+        Optional.of(
+            new AggregatePosition(
+                "federated-receiving-request/"
+                    + java.util.UUID.nameUUIDFromBytes(
+                        syntheticResourceId.getBytes(java.nio.charset.StandardCharsets.UTF_8)),
+                sequence)),
         payload);
   }
 
