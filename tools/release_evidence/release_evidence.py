@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""Local-only helpers for preparing and checking AyuVahak release evidence.
-
-This module intentionally does not generate or validate SPDX documents. The
-Phase 13 release gate requires a validated SPDX 3.0 SBOM; until an approved,
-locally available generator and validator are selected, manifests produced by
-this module remain ineligible for release.
-"""
+"""Local-only helpers for preparing and checking AyuVahak release evidence."""
 
 from __future__ import annotations
 
@@ -23,6 +17,8 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
+
+from spdx_sbom import SbomGenerationError, generate_and_validate_spdx, sha256_file
 
 
 MANIFEST_SCHEMA = "ayuvahak.release-evidence/v1"
@@ -200,16 +196,98 @@ def build_incomplete_manifest(
     }
 
 
+def build_manifest(
+    *,
+    version: str,
+    source_revision: str,
+    builder_id: str,
+    build_type: str,
+    build_parameters: dict[str, str],
+    artifacts: dict[str, str],
+    migration_range: str,
+    supported_upgrade_path: str,
+    sbom: dict[str, Any],
+    generated_at: datetime | None = None,
+) -> dict[str, Any]:
+    """Create a manifest bound to validated SPDX evidence and output digests."""
+    validate_version(version)
+    _validate_revision(source_revision)
+    if not migration_range.strip() or not supported_upgrade_path.strip():
+        raise ReleaseEvidenceError("migration range and supported upgrade path are required")
+    if not artifacts:
+        raise ReleaseEvidenceError("at least one output artifact is required")
+    for name, digest in artifacts.items():
+        _validate_archive_name(name)
+        if not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ReleaseEvidenceError(f"artifact {name!r} has no valid SHA-256 digest")
+    provenance = build_provenance(
+        source_revision=source_revision,
+        builder_id=builder_id,
+        build_type=build_type,
+        parameters=build_parameters,
+        artifacts=artifacts,
+        generated_at=generated_at,
+    )
+    eligibility = release_eligibility(
+        {
+            "sbom": sbom,
+            "provenance": {"status": "PRESENT"},
+            "signature": {"status": "PENDING"},
+            "vulnerabilityReport": {"status": "PENDING"},
+        }
+    )
+    return {
+        "schemaVersion": MANIFEST_SCHEMA,
+        "product": "AyuVahak",
+        "version": version,
+        "sourceRevision": source_revision.lower(),
+        "builderId": builder_id,
+        "buildType": build_type,
+        "buildParameters": dict(sorted(build_parameters.items())),
+        "artifacts": [
+            {"name": name, "sha256": digest}
+            for name, digest in sorted(artifacts.items())
+        ],
+        "migrationRange": migration_range,
+        "supportedUpgradePath": supported_upgrade_path,
+        "sbom": sbom,
+        "provenance": provenance,
+        "releaseEligibility": eligibility,
+        "generatedAt": (generated_at or datetime.now(timezone.utc))
+        .astimezone(timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z"),
+    }
+
+
 def release_eligibility(evidence: dict[str, Any]) -> dict[str, Any]:
-    """Apply fail-closed prerequisites; this partial tool cannot grant eligibility."""
+    """Apply fail-closed prerequisites from validated local release evidence."""
     blockers: list[str] = []
     sbom = evidence.get("sbom") or {}
+    validation_report = sbom.get("validationReport")
+    schema = (validation_report or {}).get("schema") or {}
+    shacl = (validation_report or {}).get("shacl") or {}
+    license_list = (validation_report or {}).get("licenseList") or {}
     if (
         sbom.get("status") != "VALIDATED"
-        or not str(sbom.get("format", "")).startswith("SPDX-3.0")
+        or sbom.get("format") != "SPDX-3.0.1"
         or not sbom.get("validator")
         or not sbom.get("validationProfile")
         or not re.fullmatch(r"[0-9a-f]{64}", str(sbom.get("sha256", "")))
+        or not re.fullmatch(r"[0-9a-f]{64}", str(sbom.get("schemaSha256", "")))
+        or not re.fullmatch(r"[0-9a-f]{64}", str(sbom.get("modelSha256", "")))
+        or not re.fullmatch(r"[0-9a-f]{64}", str(sbom.get("contextSha256", "")))
+        or not re.fullmatch(r"[0-9a-f]{64}", str(sbom.get("licenseListSha256", "")))
+        or not isinstance(sbom.get("validationReportSha256"), str)
+        or not re.fullmatch(r"[0-9a-f]{64}", str(sbom.get("validationReportSha256", "")))
+        or not isinstance(validation_report, dict)
+        or validation_report.get("result") != "PASS"
+        or validation_report.get("format") != "SPDX-3.0.1"
+        or validation_report.get("sbomSha256") != sbom.get("sha256")
+        or schema.get("sha256") != sbom.get("schemaSha256")
+        or shacl.get("sha256") != sbom.get("modelSha256")
+        or validation_report.get("contextSha256") != sbom.get("contextSha256")
+        or license_list.get("sha256") != sbom.get("licenseListSha256")
     ):
         blockers.append("validated SPDX 3.0 SBOM evidence is required")
     if (evidence.get("provenance") or {}).get("status") != "VERIFIED":
@@ -218,9 +296,6 @@ def release_eligibility(evidence: dict[str, Any]) -> dict[str, Any]:
         blockers.append("verified signature and expected signer identity are required")
     if (evidence.get("vulnerabilityReport") or {}).get("status") != "REVIEWED":
         blockers.append("reviewed local vulnerability inventory is required")
-    blockers.append(
-        "SPDX 3.0 generation and schema/profile validation are not implemented or configured locally"
-    )
     return {"eligible": not blockers, "blockers": blockers}
 
 
@@ -480,7 +555,18 @@ def _command() -> argparse.ArgumentParser:
     provenance.add_argument("--artifact", action="append", type=_parse_assignment, required=True)
     provenance.add_argument("--output", required=True, type=Path)
 
-    manifest = commands.add_parser("manifest", help="write a manifest that remains blocked without SPDX 3.0")
+    sbom = commands.add_parser("sbom", help="generate and validate an SPDX 3.0.1 SBOM offline")
+    sbom.add_argument("--generator", required=True, type=Path)
+    sbom.add_argument("--project-root", type=Path, default=Path.cwd())
+    sbom.add_argument("--artifact", required=True, type=Path)
+    sbom.add_argument("--application-purl", required=True)
+    sbom.add_argument("--maven-repository", type=Path, default=Path.home() / ".m2" / "repository")
+    sbom.add_argument("--validator-python", type=Path, default=Path(sys.executable))
+    sbom.add_argument("--java-home", type=Path)
+    sbom.add_argument("--output", required=True, type=Path)
+    sbom.add_argument("--validation-report", required=True, type=Path)
+
+    manifest = commands.add_parser("manifest", help="write a manifest bound to locally validated SPDX 3.0.1")
     manifest.add_argument("--version", required=True)
     manifest.add_argument("--source-revision", required=True)
     manifest.add_argument("--builder-id", required=True)
@@ -489,6 +575,9 @@ def _command() -> argparse.ArgumentParser:
     manifest.add_argument("--artifact", action="append", type=_parse_assignment, required=True)
     manifest.add_argument("--migration-range", required=True)
     manifest.add_argument("--supported-upgrade-path", required=True)
+    manifest.add_argument("--sbom", type=Path)
+    manifest.add_argument("--sbom-report", type=Path)
+    manifest.add_argument("--validator-python", type=Path, default=Path(sys.executable))
     manifest.add_argument("--output", required=True, type=Path)
 
     assess = commands.add_parser("assess", help="classify a local vulnerability inventory")
@@ -514,6 +603,29 @@ def _command() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     arguments = _command().parse_args(argv)
     try:
+        if arguments.command == "sbom":
+            report = generate_and_validate_spdx(
+                generator=arguments.generator,
+                project_root=arguments.project_root,
+                artifact=arguments.artifact,
+                application_purl=arguments.application_purl,
+                maven_repository=arguments.maven_repository,
+                validator_python=arguments.validator_python,
+                output=arguments.output,
+                validation_report=arguments.validation_report,
+                java_home=arguments.java_home,
+            )
+            print(json.dumps({
+                "result": report["result"],
+                "format": report["format"],
+                "sbomSha256": report["sbomSha256"],
+                "applicationArtifactSha256": report["applicationArtifactSha256"],
+                "runtimePackageCount": report["runtimePackageCount"],
+                "declaredLicenseRelationshipCount": report["declaredLicenseRelationshipCount"],
+                "generatorVersion": report["generator"]["version"],
+            }, sort_keys=True))
+            return 0
+
         if arguments.command == "provenance":
             validate_version(arguments.version)
             parameters: dict[str, str] = {}
@@ -538,6 +650,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if arguments.command == "manifest":
+            if bool(arguments.sbom) != bool(arguments.sbom_report):
+                raise ReleaseEvidenceError("--sbom and --sbom-report must be supplied together")
             parameters: dict[str, str] = {}
             for pair in arguments.parameter:
                 key, separator, value = pair.partition("=")
@@ -545,21 +659,76 @@ def main(argv: list[str] | None = None) -> int:
                     raise ReleaseEvidenceError("build parameters must use KEY=VALUE")
                 parameters[key] = value
             artifacts = {name: sha256_file(Path(path)) for name, path in arguments.artifact}
-            manifest = build_incomplete_manifest(
-                version=arguments.version,
-                source_revision=arguments.source_revision,
-                builder_id=arguments.builder_id,
-                build_type=arguments.build_type,
-                build_parameters=parameters,
-                artifacts=artifacts,
-                migration_range=arguments.migration_range,
-                supported_upgrade_path=arguments.supported_upgrade_path,
-            )
+            if arguments.sbom is None:
+                manifest = build_incomplete_manifest(
+                    version=arguments.version,
+                    source_revision=arguments.source_revision,
+                    builder_id=arguments.builder_id,
+                    build_type=arguments.build_type,
+                    build_parameters=parameters,
+                    artifacts=artifacts,
+                    migration_range=arguments.migration_range,
+                    supported_upgrade_path=arguments.supported_upgrade_path,
+                )
+            else:
+                validation_script = Path(__file__).with_name("validate_spdx31_offline.py")
+                validated = subprocess.run(
+                    [str(arguments.validator_python.resolve()), str(validation_script), str(arguments.sbom.resolve())],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                )
+                try:
+                    validation_report = json.loads(validated.stdout.strip())
+                    generation_report = json.loads(arguments.sbom_report.read_text(encoding="utf-8"))
+                except json.JSONDecodeError as error:
+                    raise ReleaseEvidenceError("SBOM validation/generation report is not valid JSON") from error
+                if validated.returncode != 0 or validation_report.get("result") != "PASS":
+                    raise ReleaseEvidenceError("SBOM failed local SPDX 3.0.1 validation")
+                actual_sbom_digest = sha256_file(arguments.sbom)
+                if (
+                    generation_report.get("result") != "PASS"
+                    or generation_report.get("format") != validation_report.get("format")
+                    or generation_report.get("sbomSha256") != actual_sbom_digest
+                    or validation_report.get("sbomSha256") != actual_sbom_digest
+                ):
+                    raise ReleaseEvidenceError("SBOM generation report does not bind this validated SBOM")
+                artifact_digest = generation_report.get("applicationArtifactSha256")
+                if artifact_digest not in artifacts.values():
+                    raise ReleaseEvidenceError("provenance artifact set does not contain the SBOM-bound application JAR")
+                sbom_evidence = {
+                    "requiredFormat": "SPDX-3.0",
+                    "format": validation_report["format"],
+                    "status": "VALIDATED",
+                    "sha256": actual_sbom_digest,
+                    "validator": "offline JSON Schema + SHACL validator",
+                    "validationProfile": "official SPDX 3.0.1 JSON Schema + model",
+                    "schemaSha256": validation_report["schema"]["sha256"],
+                    "modelSha256": validation_report["shacl"]["sha256"],
+                    "contextSha256": validation_report["contextSha256"],
+                    "licenseListSha256": validation_report["licenseList"]["sha256"],
+                    "validationReportSha256": sha256_file(arguments.sbom_report),
+                    "validationReport": validation_report,
+                    "generator": generation_report["generator"],
+                    "applicationArtifactSha256": artifact_digest,
+                }
+                manifest = build_manifest(
+                    version=arguments.version,
+                    source_revision=arguments.source_revision,
+                    builder_id=arguments.builder_id,
+                    build_type=arguments.build_type,
+                    build_parameters=parameters,
+                    artifacts=artifacts,
+                    migration_range=arguments.migration_range,
+                    supported_upgrade_path=arguments.supported_upgrade_path,
+                    sbom=sbom_evidence,
+                )
             arguments.output.parent.mkdir(parents=True, exist_ok=True)
             with arguments.output.open("x", encoding="utf-8", newline="\n") as destination:
                 json.dump(manifest, destination, indent=2, sort_keys=True)
                 destination.write("\n")
-            print("Manifest written as blocked; it is not release-eligible without validated SPDX 3.0.")
+            print("Manifest written; final eligibility still requires verified provenance, signature, and vulnerability review.")
             return 0
 
         if arguments.command == "assess":
@@ -620,7 +789,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if valid else 2
 
         raise ReleaseEvidenceError("unsupported command")
-    except (OSError, json.JSONDecodeError, ReleaseEvidenceError, ValueError) as error:
+    except (OSError, json.JSONDecodeError, ReleaseEvidenceError, SbomGenerationError, ValueError) as error:
         print(f"release-evidence: {error}", file=sys.stderr)
         return 2
 
