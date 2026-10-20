@@ -53,6 +53,11 @@ def reviewed_vulnerability_report(*, sbom_sha256: str, artifact_sha256: str) -> 
             "componentCount": 194,
             "findingCount": 0,
         },
+        "inputVerification": {
+            "status": "VERIFIED",
+            "databaseSha256": "7" * 64,
+            "scanResultSha256": "8" * 64,
+        },
         "findings": [],
         "review": {
             "status": "COMPLETE",
@@ -66,13 +71,79 @@ def reviewed_vulnerability_report(*, sbom_sha256: str, artifact_sha256: str) -> 
 class ReleaseEvidenceTests(unittest.TestCase):
     def test_vulnerability_report_loader_binds_exact_local_file_bytes(self):
         with tempfile.TemporaryDirectory(prefix="ayuvahak-vulnerability-evidence-") as tmp:
-            report_path = Path(tmp) / "reviewed-inventory.json"
-            report_path.write_bytes(b'{"status":"REVIEWED","findings":[]}\n')
+            root = Path(tmp)
+            database = root / "osv-maven-snapshot.zip"
+            scan_result = root / "osv-scan.json"
+            database.write_bytes(b"synthetic local OSV database snapshot\n")
+            scan_result.write_bytes(b'{"synthetic":"local scan result"}\n')
+            raw_report = reviewed_vulnerability_report(
+                sbom_sha256="a" * 64, artifact_sha256="b" * 64
+            )
+            raw_report["database"]["sha256"] = hashlib.sha256(database.read_bytes()).hexdigest()
+            raw_report["scan"]["resultSha256"] = hashlib.sha256(scan_result.read_bytes()).hexdigest()
+            report_path = root / "reviewed-inventory.json"
+            report_bytes = json.dumps(raw_report).encode("utf-8")
+            report_path.write_bytes(report_bytes)
 
-            report = load_vulnerability_report(report_path)
+            report = load_vulnerability_report(
+                report_path, database_path=database, scan_result_path=scan_result
+            )
 
-        self.assertEqual(hashlib.sha256(b'{"status":"REVIEWED","findings":[]}\n').hexdigest(), report["reportSha256"])
+        self.assertEqual(hashlib.sha256(report_bytes).hexdigest(), report["reportSha256"])
         self.assertEqual([], report["findings"])
+
+    def test_vulnerability_report_loader_verifies_database_and_scan_bytes(self):
+        with tempfile.TemporaryDirectory(prefix="ayuvahak-vulnerability-inputs-") as tmp:
+            root = Path(tmp)
+            database = root / "osv-maven-snapshot.zip"
+            scan_result = root / "osv-scan.json"
+            database.write_bytes(b"synthetic local OSV database snapshot\n")
+            scan_result.write_bytes(b'{"synthetic":"local scan result"}\n')
+            report = reviewed_vulnerability_report(
+                sbom_sha256="a" * 64, artifact_sha256="b" * 64
+            )
+            report["database"]["sha256"] = hashlib.sha256(database.read_bytes()).hexdigest()
+            report["scan"]["resultSha256"] = hashlib.sha256(scan_result.read_bytes()).hexdigest()
+            report["inputVerification"] = {
+                "status": "VERIFIED",
+                "databaseSha256": "0" * 64,
+                "scanResultSha256": "0" * 64,
+            }
+            report_path = root / "reviewed-inventory.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+
+            verified = load_vulnerability_report(
+                report_path, database_path=database, scan_result_path=scan_result
+            )
+            self.assertEqual("VERIFIED", verified["inputVerification"]["status"])
+            self.assertEqual(report["database"]["sha256"], verified["inputVerification"]["databaseSha256"])
+            self.assertEqual(report["scan"]["resultSha256"], verified["inputVerification"]["scanResultSha256"])
+
+            database.write_bytes(b"different snapshot\n")
+            with self.assertRaisesRegex(ValueError, "database digest does not match"):
+                load_vulnerability_report(
+                    report_path, database_path=database, scan_result_path=scan_result
+                )
+
+            database.write_bytes(b"synthetic local OSV database snapshot\n")
+            scan_result.write_bytes(b"changed local scan result\n")
+            with self.assertRaisesRegex(ValueError, "scan result digest does not match"):
+                load_vulnerability_report(
+                    report_path, database_path=database, scan_result_path=scan_result
+                )
+
+    def test_vulnerability_report_loader_requires_both_scan_inputs(self):
+        with tempfile.TemporaryDirectory(prefix="ayuvahak-vulnerability-inputs-") as tmp:
+            root = Path(tmp)
+            report = reviewed_vulnerability_report(
+                sbom_sha256="a" * 64, artifact_sha256="b" * 64
+            )
+            report_path = root / "reviewed-inventory.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            database = root / "osv-maven-snapshot.zip"
+
+            with self.assertRaisesRegex(ValueError, "must be supplied together"):
+                load_vulnerability_report(report_path, database_path=database)
 
     def test_vulnerability_report_loader_rejects_non_object_json(self):
         with tempfile.TemporaryDirectory(prefix="ayuvahak-vulnerability-evidence-") as tmp:
@@ -517,6 +588,51 @@ class ReleaseEvidenceTests(unittest.TestCase):
         self.assertFalse(result["eligible"])
         self.assertIn("reviewed local vulnerability inventory is required", result["blockers"])
 
+    def test_release_eligibility_rejects_unverified_vulnerability_inputs(self):
+        digest = "a" * 64
+        schema_digest = "b" * 64
+        model_digest = "c" * 64
+        context_digest = "d" * 64
+        license_list_digest = "f" * 64
+        validation_report = {
+            "result": "PASS",
+            "format": "SPDX-3.0.1",
+            "sbomSha256": digest,
+            "schema": {"sha256": schema_digest},
+            "shacl": {"sha256": model_digest},
+            "contextSha256": context_digest,
+            "licenseList": {"sha256": license_list_digest},
+        }
+        vulnerability_report = reviewed_vulnerability_report(
+            sbom_sha256=digest, artifact_sha256="1" * 64
+        )
+        vulnerability_report["inputVerification"] = {"status": "UNVERIFIED"}
+        result = release_eligibility(
+            {
+                "sbom": {
+                    "format": "SPDX-3.0.1",
+                    "status": "VALIDATED",
+                    "validator": "offline JSON Schema + SHACL validator",
+                    "validationProfile": "official SPDX 3.0.1 JSON Schema + model",
+                    "sha256": digest,
+                    "schemaSha256": schema_digest,
+                    "modelSha256": model_digest,
+                    "contextSha256": context_digest,
+                    "licenseListSha256": license_list_digest,
+                    "validationReportSha256": "e" * 64,
+                    "validationReport": validation_report,
+                    "applicationArtifactSha256": "1" * 64,
+                    "runtimePackageCount": 195,
+                    "runtimeDependencyCount": 194,
+                },
+                "provenance": {"status": "VERIFIED"},
+                "signature": {"status": "VERIFIED"},
+                "vulnerabilityReport": vulnerability_report,
+            }
+        )
+        self.assertFalse(result["eligible"])
+        self.assertIn("reviewed local vulnerability inventory is required", result["blockers"])
+
     def test_release_eligibility_rejects_mismatched_spdx_asset_digest(self):
         digest = "a" * 64
         report = {
@@ -754,6 +870,21 @@ class SignedBundleTests(unittest.TestCase):
             self.assertTrue(signed.is_file())
             expected_signer = signer_fingerprint(self.keytool, signed)
             self.assertIsNotNone(expected_signer)
+            direct_verification = subprocess.run(
+                [self.jarsigner, "-verify", "-certs", str(signed)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(
+                0,
+                direct_verification.returncode,
+                direct_verification.stdout + direct_verification.stderr,
+            )
+            self.assertIn(
+                "jar verified.",
+                f"{direct_verification.stdout}\n{direct_verification.stderr}".casefold(),
+            )
             verify_result = subprocess.run(
                 [
                     sys.executable,

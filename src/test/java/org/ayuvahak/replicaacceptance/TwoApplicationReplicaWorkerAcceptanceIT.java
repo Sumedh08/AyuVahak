@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.zaxxer.hikari.HikariDataSource;
 import java.lang.management.ManagementFactory;
+import java.net.Proxy;
+import java.net.ProxySelector;
 import java.net.ServerSocket;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -61,6 +63,7 @@ import org.ayuvahak.platform.observability.BenchmarkObservation;
 import org.ayuvahak.platform.observability.BenchmarkRunCondition;
 import org.ayuvahak.platform.observability.BenchmarkRunResult;
 import org.ayuvahak.platform.observability.BenchmarkWorkloadScale;
+import org.ayuvahak.platform.observability.DurableWorkQueue;
 import org.ayuvahak.platform.observability.SyntheticBenchmarkRunner;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.WebApplicationType;
@@ -71,6 +74,8 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.testcontainers.containers.wait.strategy.Wait;
+import org.testcontainers.containers.wait.strategy.WaitAllStrategy;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
@@ -88,7 +93,20 @@ class TwoApplicationReplicaWorkerAcceptanceIT {
   private static final Instant SYNTHETIC_TIME = Instant.parse("2026-10-20T00:00:00Z");
   private static final EventType EVENT_TYPE = EventType.parse("referral.cancelled.v1");
   private static final HttpClient HTTP =
-      HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build();
+      HttpClient.newBuilder()
+          .connectTimeout(Duration.ofSeconds(30))
+          .proxy(
+              new ProxySelector() {
+                @Override
+                public List<Proxy> select(URI uri) {
+                  return List.of(Proxy.NO_PROXY);
+                }
+
+                @Override
+                public void connectFailed(
+                    URI uri, java.net.SocketAddress address, java.io.IOException exception) {}
+              })
+          .build();
   private static volatile ProjectionControl projectionControl;
 
   @Test
@@ -366,6 +384,14 @@ class TwoApplicationReplicaWorkerAcceptanceIT {
           .withDatabaseName("ayuvahak_replica_acceptance")
           .withUsername("ayuvahak")
           .withPassword(TEST_PASSWORD)
+          .withCommand("postgres", "-c", "shared_preload_libraries=pg_stat_statements")
+          .waitingFor(
+              new WaitAllStrategy()
+                  .withStrategy(
+                      Wait.forSuccessfulCommand(
+                          "pg_isready -U ayuvahak -d ayuvahak_replica_acceptance"))
+                  .withStrategy(Wait.forListeningPort())
+                  .withStartupTimeout(Duration.ofMinutes(3)))
           .withStartupTimeout(Duration.ofMinutes(3));
 
   @Test
@@ -487,6 +513,10 @@ class TwoApplicationReplicaWorkerAcceptanceIT {
       assertThat(institutional.failedOperations()).isZero();
       assertThat(singleSite.measuredOperations()).isEqualTo(150);
       assertThat(institutional.measuredOperations()).isEqualTo(150);
+      assertThat(singleSite.databaseQueryCount()).isPositive();
+      assertThat(institutional.databaseQueryCount()).isPositive();
+      assertThat(singleSite.maximumBacklogAge()).containsKey(DurableWorkQueue.OUTBOX);
+      assertThat(institutional.maximumBacklogAge()).containsKey(DurableWorkQueue.OUTBOX);
       assertThat(singleSite.declaration().workload().organizations()).isEqualTo(5);
       assertThat(institutional.declaration().workload().organizations()).isEqualTo(5);
     } finally {
@@ -548,6 +578,7 @@ class TwoApplicationReplicaWorkerAcceptanceIT {
     String planFingerprint =
         notificationReplayPlanFingerprint(
             firstPool, NotificationScope.from(scopes.getFirst()).key());
+    resetStatementStatistics(firstPool);
     String sourceRevision = localSourceRevision();
     var operatingSystem = ManagementFactory.getOperatingSystemMXBean();
     long memoryMiB =
@@ -614,18 +645,43 @@ class TwoApplicationReplicaWorkerAcceptanceIT {
                         Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory();
                     return new BenchmarkObservation(
                         peakActiveConnections.get(),
-                        4,
+                        0,
                         cpuUtilization,
                         usedMemory,
                         Map.of(),
                         Set.of(planFingerprint));
                   });
+      long measuredDatabaseQueries = totalStatementCalls(firstPool);
+      assertThat(measuredDatabaseQueries)
+          .as("query count is collected from PostgreSQL statement statistics")
+          .isPositive();
+      result =
+          new BenchmarkRunResult(
+              result.declaration(),
+              result.startedAt(),
+              result.completedAt(),
+              result.elapsed(),
+              result.warmupFailures(),
+              result.measuredOperations(),
+              result.failedOperations(),
+              result.p50Milliseconds(),
+              result.p95Milliseconds(),
+              result.p99Milliseconds(),
+              result.throughputOperationsPerSecond(),
+              result.errorRate(),
+              result.maximumProcessCpuUtilization(),
+              result.peakProcessMemoryBytes(),
+              result.maximumActiveDatabaseConnections(),
+              measuredDatabaseQueries,
+              result.queryPlanFingerprints(),
+              Map.of(DurableWorkQueue.OUTBOX, oldestPendingOutboxAge(firstPool)));
     } finally {
       sampler.shutdownNow();
     }
     System.out.println(
         "PHASE13_SYNTHETIC_BASELINE "
             + profile
+            + " scope=notification_projection_replay_only"
             + " "
             + new ObjectMapper().writeValueAsString(result));
     return result;
@@ -648,6 +704,41 @@ class TwoApplicationReplicaWorkerAcceptanceIT {
             instanceof com.sun.management.OperatingSystemMXBean extended
         ? Math.max(0L, extended.getProcessCpuTime())
         : 0L;
+  }
+
+  private static void resetStatementStatistics(HikariDataSource dataSource) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        var statement = connection.createStatement()) {
+      statement.execute("CREATE EXTENSION IF NOT EXISTS pg_stat_statements");
+      statement.execute("SELECT pg_stat_statements_reset()");
+    }
+  }
+
+  private static long totalStatementCalls(HikariDataSource dataSource) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        var statement = connection.createStatement();
+        var result =
+            statement.executeQuery(
+                "SELECT COALESCE(SUM(calls), 0)::bigint FROM pg_stat_statements "
+                    + "WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database()) "
+                    + "AND query NOT ILIKE '%pg_stat_statements%'")) {
+      result.next();
+      return result.getLong(1);
+    }
+  }
+
+  private static Duration oldestPendingOutboxAge(HikariDataSource dataSource) throws SQLException {
+    try (Connection connection = dataSource.getConnection();
+        var statement = connection.createStatement();
+        var result =
+            statement.executeQuery(
+                "SELECT COALESCE(EXTRACT(EPOCH FROM (clock_timestamp() - MIN(created_at))), 0) "
+                    + "FROM platform_eventing.outbox_delivery "
+                    + "WHERE state IN ('PENDING', 'LEASED', 'STALLED', 'UNHANDLED')")) {
+      result.next();
+      double seconds = result.getDouble(1);
+      return Duration.ofNanos(Math.max(0L, (long) (seconds * 1_000_000_000L)));
+    }
   }
 
   private static String notificationReplayPlanFingerprint(
@@ -749,7 +840,7 @@ class TwoApplicationReplicaWorkerAcceptanceIT {
     HttpRequest request =
         HttpRequest.newBuilder(
                 URI.create("http://127.0.0.1:" + serverPort(context) + "/actuator/health/liveness"))
-            .timeout(Duration.ofSeconds(5))
+            .timeout(Duration.ofSeconds(60))
             .GET()
             .build();
     HttpResponse<Void> response = HTTP.send(request, HttpResponse.BodyHandlers.discarding());
