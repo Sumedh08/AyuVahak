@@ -156,8 +156,7 @@ class ProductionRequestBudgetStorePostgresIT {
     ActorReference actor = actor("SYN-OPERATION-CLASS-USER");
 
     assertThat(
-            invokeRoute(firstInstance, actor, "GET", "/api/v1/directory", "192.0.2.32")
-                .getStatus())
+            invokeRoute(firstInstance, actor, "GET", "/api/v1/directory", "192.0.2.32").getStatus())
         .isEqualTo(200);
     assertThat(
             invokeRoute(secondInstance, actor, "GET", "/api/v1/directory", "198.51.100.32")
@@ -190,8 +189,7 @@ class ProductionRequestBudgetStorePostgresIT {
     ActorReference actor = actor("SYN-RATE-REFILL-USER");
 
     assertThat(
-            invokeRoute(firstInstance, actor, "GET", "/api/v1/directory", "192.0.2.33")
-                .getStatus())
+            invokeRoute(firstInstance, actor, "GET", "/api/v1/directory", "192.0.2.33").getStatus())
         .isEqualTo(200);
     assertThat(
             invokeRoute(secondInstance, actor, "GET", "/api/v1/directory", "198.51.100.33")
@@ -386,8 +384,7 @@ class ProductionRequestBudgetStorePostgresIT {
   private static MockHttpServletResponse invokeAnonymous(
       ProductionRequestAbuseFilter filter, String remoteAddress) throws Exception {
     SecurityContextHolder.clearContext();
-    MockHttpServletRequest request =
-        new MockHttpServletRequest("GET", "/api/v1/system-info");
+    MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/v1/system-info");
     request.setRequestURI("/api/v1/system-info");
     request.setRemoteAddr(remoteAddress);
     MockHttpServletResponse response = new MockHttpServletResponse();

@@ -385,8 +385,7 @@ class TwoApplicationReplicaWorkerAcceptanceIT {
           .withPassword(TEST_PASSWORD)
           .withCommand("postgres", "-c", "shared_preload_libraries=pg_stat_statements")
           .waitingFor(
-              Wait.forSuccessfulCommand(
-                      "pg_isready -U ayuvahak -d ayuvahak_replica_acceptance")
+              Wait.forSuccessfulCommand("pg_isready -U ayuvahak -d ayuvahak_replica_acceptance")
                   .withStartupTimeout(Duration.ofMinutes(3)))
           .withStartupTimeout(Duration.ofMinutes(3));
 
