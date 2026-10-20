@@ -26,7 +26,7 @@
         <archunit.version>1.5.1</archunit.version>
         <spotless.version>3.10.1</spotless.version>
         <google-java-format.version>1.30.0</google-java-format.version>
-        <hapi-fhir.version>8.10.0</hapi-fhir.version>
+        <hapi-fhir.version>8.10.1</hapi-fhir.version>
         <httpclient5.version>5.6.5</httpclient5.version>
         <httpcore5.version>5.4.4</httpcore5.version>
         <nimbus-jose-jwt.version>10.9.1</nimbus-jose-jwt.version>
