@@ -18,7 +18,7 @@ operator/DPG documentation, and integrated acceptance/freeze. No external tracke
 |---|---|---|
 | P13-01 Production profiles | Implemented | Fail-closed profile validation and local configuration tests; no production deployment was performed. |
 | P13-02 Secret boundary | Implemented | Provider-neutral reference resolution and local fake-provider/rotation tests; no real provider or credential was used. |
-| P13-03 HTTP and abuse controls | Implemented | Local management, HTTP, CORS, and rate-limit controls/tests; limits remain application/deployment configuration. |
+| P13-03 HTTP and abuse controls | Partial | Local management, HTTP, CORS, and per-process actor/traffic-class rate-limit controls/tests exist. Current budgets do not cover all frozen principal/service, tenant/scope, partner, and operation dimensions, and per-process limits multiply across replicas. |
 | P13-04 SLI/SLO and capacity | Implemented, deployment evidence partial | Bounded SLI catalogue and configurable declarations exist; no universal SLO or external monitoring operation is claimed. |
 | P13-05 Migration recovery | Implemented | Controlled migration/readiness behavior and PostgreSQL migration integration tests; production upgrade evidence remains deployment-specific. |
 | P13-06 Replica/worker/shutdown | Partial | Bounded shutdown and duplicate PostgreSQL outbox-worker claim tests exist. A two-process/two-application-replica acceptance run is not yet evidenced. |
@@ -78,8 +78,20 @@ unresolved; no nomination or submission was made.
 
 ## Review and freeze gate
 
-The independent Phase 13 reviews found unresolved BLOCKER findings. At least the following freeze
-conditions remain unmet:
+The independent Phase 13 reviews found unresolved findings. Their disposition is:
+
+| Severity | Finding | Resolution |
+|---|---|---|
+| BLOCKER | Owner retention/restore coverage is incomplete outside Platform outbox and Referral restrictions; the frozen owner-by-owner purge/minimization, hold, and restore-reapplication evidence is not complete. | Unresolved. Do not freeze. |
+| BLOCKER | Two-application-replica acceptance is not evidenced; worker-claim tests do not prove the frozen multi-replica scenario. | Unresolved. Do not freeze. |
+| BLOCKER | No measured synthetic workload baseline is recorded for either supported deployment profile. | Unresolved. Do not freeze. |
+| MAJOR | Rate limits lack required tenant/scope, peer/partner, and operation budgets; per-process buckets can multiply across replicas. | Unresolved. Do not freeze. |
+| MAJOR | The restore fixture omits required idempotency and representative Transfer, Transport, and federation invariants. | Unresolved. Do not freeze. |
+| MAJOR | No reviewed dependency vulnerability inventory is bound to the release manifest; release eligibility remains false. | Unresolved. Do not freeze. |
+| MINOR | Independent standards review noted possible divergent-change smells in the combined release-evidence module and large production-profile binding class. | No correctness defect identified; retain as maintainability follow-up. |
+| DOCUMENTATION | Earlier readiness text used stale baseline/release claims and inconsistent restore figures. | Corrected in the local documentation follow-up commit. |
+
+At least the following freeze conditions remain unmet:
 
 1. SPDX generation, provenance, local ephemeral signing, manifest binding and signed bundle
    verification now pass for local synthetic acceptance. A reviewed dependency vulnerability
@@ -90,8 +102,12 @@ conditions remain unmet:
    two-replica acceptance scenario.
 4. The required measured synthetic workload baseline has not yet been recorded for either supported
    deployment profile.
-5. The full clean verification previously passed, but the remaining acceptance and review blockers
-   prevent Phase 13 completion and freeze.
+5. The repeat full clean verification at `689e0f8` could not start because `JAVA_HOME` points to an
+   inaccessible JDK 25 installation. The previous clean verification is historical evidence only;
+   the current verification attempt is not a pass.
+
+6. Rate-limit dimensions, the broader restore fixture, and a reviewed vulnerability inventory remain
+   incomplete as classified above.
 
 No Phase 13 freeze commit or governance update to “complete and frozen” is authorized while these
 conditions remain unresolved. Phase 14 remains specification-frozen and implementation-not-started.
