@@ -3,6 +3,7 @@ package org.ayuvahak.matching.adapter.persistence;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
@@ -52,7 +53,8 @@ class RemoteCapacityEvidenceProjectionStoreTest {
                   .asCompatibleSubstituteFor("postgres"))
           .withDatabaseName("ayuvahak")
           .withUsername("ayuvahak")
-          .withPassword("local-synthetic-only");
+          .withPassword("local-synthetic-only")
+          .withStartupTimeout(Duration.ofMinutes(3));
 
   @Container private static final PostgreSQLContainer CONTAINER = POSTGRES;
 

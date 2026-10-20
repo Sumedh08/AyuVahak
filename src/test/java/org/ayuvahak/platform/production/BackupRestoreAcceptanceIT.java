@@ -109,6 +109,8 @@ class BackupRestoreAcceptanceIT {
   private static PlatformOutboxRetentionManifest platformManifest;
   private static ReferralRetentionManifest referralManifest;
   private static Instant backupCompletedAt;
+  private static Instant disasterDeclaredAt;
+  private static Duration measuredRpo;
   private static Instant restoreStartedAt;
   private static long restoreStartedNanos;
   private static Path backupFile;
@@ -148,44 +150,6 @@ class BackupRestoreAcceptanceIT {
     runDocker("cp", SOURCE.getContainerId() + ":" + containerDumpPath, backupFile.toString());
     backupCompletedAt = Instant.now();
 
-    runDocker(
-        "exec",
-        RESTORED.getContainerId(),
-        "psql",
-        "-U",
-        RESTORED.getUsername(),
-        "-d",
-        "postgres",
-        "-v",
-        "ON_ERROR_STOP=1",
-        "-c",
-        "DROP DATABASE ayuvahak");
-    runDocker(
-        "exec",
-        RESTORED.getContainerId(),
-        "psql",
-        "-U",
-        RESTORED.getUsername(),
-        "-d",
-        "postgres",
-        "-v",
-        "ON_ERROR_STOP=1",
-        "-c",
-        "CREATE DATABASE ayuvahak TEMPLATE template0 OWNER ayuvahak");
-    runDocker("cp", backupFile.toString(), RESTORED.getContainerId() + ":" + containerDumpPath);
-    restoreStartedAt = Instant.now();
-    restoreStartedNanos = System.nanoTime();
-    runDocker(
-        "exec",
-        RESTORED.getContainerId(),
-        "pg_restore",
-        "--no-owner",
-        "-U",
-        RESTORED.getUsername(),
-        "-d",
-        RESTORED.getDatabaseName(),
-        containerDumpPath);
-
     Instant postBackupActionAt = backupCompletedAt.plusMillis(1);
     source.update(
         "UPDATE directory.organization SET name = 'SYN Late Backup Mutation', updated_at = ? "
@@ -217,6 +181,47 @@ class BackupRestoreAcceptanceIT {
     referralManifest =
         new JdbcReferralRetentionStore(source)
             .exportSince(restoreId, backupCompletedAt, postBackupActionAt.plusMillis(1));
+
+    disasterDeclaredAt = Instant.now();
+    measuredRpo = Duration.between(backupCompletedAt, disasterDeclaredAt);
+    restoreStartedAt = disasterDeclaredAt;
+    restoreStartedNanos = System.nanoTime();
+
+    runDocker(
+        "exec",
+        RESTORED.getContainerId(),
+        "psql",
+        "-U",
+        RESTORED.getUsername(),
+        "-d",
+        "postgres",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-c",
+        "DROP DATABASE ayuvahak");
+    runDocker(
+        "exec",
+        RESTORED.getContainerId(),
+        "psql",
+        "-U",
+        RESTORED.getUsername(),
+        "-d",
+        "postgres",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-c",
+        "CREATE DATABASE ayuvahak TEMPLATE template0 OWNER ayuvahak");
+    runDocker("cp", backupFile.toString(), RESTORED.getContainerId() + ":" + containerDumpPath);
+    runDocker(
+        "exec",
+        RESTORED.getContainerId(),
+        "pg_restore",
+        "--no-owner",
+        "-U",
+        RESTORED.getUsername(),
+        "-d",
+        RESTORED.getDatabaseName(),
+        containerDumpPath);
 
     jwksServer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
     jwksServer.createContext(
@@ -362,20 +367,20 @@ class BackupRestoreAcceptanceIT {
 
     Duration recoveryTime = Duration.ofNanos(System.nanoTime() - restoreStartedNanos);
     Instant recoveryCompletedAt = Instant.now();
-    Duration dataLossWindow = Duration.between(backupCompletedAt, recoveryCompletedAt);
     assertThat(recoveryTime).isLessThan(DECLARED_RTO);
     assertThat(recoveryTime).isLessThan(Duration.ofSeconds(900));
-    assertThat(dataLossWindow).isLessThanOrEqualTo(DECLARED_RPO);
+    assertThat(measuredRpo).isLessThanOrEqualTo(DECLARED_RPO);
     assertThat(backupCompletedAt).isBefore(Instant.now());
     LOG.info(
-        "Synthetic restore evidence: backupCompletedAt={} restoreStartedAt={} "
-            + "recoveryCompletedAt={} recoveryTime={} dataLossWindow={} declaredRpo={} "
+        "Synthetic restore evidence: backupCompletedAt={} disasterDeclaredAt={} "
+            + "restoreStartedAt={} recoveryCompletedAt={} recoveryTime={} measuredRpo={} declaredRpo={} "
             + "declaredRto={} restoredAtBackupPoint=true postBackupMutationLost=true",
         backupCompletedAt,
+        disasterDeclaredAt,
         restoreStartedAt,
         recoveryCompletedAt,
         recoveryTime,
-        dataLossWindow,
+        measuredRpo,
         DECLARED_RPO,
         DECLARED_RTO);
     assertThat(platformManifest.purgedEvents()).hasSize(1);

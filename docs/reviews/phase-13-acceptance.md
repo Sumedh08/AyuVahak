@@ -24,9 +24,9 @@ operator/DPG documentation, and integrated acceptance/freeze. No external tracke
 | P13-06 Replica/worker/shutdown | Partial | Bounded shutdown and duplicate PostgreSQL outbox-worker claim tests exist. A two-process/two-application-replica acceptance run is not yet evidenced. |
 | P13-07 Retention | Partial | Owner-scoped Platform outbox purge and Referral identifier restriction/reapplication are implemented. Other matrix owners do not yet have complete purge/minimization adapters or restore replayers. |
 | P13-08 Backup/restore | Local acceptance passed | Isolated synthetic `pg_dump`/`pg_restore`, Flyway, restored application, retention reapplication, and unresolved Analytics export barrier are exercised. The post-backup Directory update is intentionally lost at the dump recovery point. |
-| P13-09 Release evidence | Partial / BLOCKED | Local SemVer, provenance, ephemeral signature, tamper verification, and vulnerability review tooling has 10 passing Python tests. Frozen SPDX 3.0 generation and schema/profile validation are not yet present. |
+| P13-09 Release evidence | Partial / BLOCKED | Local SemVer, provenance, ephemeral signature, tamper verification, and vulnerability review tooling has 10 passing Python tests. The SPDX 3.0.1 candidate fails official SHACL validation and is not accepted. |
 | P13-10 Operations/DPG evidence | Partial | Local runbooks, ASVS 5.0.0 matrix, standards register, and evidence-based readiness matrix are present; governance and live deployment evidence remain open. |
-| P13-11 Integrated acceptance | Not complete | Full clean verify, complete retention coverage, true multi-replica acceptance, complete SPDX 3.0 evidence, and independent review/freeze remain outstanding. |
+| P13-11 Integrated acceptance | Not complete | Canonical clean verification passes, but complete retention coverage, true multi-replica acceptance, valid SPDX 3.0 evidence, and blocker remediation remain outstanding. |
 
 ## Backup and restore acceptance
 
@@ -37,22 +37,29 @@ outbox event, Referral restriction, and unresolved DHIS2 export/target-tuple cla
 retention action must be reapplied before readiness becomes healthy. A privacy marker is checked
 against retention manifests, audit, event, and Analytics export operation state.
 
-The test declares a synthetic 15-minute RPO and RTO. In the latest run, recovery took 3m21.730s
-from `pg_restore` start through restore reapplication/readiness and authorized read; the
-dump-completion-to-recovery window was 3m30.468s. Both were within the declared test targets. The
-method is a logical snapshot; it does not exercise WAL/PITR, scheduled backups, encryption, or
-off-host storage. No general production RPO/RTO claim follows from this test.
+The test declares synthetic 15-minute RPO and RTO targets. In the canonical clean run on
+2026-10-20, measured RPO was 0.195s from backup completion to disaster declaration and measured
+RTO was 8.121s from disaster declaration through restore reapplication, readiness, and authorized
+read. Both were within the declared test targets. The method is a logical snapshot; it does not
+exercise WAL/PITR, scheduled backups, encryption, or off-host storage. No general production
+RPO/RTO claim follows from this test.
 
 ## Local verification so far
 
-- `BackupRestoreAcceptanceIT`: latest version passed 1 Failsafe test (0 failures, 0 errors, 0
-  skips; 505.4 seconds). It demonstrated post-backup business-state loss, retention reapplication
-  before readiness, restored `OUTCOME_UNKNOWN` tuple barrier preservation, and an authorized read.
-- `ProductionFlywayMigrationStrategyIT`: 4 integration tests passed in an earlier focused run.
-- Focused retention regression suites passed earlier: Event delivery 6, outbox PostgreSQL 14, and
-  Referral draft API 34.
+- Canonical `.\mvnw.cmd -B -ntp clean verify`: **BUILD SUCCESS** in 19m38s using Java 25.0.4.1,
+  Maven 3.10.0, Spring Boot 4.1.1, and PostgreSQL 18.6 Testcontainers; Flyway validated/applied
+  92 migrations. Surefire: 479 tests, 0 failures, 0 errors, 0 skips. Failsafe: 408 tests,
+  0 failures, 0 errors, 0 skips. Total: 887 tests across 103 unit suites and 31 integration
+  suites. These are local synthetic acceptance runs, not production deployment evidence.
+- `BackupRestoreAcceptanceIT`: 1 Failsafe test passed in the canonical clean run (0 failures,
+  0 errors, 0 skips; test time 24.31s). It demonstrated post-backup business-state loss, retention
+  reapplication before readiness, restored `OUTCOME_UNKNOWN` tuple-barrier preservation, and an
+  authorized read.
+- `ProductionFlywayMigrationStrategyIT`: 4 integration tests passed in the canonical clean run.
+- Focused retention regression suites also passed earlier: Event delivery 6, outbox PostgreSQL 14,
+  and Referral draft API 34.
 - Local release-evidence Python tests: 10 passed, 0 failures/errors/skips in 60.5 seconds.
-- The canonical `clean verify` and full Volume I–IV regression have not yet passed in this run.
+- The canonical full clean verification passed. The frozen integrated Phase 13 acceptance gate remains incomplete because retention, two-replica, and valid SPDX 3.0 evidence are still missing.
 
 ## Readiness and DPG evidence
 
@@ -66,13 +73,19 @@ unresolved; no nomination or submission was made.
 
 ## Review and freeze gate
 
-The independent Phase 13 review is pending. At least the following freeze conditions remain unmet:
+The independent Phase 13 reviews found unresolved BLOCKER findings. At least the following freeze
+conditions remain unmet:
 
 1. The frozen release-evidence gate requires generated and validated SPDX 3.0; current tooling
-   explicitly fails release eligibility without it.
-2. Owner retention coverage is incomplete outside Platform outbox and Referral restrictions.
-3. Two-application-replica acceptance and the full integrated Phase 13 gate are not yet evidenced.
-4. Canonical full clean verification and the final review have not completed.
+   explicitly fails release eligibility without it. The cdxgen SPDX 3.0.1 candidate passed its
+   built-in JSON Schema check but failed the official SPDX SHACL validation (missing creator Agent
+   node and invalid `profileConformance` enum), so it is not accepted as a valid SBOM.
+2. Owner retention coverage is incomplete outside Platform outbox and Referral restrictions; the
+   frozen owner-by-owner purge/minimization, hold, and restore-reapplication evidence is not complete.
+3. Two-application-replica acceptance is not evidenced; worker claim tests do not prove the frozen
+   two-replica acceptance scenario.
+4. The full clean verification now passes, but these acceptance and review blockers still prevent
+   Phase 13 completion and freeze.
 
 No Phase 13 freeze commit or governance update to “complete and frozen” is authorized while these
 conditions remain unresolved. Phase 14 remains specification-frozen and implementation-not-started.
