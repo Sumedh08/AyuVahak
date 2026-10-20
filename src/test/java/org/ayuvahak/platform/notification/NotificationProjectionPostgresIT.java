@@ -334,8 +334,7 @@ class NotificationProjectionPostgresIT {
 
     clock.advance(Duration.ofHours(25));
 
-    NotificationProjectionPage replay =
-        query.listAfter(scope, Optional.of(originalCursor), 20);
+    NotificationProjectionPage replay = query.listAfter(scope, Optional.of(originalCursor), 20);
 
     assertThat(replay.refreshRequired()).isTrue();
     assertThat(replay.hints()).isEmpty();

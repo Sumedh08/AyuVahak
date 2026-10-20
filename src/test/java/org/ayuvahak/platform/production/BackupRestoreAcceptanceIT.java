@@ -605,8 +605,7 @@ class BackupRestoreAcceptanceIT {
 
   private static void seedTransferTransportAndFederation(JdbcTemplate jdbc, Instant now) {
     UUID recommendationId = UUID.fromString("00000000-0000-4000-8000-000000000037");
-    UUID destinationOrganizationId =
-        UUID.fromString("00000000-0000-4000-8000-000000000038");
+    UUID destinationOrganizationId = UUID.fromString("00000000-0000-4000-8000-000000000038");
     UUID originFacilityId = UUID.fromString("00000000-0000-4000-8000-000000000039");
     UUID destinationFacilityId = UUID.fromString("00000000-0000-4000-8000-000000000040");
     jdbc.update(

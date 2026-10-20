@@ -2,20 +2,26 @@ package org.ayuvahak.replicaacceptance;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.zaxxer.hikari.HikariDataSource;
+import java.lang.management.ManagementFactory;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -30,6 +36,7 @@ import org.ayuvahak.platform.core.OccurredAt;
 import org.ayuvahak.platform.core.RecordedAt;
 import org.ayuvahak.platform.event.AggregatePosition;
 import org.ayuvahak.platform.event.EventEnvelope;
+import org.ayuvahak.platform.event.EventEnvelopeJsonCodec;
 import org.ayuvahak.platform.event.EventType;
 import org.ayuvahak.platform.eventing.application.DispatchReport;
 import org.ayuvahak.platform.eventing.application.EventHandlerRegistry;
@@ -45,6 +52,13 @@ import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
 import org.ayuvahak.platform.notification.application.NotificationEventProjectionHandler;
 import org.ayuvahak.platform.notification.application.NotificationProjectionPage;
 import org.ayuvahak.platform.notification.application.NotificationProjectionQuery;
+import org.ayuvahak.platform.notification.application.NotificationScope;
+import org.ayuvahak.platform.observability.BenchmarkDeclaration;
+import org.ayuvahak.platform.observability.BenchmarkObservation;
+import org.ayuvahak.platform.observability.BenchmarkRunCondition;
+import org.ayuvahak.platform.observability.BenchmarkRunResult;
+import org.ayuvahak.platform.observability.BenchmarkWorkloadScale;
+import org.ayuvahak.platform.observability.SyntheticBenchmarkRunner;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.WebApplicationType;
 import org.springframework.boot.builder.SpringApplicationBuilder;
@@ -179,6 +193,195 @@ class TwoApplicationReplicaWorkerAcceptanceIT {
         replicaA.close();
       }
       projectionControl = null;
+    }
+  }
+
+  @Test
+  void recordsMeasuredSyntheticBaselinesForSingleAndTwoReplicaProfiles() throws Exception {
+    projectionControl = new ProjectionControl();
+    ConfigurableApplicationContext profileA = null;
+    ConfigurableApplicationContext profileBFirst = null;
+    ConfigurableApplicationContext profileBSecond = null;
+    try {
+      profileA = startReplica("SYN-PROFILE-A-SINGLE");
+      BenchmarkRunResult singleSite =
+          measureNotificationReplayProfile(
+              "PROFILE_A_SINGLE_SITE", List.of(profileA), "SYN-ORG-001");
+
+      profileBFirst = startReplica("SYN-PROFILE-B-REPLICA-A");
+      profileBSecond = startReplica("SYN-PROFILE-B-REPLICA-B");
+      assertIndependentLocalReplicas(profileBFirst, profileBSecond);
+      BenchmarkRunResult institutional =
+          measureNotificationReplayProfile(
+              "PROFILE_B_TWO_REPLICA",
+              List.of(profileBFirst, profileBSecond),
+              "SYN-ORG-001");
+
+      assertThat(singleSite.failedOperations()).isZero();
+      assertThat(institutional.failedOperations()).isZero();
+      assertThat(singleSite.measuredOperations()).isEqualTo(150);
+      assertThat(institutional.measuredOperations()).isEqualTo(150);
+    } finally {
+      if (profileBSecond != null && profileBSecond.isActive()) {
+        profileBSecond.close();
+      }
+      if (profileBFirst != null && profileBFirst.isActive()) {
+        profileBFirst.close();
+      }
+      if (profileA != null && profileA.isActive()) {
+        profileA.close();
+      }
+      projectionControl = null;
+    }
+  }
+
+  private static BenchmarkRunResult measureNotificationReplayProfile(
+      String profile, List<ConfigurableApplicationContext> replicas, String organizationId)
+      throws Exception {
+    ExecutionScope scope = organizationScope(organizationId);
+    NotificationProjectionQuery initialQuery =
+        replicas.getFirst().getBean(NotificationProjectionQuery.class);
+    String cursor = initialQuery.currentCursor(scope);
+    EventEnvelopeJsonCodec codec = replicas.getFirst().getBean(EventEnvelopeJsonCodec.class);
+    var projection = replicas.getFirst().getBean(NotificationEventProjectionHandler.class);
+    for (int index = 0; index < 128; index++) {
+      EventEnvelope syntheticEvent = event("SYN-REFERRAL-BENCH-" + index, index + 1L);
+      projection.handle(
+          new InternalEvent(
+              syntheticEvent.eventId(),
+              syntheticEvent.eventType(),
+              syntheticEvent.producerContext(),
+              syntheticEvent.aggregatePosition(),
+              codec.encode(syntheticEvent)));
+    }
+
+    List<NotificationProjectionQuery> queries =
+        replicas.stream()
+            .map(context -> context.getBean(NotificationProjectionQuery.class))
+            .toList();
+    HikariDataSource firstPool = (HikariDataSource) replicas.getFirst().getBean(DataSource.class);
+    String databaseVersion;
+    try (Connection connection = firstPool.getConnection();
+        var statement = connection.createStatement();
+        var result = statement.executeQuery("SHOW server_version")) {
+      result.next();
+      databaseVersion = "PostgreSQL " + result.getString(1);
+    }
+    String planFingerprint =
+        notificationReplayPlanFingerprint(firstPool, NotificationScope.from(scope).key());
+    String sourceRevision = localSourceRevision();
+    var operatingSystem = ManagementFactory.getOperatingSystemMXBean();
+    long memoryMiB =
+        operatingSystem instanceof com.sun.management.OperatingSystemMXBean extended
+            ? Math.max(1L, extended.getTotalMemorySize() / (1024 * 1024))
+            : Math.max(1L, Runtime.getRuntime().maxMemory() / (1024 * 1024));
+    BenchmarkDeclaration declaration =
+        new BenchmarkDeclaration(
+            sourceRevision,
+            System.getProperty("java.runtime.version"),
+            databaseVersion,
+            Math.max(1, Runtime.getRuntime().availableProcessors()),
+            memoryMiB,
+            new BenchmarkWorkloadScale(1, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+            BenchmarkRunCondition.WARM,
+            10,
+            50,
+            3);
+
+    AtomicInteger peakActiveConnections = new AtomicInteger();
+    ScheduledExecutorService sampler = Executors.newSingleThreadScheduledExecutor();
+    sampler.scheduleAtFixedRate(
+        () -> {
+          int active =
+              replicas.stream()
+                  .map(context -> (HikariDataSource) context.getBean(DataSource.class))
+                  .map(HikariDataSource::getHikariPoolMXBean)
+                  .filter(java.util.Objects::nonNull)
+                  .mapToInt(pool -> pool.getActiveConnections())
+                  .sum();
+          peakActiveConnections.accumulateAndGet(active, Math::max);
+        },
+        0,
+        1,
+        TimeUnit.MILLISECONDS);
+    BenchmarkRunResult result;
+    try {
+      result =
+          new SyntheticBenchmarkRunner()
+              .run(
+                  declaration,
+                  (scale, stage, repetition, operationIndex) -> {
+                    long cpuBefore = processCpuNanos();
+                    long operationStarted = System.nanoTime();
+                    NotificationProjectionPage page =
+                        queries
+                            .get(operationIndex % queries.size())
+                            .listAfter(scope, Optional.of(cursor), 25);
+                    long elapsedNanos = Math.max(1L, System.nanoTime() - operationStarted);
+                    long cpuDelta = Math.max(0L, processCpuNanos() - cpuBefore);
+                    double cpuUtilization =
+                        Math.min(
+                            1.0,
+                            (double) cpuDelta
+                                / (elapsedNanos * Runtime.getRuntime().availableProcessors()));
+                    assertThat(page.refreshRequired()).isFalse();
+                    assertThat(page.hints()).hasSize(25);
+                    long usedMemory =
+                        Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory();
+                    return new BenchmarkObservation(
+                        peakActiveConnections.get(),
+                        4,
+                        cpuUtilization,
+                        usedMemory,
+                        Map.of(),
+                        Set.of(planFingerprint));
+                  });
+    } finally {
+      sampler.shutdownNow();
+    }
+    System.out.println(
+        "PHASE13_SYNTHETIC_BASELINE "
+            + profile
+            + " "
+            + new ObjectMapper().writeValueAsString(result));
+    return result;
+  }
+
+  private static String localSourceRevision() throws Exception {
+    Process process =
+        new ProcessBuilder("git", "rev-parse", "HEAD").redirectErrorStream(true).start();
+    String revision;
+    try (var output = process.getInputStream()) {
+      revision = new String(output.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8).trim();
+    }
+    assertThat(process.waitFor()).isZero();
+    assertThat(revision).matches("[0-9a-fA-F]{40}");
+    return revision;
+  }
+
+  private static long processCpuNanos() {
+    return ManagementFactory.getOperatingSystemMXBean()
+            instanceof com.sun.management.OperatingSystemMXBean extended
+        ? Math.max(0L, extended.getProcessCpuTime())
+        : 0L;
+  }
+
+  private static String notificationReplayPlanFingerprint(
+      HikariDataSource dataSource, String scopeKey) throws SQLException, NoSuchAlgorithmException {
+    String sql =
+        "EXPLAIN (FORMAT JSON) SELECT event_type, resource_type, resource_id, owner_version, "
+            + "sequence_number, cursor_id, correlation_id, occurred_at, recorded_at, projected_at "
+            + "FROM platform_notification.notification_projection WHERE scope_key = '"
+            + scopeKey
+            + "' AND sequence_number > 0 ORDER BY sequence_number LIMIT 26";
+    try (Connection connection = dataSource.getConnection();
+        var statement = connection.createStatement();
+        var result = statement.executeQuery(sql)) {
+      result.next();
+      return HexFormat.of()
+          .formatHex(
+              MessageDigest.getInstance("SHA-256")
+                  .digest(result.getString(1).getBytes(java.nio.charset.StandardCharsets.UTF_8)));
     }
   }
 
