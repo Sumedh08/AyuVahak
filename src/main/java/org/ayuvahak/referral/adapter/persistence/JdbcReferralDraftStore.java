@@ -23,6 +23,7 @@ import org.ayuvahak.referral.application.ReferralListItem;
 import org.ayuvahak.referral.application.ReferralReadFilter;
 import org.ayuvahak.referral.application.ReferralRetentionHoldPurpose;
 import org.ayuvahak.referral.application.ReferralRetentionHoldReleaseReason;
+import org.ayuvahak.referral.application.ReferralRetentionManifest;
 import org.ayuvahak.referral.application.ReferralRetentionStore;
 import org.ayuvahak.referral.domain.CareRequirement;
 import org.ayuvahak.referral.domain.PatientReference;
@@ -102,8 +103,23 @@ public class JdbcReferralDraftStore implements ReferralDraftStore {
       ReferralIdentifierRestrictionReason reason,
       ActorReference actor,
       Instant restrictedAt) {
-    return retention.restrictIdentifier(
-        restrictionId, referralId, reason, actor, restrictedAt);
+    return retention.restrictIdentifier(restrictionId, referralId, reason, actor, restrictedAt);
+  }
+
+  @Override
+  public ReferralRetentionManifest exportSince(
+      UUID restoreId, Instant backupCompletedAt, Instant generatedAt) {
+    return retention.exportSince(restoreId, backupCompletedAt, generatedAt);
+  }
+
+  @Override
+  public void reapply(ReferralRetentionManifest manifest, Instant completedAt) {
+    retention.reapply(manifest, completedAt);
+  }
+
+  @Override
+  public boolean hasCompleted(UUID restoreId) {
+    return retention.hasCompleted(restoreId);
   }
 
   @Override

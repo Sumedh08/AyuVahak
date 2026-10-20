@@ -54,9 +54,9 @@ import org.ayuvahak.platform.eventing.application.OutboxDispatcher;
 import org.ayuvahak.platform.executioncontext.ExecutionContext;
 import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
 import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
+import org.ayuvahak.platform.retention.RetentionReapplicationProperties;
 import org.ayuvahak.referral.application.ReferralMatchingRequirement;
 import org.ayuvahak.referral.application.ReferralQueries;
-import org.ayuvahak.platform.retention.RetentionReapplicationProperties;
 import org.ayuvahak.referral.application.ReferralTransferOutcomeEventHandler;
 import org.ayuvahak.transfer.application.TransferAmendmentStatusQuery;
 import org.ayuvahak.transfer.application.TransferStore;
@@ -116,7 +116,8 @@ class ReferralDraftCommandsApiIT {
                   .asCompatibleSubstituteFor("postgres"))
           .withDatabaseName("ayuvahak")
           .withUsername("ayuvahak")
-          .withPassword(TEST_PASSWORD);
+          .withPassword(TEST_PASSWORD)
+          .withStartupTimeout(Duration.ofMinutes(3));
 
   @Container private static final PostgreSQLContainer CONTAINER = POSTGRES;
   private static HttpServer jwksServer;
@@ -2141,9 +2142,12 @@ class ReferralDraftCommandsApiIT {
             .getResponse()
             .getContentAsString();
 
-    assertThat(com.jayway.jsonpath.JsonPath.read(manifest, "$.identifierRestrictions[0].referralId"))
-        .isEqualTo(referralId);
-    jdbc.update("DELETE FROM referral.identifier_restriction WHERE referral_id = ?::uuid", referralId);
+    String reappearedReferralId =
+        com.jayway.jsonpath.JsonPath.<String>read(
+            manifest, "$.identifierRestrictions[0].referralId");
+    assertThat(reappearedReferralId).isEqualTo(referralId);
+    jdbc.update(
+        "DELETE FROM referral.identifier_restriction WHERE referral_id = ?::uuid", referralId);
     retentionReapplicationProperties.setRequiredRestoreId(restoreId.toString());
 
     mockMvc
@@ -2155,12 +2159,12 @@ class ReferralDraftCommandsApiIT {
                 .content(manifest))
         .andExpect(status().isNoContent());
 
-    assertThat(
-            jdbc.queryForObject(
-                "SELECT COUNT(*) FROM referral.identifier_restriction WHERE referral_id = ?::uuid",
-                Integer.class,
-                referralId))
-        .isEqualTo(1);
+    int reappearedRestrictionCount =
+        jdbc.queryForObject(
+            "SELECT COUNT(*) FROM referral.identifier_restriction WHERE referral_id = ?::uuid",
+            Integer.class,
+            referralId);
+    assertThat(reappearedRestrictionCount).isEqualTo(1);
     assertThat(
             jdbc.queryForObject(
                 "SELECT EXISTS (SELECT 1 FROM referral.retention_reapplication_receipt "

@@ -22,12 +22,12 @@ import org.ayuvahak.platform.core.ActorKind;
 import org.ayuvahak.platform.core.CorrelationId;
 import org.ayuvahak.platform.core.InternalId;
 import org.ayuvahak.platform.event.EventEnvelopeJsonCodec;
-import org.ayuvahak.platform.retention.RetentionReapplicationProperties;
-import org.ayuvahak.platform.retention.PlatformRetentionAuthorities;
 import org.ayuvahak.platform.executioncontext.AuthenticationMechanism;
 import org.ayuvahak.platform.executioncontext.ExecutionContext;
 import org.ayuvahak.platform.idempotency.CommandReceiptKey;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
+import org.ayuvahak.platform.retention.PlatformRetentionAuthorities;
+import org.ayuvahak.platform.retention.RetentionReapplicationProperties;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Lazy;
@@ -70,7 +70,8 @@ public class EventDeliveryOperations {
     this.retentionReapplicationStore =
         Objects.requireNonNull(retentionReapplicationStore, "retention reapplication store");
     this.retentionReapplicationProperties =
-        Objects.requireNonNull(retentionReapplicationProperties, "retention reapplication properties");
+        Objects.requireNonNull(
+            retentionReapplicationProperties, "retention reapplication properties");
     this.handlers = Objects.requireNonNull(handlers, "handlers");
     this.codec = Objects.requireNonNull(codec, "codec");
     this.authorization = Objects.requireNonNull(authorization, "authorization");
@@ -555,7 +556,7 @@ public class EventDeliveryOperations {
             evidence(
                 context,
                 AuditActionKind.PROTECTED_MUTATION,
-                  action,
+                action,
                 Optional.of(eventId),
                 AuditOutcome.SUCCEEDED,
                 AuditAuthorizationOutcome.ALLOWED));

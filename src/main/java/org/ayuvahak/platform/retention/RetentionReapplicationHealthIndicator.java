@@ -20,8 +20,7 @@ public final class RetentionReapplicationHealthIndicator implements HealthIndica
   private final List<OwnerRetentionReapplicationStatus> owners;
 
   public RetentionReapplicationHealthIndicator(
-      RetentionReapplicationProperties properties,
-      List<OwnerRetentionReapplicationStatus> owners) {
+      RetentionReapplicationProperties properties, List<OwnerRetentionReapplicationStatus> owners) {
     this.properties = Objects.requireNonNull(properties, "reapplication properties");
     this.owners = List.copyOf(Objects.requireNonNull(owners, "owner reapplication statuses"));
   }
@@ -38,7 +37,8 @@ public final class RetentionReapplicationHealthIndicator implements HealthIndica
     try {
       Map<String, OwnerRetentionReapplicationStatus> byCode =
           owners.stream()
-              .collect(Collectors.toMap(OwnerRetentionReapplicationStatus::ownerCode, owner -> owner));
+              .collect(
+                  Collectors.toMap(OwnerRetentionReapplicationStatus::ownerCode, owner -> owner));
       boolean complete =
           REQUIRED_OWNERS.stream()
               .allMatch(

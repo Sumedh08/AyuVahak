@@ -148,8 +148,7 @@ public class PostgresOutboxRetentionReapplicationStore
                 + "AND d.delivery_generation = e.current_delivery_generation "
                 + "WHERE e.event_id = ? FOR UPDATE OF e",
             (row, index) ->
-                new PurgeTarget(
-                    row.getInt("current_delivery_generation"), row.getString("state")),
+                new PurgeTarget(row.getInt("current_delivery_generation"), row.getString("state")),
             purge.eventId());
     if (!targets.isEmpty()) {
       PurgeTarget target = targets.getFirst();
@@ -161,17 +160,16 @@ public class PostgresOutboxRetentionReapplicationStore
                       + "WHERE event_id = ? AND released_at IS NULL)",
                   Boolean.class,
                   purge.eventId()))) {
-        throw new IllegalStateException("Platform purge cannot be reapplied to current outbox state");
+        throw new IllegalStateException(
+            "Platform purge cannot be reapplied to current outbox state");
       }
       jdbc.update(
           "DELETE FROM platform_eventing.delivery_command_receipt WHERE event_id = ?",
           purge.eventId());
       jdbc.update(
-          "DELETE FROM platform_eventing.outbox_delivery WHERE event_id = ?",
-          purge.eventId());
+          "DELETE FROM platform_eventing.outbox_delivery WHERE event_id = ?", purge.eventId());
       jdbc.update(
-          "DELETE FROM platform_eventing.internal_event WHERE event_id = ?",
-          purge.eventId());
+          "DELETE FROM platform_eventing.internal_event WHERE event_id = ?", purge.eventId());
     }
     jdbc.update(
         "INSERT INTO platform_eventing.retention_purge_receipt "

@@ -162,8 +162,7 @@ class ReferralPatientContextQueriesTest {
     assertThat(fixture.storeWrites).hasValue(0);
     assertThat(fixture.audits)
         .anySatisfy(
-            evidence ->
-                assertThat(evidence.reasonCode()).contains("PATIENT_REFERENCE_RESTRICTED"));
+            evidence -> assertThat(evidence.reasonCode()).contains("PATIENT_REFERENCE_RESTRICTED"));
   }
 
   @Test

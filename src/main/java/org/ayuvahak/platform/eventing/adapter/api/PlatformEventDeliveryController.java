@@ -2,10 +2,10 @@ package org.ayuvahak.platform.eventing.adapter.api;
 
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
-import java.time.Instant;
 import org.ayuvahak.platform.api.CorrelationIdFilter;
 import org.ayuvahak.platform.api.PlatformErrorCode;
 import org.ayuvahak.platform.api.PlatformProblemException;
@@ -31,10 +31,10 @@ import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
@@ -133,8 +133,7 @@ public class PlatformEventDeliveryController {
       throw validation("A valid retention hold id is required.");
     }
     RetentionHoldReleaseReason reason = readRetentionHoldReleaseReason(body);
-    operations.releaseRetentionHold(
-        context(actor, requestedScope), id, parsedHoldId, reason);
+    operations.releaseRetentionHold(context(actor, requestedScope), id, parsedHoldId, reason);
     return ResponseEntity.noContent().build();
   }
 
@@ -143,8 +142,11 @@ public class PlatformEventDeliveryController {
       @AuthenticationPrincipal ActorReference actor,
       @RequestHeader(value = EXECUTION_SCOPE_HEADER, required = false) String requestedScope,
       @RequestBody JsonNode body) {
-    if (body == null || !body.isObject() || body.size() != 2
-        || !body.has("restoreId") || !body.has("backupCompletedAt")
+    if (body == null
+        || !body.isObject()
+        || body.size() != 2
+        || !body.has("restoreId")
+        || !body.has("backupCompletedAt")
         || !body.get("restoreId").isTextual()
         || !body.get("backupCompletedAt").isTextual()) {
       throw validation("A restoreId and backupCompletedAt are required.");
@@ -177,10 +179,9 @@ public class PlatformEventDeliveryController {
     final PlatformOutboxRetentionManifest manifest;
     try {
       manifest = objectMapper.treeToValue(body, PlatformOutboxRetentionManifest.class);
-    } catch (
-        tools.jackson.core.JacksonException
-            | IllegalArgumentException
-            | NullPointerException malformed) {
+    } catch (tools.jackson.core.JacksonException
+        | IllegalArgumentException
+        | NullPointerException malformed) {
       throw validation("The Platform retention manifest is malformed.");
     }
     operations.reapplyRetentionManifest(context(actor, requestedScope), manifest);

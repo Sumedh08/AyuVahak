@@ -10,6 +10,7 @@ import java.time.ZoneId;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -37,9 +38,9 @@ import org.ayuvahak.platform.eventing.application.LeasedEvent;
 import org.ayuvahak.platform.eventing.application.OutboxDispatcher;
 import org.ayuvahak.platform.eventing.application.OutboxStore;
 import org.ayuvahak.platform.eventing.application.OutboxWriter;
-import org.ayuvahak.platform.eventing.configuration.OutboxProperties;
 import org.ayuvahak.platform.eventing.application.PlatformOutboxRetentionManifest;
 import org.ayuvahak.platform.eventing.application.PlatformOutboxRetentionReapplicationStore;
+import org.ayuvahak.platform.eventing.configuration.OutboxProperties;
 import org.ayuvahak.platform.executioncontext.ExecutionContext;
 import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
 import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
@@ -354,7 +355,8 @@ class OutboxTransactionPostgresIT {
     assertThat(manifest.purgedEvents().getFirst().deliveryGeneration()).isEqualTo(2);
     assertThat(manifest.holds()).hasSize(1);
 
-    // Simulate restoring the backup checkpoint: the delivered event exists and post-backup controls do not.
+    // Simulate restoring the backup checkpoint: the delivered event exists and post-backup controls
+    // do not.
     record(delivered);
     jdbcTemplate.update(
         "UPDATE platform_eventing.outbox_delivery SET state = 'DELIVERED', updated_at = ? "

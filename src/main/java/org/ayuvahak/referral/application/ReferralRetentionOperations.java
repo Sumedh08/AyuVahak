@@ -17,7 +17,6 @@ import org.ayuvahak.platform.audit.domain.AuditOutcome;
 import org.ayuvahak.platform.audit.domain.AuditTargetContext;
 import org.ayuvahak.platform.authorization.application.AuthorizationService;
 import org.ayuvahak.platform.authorization.domain.AuthorizationDecision;
-import org.ayuvahak.platform.core.ActorKind;
 import org.ayuvahak.platform.executioncontext.AuthenticationMechanism;
 import org.ayuvahak.platform.executioncontext.ExecutionContext;
 import org.ayuvahak.platform.executioncontext.ExecutionScope;
@@ -91,8 +90,7 @@ public final class ReferralRetentionOperations {
             if (drafts.isIdentifierRestricted(referralId)) {
               throw conflict("The Referral identifier is already restricted.");
             }
-            if (!drafts.createHold(
-                holdId, referralId, purpose, reviewBy, context.actor(), now)) {
+            if (!drafts.createHold(holdId, referralId, purpose, reviewBy, context.actor(), now)) {
               throw referralUnavailable();
             }
             auditMutation(context, draft, "REFERRAL_RETENTION_HOLD", purpose.name());
@@ -144,8 +142,10 @@ public final class ReferralRetentionOperations {
       return transaction.execute(
           status -> {
             ReferralDraft draft = requireOwnedDraft(context.scope(), referralId, true);
-            if (draft.state() != ReferralState.CANCELLED && draft.state() != ReferralState.RESOLVED) {
-              throw conflict("Only a cancelled or resolved Referral may have its identifier restricted.");
+            if (draft.state() != ReferralState.CANCELLED
+                && draft.state() != ReferralState.RESOLVED) {
+              throw conflict(
+                  "Only a cancelled or resolved Referral may have its identifier restricted.");
             }
             if (drafts.hasActiveHold(referralId)) {
               throw conflict("An active retention hold prevents Referral identifier restriction.");
@@ -160,7 +160,8 @@ public final class ReferralRetentionOperations {
                   "Transfer could not confirm that Referral coordination is closed safely.");
             }
             if (activeCoordination) {
-              throw conflict("Active Transfer coordination prevents Referral identifier restriction.");
+              throw conflict(
+                  "Active Transfer coordination prevents Referral identifier restriction.");
             }
             UUID restrictionId = UUID.randomUUID();
             boolean created =

@@ -34,7 +34,8 @@ public interface ReferralRetentionStore {
       ActorReference actor,
       Instant restrictedAt);
 
-  ReferralRetentionManifest exportSince(UUID restoreId, Instant backupCompletedAt, Instant generatedAt);
+  ReferralRetentionManifest exportSince(
+      UUID restoreId, Instant backupCompletedAt, Instant generatedAt);
 
   void reapply(ReferralRetentionManifest manifest, Instant completedAt);
 

@@ -279,10 +279,7 @@ class EventDeliveryOperationsIT {
             .andExpect(jsonPath("$.holdId").isNotEmpty())
             .andReturn();
     String holdId =
-        objectMapper
-            .readTree(held.getResponse().getContentAsString())
-            .get("holdId")
-            .stringValue();
+        objectMapper.readTree(held.getResponse().getContentAsString()).get("holdId").stringValue();
     assertThat(
             jdbc.queryForObject(
                 "SELECT COUNT(*) FROM platform_eventing.retention_hold "
@@ -325,11 +322,7 @@ class EventDeliveryOperationsIT {
     retentionReapplicationProperties.setRequiredRestoreId(restoreId.toString());
     String backupCompletedAt = Instant.now().minusSeconds(60).toString();
     String exportRequest =
-        "{\"restoreId\":\""
-            + restoreId
-            + "\",\"backupCompletedAt\":\""
-            + backupCompletedAt
-            + "\"}";
+        "{\"restoreId\":\"" + restoreId + "\",\"backupCompletedAt\":\"" + backupCompletedAt + "\"}";
 
     mvc.perform(
             post("/api/v1/platform/event-deliveries/retention-reapplication/export")

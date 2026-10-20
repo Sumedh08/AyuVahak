@@ -9,12 +9,12 @@ import java.util.Optional;
 import java.util.UUID;
 import org.ayuvahak.platform.core.ActorReference;
 import org.ayuvahak.platform.core.InternalId;
+import org.ayuvahak.platform.retention.OwnerRetentionReapplicationStatus;
 import org.ayuvahak.referral.application.ReferralIdentifierRestrictionReason;
 import org.ayuvahak.referral.application.ReferralRetentionHoldPurpose;
 import org.ayuvahak.referral.application.ReferralRetentionHoldReleaseReason;
 import org.ayuvahak.referral.application.ReferralRetentionManifest;
 import org.ayuvahak.referral.application.ReferralRetentionStore;
-import org.ayuvahak.platform.retention.OwnerRetentionReapplicationStatus;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
@@ -291,8 +291,8 @@ public class JdbcReferralRetentionStore
     }
   }
 
-  private static ReferralRetentionManifest.HoldSnapshot holdSnapshot(
-      ResultSet row, int ignored) throws SQLException {
+  private static ReferralRetentionManifest.HoldSnapshot holdSnapshot(ResultSet row, int ignored)
+      throws SQLException {
     return new ReferralRetentionManifest.HoldSnapshot(
         row.getObject("hold_id", UUID.class),
         row.getObject("referral_id", UUID.class),

@@ -33,7 +33,8 @@ public final class ReferralAuthorities {
   private static final FunctionalAuthority RETENTION =
       new FunctionalAuthority("ReferralRetention", ORIGIN_SCOPES);
   private static final FunctionalAuthority RETENTION_REAPPLICATION =
-      new FunctionalAuthority("ReferralRetentionReapplication", Set.of(ExecutionScope.Kind.PLATFORM));
+      new FunctionalAuthority(
+          "ReferralRetentionReapplication", Set.of(ExecutionScope.Kind.PLATFORM));
 
   private ReferralAuthorities() {}
 

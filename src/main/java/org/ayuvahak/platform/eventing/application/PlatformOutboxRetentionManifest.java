@@ -29,7 +29,8 @@ public record PlatformOutboxRetentionManifest(
     public PurgedEvent {
       Objects.requireNonNull(eventId, "event id");
       Objects.requireNonNull(purgedAt, "purge time");
-      if (deliveryGeneration < 1) throw new IllegalArgumentException("delivery generation must be positive");
+      if (deliveryGeneration < 1)
+        throw new IllegalArgumentException("delivery generation must be positive");
     }
   }
 
