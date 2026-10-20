@@ -4,17 +4,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.zaxxer.hikari.HikariDataSource;
 import java.lang.management.ManagementFactory;
-import java.net.URI;
 import java.net.ServerSocket;
+import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.sql.Connection;
 import java.sql.SQLException;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.HexFormat;
@@ -462,7 +462,7 @@ class TwoApplicationReplicaWorkerAcceptanceIT {
       profileA = startReplica("SYN-PROFILE-A-SINGLE");
       BenchmarkRunResult singleSite =
           measureNotificationReplayProfile(
-              "PROFILE_A_SINGLE_SITE", List.of(profileA), "SYN-ORG-001");
+              "PROFILE_A_SINGLE_SITE", List.of(profileA));
 
       profileBFirst = startReplica("SYN-PROFILE-B-REPLICA-A");
       profileBSecond = startReplica("SYN-PROFILE-B-REPLICA-B");
@@ -470,13 +470,14 @@ class TwoApplicationReplicaWorkerAcceptanceIT {
       BenchmarkRunResult institutional =
           measureNotificationReplayProfile(
               "PROFILE_B_TWO_REPLICA",
-              List.of(profileBFirst, profileBSecond),
-              "SYN-ORG-001");
+              List.of(profileBFirst, profileBSecond));
 
       assertThat(singleSite.failedOperations()).isZero();
       assertThat(institutional.failedOperations()).isZero();
       assertThat(singleSite.measuredOperations()).isEqualTo(150);
       assertThat(institutional.measuredOperations()).isEqualTo(150);
+      assertThat(singleSite.declaration().workload().organizations()).isEqualTo(5);
+      assertThat(institutional.declaration().workload().organizations()).isEqualTo(5);
     } finally {
       if (profileBSecond != null && profileBSecond.isActive()) {
         profileBSecond.close();
@@ -492,16 +493,26 @@ class TwoApplicationReplicaWorkerAcceptanceIT {
   }
 
   private static BenchmarkRunResult measureNotificationReplayProfile(
-      String profile, List<ConfigurableApplicationContext> replicas, String organizationId)
-      throws Exception {
-    ExecutionScope scope = organizationScope(organizationId);
+      String profile, List<ConfigurableApplicationContext> replicas) throws Exception {
+    List<String> organizationIds =
+        List.of("SYN-ORG-001", "SYN-ORG-002", "SYN-ORG-003", "SYN-ORG-004", "SYN-ORG-005");
+    List<ExecutionScope> scopes =
+        organizationIds.stream()
+            .map(TwoApplicationReplicaWorkerAcceptanceIT::organizationScope)
+            .toList();
     NotificationProjectionQuery initialQuery =
         replicas.getFirst().getBean(NotificationProjectionQuery.class);
-    String cursor = initialQuery.currentCursor(scope);
+    List<String> cursors = scopes.stream().map(initialQuery::currentCursor).toList();
     EventEnvelopeJsonCodec codec = replicas.getFirst().getBean(EventEnvelopeJsonCodec.class);
     var projection = replicas.getFirst().getBean(NotificationEventProjectionHandler.class);
+    int[] sequenceByOrganization = new int[organizationIds.size()];
     for (int index = 0; index < 128; index++) {
-      EventEnvelope syntheticEvent = event("SYN-REFERRAL-BENCH-" + index, index + 1L);
+      int organizationIndex = index % organizationIds.size();
+      EventEnvelope syntheticEvent =
+          event(
+              "SYN-REFERRAL-BENCH-" + index,
+              ++sequenceByOrganization[organizationIndex],
+              organizationIds.get(organizationIndex));
       projection.handle(
           new InternalEvent(
               syntheticEvent.eventId(),
@@ -524,7 +535,8 @@ class TwoApplicationReplicaWorkerAcceptanceIT {
       databaseVersion = "PostgreSQL " + result.getString(1);
     }
     String planFingerprint =
-        notificationReplayPlanFingerprint(firstPool, NotificationScope.from(scope).key());
+        notificationReplayPlanFingerprint(
+            firstPool, NotificationScope.from(scopes.getFirst()).key());
     String sourceRevision = localSourceRevision();
     var operatingSystem = ManagementFactory.getOperatingSystemMXBean();
     long memoryMiB =
@@ -538,7 +550,7 @@ class TwoApplicationReplicaWorkerAcceptanceIT {
             databaseVersion,
             Math.max(1, Runtime.getRuntime().availableProcessors()),
             memoryMiB,
-            new BenchmarkWorkloadScale(1, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+            new BenchmarkWorkloadScale(organizationIds.size(), 0, 0, 0, 0, 0, 0, 0, 0, 0),
             BenchmarkRunCondition.WARM,
             10,
             50,
@@ -567,12 +579,16 @@ class TwoApplicationReplicaWorkerAcceptanceIT {
               .run(
                   declaration,
                   (scale, stage, repetition, operationIndex) -> {
+                    int organizationIndex = operationIndex % organizationIds.size();
+                    int replicaIndex = (operationIndex / organizationIds.size()) % queries.size();
                     long cpuBefore = processCpuNanos();
                     long operationStarted = System.nanoTime();
                     NotificationProjectionPage page =
-                        queries
-                            .get(operationIndex % queries.size())
-                            .listAfter(scope, Optional.of(cursor), 25);
+                        queries.get(replicaIndex)
+                            .listAfter(
+                                scopes.get(organizationIndex),
+                                Optional.of(cursors.get(organizationIndex)),
+                                25);
                     long elapsedNanos = Math.max(1L, System.nanoTime() - operationStarted);
                     long cpuDelta = Math.max(0L, processCpuNanos() - cpuBefore);
                     double cpuUtilization =
@@ -759,9 +775,14 @@ class TwoApplicationReplicaWorkerAcceptanceIT {
   }
 
   private static EventEnvelope event(String syntheticReferralId, long sequence) {
+    return event(syntheticReferralId, sequence, "SYN-ORG-001");
+  }
+
+  private static EventEnvelope event(
+      String syntheticReferralId, long sequence, String organizationId) {
     ExternalReference organization =
         new ExternalReference(
-            new IssuerId("urn:ayuvahak:directory"), "Organization", "SYN-ORG-001");
+            new IssuerId("urn:ayuvahak:directory"), "Organization", organizationId);
     ExecutionContext context =
         new ExecutionContextFactory((actor, scope) -> true)
             .forInteractiveRequest(

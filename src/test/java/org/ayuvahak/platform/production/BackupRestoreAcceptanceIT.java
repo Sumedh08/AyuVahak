@@ -31,6 +31,10 @@ import org.ayuvahak.platform.retention.RetentionReapplicationHealthIndicator;
 import org.ayuvahak.platform.retention.RetentionReapplicationProperties;
 import org.ayuvahak.referral.adapter.persistence.JdbcReferralRetentionStore;
 import org.ayuvahak.referral.application.ReferralRetentionManifest;
+import org.ayuvahak.platform.idempotency.CommandReceiptKey;
+import org.ayuvahak.platform.idempotency.IdempotencyKeyDigest;
+import org.ayuvahak.platform.idempotency.RequestFingerprint;
+import org.ayuvahak.transfer.application.TransferStore;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -153,6 +157,7 @@ class BackupRestoreAcceptanceIT {
   @Autowired private PostgresOutboxRetentionReapplicationStore platformRetention;
   @Autowired private JdbcReferralRetentionStore referralRetention;
   @Autowired private PlatformTransactionManager transactionManager;
+  @Autowired private TransferStore transferStore;
 
   @BeforeAll
   static void createSyntheticBackupAndRestoreToCleanDatabase() throws Exception {
@@ -424,6 +429,17 @@ class BackupRestoreAcceptanceIT {
                 Integer.class,
                 JOURNEY_ID))
         .isEqualTo(1);
+    TransferStore.ReceiptClaim restoredTransferReplay =
+        transferStore.claimReceipt(
+            new CommandReceiptKey(
+                "b".repeat(64), IdempotencyKeyDigest.from("SYN-RESTORE-TRANSFER-KEY")),
+            RequestFingerprint.fromDigest("d".repeat(64)),
+            Instant.now());
+    assertThat(restoredTransferReplay.state()).isEqualTo(TransferStore.ReceiptState.REPLAY);
+    assertThat(restoredTransferReplay.responseStatus()).contains(201);
+    assertThat(restoredTransferReplay.resultReference())
+        .contains(new org.ayuvahak.platform.core.InternalId(JOURNEY_ID));
+    assertThat(restoredTransferReplay.resultVersion()).contains(1L);
     assertThat(
             jdbc.queryForObject(
                 "SELECT COUNT(*) FROM identity_access.grant_command_receipt "
@@ -859,7 +875,7 @@ class BackupRestoreAcceptanceIT {
             + "response_status, result_reference, result_version, recorded_at) "
             + "VALUES (?, ?, ?, 'COMPLETED', 201, ?, 1, ?)",
         "b".repeat(64),
-        "c".repeat(64),
+        IdempotencyKeyDigest.from("SYN-RESTORE-TRANSFER-KEY").value(),
         "d".repeat(64),
         JOURNEY_ID,
         Timestamp.from(now.minus(Duration.ofHours(5))));
