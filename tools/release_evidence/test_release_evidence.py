@@ -14,8 +14,10 @@ from release_evidence import (
     assess_finding,
     build_provenance,
     build_incomplete_manifest,
+    load_vulnerability_report,
     release_eligibility,
     signer_fingerprint,
+    _finding_has_review_disposition,
     validate_version,
     verify_provenance,
     verify_signed_bundle,
@@ -30,7 +32,70 @@ from spdx_sbom import (
 )
 
 
+def reviewed_vulnerability_report(*, sbom_sha256: str, artifact_sha256: str) -> dict:
+    return {
+        "schemaVersion": "ayuvahak.vulnerability-inventory/v1",
+        "status": "REVIEWED",
+        "reportSha256": "9" * 64,
+        "tool": {"name": "OSV-Scanner", "version": "2.6.0"},
+        "database": {
+            "name": "OSV",
+            "source": "https://osv-vulnerabilities.storage.googleapis.com/Maven/all.zip",
+            "ecosystem": "Maven",
+            "retrievedAt": "2026-10-20T08:00:00Z",
+            "lastModified": "2026-10-19T19:48:00Z",
+            "sha256": "7" * 64,
+        },
+        "scan": {
+            "sbomSha256": sbom_sha256,
+            "artifactSha256": artifact_sha256,
+            "resultSha256": "8" * 64,
+            "componentCount": 194,
+            "findingCount": 0,
+        },
+        "findings": [],
+        "review": {
+            "status": "COMPLETE",
+            "reviewer": "Codex local Phase 13 acceptance review",
+            "reviewedAt": "2026-10-20T09:00:00Z",
+            "findingsReviewed": 0,
+        },
+    }
+
+
 class ReleaseEvidenceTests(unittest.TestCase):
+    def test_vulnerability_report_loader_binds_exact_local_file_bytes(self):
+        with tempfile.TemporaryDirectory(prefix="ayuvahak-vulnerability-evidence-") as tmp:
+            report_path = Path(tmp) / "reviewed-inventory.json"
+            report_path.write_bytes(b'{"status":"REVIEWED","findings":[]}\n')
+
+            report = load_vulnerability_report(report_path)
+
+        self.assertEqual(hashlib.sha256(b'{"status":"REVIEWED","findings":[]}\n').hexdigest(), report["reportSha256"])
+        self.assertEqual([], report["findings"])
+
+    def test_vulnerability_report_loader_rejects_non_object_json(self):
+        with tempfile.TemporaryDirectory(prefix="ayuvahak-vulnerability-evidence-") as tmp:
+            report_path = Path(tmp) / "invalid-inventory.json"
+            report_path.write_text("[]\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "must be a JSON object"):
+                load_vulnerability_report(report_path)
+
+    def test_vulnerability_finding_review_requires_explicit_risk_dimensions(self):
+        finding = {
+            "id": "SYN-CVE-0005",
+            "component": "org.example:synthetic",
+            "version": "1.0.0",
+            "severity": "critical",
+            "decision": "NOT_APPLICABLE",
+            "owner": "platform-security",
+            "rationale": "Synthetic fixture only.",
+            "reviewed": True,
+        }
+
+        self.assertFalse(_finding_has_review_disposition(finding))
+
     def test_spdx_generation_environment_is_offline_loopback_only_and_credential_free(self):
         with tempfile.TemporaryDirectory(prefix="ayuvahak-spdx-env-") as tmp:
             root = Path(tmp)
@@ -277,7 +342,9 @@ class ReleaseEvidenceTests(unittest.TestCase):
                 "sbom": {"requiredFormat": "SPDX-3.0", "status": "BLOCKED"},
                 "provenance": {"status": "VERIFIED"},
                 "signature": {"status": "VERIFIED"},
-                "vulnerabilityReport": {"status": "REVIEWED"},
+                "vulnerabilityReport": reviewed_vulnerability_report(
+                    sbom_sha256="a" * 64, artifact_sha256="1" * 64
+                ),
             }
         )
 
@@ -315,6 +382,9 @@ class ReleaseEvidenceTests(unittest.TestCase):
             "contextSha256": context_digest,
             "licenseList": {"sha256": license_list_digest},
         }
+        vulnerability_report = reviewed_vulnerability_report(
+            sbom_sha256=digest, artifact_sha256="1" * 64
+        )
         result = release_eligibility(
             {
                 "sbom": {
@@ -329,15 +399,123 @@ class ReleaseEvidenceTests(unittest.TestCase):
                     "licenseListSha256": license_list_digest,
                     "validationReportSha256": "e" * 64,
                     "validationReport": report,
+                    "applicationArtifactSha256": "1" * 64,
+                    "runtimePackageCount": 195,
+                    "runtimeDependencyCount": 194,
+                },
+                "provenance": {"status": "VERIFIED"},
+                "signature": {"status": "VERIFIED"},
+                "vulnerabilityReport": vulnerability_report,
+            }
+        )
+
+        self.assertTrue(result["eligible"])
+        self.assertEqual([], result["blockers"])
+
+    def test_release_eligibility_rejects_inventory_bound_to_other_jar(self):
+        digest = "a" * 64
+        schema_digest = "b" * 64
+        model_digest = "c" * 64
+        context_digest = "d" * 64
+        license_list_digest = "f" * 64
+        report = {
+            "result": "PASS",
+            "format": "SPDX-3.0.1",
+            "sbomSha256": digest,
+            "schema": {"sha256": schema_digest},
+            "shacl": {"sha256": model_digest},
+            "contextSha256": context_digest,
+            "licenseList": {"sha256": license_list_digest},
+        }
+        vulnerability_report = reviewed_vulnerability_report(
+            sbom_sha256=digest, artifact_sha256="2" * 64
+        )
+        result = release_eligibility(
+            {
+                "sbom": {
+                    "format": "SPDX-3.0.1",
+                    "status": "VALIDATED",
+                    "validator": "offline JSON Schema + SHACL validator",
+                    "validationProfile": "official SPDX 3.0.1 JSON Schema + model",
+                    "sha256": digest,
+                    "schemaSha256": schema_digest,
+                    "modelSha256": model_digest,
+                    "contextSha256": context_digest,
+                    "licenseListSha256": license_list_digest,
+                    "validationReportSha256": "e" * 64,
+                    "validationReport": report,
+                    "applicationArtifactSha256": "1" * 64,
+                    "runtimePackageCount": 195,
+                    "runtimeDependencyCount": 194,
+                },
+                "provenance": {"status": "VERIFIED"},
+                "signature": {"status": "VERIFIED"},
+                "vulnerabilityReport": vulnerability_report,
+            }
+        )
+        self.assertFalse(result["eligible"])
+        self.assertIn("reviewed local vulnerability inventory is required", result["blockers"])
+
+    def test_release_eligibility_rejects_scan_component_count_mismatch(self):
+        digest = "a" * 64
+        schema_digest = "b" * 64
+        model_digest = "c" * 64
+        context_digest = "d" * 64
+        license_list_digest = "f" * 64
+        validation_report = {
+            "result": "PASS",
+            "format": "SPDX-3.0.1",
+            "sbomSha256": digest,
+            "schema": {"sha256": schema_digest},
+            "shacl": {"sha256": model_digest},
+            "contextSha256": context_digest,
+            "licenseList": {"sha256": license_list_digest},
+        }
+        vulnerability_report = reviewed_vulnerability_report(
+            sbom_sha256=digest, artifact_sha256="1" * 64
+        )
+        vulnerability_report["scan"]["componentCount"] = 195
+        result = release_eligibility(
+            {
+                "sbom": {
+                    "format": "SPDX-3.0.1",
+                    "status": "VALIDATED",
+                    "validator": "offline JSON Schema + SHACL validator",
+                    "validationProfile": "official SPDX 3.0.1 JSON Schema + model",
+                    "sha256": digest,
+                    "schemaSha256": schema_digest,
+                    "modelSha256": model_digest,
+                    "contextSha256": context_digest,
+                    "licenseListSha256": license_list_digest,
+                    "validationReportSha256": "e" * 64,
+                    "validationReport": validation_report,
+                    "applicationArtifactSha256": "1" * 64,
+                    "runtimePackageCount": 195,
+                    "runtimeDependencyCount": 194,
+                },
+                "provenance": {"status": "VERIFIED"},
+                "signature": {"status": "VERIFIED"},
+                "vulnerabilityReport": vulnerability_report,
+            }
+        )
+
+        self.assertFalse(result["eligible"])
+        self.assertIn("reviewed local vulnerability inventory is required", result["blockers"])
+
+    def test_release_eligibility_rejects_status_only_vulnerability_claim(self):
+        result = release_eligibility(
+            {
+                "sbom": {
+                    "sha256": "a" * 64,
+                    "applicationArtifactSha256": "1" * 64,
                 },
                 "provenance": {"status": "VERIFIED"},
                 "signature": {"status": "VERIFIED"},
                 "vulnerabilityReport": {"status": "REVIEWED"},
             }
         )
-
-        self.assertTrue(result["eligible"])
-        self.assertEqual([], result["blockers"])
+        self.assertFalse(result["eligible"])
+        self.assertIn("reviewed local vulnerability inventory is required", result["blockers"])
 
     def test_release_eligibility_rejects_mismatched_spdx_asset_digest(self):
         digest = "a" * 64

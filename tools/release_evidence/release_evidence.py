@@ -23,6 +23,7 @@ from spdx_sbom import SbomGenerationError, generate_and_validate_spdx, sha256_fi
 
 MANIFEST_SCHEMA = "ayuvahak.release-evidence/v1"
 PROVENANCE_SCHEMA = "ayuvahak.release-provenance/v1"
+VULNERABILITY_REPORT_SCHEMA = "ayuvahak.vulnerability-inventory/v1"
 SEMVER_PATTERN = re.compile(
     r"^(0|[1-9][0-9]*)\."
     r"(0|[1-9][0-9]*)\."
@@ -61,6 +62,18 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def load_vulnerability_report(path: Path) -> dict[str, Any]:
+    """Load a local reviewed inventory and bind its exact bytes into release evidence."""
+    try:
+        source_bytes = path.read_bytes()
+        report = json.loads(source_bytes)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ReleaseEvidenceError("vulnerability report is unreadable or not valid JSON") from error
+    if not isinstance(report, dict):
+        raise ReleaseEvidenceError("vulnerability report must be a JSON object")
+    return {**report, "reportSha256": sha256_bytes(source_bytes)}
 
 
 def _validate_revision(revision: str) -> None:
@@ -188,6 +201,7 @@ def build_incomplete_manifest(
         "supportedUpgradePath": supported_upgrade_path,
         "sbom": sbom,
         "provenance": provenance,
+        "vulnerabilityReport": {"status": "PENDING"},
         "releaseEligibility": eligibility,
         "generatedAt": (generated_at or datetime.now(timezone.utc))
         .astimezone(timezone.utc)
@@ -207,6 +221,7 @@ def build_manifest(
     migration_range: str,
     supported_upgrade_path: str,
     sbom: dict[str, Any],
+    vulnerability_report: dict[str, Any] | None = None,
     generated_at: datetime | None = None,
 ) -> dict[str, Any]:
     """Create a manifest bound to validated SPDX evidence and output digests."""
@@ -228,12 +243,13 @@ def build_manifest(
         artifacts=artifacts,
         generated_at=generated_at,
     )
+    vulnerability_evidence = vulnerability_report or {"status": "PENDING"}
     eligibility = release_eligibility(
         {
             "sbom": sbom,
             "provenance": {"status": "PRESENT"},
             "signature": {"status": "PENDING"},
-            "vulnerabilityReport": {"status": "PENDING"},
+            "vulnerabilityReport": vulnerability_evidence,
         }
     )
     return {
@@ -252,6 +268,7 @@ def build_manifest(
         "supportedUpgradePath": supported_upgrade_path,
         "sbom": sbom,
         "provenance": provenance,
+        "vulnerabilityReport": vulnerability_evidence,
         "releaseEligibility": eligibility,
         "generatedAt": (generated_at or datetime.now(timezone.utc))
         .astimezone(timezone.utc)
@@ -294,9 +311,93 @@ def release_eligibility(evidence: dict[str, Any]) -> dict[str, Any]:
         blockers.append("verified source/build/artifact provenance is required")
     if (evidence.get("signature") or {}).get("status") != "VERIFIED":
         blockers.append("verified signature and expected signer identity are required")
-    if (evidence.get("vulnerabilityReport") or {}).get("status") != "REVIEWED":
+    vulnerability_report = evidence.get("vulnerabilityReport") or {}
+    vulnerability_scan = vulnerability_report.get("scan") or {}
+    vulnerability_database = vulnerability_report.get("database") or {}
+    vulnerability_tool = vulnerability_report.get("tool") or {}
+    vulnerability_review = vulnerability_report.get("review") or {}
+    findings = vulnerability_report.get("findings")
+    artifact_digest = sbom.get("applicationArtifactSha256")
+    component_count = vulnerability_scan.get("componentCount")
+    finding_count = vulnerability_scan.get("findingCount")
+    vulnerability_report_valid = (
+        vulnerability_report.get("schemaVersion") == VULNERABILITY_REPORT_SCHEMA
+        and vulnerability_report.get("status") == "REVIEWED"
+        and re.fullmatch(r"[0-9a-f]{64}", str(vulnerability_report.get("reportSha256", "")))
+        and bool(vulnerability_tool.get("name"))
+        and bool(vulnerability_tool.get("version"))
+        and bool(vulnerability_database.get("name"))
+        and bool(vulnerability_database.get("source"))
+        and bool(vulnerability_database.get("ecosystem"))
+        and _is_timezone_instant(vulnerability_database.get("retrievedAt"))
+        and _is_timezone_instant(vulnerability_database.get("lastModified"))
+        and re.fullmatch(r"[0-9a-f]{64}", str(vulnerability_database.get("sha256", "")))
+        and vulnerability_scan.get("sbomSha256") == sbom.get("sha256")
+        and vulnerability_scan.get("artifactSha256") == artifact_digest
+        and re.fullmatch(r"[0-9a-f]{64}", str(vulnerability_scan.get("resultSha256", "")))
+        and isinstance(component_count, int)
+        and component_count > 0
+        and component_count == sbom.get("runtimeDependencyCount")
+        and isinstance(finding_count, int)
+        and finding_count >= 0
+        and isinstance(findings, list)
+        and finding_count == len(findings)
+        and vulnerability_review.get("status") == "COMPLETE"
+        and bool(str(vulnerability_review.get("reviewer", "")).strip())
+        and _is_timezone_instant(vulnerability_review.get("reviewedAt"))
+        and vulnerability_review.get("findingsReviewed") == finding_count
+        and all(_finding_has_review_disposition(finding) for finding in findings)
+    )
+    if not vulnerability_report_valid:
         blockers.append("reviewed local vulnerability inventory is required")
     return {"eligible": not blockers, "blockers": blockers}
+
+
+def _is_timezone_instant(value: Any) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None and parsed.utcoffset() is not None
+
+
+def _finding_has_review_disposition(
+    finding: Any, now: datetime | None = None
+) -> bool:
+    if not isinstance(finding, dict):
+        return False
+    if not all(
+        bool(str(finding.get(field, "")).strip())
+        for field in ("id", "component", "version", "severity", "decision", "owner", "rationale")
+    ) or finding.get("reviewed") is not True:
+        return False
+    if (
+        "reachable" not in finding
+        or finding.get("reachable") not in {True, False, None}
+        or not isinstance(finding.get("knownExploited"), bool)
+        or not isinstance(finding.get("fixAvailable"), bool)
+        or str(finding.get("exposure", "")).casefold()
+        not in {"public", "intranet", "local", "unknown"}
+    ):
+        return False
+
+    decision = str(finding.get("decision", "")).upper()
+    if decision == "NOT_APPLICABLE":
+        return finding.get("reachable") is False
+    if decision == "ACCEPTED_WITH_EXCEPTION":
+        exception = finding.get("exception")
+        if not isinstance(exception, dict):
+            return False
+        try:
+            _validate_exception(
+                str(finding.get("id")), exception, now or datetime.now(timezone.utc)
+            )
+        except ReleaseEvidenceError:
+            return False
+        return True
+    return False
 
 
 def assess_finding(
@@ -577,6 +678,7 @@ def _command() -> argparse.ArgumentParser:
     manifest.add_argument("--supported-upgrade-path", required=True)
     manifest.add_argument("--sbom", type=Path)
     manifest.add_argument("--sbom-report", type=Path)
+    manifest.add_argument("--vulnerability-report", type=Path)
     manifest.add_argument("--validator-python", type=Path, default=Path(sys.executable))
     manifest.add_argument("--output", required=True, type=Path)
 
@@ -621,6 +723,7 @@ def main(argv: list[str] | None = None) -> int:
                 "sbomSha256": report["sbomSha256"],
                 "applicationArtifactSha256": report["applicationArtifactSha256"],
                 "runtimePackageCount": report["runtimePackageCount"],
+                "runtimeDependencyCount": report["runtimeDependencyCount"],
                 "declaredLicenseRelationshipCount": report["declaredLicenseRelationshipCount"],
                 "generatorVersion": report["generator"]["version"],
             }, sort_keys=True))
@@ -652,6 +755,8 @@ def main(argv: list[str] | None = None) -> int:
         if arguments.command == "manifest":
             if bool(arguments.sbom) != bool(arguments.sbom_report):
                 raise ReleaseEvidenceError("--sbom and --sbom-report must be supplied together")
+            if arguments.vulnerability_report is not None and arguments.sbom is None:
+                raise ReleaseEvidenceError("--vulnerability-report requires a validated --sbom")
             parameters: dict[str, str] = {}
             for pair in arguments.parameter:
                 key, separator, value = pair.partition("=")
@@ -697,6 +802,11 @@ def main(argv: list[str] | None = None) -> int:
                 artifact_digest = generation_report.get("applicationArtifactSha256")
                 if artifact_digest not in artifacts.values():
                     raise ReleaseEvidenceError("provenance artifact set does not contain the SBOM-bound application JAR")
+                vulnerability_evidence = None
+                if arguments.vulnerability_report is not None:
+                    vulnerability_evidence = load_vulnerability_report(
+                        arguments.vulnerability_report
+                    )
                 sbom_evidence = {
                     "requiredFormat": "SPDX-3.0",
                     "format": validation_report["format"],
@@ -712,6 +822,8 @@ def main(argv: list[str] | None = None) -> int:
                     "validationReport": validation_report,
                     "generator": generation_report["generator"],
                     "applicationArtifactSha256": artifact_digest,
+                    "runtimePackageCount": generation_report.get("runtimePackageCount"),
+                    "runtimeDependencyCount": generation_report.get("runtimeDependencyCount"),
                 }
                 manifest = build_manifest(
                     version=arguments.version,
@@ -723,12 +835,13 @@ def main(argv: list[str] | None = None) -> int:
                     migration_range=arguments.migration_range,
                     supported_upgrade_path=arguments.supported_upgrade_path,
                     sbom=sbom_evidence,
+                    vulnerability_report=vulnerability_evidence,
                 )
             arguments.output.parent.mkdir(parents=True, exist_ok=True)
             with arguments.output.open("x", encoding="utf-8", newline="\n") as destination:
                 json.dump(manifest, destination, indent=2, sort_keys=True)
                 destination.write("\n")
-            print("Manifest written; final eligibility still requires verified provenance, signature, and vulnerability review.")
+            print("Manifest written; eligibility reflects only locally bound evidence present in the manifest.")
             return 0
 
         if arguments.command == "assess":

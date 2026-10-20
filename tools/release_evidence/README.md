@@ -110,8 +110,10 @@ python tools/release_evidence/release_evidence.py manifest `
 ```
 
 Release eligibility still requires verified provenance, a signer-pinned signed
-evidence bundle, and a reviewed local vulnerability inventory. SPDX validation
-alone never marks a release eligible.
+evidence bundle, and a reviewed local vulnerability inventory bound to the exact
+SBOM and application artifact. The SBOM report distinguishes total package nodes
+from runtime dependency components; scanner component counts are checked against
+the latter. SPDX validation alone never marks a release eligible.
 
 ## Signing and vulnerability review
 
@@ -128,6 +130,20 @@ exploitability, or automatically accept a finding. A time-bounded exception
 must match the finding and contain an owner, rationale, compensating controls,
 approver, and future expiry. Exceptions do not erase findings or independently
 authorize release.
+
+The reviewed inventory uses schema `ayuvahak.vulnerability-inventory/v1` and
+binds the local scan to the SHA-256 digests of the SPDX document, application
+JAR, and raw scanner result. Record the scanner/version, local database source,
+ecosystem, retrieval and last-modified times, and database digest. The review
+record identifies a reviewer, timestamp, and count of individually reviewed
+findings. Every finding must record its affected component/version, severity,
+reachability (true, false, or unknown), known-exploited status, fix availability,
+deployment exposure, owner, rationale, and an explicit disposition. Release
+eligibility accepts only a reviewed finding marked not applicable after a
+documented unreachable assessment or covered by a current time-bounded
+exception; unresolved findings fail closed. A zero-finding scan is valid only
+when it is bound to the exact current SBOM/JAR and the matching local database
+snapshot. A database miss is not proof that a component is safe.
 
 ## Safety boundary
 

@@ -352,6 +352,11 @@ def generate_and_validate_spdx(
             "runtimePackageCount": sum(
                 item.get("type") == "software_Package" for item in normalized["@graph"]
             ),
+            "runtimeDependencyCount": sum(
+                item.get("type") == "software_Package"
+                and item.get("software_packageUrl") != application_purl
+                for item in normalized["@graph"]
+            ),
             "declaredLicenseRelationshipCount": sum(
                 item.get("relationshipType") == "hasDeclaredLicense" for item in normalized["@graph"]
             ),
