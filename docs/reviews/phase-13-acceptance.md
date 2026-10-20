@@ -4,6 +4,18 @@
 **Assessment date:** 2026-10-20.
 **Acceptance target:** local-only, synthetic data, frozen Phase 13 specification.
 
+## Remediation continuation gate
+
+The continuation started at `6858a7bebbdfd699bece631e4589f74cc44f6689`; `689e0f8` is the earlier
+SPDX implementation commit, followed by documentation commits `a41bd1c` and `6858a7b`. The local
+`JAVA_HOME` target is inaccessible. The only executable found on `PATH` is Temurin Java 17.0.8,
+while `pom.xml` requires Java 25. `java -version` confirmed Java 17.0.8 and `mvnw -version` exited
+before Maven startup with the invalid `JAVA_HOME` error. The local installation search found no
+accessible Java 25 runtime. No JDK was downloaded. Per the remediation gate, implementation and
+current-tree verification stopped here:
+
+`PHASE 13 REMEDIATION BLOCKED — JAVA 25 TOOLCHAIN UNAVAILABLE — PHASE 14 NOT STARTED`
+
 ## Approved ticket graph
 
 The human-approved 11-slice graph is stored locally under
@@ -26,7 +38,7 @@ operator/DPG documentation, and integrated acceptance/freeze. No external tracke
 | P13-08 Backup/restore | Partial | Isolated synthetic `pg_dump`/`pg_restore`, Flyway, restored application, Platform/Referral retention reapplication, and an unresolved Analytics export barrier are exercised. The post-backup Directory update is intentionally lost at the dump recovery point. The fixture omits idempotency and representative Transfer, Transport, and federation invariants required by the frozen acceptance spec. |
 | P13-09 Release evidence | Partial | Pinned cdxgen 13.4.0 generated an SPDX 3.0.1 SBOM from the local runtime dependency tree; normalized output passed the pinned official JSON Schema and SHACL model plus local SPDX License List 3.29.0 validation. The actual AyuVahak JAR digest is bound. A local manifest/provenance/signed bundle was generated with an ephemeral synthetic signer and verified; the release remains ineligible because no reviewed dependency vulnerability inventory is bound. Release-evidence helpers have 19 passing Python tests. |
 | P13-10 Operations/DPG evidence | Partial | Local runbooks, ASVS 5.0.0 matrix, standards register, and evidence-based readiness matrix are present; governance and live deployment evidence remain open. |
-| P13-11 Integrated acceptance | Not complete | A prior canonical clean verification passed, and local SPDX 3.0.1 generation/validation now passes. The current canonical verification attempt failed before Maven startup because `JAVA_HOME` points to an inaccessible JDK 25 path. Complete retention coverage, true multi-replica acceptance, measured deployment-profile workload baselines, vulnerability inventory review, and blocker remediation remain outstanding. |
+| P13-11 Integrated acceptance | Not complete | A prior canonical clean verification passed, and local SPDX 3.0.1 generation/validation now passes. The repeat at `689e0f8` failed before Maven startup because `JAVA_HOME` was unavailable. On the current continuation, only Java 17.0.8 is accessible while the project requires Java 25, so the required clean verification gate stopped before remediation. Complete retention coverage, true multi-replica acceptance, measured deployment-profile workload baselines, vulnerability inventory review, and blocker remediation remain outstanding. |
 
 ## Backup and restore acceptance
 
@@ -42,8 +54,9 @@ The test declares synthetic 15-minute RPO and RTO targets. In the recorded canon
 disaster declaration was 0.195s; restore elapsed time from disaster declaration through target
 database recreation, dump transfer/restore, retention reapplication, readiness, and authorized read
 was 8.121s. Both were within the synthetic targets. A later repeat canonical command at HEAD
-`689e0f8` could not start because the configured `JAVA_HOME` points to an inaccessible JDK 25 path;
-these values are prior-run evidence, not a verification of that attempt. The method is a logical
+`689e0f8` could not start because the configured `JAVA_HOME` target was unavailable; Java 17 was
+accessible, but incompatible with this Java 25 project. These values are prior-run evidence, not a
+verification of that attempt. The method is a logical
 snapshot; it does not exercise WAL/PITR, scheduled backups, encryption, or off-host storage. No general production
 RPO/RTO claim follows from this test.
 
@@ -64,7 +77,7 @@ RPO/RTO claim follows from this test.
 - Local release-evidence Python tests: 19 passed, 0 failures/errors/skips in 4.99 seconds.
 - Local SBOM generation/validation: cdxgen 13.4.0 (official pinned Windows AMD64 asset SHA-256 `0b4a6ec411a70127d72e2f6fc45277f03fa64d4237a40325d0ff117634b76375`) generated 195 runtime package nodes and 133 declared-license relationships for the local JAR. The SPDX 3.0.1 output SHA-256 is `0e5230a50e0dd4615b7b0fbf4beb87a3582fdd943e1a10498d1505130d3f5a76`; the application JAR SHA-256 is `5ae4598d12c8f660915ab556869becad57b93cacf833d5bdcf89a638037fc9f4`. Validation used pinned official schema, SHACL model/context, and SPDX License List 3.29.0 assets. Maven ran offline with repository-owned credential-free settings and a preverified cached wrapper distribution; cdxgen was loopback-only and its execution trace contained no external host activity. This is local acceptance evidence, not a published release.
 - Local manifest/provenance/evidence-pack check: a local manifest revalidated and bound the SPDX SBOM to the application JAR. A provenance record and bundle containing the JAR, manifest, SBOM, validation report and provenance verified with a two-day ephemeral synthetic PKCS#12 identity (fingerprint `2c381e4e5183906b37aecbd8b70338a121f64992a9373eb91711281cf0e62f0a`; bundle SHA-256 `dd0495d594ccd3dd16da482b09ca0b9a122f32f9566a66e8b545423be83de5e7`). The manifest remained release-ineligible because it had no reviewed dependency vulnerability inventory or production signer. The bundle stayed under ignored `.scratch` and was not published.
-- The canonical full clean verification passed before the latest local Python/doc-only release-evidence changes. Its repeat at `689e0f8` exited before the Maven build with `JAVA_HOME` pointing to an inaccessible JDK 25 location; JDK 17 is available but cannot compile the Java 25 project. No JDK was fetched. The frozen integrated Phase 13 acceptance gate remains incomplete because owner retention/recovery coverage, two-replica acceptance, measured workload evidence, and vulnerability-inventory review are still missing.
+- The canonical full clean verification passed before the latest local Python/doc-only release-evidence changes. Its repeat at `689e0f8` exited before the Maven build because `JAVA_HOME` was unavailable; Java 17 was accessible but cannot compile the Java 25 project. At current HEAD `6858a7b`, no accessible Java 25 runtime was found and remediation stopped before a current-tree clean verification. No JDK was fetched. The frozen integrated Phase 13 acceptance gate remains incomplete because owner retention/recovery coverage, two-replica acceptance, measured workload evidence, and vulnerability-inventory review are still missing.
 
 ## Readiness and DPG evidence
 
@@ -102,9 +115,10 @@ At least the following freeze conditions remain unmet:
    two-replica acceptance scenario.
 4. The required measured synthetic workload baseline has not yet been recorded for either supported
    deployment profile.
-5. The repeat full clean verification at `689e0f8` could not start because `JAVA_HOME` points to an
-   inaccessible JDK 25 installation. The previous clean verification is historical evidence only;
-   the current verification attempt is not a pass.
+5. The repeat full clean verification at `689e0f8` could not start because `JAVA_HOME` was
+   unavailable. At current HEAD `6858a7b`, the accessible Java 17 runtime does not meet the Java 25
+   project requirement, and no accessible Java 25 installation was found. The previous clean
+   verification is historical evidence only; current verification is blocked.
 
 6. Rate-limit dimensions, the broader restore fixture, and a reviewed vulnerability inventory remain
    incomplete as classified above.

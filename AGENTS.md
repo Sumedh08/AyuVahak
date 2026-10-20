@@ -49,7 +49,7 @@ Do not request, generate, store, expose, commit, or transmit real production cre
 - Phase 12 — IMPLEMENTATION COMPLETE + FROZEN
 - Volume IV — COMPLETE + FROZEN
 - Volume V — DESIGN FROZEN
-- Phase 13 — IMPLEMENTATION AUTHORIZED
+- Phase 13 — IMPLEMENTATION AUTHORIZED BUT INCOMPLETE
 - Phase 14 — SPECIFICATION FROZEN / IMPLEMENTATION NOT AUTHORIZED
 - Volume V — NOT YET COMPLETE
 
