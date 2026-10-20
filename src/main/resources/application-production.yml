@@ -44,12 +44,16 @@ ayuvahak:
       enabled: ${AYUVAHAK_CORS_ENABLED:false}
       allowed-origins: ${AYUVAHAK_CORS_ALLOWED_ORIGINS:}
     limits:
+      principal-requests-per-minute: ${AYUVAHAK_LIMIT_PRINCIPAL_PER_MINUTE:}
+      scope-requests-per-minute: ${AYUVAHAK_LIMIT_SCOPE_PER_MINUTE:}
+      partner-requests-per-minute: ${AYUVAHAK_LIMIT_PARTNER_PER_MINUTE:}
       anonymous-requests-per-minute: ${AYUVAHAK_LIMIT_ANONYMOUS_PER_MINUTE:}
       authenticated-read-requests-per-minute: ${AYUVAHAK_LIMIT_AUTHENTICATED_READ_PER_MINUTE:}
       sensitive-write-requests-per-minute: ${AYUVAHAK_LIMIT_SENSITIVE_WRITE_PER_MINUTE:}
       admin-requests-per-minute: ${AYUVAHAK_LIMIT_ADMIN_PER_MINUTE:}
       sse-connections-per-principal: ${AYUVAHAK_LIMIT_SSE_PER_PRINCIPAL:}
       sse-connections-total: ${AYUVAHAK_LIMIT_SSE_TOTAL_CONNECTIONS:}
+      sse-subscriptions-per-minute: ${AYUVAHAK_LIMIT_SSE_SUBSCRIPTIONS_PER_MINUTE:}
       federation-requests-per-minute: ${AYUVAHAK_LIMIT_FEDERATION_PER_MINUTE:}
       exchange-requests-per-minute: ${AYUVAHAK_LIMIT_EXCHANGE_PER_MINUTE:}
     retention:

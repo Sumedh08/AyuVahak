@@ -137,6 +137,12 @@ public class ProductionProfileProperties {
 
   public static class Limits {
 
+    @NotNull @Positive private Integer principalRequestsPerMinute;
+
+    @NotNull @Positive private Integer scopeRequestsPerMinute;
+
+    @NotNull @Positive private Integer partnerRequestsPerMinute;
+
     @NotNull @Positive private Integer anonymousRequestsPerMinute;
 
     @NotNull @Positive private Integer authenticatedReadRequestsPerMinute;
@@ -149,9 +155,35 @@ public class ProductionProfileProperties {
 
     @NotNull @Positive private Integer sseConnectionsTotal;
 
+    @NotNull @Positive private Integer sseSubscriptionsPerMinute;
+
     @NotNull @Positive private Integer federationRequestsPerMinute;
 
     @NotNull @Positive private Integer exchangeRequestsPerMinute;
+
+    public Integer getPrincipalRequestsPerMinute() {
+      return principalRequestsPerMinute;
+    }
+
+    public void setPrincipalRequestsPerMinute(Integer value) {
+      principalRequestsPerMinute = value;
+    }
+
+    public Integer getScopeRequestsPerMinute() {
+      return scopeRequestsPerMinute;
+    }
+
+    public void setScopeRequestsPerMinute(Integer value) {
+      scopeRequestsPerMinute = value;
+    }
+
+    public Integer getPartnerRequestsPerMinute() {
+      return partnerRequestsPerMinute;
+    }
+
+    public void setPartnerRequestsPerMinute(Integer value) {
+      partnerRequestsPerMinute = value;
+    }
 
     public Integer getAnonymousRequestsPerMinute() {
       return anonymousRequestsPerMinute;
@@ -199,6 +231,14 @@ public class ProductionProfileProperties {
 
     public void setSseConnectionsTotal(Integer value) {
       sseConnectionsTotal = value;
+    }
+
+    public Integer getSseSubscriptionsPerMinute() {
+      return sseSubscriptionsPerMinute;
+    }
+
+    public void setSseSubscriptionsPerMinute(Integer value) {
+      sseSubscriptionsPerMinute = value;
     }
 
     public Integer getFederationRequestsPerMinute() {

@@ -4,12 +4,15 @@ import java.util.List;
 import org.ayuvahak.platform.authentication.AuthenticationProperties;
 import org.ayuvahak.platform.observability.ServiceLevelPlan;
 import org.ayuvahak.platform.observability.ServiceLevelPlanProperties;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.flyway.autoconfigure.FlywayMigrationStrategy;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
 import org.springframework.core.env.Environment;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
@@ -36,6 +39,13 @@ public class ProductionProfileConfiguration {
   @Bean
   ServiceLevelPlan productionServiceLevelPlan(ServiceLevelPlanProperties properties) {
     return properties.toPlan();
+  }
+
+  @Bean
+  @ConditionalOnBean({JdbcTemplate.class, PlatformTransactionManager.class})
+  RequestBudgetStore productionRequestBudgetStore(
+      JdbcTemplate jdbc, PlatformTransactionManager transactionManager) {
+    return new JdbcRequestBudgetStore(jdbc, transactionManager);
   }
 
   @Bean

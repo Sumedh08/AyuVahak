@@ -14,6 +14,7 @@ import org.ayuvahak.platform.audit.domain.AuditEvidence;
 import org.ayuvahak.platform.audit.domain.AuditOutcome;
 import org.ayuvahak.platform.configuration.ProductionProfileProperties;
 import org.ayuvahak.platform.configuration.ProductionRequestAbuseFilter;
+import org.ayuvahak.platform.configuration.RequestBudgetStore;
 import org.ayuvahak.platform.core.CorrelationId;
 import org.ayuvahak.platform.core.IssuerId;
 import org.springframework.beans.factory.ObjectProvider;
@@ -59,7 +60,8 @@ public class AyuVahakSecurityConfiguration {
       AccessDeniedHandler problemAccessDeniedHandler,
       Converter<Jwt, ActorAuthentication> actorAuthenticationConverter,
       ObjectProvider<CorsConfigurationSource> corsConfigurationSources,
-      ObjectProvider<ProductionProfileProperties> productionProfileProperties)
+      ObjectProvider<ProductionProfileProperties> productionProfileProperties,
+      ObjectProvider<RequestBudgetStore> requestBudgetStores)
       throws Exception {
     http.csrf(AbstractHttpConfigurer::disable)
         .sessionManagement(
@@ -92,7 +94,7 @@ public class AyuVahakSecurityConfiguration {
     productionProfileProperties.ifAvailable(
         properties ->
             http.addFilterAfter(
-                new ProductionRequestAbuseFilter(properties),
+                new ProductionRequestAbuseFilter(properties, requestBudgetStores.getObject()),
                 BearerTokenAuthenticationFilter.class));
     corsConfigurationSources.ifAvailable(
         source -> http.cors(cors -> cors.configurationSource(source)));

@@ -2,12 +2,15 @@ package org.ayuvahak.platform.configuration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.ayuvahak.platform.authentication.ActorAuthentication;
 import org.ayuvahak.platform.core.ActorReference;
 import org.ayuvahak.platform.core.IssuerId;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -21,7 +24,7 @@ class ProductionRequestAbuseFilterTest {
 
   @Test
   void authenticatedLimitFollowsPrincipalAcrossSourceAddresses() throws Exception {
-    var filter = new ProductionRequestAbuseFilter(properties(1), 10);
+    var filter = filter(properties(1));
     ActorReference actor =
         ActorReference.human(new IssuerId("https://identity.example.test/issuer"), "SYN-USER-1");
     SecurityContextHolder.getContext().setAuthentication(new ActorAuthentication(actor));
@@ -39,7 +42,7 @@ class ProductionRequestAbuseFilterTest {
 
   @Test
   void independentPrincipalsAndTrafficClassesHaveIndependentBudgets() throws Exception {
-    var filter = new ProductionRequestAbuseFilter(properties(1), 10);
+    var filter = filter(properties(1));
     ActorReference firstActor =
         ActorReference.human(new IssuerId("https://identity.example.test/issuer"), "SYN-USER-1");
     ActorReference secondActor =
@@ -64,8 +67,94 @@ class ProductionRequestAbuseFilterTest {
   }
 
   @Test
+  void principalBudgetIsSharedAcrossOperationsAndServiceOrHumanIdentity() throws Exception {
+    ProductionProfileProperties properties = properties(100);
+    properties.getLimits().setPrincipalRequestsPerMinute(1);
+    properties.getLimits().setSensitiveWriteRequestsPerMinute(100);
+    var filter = filter(properties);
+    ActorReference actor =
+        ActorReference.human(new IssuerId("https://identity.example.test/issuer"), "SYN-USER-1");
+    SecurityContextHolder.getContext().setAuthentication(new ActorAuthentication(actor));
+
+    assertThat(invoke(filter, request("GET", "/api/v1/directory", "192.0.2.1")).getStatus())
+        .isEqualTo(200);
+    assertRateLimited(invoke(filter, request("POST", "/api/v1/referrals", "198.51.100.2")));
+  }
+
+  @Test
+  void organizationScopeBudgetAppliesAcrossPrincipalsAndSeparatesScopes() throws Exception {
+    ProductionProfileProperties properties = properties(100);
+    properties.getLimits().setScopeRequestsPerMinute(1);
+    var filter = filter(properties);
+    ActorReference firstActor =
+        ActorReference.human(new IssuerId("https://identity.example.test/issuer"), "SYN-USER-1");
+    ActorReference secondActor =
+        ActorReference.human(new IssuerId("https://identity.example.test/issuer"), "SYN-USER-2");
+
+    SecurityContextHolder.getContext().setAuthentication(new ActorAuthentication(firstActor));
+    assertThat(invoke(filter, scopedRequest("SYN-ORG-001", "192.0.2.1")).getStatus())
+        .isEqualTo(200);
+
+    SecurityContextHolder.getContext().setAuthentication(new ActorAuthentication(secondActor));
+    assertRateLimited(invoke(filter, scopedRequest("SYN-ORG-001", "198.51.100.2")));
+    assertThat(invoke(filter, scopedRequest("SYN-ORG-002", "198.51.100.2")).getStatus())
+        .isEqualTo(200);
+  }
+
+  @Test
+  void anonymousCallerCannotConsumeRequestedOrganizationBudget() throws Exception {
+    ProductionProfileProperties properties = properties(100);
+    properties.getLimits().setScopeRequestsPerMinute(1);
+    var filter = filter(properties);
+
+    assertThat(invoke(filter, scopedRequest("SYN-ORG-001", "192.0.2.1")).getStatus())
+        .isEqualTo(200);
+    ActorReference actor =
+        ActorReference.human(new IssuerId("https://identity.example.test/issuer"), "SYN-USER-1");
+    SecurityContextHolder.getContext().setAuthentication(new ActorAuthentication(actor));
+    assertThat(invoke(filter, scopedRequest("SYN-ORG-001", "192.0.2.1")).getStatus())
+        .isEqualTo(200);
+  }
+
+  @Test
+  void partnerBudgetFollowsVerifiedServiceAcrossOperationClassesAndSourceAddresses()
+      throws Exception {
+    ProductionProfileProperties properties = properties(100);
+    properties.getLimits().setPartnerRequestsPerMinute(1);
+    properties.getLimits().setFederationRequestsPerMinute(100);
+    properties.getLimits().setExchangeRequestsPerMinute(100);
+    var filter = filter(properties);
+    ActorReference peer =
+        ActorReference.service(new IssuerId("https://identity.example.test/issuer"), "SYN-PEER-A");
+    SecurityContextHolder.getContext().setAuthentication(new ActorAuthentication(peer));
+
+    assertThat(
+            invoke(filter, request("POST", "/api/federation/operations", "192.0.2.1")).getStatus())
+        .isEqualTo(200);
+    assertRateLimited(
+        invoke(filter, request("POST", "/api/v1/transport-provider/outcomes", "198.51.100.2")));
+  }
+
+  @Test
+  void independentProductionFiltersShareTheirPrincipalAndOperationBudget() throws Exception {
+    ProductionProfileProperties properties = properties(1);
+    TestBudgetStore sharedStore = new TestBudgetStore();
+    ProductionRequestAbuseFilter firstReplica =
+        new ProductionRequestAbuseFilter(properties, sharedStore);
+    ProductionRequestAbuseFilter secondReplica =
+        new ProductionRequestAbuseFilter(properties, sharedStore);
+    ActorReference actor =
+        ActorReference.human(new IssuerId("https://identity.example.test/issuer"), "SYN-USER-1");
+    SecurityContextHolder.getContext().setAuthentication(new ActorAuthentication(actor));
+
+    assertThat(invoke(firstReplica, request("GET", "/api/v1/directory", "192.0.2.1")).getStatus())
+        .isEqualTo(200);
+    assertRateLimited(invoke(secondReplica, request("GET", "/api/v1/directory", "198.51.100.2")));
+  }
+
+  @Test
   void anonymousLimitUsesRemoteAddressAndDoesNotTrustForwardedHeaders() throws Exception {
-    var filter = new ProductionRequestAbuseFilter(properties(10, 1), 10);
+    var filter = filter(properties(10, 1));
     MockHttpServletRequest firstRequest = request("GET", "/api/v1/system-info", "192.0.2.1");
     firstRequest.addHeader("X-Forwarded-For", "203.0.113.9");
     MockHttpServletRequest secondRequest = request("GET", "/api/v1/system-info", "192.0.2.1");
@@ -79,7 +168,7 @@ class ProductionRequestAbuseFilterTest {
 
   @Test
   void sseConnectionsAreBoundedPerPrincipalUntilAsyncCompletion() throws Exception {
-    var filter = new ProductionRequestAbuseFilter(properties(10, 10, 1, 10), 10);
+    var filter = filter(properties(10, 10, 1, 10));
     SecurityContextHolder.getContext()
         .setAuthentication(
             new ActorAuthentication(
@@ -107,7 +196,7 @@ class ProductionRequestAbuseFilterTest {
 
   @Test
   void sseConnectionsAreBoundedAcrossPrincipalsUntilAsyncCompletion() throws Exception {
-    var filter = new ProductionRequestAbuseFilter(properties(10, 10, 10, 1), 10);
+    var filter = filter(properties(10, 10, 10, 1));
     SecurityContextHolder.getContext()
         .setAuthentication(
             new ActorAuthentication(
@@ -138,7 +227,7 @@ class ProductionRequestAbuseFilterTest {
 
   @Test
   void routeClassesSelectConfiguredFederationExchangeAndAdminBudgets() throws Exception {
-    var filter = new ProductionRequestAbuseFilter(properties(100), 10);
+    var filter = filter(properties(100));
     ActorReference actor =
         ActorReference.service(
             new IssuerId("https://identity.example.test/issuer"), "SYN-SERVICE-1");
@@ -162,6 +251,21 @@ class ProductionRequestAbuseFilterTest {
         invoke(filter, request("POST", "/api/v1/platform/access-grants", "192.0.2.1")));
   }
 
+  @Test
+  void storeFailureFailsClosedWithoutInvokingRequestHandler() throws Exception {
+    ProductionRequestAbuseFilter filter =
+        new ProductionRequestAbuseFilter(
+            properties(100),
+            charges -> {
+              throw new DataAccessResourceFailureException("synthetic database outage");
+            });
+    MockHttpServletResponse response =
+        invoke(filter, request("GET", "/api/v1/directory", "192.0.2.1"));
+
+    assertThat(response.getStatus()).isEqualTo(503);
+    assertThat(response.getContentAsString()).contains("REQUEST_RATE_LIMITER_UNAVAILABLE");
+  }
+
   private static MockHttpServletResponse invoke(
       ProductionRequestAbuseFilter filter, MockHttpServletRequest request) throws Exception {
     MockHttpServletResponse response = new MockHttpServletResponse();
@@ -175,10 +279,21 @@ class ProductionRequestAbuseFilterTest {
     return response;
   }
 
+  private static ProductionRequestAbuseFilter filter(ProductionProfileProperties properties) {
+    return new ProductionRequestAbuseFilter(properties, new TestBudgetStore());
+  }
+
   private static MockHttpServletRequest request(String method, String path, String remoteAddress) {
     MockHttpServletRequest request = new MockHttpServletRequest(method, path);
     request.setRequestURI(path);
     request.setRemoteAddr(remoteAddress);
+    return request;
+  }
+
+  private static MockHttpServletRequest scopedRequest(String organizationId, String remoteAddress) {
+    MockHttpServletRequest request = request("GET", "/api/v1/directory", remoteAddress);
+    request.addHeader("X-AyuVahak-Execution-Scope", "ORGANIZATION");
+    request.addHeader("X-AyuVahak-Organization-Id", organizationId);
     return request;
   }
 
@@ -200,12 +315,16 @@ class ProductionRequestAbuseFilterTest {
       int authenticatedReadLimit, int anonymousLimit, int sseLimit, int sseTotalLimit) {
     ProductionProfileProperties properties = new ProductionProfileProperties();
     ProductionProfileProperties.Limits limits = new ProductionProfileProperties.Limits();
+    limits.setPrincipalRequestsPerMinute(10_000);
+    limits.setScopeRequestsPerMinute(10_000);
+    limits.setPartnerRequestsPerMinute(10_000);
     limits.setAnonymousRequestsPerMinute(anonymousLimit);
     limits.setAuthenticatedReadRequestsPerMinute(authenticatedReadLimit);
     limits.setSensitiveWriteRequestsPerMinute(1);
     limits.setAdminRequestsPerMinute(1);
     limits.setSseConnectionsPerPrincipal(sseLimit);
     limits.setSseConnectionsTotal(sseTotalLimit);
+    limits.setSseSubscriptionsPerMinute(10_000);
     limits.setFederationRequestsPerMinute(1);
     limits.setExchangeRequestsPerMinute(1);
     properties.setLimits(limits);
@@ -220,4 +339,42 @@ class ProductionRequestAbuseFilterTest {
             new String(response.getContentAsByteArray(), java.nio.charset.StandardCharsets.UTF_8))
         .contains("REQUEST_RATE_LIMITED");
   }
+
+  private static final class TestBudgetStore implements RequestBudgetStore {
+
+    private final ConcurrentHashMap<TestBucketKey, Integer> remaining = new ConcurrentHashMap<>();
+
+    @Override
+    public synchronized boolean tryAcquire(List<Charge> charges) {
+      List<TestBucketKey> keys =
+          charges.stream()
+              .map(
+                  charge ->
+                      new TestBucketKey(
+                          charge.dimension(), charge.budgetClass(), charge.identity()))
+              .toList();
+      if (keys.stream()
+          .anyMatch(
+              key -> remaining.computeIfAbsent(key, ignored -> limitFor(charges, key)) <= 0)) {
+        return false;
+      }
+      keys.forEach(key -> remaining.computeIfPresent(key, (ignored, count) -> count - 1));
+      return true;
+    }
+
+    private static int limitFor(List<Charge> charges, TestBucketKey key) {
+      return charges.stream()
+          .filter(
+              charge ->
+                  charge.dimension() == key.dimension()
+                      && charge.budgetClass().equals(key.budgetClass())
+                      && charge.identity().equals(key.identity()))
+          .findFirst()
+          .orElseThrow()
+          .requestsPerMinute();
+    }
+  }
+
+  private record TestBucketKey(
+      RequestBudgetStore.Dimension dimension, String budgetClass, String identity) {}
 }

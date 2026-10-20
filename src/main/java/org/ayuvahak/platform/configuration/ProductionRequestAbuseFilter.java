@@ -10,50 +10,44 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.time.Duration;
-import java.util.HexFormat;
-import java.util.Map;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
-import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
 import org.ayuvahak.platform.api.CorrelationIdFilter;
 import org.ayuvahak.platform.api.PlatformErrorCode;
 import org.ayuvahak.platform.authentication.ActorAuthentication;
 import org.ayuvahak.platform.core.ActorReference;
+import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.transaction.TransactionException;
 import org.springframework.web.filter.OncePerRequestFilter;
 
-/** Per-application-instance resource limits for production HTTP request classes. */
+/** Applies bounded production request budgets before authorization and business handling. */
 public final class ProductionRequestAbuseFilter extends OncePerRequestFilter {
 
-  private static final long BUCKET_IDLE_NANOS = Duration.ofMinutes(2).toNanos();
-  private static final int PRODUCTION_BUCKET_CAPACITY = 20_000;
   private static final String SSE_PATH = "/api/v1/notifications/stream";
+  private static final String EXECUTION_SCOPE_HEADER = "X-AyuVahak-Execution-Scope";
+  private static final String ORGANIZATION_SCOPE_HEADER = "X-AyuVahak-Organization-Id";
+  private static final String FACILITY_SCOPE_HEADER = "X-AyuVahak-Facility-Id";
+  private static final int MAX_SCOPE_HEADER_LENGTH = 128;
 
   private final ProductionProfileProperties.Limits limits;
-  private final int maximumBuckets;
-  private final String processSalt = UUID.randomUUID().toString();
-  private final Map<BucketKey, TokenBucket> buckets = new ConcurrentHashMap<>();
-  private final Map<String, AtomicInteger> sseConnections = new ConcurrentHashMap<>();
-  private final AtomicLong requestsSinceCleanup = new AtomicLong();
+  private final RequestBudgetStore budgetStore;
+  // These are deliberately node-local transport ceilings, not deployment-wide quotas.
+  private final ConcurrentHashMap<String, AtomicInteger> sseConnections = new ConcurrentHashMap<>();
   private final AtomicInteger totalSseConnections = new AtomicInteger();
 
-  public ProductionRequestAbuseFilter(ProductionProfileProperties properties) {
-    this(properties, PRODUCTION_BUCKET_CAPACITY);
-  }
-
-  ProductionRequestAbuseFilter(ProductionProfileProperties properties, int maximumBuckets) {
+  public ProductionRequestAbuseFilter(
+      ProductionProfileProperties properties, RequestBudgetStore budgetStore) {
     this.limits = Objects.requireNonNull(properties, "properties").getLimits();
-    if (maximumBuckets < 1) {
-      throw new IllegalArgumentException("maximum rate-limit buckets must be positive");
-    }
-    this.maximumBuckets = maximumBuckets;
+    this.budgetStore = Objects.requireNonNull(budgetStore, "request budget store");
   }
 
   @Override
@@ -64,17 +58,28 @@ public final class ProductionRequestAbuseFilter extends OncePerRequestFilter {
     if (request.getRequestURI().startsWith("/api/")) {
       response.setHeader("Cache-Control", "no-store");
     }
-    long now = System.nanoTime();
-    if ((requestsSinceCleanup.incrementAndGet() & 0xffL) == 0) {
-      removeExpiredBuckets(now);
-    }
 
     TrafficClass trafficClass = classify(request);
-    String identity = requestIdentity(request);
+    String principalIdentity = requestIdentity(request);
+    List<RequestBudgetStore.Charge> charges = charges(request, principalIdentity, trafficClass);
+    final boolean allowed;
+    try {
+      allowed = budgetStore.tryAcquire(charges);
+    } catch (DataAccessException | TransactionException unavailable) {
+      writeLimiterUnavailable(response);
+      return;
+    }
+    if (!allowed) {
+      writeRateLimited(response);
+      return;
+    }
+
     if (trafficClass == TrafficClass.SSE) {
       SseLease lease =
           reserveSse(
-              identity, limits.getSseConnectionsPerPrincipal(), limits.getSseConnectionsTotal());
+              principalIdentity,
+              limits.getSseConnectionsPerPrincipal(),
+              limits.getSseConnectionsTotal());
       if (lease == null) {
         writeRateLimited(response);
         return;
@@ -93,37 +98,92 @@ public final class ProductionRequestAbuseFilter extends OncePerRequestFilter {
       }
       return;
     }
-
-    BucketKey key = new BucketKey(trafficClass, fingerprint(identity));
-    if (!tryAcquire(key, requestsPerMinute(trafficClass), now)) {
-      writeRateLimited(response);
-      return;
-    }
     filterChain.doFilter(request, response);
   }
 
-  private boolean tryAcquire(BucketKey key, int limit, long now) {
-    TokenBucket bucket = buckets.get(key);
-    if (bucket == null) {
-      synchronized (buckets) {
-        bucket = buckets.get(key);
-        if (bucket == null) {
-          removeExpiredBuckets(now);
-          if (buckets.size() >= maximumBuckets) {
-            return false;
-          }
-          bucket = new TokenBucket(limit, now);
-          buckets.put(key, bucket);
-        }
-      }
-    }
-    return bucket.tryAcquire(now);
+  private List<RequestBudgetStore.Charge> charges(
+      HttpServletRequest request, String principalIdentity, TrafficClass trafficClass) {
+    List<RequestBudgetStore.Charge> result = new ArrayList<>(4);
+    result.add(
+        new RequestBudgetStore.Charge(
+            RequestBudgetStore.Dimension.PRINCIPAL,
+            "ALL",
+            principalIdentity,
+            limits.getPrincipalRequestsPerMinute()));
+    scopeIdentity(request, principalIdentity)
+        .ifPresent(
+            scope ->
+                result.add(
+                    new RequestBudgetStore.Charge(
+                        RequestBudgetStore.Dimension.SCOPE,
+                        "ALL",
+                        scope,
+                        limits.getScopeRequestsPerMinute())));
+    serviceIdentity(principalIdentity)
+        .filter(
+            ignored ->
+                trafficClass == TrafficClass.FEDERATION || trafficClass == TrafficClass.EXCHANGE)
+        .ifPresent(
+            partner ->
+                result.add(
+                    new RequestBudgetStore.Charge(
+                        RequestBudgetStore.Dimension.PARTNER,
+                        "ALL",
+                        partner,
+                        limits.getPartnerRequestsPerMinute())));
+    result.add(
+        new RequestBudgetStore.Charge(
+            RequestBudgetStore.Dimension.OPERATION,
+            trafficClass.name(),
+            principalIdentity,
+            requestsPerMinute(trafficClass)));
+    return List.copyOf(result);
   }
 
-  private void removeExpiredBuckets(long now) {
-    buckets
-        .entrySet()
-        .removeIf(entry -> now - entry.getValue().lastAccessNanos() > BUCKET_IDLE_NANOS);
+  private static java.util.Optional<String> scopeIdentity(
+      HttpServletRequest request, String principalIdentity) {
+    if (!(principalIdentity.startsWith("human\u0000")
+        || principalIdentity.startsWith("service\u0000"))) {
+      return java.util.Optional.empty();
+    }
+    // Requested scopes only add a fair-share key; normal grant checks still decide access.
+    String scopeKind = safeScopePart(request.getHeader(EXECUTION_SCOPE_HEADER));
+    if (scopeKind == null) {
+      return java.util.Optional.empty();
+    }
+    String organization = safeScopePart(request.getHeader(ORGANIZATION_SCOPE_HEADER));
+    String facility = safeScopePart(request.getHeader(FACILITY_SCOPE_HEADER));
+    if ("ORGANIZATION".equals(scopeKind) && organization != null && facility == null) {
+      return java.util.Optional.of("ORGANIZATION\u0000" + organization);
+    }
+    if ("FACILITY".equals(scopeKind) && organization != null && facility != null) {
+      return java.util.Optional.of("FACILITY\u0000" + organization + "\u0000" + facility);
+    }
+    // Platform, malformed, or incomplete scopes do not acquire a fabricated tenant bucket.
+    return java.util.Optional.empty();
+  }
+
+  private static String safeScopePart(String value) {
+    if (value == null || value.isBlank() || value.length() > MAX_SCOPE_HEADER_LENGTH) {
+      return null;
+    }
+    for (int index = 0; index < value.length(); index++) {
+      char character = value.charAt(index);
+      if (!(Character.isLetterOrDigit(character)
+          || character == '-'
+          || character == '_'
+          || character == '.'
+          || character == ':')) {
+        return null;
+      }
+    }
+    return value;
+  }
+
+  private static java.util.Optional<String> serviceIdentity(String principalIdentity) {
+    return principalIdentity.startsWith("service\u0000")
+        ? java.util.Optional.of(principalIdentity)
+        : java.util.Optional.empty();
   }
 
   private SseLease reserveSse(
@@ -181,37 +241,36 @@ public final class ProductionRequestAbuseFilter extends OncePerRequestFilter {
     if (authentication != null && authentication.isAuthenticated()) {
       Object principal = authentication.getPrincipal();
       if (principal instanceof ActorReference actor) {
-        return "actor\u0000"
-            + actor.kind().name()
-            + "\u0000"
-            + actor.identity().issuer().value()
-            + "\u0000"
-            + actor.identity().resourceType()
-            + "\u0000"
-            + actor.identity().value();
+        String identity =
+            actor.kind().name().toLowerCase(Locale.ROOT)
+                + "\u0000"
+                + actor.identity().issuer().value()
+                + "\u0000"
+                + actor.identity().resourceType()
+                + "\u0000"
+                + actor.identity().value();
+        return identity;
       }
       if (authentication instanceof ActorAuthentication) {
-        // A malformed platform authentication must not collapse all actors into one quota.
-        return "invalid-platform-actor\u0000" + UUID.randomUUID();
+        // Malformed platform authentication cannot evade the limiter by changing source address.
+        return "invalid-platform-actor";
       }
       return "authenticated\u0000"
           + authentication.getClass().getName()
           + "\u0000"
           + authentication.getName();
     }
-    // Forwarded headers are deliberately ignored; a proxy address is only a supplementary key.
+    // Forwarded headers are deliberately ignored; proxy address is only an anonymous key.
     return "anonymous\u0000" + Objects.toString(request.getRemoteAddr(), "unknown");
   }
 
-  private String fingerprint(String identity) {
+  private static String fingerprint(String identity) {
     try {
       MessageDigest digest = MessageDigest.getInstance("SHA-256");
-      byte[] hash =
-          digest.digest((processSalt + "\u0000" + identity).getBytes(StandardCharsets.UTF_8));
-      return HexFormat.of().formatHex(hash);
+      return java.util.HexFormat.of()
+          .formatHex(digest.digest(identity.getBytes(StandardCharsets.UTF_8)));
     } catch (NoSuchAlgorithmException impossible) {
-      throw new IllegalStateException(
-          "SHA-256 is required for in-memory rate-limit keys.", impossible);
+      throw new IllegalStateException("SHA-256 is required for in-memory SSE keys.", impossible);
     }
   }
 
@@ -223,7 +282,7 @@ public final class ProductionRequestAbuseFilter extends OncePerRequestFilter {
       case ADMIN -> limits.getAdminRequestsPerMinute();
       case FEDERATION -> limits.getFederationRequestsPerMinute();
       case EXCHANGE -> limits.getExchangeRequestsPerMinute();
-      case SSE -> throw new IllegalArgumentException("SSE uses a concurrent connection budget.");
+      case SSE -> limits.getSseSubscriptionsPerMinute();
     };
   }
 
@@ -257,10 +316,35 @@ public final class ProductionRequestAbuseFilter extends OncePerRequestFilter {
   }
 
   private static void writeRateLimited(HttpServletResponse response) throws IOException {
-    response.setStatus(HttpStatus.TOO_MANY_REQUESTS.value());
+    writeProblem(
+        response,
+        HttpStatus.TOO_MANY_REQUESTS,
+        PlatformErrorCode.REQUEST_RATE_LIMITED,
+        "Too Many Requests",
+        "Request capacity is temporarily exhausted.");
+    response.setHeader("Retry-After", "1");
+  }
+
+  private static void writeLimiterUnavailable(HttpServletResponse response) throws IOException {
+    writeProblem(
+        response,
+        HttpStatus.SERVICE_UNAVAILABLE,
+        PlatformErrorCode.REQUEST_RATE_LIMITER_UNAVAILABLE,
+        "Request capacity check unavailable",
+        "The request was not admitted because the shared request budget could not be checked.");
+    response.setHeader("Retry-After", "1");
+  }
+
+  private static void writeProblem(
+      HttpServletResponse response,
+      HttpStatus status,
+      PlatformErrorCode code,
+      String title,
+      String detail)
+      throws IOException {
+    response.setStatus(status.value());
     response.setContentType(MediaType.APPLICATION_PROBLEM_JSON_VALUE);
     response.setHeader("Cache-Control", "no-store");
-    response.setHeader("Retry-After", "1");
     String correlationId = response.getHeader(CorrelationIdFilter.HEADER_NAME);
     if (correlationId == null || correlationId.isBlank()) {
       correlationId = "unavailable";
@@ -268,49 +352,18 @@ public final class ProductionRequestAbuseFilter extends OncePerRequestFilter {
     response
         .getWriter()
         .write(
-            "{\"type\":\"about:blank\",\"title\":\"Too Many Requests\",\"status\":429,"
-                + "\"detail\":\"Request capacity is temporarily exhausted.\","
-                + "\"code\":\""
-                + PlatformErrorCode.REQUEST_RATE_LIMITED.name()
+            "{\"type\":\"about:blank\",\"title\":\""
+                + title
+                + "\",\"status\":"
+                + status.value()
+                + ",\"detail\":\""
+                + detail
+                + "\",\"code\":\""
+                + code.name()
                 + "\",\"correlationId\":\""
                 + correlationId
                 + "\"}");
   }
-
-  private static final class TokenBucket {
-
-    private final int capacity;
-    private double tokens;
-    private long lastRefillNanos;
-    private volatile long lastAccessNanos;
-
-    private TokenBucket(int capacity, long now) {
-      this.capacity = capacity;
-      this.tokens = capacity;
-      this.lastRefillNanos = now;
-      this.lastAccessNanos = now;
-    }
-
-    private synchronized boolean tryAcquire(long now) {
-      long elapsed = Math.max(0, now - lastRefillNanos);
-      tokens =
-          Math.min(
-              capacity, tokens + ((double) elapsed * capacity / Duration.ofMinutes(1).toNanos()));
-      lastRefillNanos = now;
-      lastAccessNanos = now;
-      if (tokens < 1.0) {
-        return false;
-      }
-      tokens -= 1.0;
-      return true;
-    }
-
-    private long lastAccessNanos() {
-      return lastAccessNanos;
-    }
-  }
-
-  private record BucketKey(TrafficClass trafficClass, String identityFingerprint) {}
 
   private enum TrafficClass {
     ANONYMOUS,
