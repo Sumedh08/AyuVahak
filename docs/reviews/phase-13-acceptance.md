@@ -4,7 +4,16 @@
 **Assessment date:** 2026-10-20.
 **Acceptance target:** local-only, synthetic data, frozen Phase 13 specification.
 
-## Remediation continuation gate
+**Current remediation code baseline:** `ead756e94d3a57ddf5e0b6e2be423b501c7d77dc` on
+`codex/phase-13-production-hardening`. The sections below beginning with “Historical” preserve
+the earlier failed acceptance record. The dated remediation disposition at the end supersedes its
+pre-remediation statuses. Final release-evidence matching is complete for the current JAR, but the
+canonical clean verification failed and the representative Profile A/B workload remains a blocker.
+
+## Historical pre-remediation Java 25 gate
+
+This records the original stop condition and is retained as failure history; it is superseded by
+the authorized local Java 25 retrieval recorded in the current remediation disposition below.
 
 The continuation started at `6858a7bebbdfd699bece631e4589f74cc44f6689`; `689e0f8` is the earlier
 SPDX implementation commit, followed by documentation commits `a41bd1c` and `6858a7b`. The local
@@ -24,7 +33,10 @@ profiles, provider-neutral secrets, HTTP/abuse controls, SLI/SLO and capacity ev
 recovery, replica/worker/shutdown behavior, owner retention, backup/restore, release evidence,
 operator/DPG documentation, and integrated acceptance/freeze. No external tracker was used.
 
-## Implemented evidence
+## Historical pre-remediation implementation evidence
+
+The following table reflects the earlier assessment before the continuation remediation and is
+retained for traceability. Current outcomes are listed in “Remediation disposition” below.
 
 | Slice | Result | Evidence / limit |
 |---|---|---|
@@ -40,7 +52,7 @@ operator/DPG documentation, and integrated acceptance/freeze. No external tracke
 | P13-10 Operations/DPG evidence | Partial | Local runbooks, ASVS 5.0.0 matrix, standards register, and evidence-based readiness matrix are present; governance and live deployment evidence remain open. |
 | P13-11 Integrated acceptance | Not complete | A prior canonical clean verification passed, and local SPDX 3.0.1 generation/validation now passes. The repeat at `689e0f8` failed before Maven startup because `JAVA_HOME` was unavailable. On the current continuation, only Java 17.0.8 is accessible while the project requires Java 25, so the required clean verification gate stopped before remediation. Complete retention coverage, true multi-replica acceptance, measured deployment-profile workload baselines, vulnerability inventory review, and blocker remediation remain outstanding. |
 
-## Backup and restore acceptance
+## Historical backup and restore acceptance
 
 The acceptance uses two local PostgreSQL/PostGIS 18.6 containers with synthetic fixtures only. The
 target is recreated from `template0`, restored from a custom-format `pg_dump`, and started with a
@@ -60,7 +72,7 @@ verification of that attempt. The method is a logical
 snapshot; it does not exercise WAL/PITR, scheduled backups, encryption, or off-host storage. No general production
 RPO/RTO claim follows from this test.
 
-## Local verification so far
+## Historical local verification before remediation
 
 - Canonical `.\mvnw.cmd -B -ntp clean verify`: **BUILD SUCCESS** in 19m38s using Java 25.0.4.1,
   Maven 3.10.0, Spring Boot 4.1.1, and PostgreSQL 18.6 Testcontainers; Flyway validated/applied
@@ -79,7 +91,7 @@ RPO/RTO claim follows from this test.
 - Local manifest/provenance/evidence-pack check: a local manifest revalidated and bound the SPDX SBOM to the application JAR. A provenance record and bundle containing the JAR, manifest, SBOM, validation report and provenance verified with a two-day ephemeral synthetic PKCS#12 identity (fingerprint `2c381e4e5183906b37aecbd8b70338a121f64992a9373eb91711281cf0e62f0a`; bundle SHA-256 `dd0495d594ccd3dd16da482b09ca0b9a122f32f9566a66e8b545423be83de5e7`). The manifest remained release-ineligible because it had no reviewed dependency vulnerability inventory or production signer. The bundle stayed under ignored `.scratch` and was not published.
 - The canonical full clean verification passed before the latest local Python/doc-only release-evidence changes. Its repeat at `689e0f8` exited before the Maven build because `JAVA_HOME` was unavailable; Java 17 was accessible but cannot compile the Java 25 project. At current HEAD `6858a7b`, no accessible Java 25 runtime was found and remediation stopped before a current-tree clean verification. No JDK was fetched. The frozen integrated Phase 13 acceptance gate remains incomplete because owner retention/recovery coverage, two-replica acceptance, measured workload evidence, and vulnerability-inventory review are still missing.
 
-## Readiness and DPG evidence
+## Historical readiness and DPG evidence
 
 The production readiness matrix currently reports 0 READY, 18 PARTIAL, 1 MISSING, and 2
 DEPLOYMENT-SPECIFIC areas. Local implementation changes improve evidence but do not establish a
@@ -89,7 +101,7 @@ The DPG matrix remains evidence-based. It does not assert registration, certific
 compliance, project ownership, or licensing. Governance evidence and the license decision remain
 unresolved; no nomination or submission was made.
 
-## Review and freeze gate
+## Historical review and freeze gate before remediation
 
 The independent Phase 13 reviews found unresolved findings. Their disposition is:
 
@@ -126,9 +138,152 @@ At least the following freeze conditions remain unmet:
 No Phase 13 freeze commit or governance update to “complete and frozen” is authorized while these
 conditions remain unresolved. Phase 14 remains specification-frozen and implementation-not-started.
 
-## Safety and scope
+## Historical safety and scope record
 
 All acceptance targets are local and synthetic. No public healthcare/DHIS2/FHIR system, cloud
 resource, external vulnerability target, public registry, production secret, real health data, DPG
 portal, or remote Git write was used. No Phase 14 code, dependencies, tickets, or optimization work
 was added.
+
+## Remediation disposition — 2026-10-20
+
+### Toolchain and repository
+
+- Starting remediation HEAD was `0145f8112fc91ea8d5d1a99d515448ae293fda32`; code remediation commits
+  are `e4d27f2b3620fa3ac9315126a832d09096cc6527` and
+  `ead756e94d3a57ddf5e0b6e2be423b501c7d77dc`. The branch is
+  `codex/phase-13-production-hardening`; `git remote -v` returned no remotes.
+- Authorized local JDK: Eclipse Temurin 25.0.4.1+1 (Adoptium), retrieved 2026-10-20 from the
+  official Adoptium GitHub release asset
+  [OpenJDK25U-jdk_x64_windows_hotspot_25.0.4.1_1.zip](https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.4%2B1/OpenJDK25U-jdk_x64_windows_hotspot_25.0.4.1_1.zip).
+  Archive SHA-256:
+  `00C847D804F4A78E9F04F2683FAF14FED898535B177B7FC704486CB0284E9283`; the checksum was
+  independently recomputed and matched. It is extracted under the developer-controlled local
+  `AppData\Local\AyuVahak\toolchains` directory. No system-wide Java setting changed.
+- `java -version` reports `25.0.4.1`, Temurin; `mvnw.cmd -version` reports Maven 3.10.0 and the
+  same Java 25.0.4.1 runtime. A new canonical full clean verification ran after remediation at
+  code HEAD `ead756e`; it failed in Failsafe as detailed below. The earlier Java 17/
+  invalid-`JAVA_HOME` failure remains historical only.
+
+### Owner retention and restore coverage
+
+The owner-by-owner register at
+[`production-retention-register.md`](../development/production-retention-register.md) contains
+exactly the 16 frozen categories. Its matrix classifies each as executable, owner-provided expiry,
+configuration/evidence-only, or retained for unresolved/history invariants. This is not a claim
+that every owner has a physical deletion adapter or a universal lawful retention period. Current
+synthetic acceptance exercises Platform outbox purge/hold and restore reapplication; notification
+projection expiry; Capacity expiry-to-stale/unknown; Referral restriction and active-hold
+reapplication; retained Directory, Transfer, Transport, idempotency, federation and Analytics
+state; and preservation of grant/audit history. Categories without an applicable executable
+action are expressly recorded as such, rather than implying automatic deletion. No physical
+PatientReference minimization or cross-context deletion was introduced.
+
+### Expanded isolated restore fixture
+
+`BackupRestoreAcceptanceIT` passed against separate disposable PostGIS 18.6 source and restore
+containers (1 test, 0 failures/errors/skips; 101.0 seconds). The synthetic fixture now covers a
+grant, audit evidence, Platform/Transfer/Transport idempotency receipts, delivered outbox state,
+Directory organization, Capacity observation/reservation, Referral restriction and hold,
+Transfer lifecycle/acceptance, Transport request, federation `OUTCOME_UNKNOWN`, Analytics
+disclosure lineage/reservation, and an unresolved DHIS2 export/target-tuple barrier. It restores
+into a clean database, validates Flyway and authorized reads, reapplies retention manifests before
+readiness, and verifies the unresolved barriers remain. Measured RPO was `PT4.5290279S`; RTO was
+`PT1M3.3759852S`; both beat the test-only 15-minute targets. The test intentionally loses a
+post-backup synthetic mutation. This is logical-dump evidence only; it does not prove WAL/PITR,
+scheduled/off-host/encrypted production backup, or legal retention compliance.
+
+### Actual application replicas and rate limits
+
+`TwoApplicationReplicaWorkerAcceptanceIT` runs two packaged AyuVahak JVMs on separate local ports,
+with separate pools and one disposable shared PostgreSQL business database. It exercises duplicate
+outbox-worker claims, kills the replica holding a controlled in-flight projection, verifies lease
+recovery on the surviving process, restarts a replica, and checks a delivered event is not repeated.
+The three test methods passed (0 failures/errors/skips; 294.4 seconds) on the targeted run, but the
+latest full canonical run had a child replica fail during database startup. Therefore targeted
+behavior passed, while the full clean verification remains failed and two-replica acceptance is not
+an integrated PASS. This process-kill scenario proves only the tested outbox/projection path; other
+owner worker claim/dedup behavior has separate PostgreSQL integration coverage. No in-memory state
+is treated as durable authority.
+
+The eight `ProductionRequestBudgetStorePostgresIT` tests passed (0 failures/errors/skips; 19.43
+seconds). PostgreSQL-shared budgets now cover principal/service, organization/scope and facility
+scope, authenticated partner across operation classes, operation/cost class, and anonymous IP
+edge limits; tests include principal across client IPs, tenant isolation, partner budgets across
+replicas, refill, and operation-class distinction. SSE connection leases are intentionally bounded
+per node; the request/subscription budget is shared in PostgreSQL. The per-node connection cap is
+not described as a deployment-global count. IP remains supplementary to identity and authorization.
+
+### Profile A/B benchmark: measured but not representative
+
+The current harness produced successful measurements, but its only measured operation is
+`notification_projection_replay_only`. It seeds five synthetic organization scopes and 128 safe
+notification hints, then measures 150 replay queries per profile. Facilities, Referrals,
+Transfers, Capacity observations, SSE clients, federation peers, Analytics indicators/periods,
+and exports are all zero in the declared workload. The numbers therefore do **not** satisfy the
+frozen requirement for representative profile workloads spanning the operational contexts.
+
+| Profile | App contexts | p50 | p95 | p99 | Throughput | Errors | Max process CPU | Peak memory | Max active DB connections | DB statement calls |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| A — single site | 1 | 18.8513 ms | 109.5496 ms | 216.7994 ms | 11.5109 ops/s | 0/150 | 0.30282 | 727,846,368 bytes | 1 | 1,801 |
+| B — two contexts | 2 | 16.2252 ms | 35.3236 ms | 62.5711 ms | 46.4618 ops/s | 0/150 | 0.31231 | 753,242,448 bytes | 1 | 1,801 |
+
+Both runs used Temurin Java 25.0.4.1+1, PostgreSQL 18.6, the local Testcontainers environment
+reporting 8 CPUs and 7,926 MiB, and a warm run with 10 warm-ups × 3 plus 50 measured operations ×
+3. These are characterization results for replay only, not production capacity claims. The earlier
+benchmark class did not exercise Directory, Capacity, Referral, Matching, Transfer, Transport,
+federation operations, Analytics computation or export in its timed mix. This remains an
+unresolved **BLOCKER**; no scale claim is made.
+
+### Vulnerability inventory and release evidence
+
+Local metadata already retrieved under the user's explicit authorization was hash-verified:
+OSV-Scanner 2.6.0 Windows AMD64 SHA-256
+`e0ed7644118b717b028c249ee9d3515024e55e8510747ca08906eb96765354d6`; OSV Maven database archive
+SHA-256 `bec867c22ed1121bcd2fa45d2ac0bb8a082789590b57dd7e6987ecc4ad3f852c`, last modified
+`2026-10-19T19:48:00Z`, retrieved `2026-10-20T07:00:35Z`; CISA KEV snapshot SHA-256
+`b6e27975f6635ecfc546fbd4fd6e444ba63a07ab2abc8876229d77fe083d357d`, retrieved
+`2026-10-20T07:00:35Z`. Matching was local/offline; no project dependency manifest, SBOM, JAR or
+source was uploaded. The current JAR scan reported zero matches across 180 runtime components; the
+inventory records scanner/database/KEV snapshot digests and explicitly states that zero matches do
+not prove absence, exploitability or reachability. The JAR SHA-256 is
+`77647c88a101dfb4c83963299aeed39d20149b38f39c06b7598ae946f9a5e540`; the scanned CycloneDX input
+SHA-256 is `0473eeca528c2d4168639103f7e22d296442edda830f24adf484436dd73702d5`, and the reviewed
+inventory SHA-256 is `5938fc09f0ebf690b4ec6482216ad3a20f60dc875b6b5899489db4d509ed6258`. SPDX 3.0.1
+validation passed for the same JAR (SBOM SHA-256
+`449eb6cca389280d02dd2f258c01e5c39eca2cdaf9d29dd722f0ffdc34c4067b`). A local provenance,
+manifest and ephemeral synthetic-signature evidence pack verified with bundle SHA-256
+`84D087B3876C92A9C9BCDAFC4685A130565BBC0DD46D09C6C0D6B6BACAADFCB3`; its release disposition
+is explicitly ineligible, and the provenance records the failed canonical verify and replay-only
+benchmark. No production signing identity is represented.
+
+### Latest canonical clean verification — failed
+
+At remediation HEAD `ead756e94d3a57ddf5e0b6e2be423b501c7d77dc`, the Java 25/Maven 3.10.0 canonical
+`clean verify` completed Surefire successfully (488 tests; 0 failures, errors or skips) but failed
+Failsafe (406 tests; 1 failure, 2 errors, 0 skips; build exit 1 after 29:02). The failure was the
+synthetic `DirectoryCapacityReferralScenarioIT` expecting IPS projection status `AVAILABLE` but
+receiving `INVALID`. Errors were a local PostGIS container startup timeout in
+`PartnerTrustAdministrationIT` and a child-replica database connection failure during
+`TwoApplicationReplicaWorkerAcceptanceIT`. Earlier targeted runs passed the affected partner-trust,
+replica and Transfer suites, but those isolated passes do not override the failed full regression.
+The acceptance run is therefore not green. No frozen Volume II/III behavior was changed to mask
+the failure. A targeted isolated rerun of the same scenario class passed 9/9 in 105.1 seconds; the
+separate local PostGIS startup and child-process startup errors have also passed isolated reruns in
+earlier attempts. These observations show suite-load instability but do not change the failed
+canonical result.
+
+### Current gate disposition
+
+| Finding/gate | Current result | Evidence / limit |
+|---|---|---|
+| Owner retention/restore coverage | Classification and acceptance matrix updated | Every frozen owner category appears in the register; only the explicitly supported owner actions are executable. No legal claim or generic deletion is inferred. |
+| Expanded restore fixture | PASS | Synthetic owner state, idempotency, hold/restriction reapplication, federation/Analytics unknown outcomes, target tuple barrier, Flyway and authorized read verified. |
+| Two application replicas | Targeted PASS; canonical run ERROR | Two packaged processes, shared DB, duplicate claim, process termination, failover and restart passed targeted; one child could not connect to disposable PostgreSQL in the latest full run. |
+| Rate-limit dimensions/distributed semantics | PASS for specified shared budgets | Cross-replica PostgreSQL budget tests pass; SSE connection-count cap remains explicitly per node. |
+| Profile A/B representative workload | **BLOCKER** | Measured replay-only results above omit required context workloads and dimensions. |
+| Reviewed dependency inventory and exact-artifact release binding | PASS as local acceptance evidence; release ineligible | OSV/CISA snapshots, scan SBOM, JAR, SPDX, provenance, manifest and ephemeral signature are digest-bound in the local evidence pack. It is not an eligible or published release. |
+| Canonical Java 25 clean verify on remediation HEAD | FAIL | Surefire 488/488 passed; Failsafe 406 tests, 1 failure and 2 errors, 0 skips. See failure categories above and the complete local log. |
+
+No Phase 13 freeze or governance transition is made while the representative profile workload gate
+remains unresolved. Phase 14 remains specification-frozen and implementation-not-started.
