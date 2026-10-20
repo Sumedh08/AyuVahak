@@ -1,0 +1,409 @@
+package org.ayuvahak.replicaacceptance;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.sql.Connection;
+import java.sql.SQLException;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import javax.sql.DataSource;
+import org.ayuvahak.platform.AyuVahakApplication;
+import org.ayuvahak.platform.core.ActorReference;
+import org.ayuvahak.platform.core.CorrelationId;
+import org.ayuvahak.platform.core.ExternalReference;
+import org.ayuvahak.platform.core.InternalId;
+import org.ayuvahak.platform.core.IssuerId;
+import org.ayuvahak.platform.core.OccurredAt;
+import org.ayuvahak.platform.core.RecordedAt;
+import org.ayuvahak.platform.event.AggregatePosition;
+import org.ayuvahak.platform.event.EventEnvelope;
+import org.ayuvahak.platform.event.EventType;
+import org.ayuvahak.platform.eventing.application.DispatchReport;
+import org.ayuvahak.platform.eventing.application.EventHandlerRegistry;
+import org.ayuvahak.platform.eventing.application.InternalEvent;
+import org.ayuvahak.platform.eventing.application.InternalEventHandler;
+import org.ayuvahak.platform.eventing.application.OutboxDispatcher;
+import org.ayuvahak.platform.eventing.application.OutboxStore;
+import org.ayuvahak.platform.eventing.application.OutboxWriter;
+import org.ayuvahak.platform.executioncontext.ExecutionContext;
+import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
+import org.ayuvahak.platform.executioncontext.ExecutionScope;
+import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
+import org.ayuvahak.platform.notification.application.NotificationEventProjectionHandler;
+import org.ayuvahak.platform.notification.application.NotificationProjectionPage;
+import org.ayuvahak.platform.notification.application.NotificationProjectionQuery;
+import org.junit.jupiter.api.Test;
+import org.springframework.boot.WebApplicationType;
+import org.springframework.boot.builder.SpringApplicationBuilder;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.ConfigurableApplicationContext;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Primary;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
+import org.testcontainers.postgresql.PostgreSQLContainer;
+import org.testcontainers.utility.DockerImageName;
+import tools.jackson.databind.ObjectMapper;
+
+/**
+ * Starts two independent Spring Boot application replicas with independent PostgreSQL pools. Both
+ * use one local disposable database because this is replica acceptance, not federation.
+ */
+@Testcontainers
+class TwoApplicationReplicaWorkerAcceptanceIT {
+
+  private static final String TEST_PASSWORD = "local-replica-test-only";
+  private static final Instant SYNTHETIC_TIME = Instant.parse("2026-10-20T00:00:00Z");
+  private static final EventType EVENT_TYPE = EventType.parse("referral.cancelled.v1");
+  private static final HttpClient HTTP =
+      HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build();
+  private static volatile ProjectionControl projectionControl;
+
+  @Container
+  private static final PostgreSQLContainer POSTGRES =
+      new PostgreSQLContainer(
+              DockerImageName.parse(
+                      "postgis/postgis:18-3.6@sha256:60f6ad1d21ea86a67d47780b9a0d1e1d200500f62b19293fa834d0dea80b8677")
+                  .asCompatibleSubstituteFor("postgres"))
+          .withDatabaseName("ayuvahak_replica_acceptance")
+          .withUsername("ayuvahak")
+          .withPassword(TEST_PASSWORD)
+          .withStartupTimeout(Duration.ofMinutes(3));
+
+  @Test
+  void independentReplicasCoordinateDurableProjectionAndRecoverAfterClaimedNodeShutdown()
+      throws Exception {
+    projectionControl = new ProjectionControl();
+    ConfigurableApplicationContext replicaA = startReplica("SYN-DEPLOYMENT-A");
+    ConfigurableApplicationContext replicaB = null;
+    try {
+      replicaB = startReplica("SYN-DEPLOYMENT-B");
+      assertIndependentLocalReplicas(replicaA, replicaB);
+
+      NotificationProjectionQuery query = replicaA.getBean(NotificationProjectionQuery.class);
+      ExecutionScope scope = organizationScope("SYN-ORG-001");
+      String startingCursor = query.currentCursor(scope);
+      EventEnvelope first = event("SYN-REFERRAL-001", 1);
+      record(replicaA, first);
+
+      projectionControl.pauseNextProjection();
+      try (var worker = Executors.newSingleThreadExecutor()) {
+        var firstReplicaDispatch =
+            worker.submit(() -> replicaA.getBean(OutboxDispatcher.class).dispatchAvailable());
+        assertThat(projectionControl.awaitProjectionStart(Duration.ofSeconds(10)))
+            .as("replica A reaches the notification projection handler")
+            .isTrue();
+
+        DispatchReport secondReplicaDispatch =
+            replicaB.getBean(OutboxDispatcher.class).dispatchAvailable();
+        assertThat(secondReplicaDispatch)
+            .as("replica B cannot claim A's live PostgreSQL lease")
+            .isEqualTo(new DispatchReport(0, 0, 0, 0, 0));
+
+        projectionControl.releaseProjection();
+        assertThat(firstReplicaDispatch.get(10, TimeUnit.SECONDS).delivered()).isEqualTo(1);
+      } finally {
+        projectionControl.releaseProjection();
+      }
+
+      assertThat(projectionControl.calls()).isEqualTo(1);
+      NotificationProjectionPage firstReplay =
+          query.listAfter(scope, Optional.of(startingCursor), 10);
+      assertThat(firstReplay.refreshRequired()).isFalse();
+      assertThat(firstReplay.hints()).hasSize(1);
+      assertThat(firstReplay.hints().getFirst().resourceType()).isEqualTo("referral");
+
+      EventEnvelope recovered = event("SYN-REFERRAL-002", 1);
+      record(replicaA, recovered);
+      Instant claimTime = Instant.now();
+      var abandonedClaim =
+          replicaA
+              .getBean(OutboxStore.class)
+              .claimDue(claimTime, Duration.ofMillis(150), 10, 1)
+              .getFirst();
+      assertThat(abandonedClaim.event().eventId()).isEqualTo(recovered.eventId());
+
+      int stoppedPort = serverPort(replicaA);
+      replicaA.close();
+      assertThat(replicaA.isActive()).isFalse();
+      assertThat(connectionFails(stoppedPort))
+          .as("closing replica A closes its embedded HTTP listener")
+          .isTrue();
+
+      Thread.sleep(250);
+      DispatchReport recoveredByReplicaB =
+          replicaB.getBean(OutboxDispatcher.class).dispatchAvailable();
+      assertThat(recoveredByReplicaB.delivered())
+          .as("replica B reclaims durable work after A's lease expires")
+          .isEqualTo(1);
+      assertThat(projectionControl.calls()).isEqualTo(2);
+
+      NotificationProjectionPage afterRecovery =
+          replicaB
+              .getBean(NotificationProjectionQuery.class)
+              .listAfter(scope, Optional.of(startingCursor), 10);
+      assertThat(afterRecovery.refreshRequired()).isFalse();
+      assertThat(afterRecovery.hints()).hasSize(2);
+
+      ConfigurableApplicationContext restartedA = startReplica("SYN-DEPLOYMENT-A");
+      try {
+        assertThat(serverPort(restartedA)).isNotEqualTo(serverPort(replicaB));
+        assertHealthEndpoint(restartedA);
+        assertThat(restartedA.getBean(OutboxDispatcher.class).dispatchAvailable())
+            .as("restarted replica does not repeat already delivered work")
+            .isEqualTo(new DispatchReport(0, 0, 0, 0, 0));
+        assertThat(projectionControl.calls()).isEqualTo(2);
+      } finally {
+        restartedA.close();
+      }
+    } finally {
+      if (replicaB != null && replicaB.isActive()) {
+        replicaB.close();
+      }
+      if (replicaA.isActive()) {
+        replicaA.close();
+      }
+      projectionControl = null;
+    }
+  }
+
+  private static ConfigurableApplicationContext startReplica(String deployment) {
+    Map<String, String> properties =
+        Map.ofEntries(
+            Map.entry("spring.application.name", "ayuvahak-" + deployment.toLowerCase()),
+            Map.entry("server.port", "0"),
+            Map.entry("spring.datasource.url", POSTGRES.getJdbcUrl()),
+            Map.entry("spring.datasource.username", POSTGRES.getUsername()),
+            Map.entry("spring.datasource.password", POSTGRES.getPassword()),
+            Map.entry("ayuvahak.database.url", POSTGRES.getJdbcUrl()),
+            Map.entry("ayuvahak.database.username", POSTGRES.getUsername()),
+            Map.entry("ayuvahak.database.password", POSTGRES.getPassword()),
+            Map.entry(
+                "ayuvahak.authentication.issuer", "https://identity.example.test/realms/test"),
+            Map.entry("ayuvahak.authentication.jwk-set-uri", "http://127.0.0.1:9/jwks"),
+            Map.entry("ayuvahak.authentication.audience", "ayuvahak-api"),
+            Map.entry("ayuvahak.authentication.service-client-ids", "synthetic-worker"),
+            Map.entry("ayuvahak.authentication.allow-http", "true"),
+            Map.entry("ayuvahak.eventing.outbox.dispatcher-enabled", "false"),
+            Map.entry("ayuvahak.eventing.outbox.delivered-event-retention", "PT24H"),
+            Map.entry("ayuvahak.eventing.outbox.batch-size", "10"),
+            Map.entry("ayuvahak.transfer.expiry-polling-enabled", "false"),
+            Map.entry("ayuvahak.transfer.reservation-polling-enabled", "false"),
+            Map.entry("ayuvahak.capacity.reservation-lifecycle.enabled", "false"),
+            Map.entry("management.endpoints.web.exposure.include", "health"),
+            Map.entry("logging.level.root", "WARN"));
+    String[] arguments =
+        properties.entrySet().stream()
+            .map(entry -> "--" + entry.getKey() + "=" + entry.getValue())
+            .toArray(String[]::new);
+    return new SpringApplicationBuilder(AyuVahakApplication.class, ReplicaTestConfiguration.class)
+        .web(WebApplicationType.SERVLET)
+        .run(arguments);
+  }
+
+  private static void assertIndependentLocalReplicas(
+      ConfigurableApplicationContext replicaA, ConfigurableApplicationContext replicaB)
+      throws Exception {
+    int portA = serverPort(replicaA);
+    int portB = serverPort(replicaB);
+    assertThat(portA).isPositive();
+    assertThat(portB).isPositive().isNotEqualTo(portA);
+    assertHealthEndpoint(replicaA);
+    assertHealthEndpoint(replicaB);
+
+    DataSource dataSourceA = replicaA.getBean(DataSource.class);
+    DataSource dataSourceB = replicaB.getBean(DataSource.class);
+    assertThat(dataSourceA).isNotSameAs(dataSourceB);
+    try (Connection connectionA = dataSourceA.getConnection();
+        Connection connectionB = dataSourceB.getConnection()) {
+      int backendA = backendPid(connectionA);
+      int backendB = backendPid(connectionB);
+      String databaseA = databaseName(connectionA);
+      String databaseB = databaseName(connectionB);
+      assertThat(connectionA.getMetaData().getURL()).isEqualTo(connectionB.getMetaData().getURL());
+      assertThat(databaseA).isEqualTo("ayuvahak_replica_acceptance").isEqualTo(databaseB);
+      assertThat(backendA).isNotEqualTo(backendB);
+    }
+  }
+
+  private static int backendPid(Connection connection) throws SQLException {
+    try (var statement = connection.createStatement();
+        var result = statement.executeQuery("SELECT pg_backend_pid()")) {
+      result.next();
+      return result.getInt(1);
+    }
+  }
+
+  private static String databaseName(Connection connection) throws SQLException {
+    try (var statement = connection.createStatement();
+        var result = statement.executeQuery("SELECT current_database()")) {
+      result.next();
+      return result.getString(1);
+    }
+  }
+
+  private static void assertHealthEndpoint(ConfigurableApplicationContext context)
+      throws Exception {
+    HttpRequest request =
+        HttpRequest.newBuilder(
+                URI.create("http://127.0.0.1:" + serverPort(context) + "/actuator/health/liveness"))
+            .timeout(Duration.ofSeconds(5))
+            .GET()
+            .build();
+    HttpResponse<Void> response = HTTP.send(request, HttpResponse.BodyHandlers.discarding());
+    assertThat(response.statusCode()).isEqualTo(200);
+  }
+
+  private static boolean connectionFails(int port) {
+    try {
+      HttpRequest request =
+          HttpRequest.newBuilder(
+                  URI.create("http://127.0.0.1:" + port + "/actuator/health/liveness"))
+              .timeout(Duration.ofSeconds(2))
+              .GET()
+              .build();
+      return HTTP.send(request, HttpResponse.BodyHandlers.discarding()).statusCode() != 200;
+    } catch (Exception closedListener) {
+      return true;
+    }
+  }
+
+  private static int serverPort(ConfigurableApplicationContext context) {
+    return context.getEnvironment().getRequiredProperty("local.server.port", Integer.class);
+  }
+
+  private static ExecutionScope organizationScope(String id) {
+    ExternalReference organization =
+        new ExternalReference(new IssuerId("urn:ayuvahak:directory"), "Organization", id);
+    return new ExecutionContextFactory((actor, scope) -> true)
+        .forInteractiveRequest(
+            ActorReference.human(
+                new IssuerId("https://identity.example.test/realms/test"), "SYN-USER-001"),
+            RequestedExecutionScope.organization(organization),
+            new CorrelationId("synthetic-replica-correlation"))
+        .scope();
+  }
+
+  private static EventEnvelope event(String syntheticReferralId, long sequence) {
+    ExternalReference organization =
+        new ExternalReference(
+            new IssuerId("urn:ayuvahak:directory"), "Organization", "SYN-ORG-001");
+    ExecutionContext context =
+        new ExecutionContextFactory((actor, scope) -> true)
+            .forInteractiveRequest(
+                ActorReference.human(
+                    new IssuerId("https://identity.example.test/realms/test"), "SYN-USER-001"),
+                RequestedExecutionScope.organization(organization),
+                new CorrelationId("synthetic-replica-correlation"));
+    var payload = new ObjectMapper().createObjectNode();
+    payload.put("coordinationReference", syntheticReferralId);
+    return new EventEnvelope(
+        InternalId.generate(),
+        EVENT_TYPE,
+        EVENT_TYPE.context(),
+        new OccurredAt(SYNTHETIC_TIME),
+        new RecordedAt(SYNTHETIC_TIME.plusSeconds(1)),
+        context,
+        Optional.of(new AggregatePosition("referral/" + java.util.UUID.randomUUID(), sequence)),
+        payload);
+  }
+
+  private static void record(ConfigurableApplicationContext context, EventEnvelope event) {
+    TransactionTemplate transaction =
+        new TransactionTemplate(context.getBean(PlatformTransactionManager.class));
+    transaction.executeWithoutResult(status -> context.getBean(OutboxWriter.class).record(event));
+  }
+
+  @TestConfiguration(proxyBeanMethods = false)
+  static class ReplicaTestConfiguration {
+
+    @Bean
+    ReplicaNotificationHandler replicaNotificationHandler(
+        NotificationEventProjectionHandler projection) {
+      if (projectionControl == null) {
+        throw new IllegalStateException("replica acceptance control was not initialized");
+      }
+      return new ReplicaNotificationHandler(projection, projectionControl);
+    }
+
+    @Bean
+    @Primary
+    EventHandlerRegistry replicaEventHandlerRegistry(ReplicaNotificationHandler handler) {
+      return new EventHandlerRegistry(List.of(handler));
+    }
+  }
+
+  static final class ReplicaNotificationHandler implements InternalEventHandler {
+
+    private final NotificationEventProjectionHandler projection;
+    private final ProjectionControl control;
+
+    ReplicaNotificationHandler(
+        NotificationEventProjectionHandler projection, ProjectionControl control) {
+      this.projection = projection;
+      this.control = control;
+    }
+
+    @Override
+    public Set<EventType> supportedEventTypes() {
+      return Set.of(EVENT_TYPE);
+    }
+
+    @Override
+    public void handle(InternalEvent event) throws Exception {
+      control.beforeProjection();
+      projection.handle(event);
+    }
+  }
+
+  static final class ProjectionControl {
+
+    private final AtomicBoolean pauseNext = new AtomicBoolean();
+    private final AtomicInteger calls = new AtomicInteger();
+    private volatile CountDownLatch entered = new CountDownLatch(0);
+    private volatile CountDownLatch release = new CountDownLatch(0);
+
+    void pauseNextProjection() {
+      entered = new CountDownLatch(1);
+      release = new CountDownLatch(1);
+      pauseNext.set(true);
+    }
+
+    void beforeProjection() throws InterruptedException {
+      calls.incrementAndGet();
+      if (pauseNext.compareAndSet(true, false)) {
+        entered.countDown();
+        if (!release.await(10, TimeUnit.SECONDS)) {
+          throw new IllegalStateException("synthetic projection gate expired");
+        }
+      }
+    }
+
+    boolean awaitProjectionStart(Duration timeout) throws InterruptedException {
+      return entered.await(timeout.toMillis(), TimeUnit.MILLISECONDS);
+    }
+
+    void releaseProjection() {
+      release.countDown();
+    }
+
+    int calls() {
+      return calls.get();
+    }
+  }
+}
