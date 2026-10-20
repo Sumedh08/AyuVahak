@@ -27,13 +27,13 @@ import java.util.UUID;
 import org.ayuvahak.platform.AyuVahakApplication;
 import org.ayuvahak.platform.eventing.adapter.persistence.PostgresOutboxRetentionReapplicationStore;
 import org.ayuvahak.platform.eventing.application.PlatformOutboxRetentionManifest;
+import org.ayuvahak.platform.idempotency.CommandReceiptKey;
+import org.ayuvahak.platform.idempotency.IdempotencyKeyDigest;
+import org.ayuvahak.platform.idempotency.RequestFingerprint;
 import org.ayuvahak.platform.retention.RetentionReapplicationHealthIndicator;
 import org.ayuvahak.platform.retention.RetentionReapplicationProperties;
 import org.ayuvahak.referral.adapter.persistence.JdbcReferralRetentionStore;
 import org.ayuvahak.referral.application.ReferralRetentionManifest;
-import org.ayuvahak.platform.idempotency.CommandReceiptKey;
-import org.ayuvahak.platform.idempotency.IdempotencyKeyDigest;
-import org.ayuvahak.platform.idempotency.RequestFingerprint;
 import org.ayuvahak.transfer.application.TransferStore;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.AfterAll;
@@ -45,8 +45,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -122,6 +122,10 @@ class BackupRestoreAcceptanceIT {
   private static final UUID HELD_REFERRAL_ID =
       UUID.fromString("00000000-0000-4000-8000-000000000035");
   private static final UUID HOLD_ID = UUID.fromString("00000000-0000-4000-8000-000000000036");
+  private static final UUID DISCLOSURE_LINEAGE_ID =
+      UUID.fromString("00000000-0000-4000-8000-000000000047");
+  private static final UUID DISCLOSURE_RESERVATION_ID =
+      UUID.fromString("00000000-0000-4000-8000-000000000048");
   private static final String INDICATOR_KEY = "SYN-INDICATOR-P13";
   private static final String MAPPING_KEY = "SYN-MAPPING-P13";
   private static final String SYNTHETIC_PRIVATE_MARKER = "SYN-PATIENT-PHASE13-RESTORE-91A2";
@@ -452,7 +456,20 @@ class BackupRestoreAcceptanceIT {
                 "SELECT transfer_status FROM transfer.transfer_record WHERE transfer_id = ?",
                 String.class,
                 TRANSFER_ID))
-        .isEqualTo("AWAITING_RESERVATION");
+        .isEqualTo("READY");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT outcome FROM transfer.capacity_reservation_request WHERE transfer_id = ?",
+                String.class,
+                TRANSFER_ID))
+        .isEqualTo("RESERVED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT reservation_id FROM transfer.capacity_reservation_request "
+                    + "WHERE transfer_id = ?",
+                UUID.class,
+                TRANSFER_ID))
+        .isEqualTo(CAPACITY_RESERVATION_ID);
     assertThat(
             jdbc.queryForObject(
                 "SELECT request_status FROM transport.transport_request "
@@ -482,6 +499,26 @@ class BackupRestoreAcceptanceIT {
                 String.class,
                 EXPORT_OPERATION_ID))
         .isEqualTo("OUTCOME_UNKNOWN");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT state FROM analytics.disclosure_reservation WHERE reservation_id = ?",
+                String.class,
+                DISCLOSURE_RESERVATION_ID))
+        .isEqualTo("POTENTIALLY_DISCLOSED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT lineage_id FROM analytics.disclosure_reservation_lineage "
+                    + "WHERE reservation_id = ?",
+                UUID.class,
+                DISCLOSURE_RESERVATION_ID))
+        .isEqualTo(DISCLOSURE_LINEAGE_ID);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT disclosure_reservation_id FROM analytics.dhis2_export_operation "
+                    + "WHERE operation_id = ?",
+                UUID.class,
+                EXPORT_OPERATION_ID))
+        .isEqualTo(DISCLOSURE_RESERVATION_ID);
     assertThat(
             jdbc.queryForObject(
                 "SELECT COUNT(*) FROM analytics.dhis2_export_target_tuple_claim WHERE operation_id = ?",
@@ -559,6 +596,13 @@ class BackupRestoreAcceptanceIT {
             jdbc.queryForObject(
                 "SELECT COUNT(*) FROM analytics.dhis2_export_operation "
                     + "WHERE to_jsonb(dhis2_export_operation)::text LIKE ?",
+                Integer.class,
+                "%" + SYNTHETIC_PRIVATE_MARKER + "%"))
+        .isZero();
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM transfer.federated_origin_receiving_attempt "
+                    + "WHERE request_body::text LIKE ?",
                 Integer.class,
                 "%" + SYNTHETIC_PRIVATE_MARKER + "%"))
         .isZero();
@@ -848,11 +892,30 @@ class BackupRestoreAcceptanceIT {
     jdbc.update(
         "INSERT INTO transfer.transfer_record "
             + "(transfer_id, journey_id, request_attempt_id, transfer_status, created_at, version) "
-            + "VALUES (?, ?, ?, 'AWAITING_RESERVATION', ?, 1)",
+            + "VALUES (?, ?, ?, 'READY', ?, 2)",
         TRANSFER_ID,
         JOURNEY_ID,
         REQUEST_ATTEMPT_ID,
         Timestamp.from(now.minus(Duration.ofHours(4))));
+    jdbc.update(
+        "INSERT INTO transfer.capacity_reservation_request "
+            + "(operation_id, transfer_id, organization_issuer, organization_identifier_type, "
+            + "organization_identifier, facility_issuer, facility_identifier_type, "
+            + "facility_identifier, dimension_code, unit_code, quantity, interval_start, "
+            + "interval_end, expires_at, outcome, reservation_id, attempt_count, next_attempt_at, "
+            + "recorded_at) VALUES (?, ?, 'urn:ayuvahak:directory', 'Organization', ?, "
+            + "'urn:ayuvahak:directory', 'Facility', ?, 'SYN_RESTORE_BEDS', 'bed', 1, ?, ?, ?, "
+            + "'RESERVED', ?, 1, ?, ?)",
+        TRANSFER_ID,
+        TRANSFER_ID,
+        ORGANIZATION_ID,
+        destinationFacilityId,
+        Timestamp.from(now.minus(Duration.ofMinutes(5))),
+        Timestamp.from(now.plus(Duration.ofMinutes(55))),
+        Timestamp.from(now.plus(Duration.ofMinutes(55))),
+        CAPACITY_RESERVATION_ID,
+        Timestamp.from(now),
+        Timestamp.from(now.minus(Duration.ofMinutes(5))));
     jdbc.update(
         "INSERT INTO transfer.request_decision "
             + "(decision_id, request_attempt_id, decision_kind, transfer_id, recorded_by_kind, "
@@ -1049,6 +1112,85 @@ class BackupRestoreAcceptanceIT {
         MAPPING_KEY,
         Timestamp.from(now),
         Timestamp.from(now));
+    jdbc.update(
+        "INSERT INTO analytics.disclosure_lineage "
+            + "(lineage_id, organization_issuer, organization_reference_type, organization_id, created_at) "
+            + "VALUES (?, 'urn:synthetic:registry', 'Organization', ?, ?)",
+        DISCLOSURE_LINEAGE_ID,
+        ORGANIZATION_ID,
+        Timestamp.from(now));
+    jdbc.update(
+        "INSERT INTO analytics.disclosure_privacy_scope "
+            + "(organization_issuer, organization_reference_type, organization_id, "
+            + "conservative_lineage_id, created_at) "
+            + "VALUES ('urn:synthetic:registry', 'Organization', ?, ?, ?)",
+        ORGANIZATION_ID,
+        DISCLOSURE_LINEAGE_ID,
+        Timestamp.from(now));
+    jdbc.update(
+        "INSERT INTO analytics.disclosure_policy_head "
+            + "(policy_key, organization_issuer, organization_reference_type, organization_id, "
+            + "conservative_lineage_id, active_version, history_checkpoint, created_at, updated_at) "
+            + "VALUES ('SYN-POLICY-P13', 'urn:synthetic:registry', 'Organization', ?, ?, 1, 1, ?, ?)",
+        ORGANIZATION_ID,
+        DISCLOSURE_LINEAGE_ID,
+        Timestamp.from(now),
+        Timestamp.from(now));
+    jdbc.update(
+        "INSERT INTO analytics.disclosure_policy_version "
+            + "(policy_key, policy_version, minimum_cell_count, external_baseline_complete, "
+            + "conservative_lineage_id, requested_fingerprint, effective_fingerprint, activated_at) "
+            + "VALUES ('SYN-POLICY-P13', 1, 1, TRUE, ?, ?, ?, ?)",
+        DISCLOSURE_LINEAGE_ID,
+        FINGERPRINT,
+        FINGERPRINT,
+        Timestamp.from(now));
+    jdbc.update(
+        "INSERT INTO analytics.disclosure_policy_output_lineage "
+            + "(policy_key, policy_version, output_key, lineage_id) "
+            + "VALUES ('SYN-POLICY-P13', 1, 'SYN-OUTPUT-P13', ?)",
+        DISCLOSURE_LINEAGE_ID);
+    jdbc.update(
+        "INSERT INTO analytics.disclosure_reservation "
+            + "(reservation_id, policy_key, policy_version, operation_id, operation_fingerprint, "
+            + "state, reason_code, origin, history_checkpoint, scope_indicator_key, "
+            + "scope_indicator_version, scope_organization_issuer, scope_organization_id, "
+            + "scope_period_start_utc, scope_period_end_exclusive_utc, created_at, updated_at) "
+            + "VALUES (?, 'SYN-POLICY-P13', 1, ?, ?, 'POTENTIALLY_DISCLOSED', 'RESPONSE_LOST', "
+            + "'LOCAL_RELEASE', 1, ?, 1, 'urn:synthetic:registry', ?, ?, ?, ?, ?)",
+        DISCLOSURE_RESERVATION_ID,
+        EXPORT_OPERATION_ID,
+        FINGERPRINT,
+        INDICATOR_KEY,
+        ORGANIZATION_ID,
+        Timestamp.from(periodStart),
+        Timestamp.from(periodEnd),
+        Timestamp.from(now),
+        Timestamp.from(now));
+    jdbc.update(
+        "INSERT INTO analytics.disclosure_reservation_lineage (reservation_id, lineage_id) "
+            + "VALUES (?, ?)",
+        DISCLOSURE_RESERVATION_ID,
+        DISCLOSURE_LINEAGE_ID);
+    jdbc.update(
+        "INSERT INTO analytics.disclosure_reservation_output "
+            + "(reservation_id, output_key, output_value, equation_result, applies_minimum_cell_count) "
+            + "VALUES (?, 'SYN-OUTPUT-P13', 4, 4, TRUE)",
+        DISCLOSURE_RESERVATION_ID);
+    jdbc.update(
+        "INSERT INTO analytics.disclosure_reservation_term "
+            + "(reservation_id, output_key, cell_key, coefficient) "
+            + "VALUES (?, 'SYN-OUTPUT-P13', 'SYN-CELL-P13', 1)",
+        DISCLOSURE_RESERVATION_ID);
+    jdbc.update(
+        "INSERT INTO analytics.disclosure_reservation_cell (reservation_id, cell_key, cell_value) "
+            + "VALUES (?, 'SYN-CELL-P13', 4)",
+        DISCLOSURE_RESERVATION_ID);
+    jdbc.update(
+        "UPDATE analytics.dhis2_export_operation SET disclosure_reservation_id = ? "
+            + "WHERE operation_id = ?",
+        DISCLOSURE_RESERVATION_ID,
+        EXPORT_OPERATION_ID);
     jdbc.update(
         "INSERT INTO analytics.dhis2_export_target_tuple_claim "
             + "(partner_key, data_element_uid, period_code, org_unit_uid, operation_id, claimed_at) "

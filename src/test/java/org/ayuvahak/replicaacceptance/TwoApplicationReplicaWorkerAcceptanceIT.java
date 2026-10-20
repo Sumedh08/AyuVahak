@@ -98,21 +98,27 @@ class TwoApplicationReplicaWorkerAcceptanceIT {
     Process replicaA = null;
     Process replicaB = null;
     Connection crashGate = null;
-    Path logDirectory = Path.of(".scratch", "phase-13-production-hardening-dpg-readiness", "process-acceptance");
+    Path logDirectory =
+        Path.of(".scratch", "phase-13-production-hardening-dpg-readiness", "process-acceptance");
     Files.createDirectories(logDirectory);
     try {
       Path applicationJar = Path.of("target", "ayuvahak-platform-0.1.0-SNAPSHOT.jar");
       assertThat(applicationJar).as("packaged application JAR for process acceptance").exists();
       int portA = freePort();
-      replicaA = startPackagedReplica("SYN-PHASE13-REPLICA-A", portA, logDirectory.resolve("replica-a.log"));
+      replicaA =
+          startPackagedReplica(
+              "SYN-PHASE13-REPLICA-A", portA, logDirectory.resolve("replica-a.log"));
       awaitProcessHealth(replicaA, portA);
       int portB = freePort();
-      replicaB = startPackagedReplica("SYN-PHASE13-REPLICA-B", portB, logDirectory.resolve("replica-b.log"));
+      replicaB =
+          startPackagedReplica(
+              "SYN-PHASE13-REPLICA-B", portB, logDirectory.resolve("replica-b.log"));
       awaitProcessHealth(replicaB, portB);
       assertThat(replicaA.pid()).isNotEqualTo(replicaB.pid());
       EventEnvelope normal = notificationOnlyEvent("SYN-RECEIVING-REQUEST-PROCESS-001", 1);
       record(seedContext, normal);
-      awaitOutboxState(seedContext, normal.eventId().toString(), "DELIVERED", Duration.ofSeconds(8));
+      awaitOutboxState(
+          seedContext, normal.eventId().toString(), "DELIVERED", Duration.ofSeconds(8));
       assertThat(notificationCount(seedContext, normal.eventId().toString())).isEqualTo(1);
 
       EventEnvelope crashRecovery = notificationOnlyEvent("SYN-RECEIVING-REQUEST-PROCESS-002", 1);
@@ -127,7 +133,8 @@ class TwoApplicationReplicaWorkerAcceptanceIT {
       crashGate.close();
       crashGate = null;
 
-      awaitOutboxState(seedContext, crashRecovery.eventId().toString(), "DELIVERED", Duration.ofSeconds(30));
+      awaitOutboxState(
+          seedContext, crashRecovery.eventId().toString(), "DELIVERED", Duration.ofSeconds(30));
       assertThat(notificationCount(seedContext, crashRecovery.eventId().toString()))
           .as("the surviving application process recovers the leased event exactly once")
           .isEqualTo(1);
@@ -158,13 +165,16 @@ class TwoApplicationReplicaWorkerAcceptanceIT {
                 java,
                 "-Duser.timezone=UTC",
                 "-jar",
-                Path.of("target", "ayuvahak-platform-0.1.0-SNAPSHOT.jar").toAbsolutePath().toString(),
+                Path.of("target", "ayuvahak-platform-0.1.0-SNAPSHOT.jar")
+                    .toAbsolutePath()
+                    .toString(),
                 "--server.port=" + port,
                 "--spring.flyway.enabled=false",
                 "--spring.datasource.url=" + jdbcUrl,
                 "--spring.datasource.username=" + POSTGRES.getUsername(),
                 "--spring.datasource.password=" + POSTGRES.getPassword(),
-                "--spring.datasource.hikari.data-source-properties.ApplicationName=" + applicationName,
+                "--spring.datasource.hikari.data-source-properties.ApplicationName="
+                    + applicationName,
                 "--ayuvahak.database.url=" + jdbcUrl,
                 "--ayuvahak.database.username=" + POSTGRES.getUsername(),
                 "--ayuvahak.database.password=" + POSTGRES.getPassword(),
@@ -200,11 +210,13 @@ class TwoApplicationReplicaWorkerAcceptanceIT {
     Instant deadline = Instant.now().plusSeconds(90);
     while (Instant.now().isBefore(deadline)) {
       if (!process.isAlive()) {
-        throw new AssertionError("packaged AyuVahak process exited during startup: " + process.pid());
+        throw new AssertionError(
+            "packaged AyuVahak process exited during startup: " + process.pid());
       }
       try {
         HttpRequest request =
-            HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/actuator/health/liveness"))
+            HttpRequest.newBuilder(
+                    URI.create("http://127.0.0.1:" + port + "/actuator/health/liveness"))
                 .timeout(Duration.ofSeconds(2))
                 .GET()
                 .build();
@@ -272,7 +284,8 @@ class TwoApplicationReplicaWorkerAcceptanceIT {
     }
     try (Connection connection = context.getBean(DataSource.class).getConnection();
         var statement = connection.createStatement()) {
-      statement.execute("DROP TRIGGER IF EXISTS pause_projection_before_insert ON platform_notification.notification_projection");
+      statement.execute(
+          "DROP TRIGGER IF EXISTS pause_projection_before_insert ON platform_notification.notification_projection");
       statement.execute("DROP FUNCTION IF EXISTS replica_acceptance.pause_projection()");
       statement.execute("DROP SCHEMA IF EXISTS replica_acceptance CASCADE");
     } catch (SQLException ignored) {
@@ -461,16 +474,14 @@ class TwoApplicationReplicaWorkerAcceptanceIT {
     try {
       profileA = startReplica("SYN-PROFILE-A-SINGLE");
       BenchmarkRunResult singleSite =
-          measureNotificationReplayProfile(
-              "PROFILE_A_SINGLE_SITE", List.of(profileA));
+          measureNotificationReplayProfile("PROFILE_A_SINGLE_SITE", List.of(profileA));
 
       profileBFirst = startReplica("SYN-PROFILE-B-REPLICA-A");
       profileBSecond = startReplica("SYN-PROFILE-B-REPLICA-B");
       assertIndependentLocalReplicas(profileBFirst, profileBSecond);
       BenchmarkRunResult institutional =
           measureNotificationReplayProfile(
-              "PROFILE_B_TWO_REPLICA",
-              List.of(profileBFirst, profileBSecond));
+              "PROFILE_B_TWO_REPLICA", List.of(profileBFirst, profileBSecond));
 
       assertThat(singleSite.failedOperations()).isZero();
       assertThat(institutional.failedOperations()).isZero();
@@ -584,7 +595,8 @@ class TwoApplicationReplicaWorkerAcceptanceIT {
                     long cpuBefore = processCpuNanos();
                     long operationStarted = System.nanoTime();
                     NotificationProjectionPage page =
-                        queries.get(replicaIndex)
+                        queries
+                            .get(replicaIndex)
                             .listAfter(
                                 scopes.get(organizationIndex),
                                 Optional.of(cursors.get(organizationIndex)),
@@ -793,7 +805,9 @@ class TwoApplicationReplicaWorkerAcceptanceIT {
     var payload = new ObjectMapper().createObjectNode();
     payload.put(
         "referralReference",
-        java.util.UUID.nameUUIDFromBytes(
+        java.util
+            .UUID
+            .nameUUIDFromBytes(
                 syntheticReferralId.getBytes(java.nio.charset.StandardCharsets.UTF_8))
             .toString());
     return new EventEnvelope(
