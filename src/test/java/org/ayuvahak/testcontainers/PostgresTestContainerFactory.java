@@ -25,8 +25,7 @@ public final class PostgresTestContainerFactory {
   }
 
   private static PostgreSQLContainer configure(PostgreSQLContainer container) {
-    container.waitingFor(
-        Wait.forLogMessage(READY_LOG, 2).withStartupTimeout(STARTUP_TIMEOUT));
+    container.waitingFor(Wait.forLogMessage(READY_LOG, 2).withStartupTimeout(STARTUP_TIMEOUT));
     container.withStartupTimeout(STARTUP_TIMEOUT);
     return container;
   }
