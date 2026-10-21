@@ -63,8 +63,9 @@ export function DashboardWorkspace({ session }: DashboardWorkspaceProps) {
                     Configure a human identity in the deployment&apos;s external identity provider.
                   </li>
                   <li>
-                    Have the local operator run the existing one-time AyuVahak grant bootstrap for
-                    that identity.
+                    Have the local operator run
+                    <code>scripts/local/Initialize-AyuVahak.ps1</code> with that identity&apos;s
+                    exact OIDC subject. Synthetic Demo uses its versioned manifest subject.
                   </li>
                   <li>
                     A grant administrator can assign Directory setup to a separate operator; the

@@ -174,6 +174,12 @@ try {
   if (-not $ready) { throw "Services started but AyuVahak did not become ready within three minutes. Inspect with docker compose logs app. No credentials were printed." }
   $url = "http://localhost:$port"
   Write-Host "AyuVahak is ready at $url"
+  if ($selectedMode -eq "SYNTHETIC_DEMO") {
+    Write-Host "Before first sign-in, establish the one-shot grant with scripts/local/Initialize-AyuVahak.ps1."
+    Write-Host "Demo business workflows are not auto-seeded yet; see docs/installation/local-first-run.md."
+  } else {
+    Write-Host "Configure a human identity, then establish its first grant with scripts/local/Initialize-AyuVahak.ps1 -GranteeIdentifier <OIDC subject>."
+  }
   if (-not $NoBrowser) { Start-Process $url }
 } finally {
   Pop-Location

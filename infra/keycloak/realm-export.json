@@ -51,6 +51,7 @@
   ],
   "users": [
     {
+      "id": "5c9cb463-0000-4000-8000-000000000014",
       "username": "synthetic.person",
       "enabled": true,
       "emailVerified": true,

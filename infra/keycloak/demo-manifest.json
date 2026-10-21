@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "mode": "SYNTHETIC_DEMO",
+  "bootstrapUsername": "synthetic.person",
+  "bootstrapSubject": "5c9cb463-0000-4000-8000-000000000014",
+  "loginNotice": "Local-only demonstration identity. Never use this account outside a loopback-bound synthetic installation.",
+  "businessData": "NOT_SEEDED"
+}
