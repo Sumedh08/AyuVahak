@@ -391,13 +391,17 @@ sampled every 300 ms; JVM heap is sampled every 200 ms. The outbox age is the ol
 pending/leased/stalled/unhandled delivery states. The notification value is projection freshness
 (age of the most recently projected record), not a source-to-projection latency claim. Analytics
 backlog includes pending, processing and retry-pending computation operations; permanent failures
-are recorded separately. Query-plan fingerprints for the pinned run are:
+are recorded separately. The following SHA-256 values fingerprint simplified PostgreSQL `EXPLAIN
+(FORMAT JSON)` probes against the principal indexed relations used by the paths. They are useful
+relation-level plan fingerprints, not plans captured from the complete application statements (for
+example, the Capacity projection query also joins correction evidence and orders by observation
+time):
 
 | Path | Fingerprint |
 |---|---|
-| Directory facility lookup | `e0342631c3c454514fe4be1e6e70c7ec70b6cb5fb955d8b00f30fc1fb8d4f940` |
-| Capacity readiness path | `86276d5aba7073ed8cf2480d08aec1e04987657c37e755ba9dd5dc87e60053cc` |
-| Notification replay | `00bcdd7cec9432a0eb550ebaee1ed7f0e7dfb9c1587ca83050a715b57e9528f4` |
+| Directory facility-key filter probe | `e0342631c3c454514fe4be1e6e70c7ec70b6cb5fb955d8b00f30fc1fb8d4f940` |
+| Capacity facility/dimension observation selector probe | `86276d5aba7073ed8cf2480d08aec1e04987657c37e755ba9dd5dc87e60053cc` |
+| Notification projection scope/page probe | `00bcdd7cec9432a0eb550ebaee1ed7f0e7dfb9c1587ca83050a715b57e9528f4` |
 
 Profile B's measured throughput was slightly lower than Profile A in this local small synthetic
 scenario; its p95 was lower and p99 higher on this run. Neither result is converted into a
