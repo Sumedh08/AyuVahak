@@ -94,12 +94,61 @@ try {
     Write-Host "Bootstrap cancelled; AyuVahak state was not changed."
     exit 0
   }
-  $dockerArguments = $compose + $bootstrapArgs
-  & docker @dockerArguments
+  $applicationId = & docker @compose ps --all --quiet app
   if ($LASTEXITCODE -ne 0) {
-    throw "The one-shot grant was not confirmed. Inspect the local application/database state before trying again. No identifier or credential was printed."
+    throw "Could not inspect the local AyuVahak application container. No bootstrap command was run."
   }
-  Write-Host "Initial local grant completed. Sign in through the configured identity provider; then use Access management for additional scopes."
+  $applicationWasRunning = $false
+  if ($applicationId) {
+    $applicationState = & docker inspect --format '{{.State.Running}}' $applicationId
+    if ($LASTEXITCODE -ne 0) {
+      throw "Could not inspect the local AyuVahak application state. No bootstrap command was run."
+    }
+    $applicationWasRunning = [string]$applicationState -eq "true"
+  }
+
+  $dockerArguments = $compose + $bootstrapArgs
+  $applicationStoppedForBootstrap = $false
+  try {
+    if ($applicationWasRunning) {
+      Write-Host "Temporarily stopping the local app while the one-shot grant initializes. The database and identity provider remain running."
+      & docker @compose stop --timeout 30 app
+      if ($LASTEXITCODE -ne 0) {
+        throw "The local app could not be stopped safely. No bootstrap command was run."
+      }
+      $applicationStoppedForBootstrap = $true
+    }
+
+    & docker @dockerArguments
+    if ($LASTEXITCODE -ne 0) {
+      throw "The one-shot grant was not confirmed. Inspect the local application/database state before trying again. No identifier or credential was printed."
+    }
+    Write-Host "Initial local grant completed. Sign in through the configured identity provider; then use Access management for additional scopes."
+  } finally {
+    if ($applicationStoppedForBootstrap) {
+      Write-Host "Restarting the local AyuVahak application."
+      & docker @compose start app
+      if ($LASTEXITCODE -ne 0) {
+        throw "The grant command finished, but the local application did not restart. Inspect local Compose state before retrying."
+      }
+
+      $port = [int]$values["AYUVAHAK_HTTP_PORT"]
+      $readinessUri = "http://127.0.0.1:$port/actuator/health/readiness"
+      $deadline = (Get-Date).AddMinutes(10)
+      $ready = $false
+      while ((Get-Date) -lt $deadline) {
+        try {
+          $response = Invoke-RestMethod -Uri $readinessUri -TimeoutSec 3
+          if ($response.status -eq "UP") { $ready = $true; break }
+        } catch { }
+        Start-Sleep -Seconds 3
+      }
+      if (-not $ready) {
+        throw "The local application restarted but did not become ready within ten minutes. Inspect local Compose logs. No credentials were printed."
+      }
+      Write-Host "Local AyuVahak is ready again."
+    }
+  }
 } finally {
   Pop-Location
 }

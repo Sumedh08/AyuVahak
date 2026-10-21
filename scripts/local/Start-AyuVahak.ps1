@@ -213,7 +213,9 @@ try {
   $databaseName = [string]$values["AYUVAHAK_DATABASE_NAME"]
   $databaseUsername = [string]$values["AYUVAHAK_DATABASE_USERNAME"]
   $discoveryUri = "$($issuerUri.AbsoluteUri.TrimEnd('/'))/.well-known/openid-configuration"
-  $dependencyDeadline = (Get-Date).AddMinutes(5)
+  # Clean Keycloak realm and schema initialization took just over five minutes on the
+  # measured local cold-start path. Keep the wait finite, with room for that observed case.
+  $dependencyDeadline = (Get-Date).AddMinutes(8)
   $nextDependencyProgress = (Get-Date).AddSeconds(30)
   $databaseReady = $false
   $identityReady = $false
@@ -232,7 +234,7 @@ try {
     Start-Sleep -Seconds 3
   }
   if (-not $databaseReady -or -not $identityReady) {
-    throw "The local database and identity provider did not both become ready within five minutes. Inspect their Compose health and logs. No credentials were printed."
+    throw "The local database and identity provider did not both become ready within eight minutes. Inspect their Compose health and logs. No credentials were printed."
   }
 
   & docker @dockerArguments up --detach app

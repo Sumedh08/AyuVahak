@@ -14,11 +14,12 @@ Run `scripts/local/Start-AyuVahak.ps1` and choose one of:
 
 The choice is recorded for that local installation. Changing modes requires a separate clean
 installation; the launcher will not reuse one mode's database volume for the other.
-On the first start, the local database and Keycloak initialize before AyuVahak starts. This keeps
-their cold-start work from competing with the application's bounded FHIR standards-profile
-initialization. The application may then take several minutes to become ready; the launcher reports
-progress and waits up to ten minutes before returning a readiness diagnostic. If a configured
-loopback port is unavailable, change the corresponding `AYUVAHAK_HTTP_PORT` or
+On the first start, the local database and Keycloak initialize before AyuVahak starts. The launcher
+allows up to eight minutes for that first dependency initialization; this bound includes a measured
+cold Keycloak start that took just over five minutes. This ordering keeps dependency initialization
+from competing with the application's bounded FHIR standards-profile initialization. The
+application may then take several minutes to become ready; the launcher reports progress and waits
+up to ten minutes before returning a readiness diagnostic. If a configured loopback port is unavailable, change the corresponding `AYUVAHAK_HTTP_PORT` or
 `AYUVAHAK_KEYCLOAK_PORT` in `.env` and retry.
 
 ## Create a local identity in Empty mode
@@ -47,7 +48,9 @@ scripts/local/Initialize-AyuVahak.ps1 -GranteeIdentifier "<OIDC subject>"
 The helper asks for the confirmation phrase and grants only platform
 `AccessGrantAdministration`. It does not create an IdP account. It writes the existing audited
 bootstrap record through the one-shot CLI and refuses if bootstrap or grant state already exists.
-If the result is unknown, inspect the local state before trying again.
+If the local app is running, the helper stops it briefly while the isolated non-web bootstrap
+process initializes, then restarts it and waits for readiness. The database and identity provider
+remain running. If the result is unknown, inspect the local state before trying again.
 
 Synthetic Demo sign-in is `synthetic.person` with the local-only password
 `local-only-not-a-secret`. This fixed demonstration credential is intentionally public and is valid
