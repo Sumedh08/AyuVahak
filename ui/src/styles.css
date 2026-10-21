@@ -608,6 +608,75 @@ tbody th .facility-id-label {
   white-space: nowrap;
 }
 
+.support-advisory-note {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  margin-block: 1rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid #d4a72c;
+  border-radius: 0.65rem;
+  background: #fff8db;
+  color: #453700;
+}
+
+.support-advisory-note strong,
+.support-answer-heading .state-tag {
+  flex: 0 0 auto;
+}
+
+.support-answer {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1.25rem;
+  padding: 1.25rem;
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+  background: var(--surface);
+}
+
+.support-answer-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: center;
+}
+
+.support-answer-heading h3,
+.support-answer h4 {
+  margin: 0;
+}
+
+.support-answer-copy {
+  margin: 0;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.support-sources {
+  display: grid;
+  gap: 0.75rem;
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+.support-sources li {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.support-sources code,
+.support-sources small,
+.support-provenance {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.support-provenance {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
 .analytics-value {
   display: block;
   margin-top: 0.45rem;

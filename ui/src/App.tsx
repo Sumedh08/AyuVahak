@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { type AccessGrantApiClient, createAccessGrantApiClient } from "./api/access-grants";
 import { type AnalyticsApiClient, createAnalyticsApiClient } from "./api/analytics";
+import {
+  createOperatorSupportApiClient,
+  type OperatorSupportApiClient,
+} from "./api/operator-support";
 import { createOwnerApiClient, type OwnerApiClient } from "./api/owner";
 import {
   createReferralMatchingApiClient,
@@ -14,10 +19,13 @@ import {
 import { createTransferApiClient, type TransferApiClient } from "./api/transfer";
 import type { AuthClient } from "./auth/oidc";
 import { AppShell } from "./components/AppShell";
+import { AccessManagementWorkspace } from "./workspaces/AccessManagementWorkspace";
 import { AnalyticsWorkspace } from "./workspaces/AnalyticsWorkspace";
 import { CapacityWorkspace } from "./workspaces/CapacityWorkspace";
+import { DashboardWorkspace } from "./workspaces/DashboardWorkspace";
 import { DirectoryWorkspace } from "./workspaces/DirectoryWorkspace";
 import { MatchingWorkspace } from "./workspaces/MatchingWorkspace";
+import { OperatorSupportWorkspace } from "./workspaces/OperatorSupportWorkspace";
 import { ReferralWorkspace } from "./workspaces/ReferralWorkspace";
 import { TransferWorkspace } from "./workspaces/TransferWorkspace";
 import { TransportWorkspace } from "./workspaces/TransportWorkspace";
@@ -41,6 +49,8 @@ export interface AppProps {
   readonly referralMatchingApiClient?: ReferralMatchingApiClient;
   readonly transferApiClient?: TransferApiClient;
   readonly analyticsApiClient?: AnalyticsApiClient;
+  readonly operatorSupportApiClient?: OperatorSupportApiClient;
+  readonly accessGrantApiClient?: AccessGrantApiClient;
 }
 
 export function App({
@@ -50,6 +60,8 @@ export function App({
   referralMatchingApiClient,
   transferApiClient,
   analyticsApiClient,
+  operatorSupportApiClient,
+  accessGrantApiClient,
 }: AppProps) {
   const [view, setView] = useState<ViewState>({ status: "loading" });
   const [currentPath, setCurrentPath] = useState(() => window.location.pathname);
@@ -69,6 +81,14 @@ export function App({
   const analyticsClient = useMemo(
     () => analyticsApiClient ?? createAnalyticsApiClient(getAccessToken),
     [getAccessToken, analyticsApiClient],
+  );
+  const operatorSupportClient = useMemo(
+    () => operatorSupportApiClient ?? createOperatorSupportApiClient(getAccessToken),
+    [getAccessToken, operatorSupportApiClient],
+  );
+  const accessGrantClient = useMemo(
+    () => accessGrantApiClient ?? createAccessGrantApiClient(getAccessToken),
+    [accessGrantApiClient, getAccessToken],
   );
 
   useEffect(() => {
@@ -225,7 +245,9 @@ export function App({
       );
     case "authenticated": {
       const workspace =
-        currentPath === "/directory" || currentPath.startsWith("/directory/") ? (
+        currentPath === "/" ? (
+          <DashboardWorkspace session={view.session} />
+        ) : currentPath === "/directory" || currentPath.startsWith("/directory/") ? (
           <DirectoryWorkspace
             session={view.session}
             getAccessToken={getAccessToken}
@@ -274,6 +296,17 @@ export function App({
             session={view.session}
             getAccessToken={getAccessToken}
             apiClient={analyticsClient}
+          />
+        ) : currentPath === "/operator-support" || currentPath.startsWith("/operator-support/") ? (
+          <OperatorSupportWorkspace
+            getAccessToken={getAccessToken}
+            apiClient={operatorSupportClient}
+          />
+        ) : currentPath === "/administration" || currentPath.startsWith("/administration/") ? (
+          <AccessManagementWorkspace
+            session={view.session}
+            getAccessToken={getAccessToken}
+            apiClient={accessGrantClient}
           />
         ) : undefined;
       return (

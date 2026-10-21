@@ -78,6 +78,12 @@ export const WORKSPACES: readonly WorkspaceDefinition[] = [
     authorities: ["AccessGrantAdministration"],
     scopeKinds: ["PLATFORM"],
   },
+  {
+    href: "/operator-support",
+    label: "Operator support",
+    authorities: ["OperatorSupportRead"],
+    scopeKinds: ["PLATFORM"],
+  },
 ];
 
 export interface AppShellProps {
