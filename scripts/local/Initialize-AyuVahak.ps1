@@ -51,7 +51,7 @@ if ($state.mode -eq "SYNTHETIC_DEMO") {
   }
   $GranteeIdentifier = [string]$demoManifest.bootstrapSubject
 } elseif (-not (Test-OpaqueIdentifier $GranteeIdentifier)) {
-  throw "Empty mode requires the exact subject identifier from its configured external identity provider."
+  throw "Empty mode requires the exact subject identifier from its configured identity provider. For the packaged local install, create a user in the empty Keycloak realm first."
 }
 
 $issuer = [string]$values["AYUVAHAK_OIDC_ISSUER"]

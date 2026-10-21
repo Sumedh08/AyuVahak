@@ -8,8 +8,9 @@ loopback and uses a dedicated Compose project and database volume for that insta
 Run `scripts/local/Start-AyuVahak.ps1` and choose one of:
 
 - **Synthetic Demo**: imports the local-only Keycloak realm and a synthetic sign-in identity.
-- **Empty**: imports no demonstration identity or business data. Configure the external local
-  identity provider with the first human identity before continuing.
+- **Empty**: imports an empty local Keycloak realm with no user or business data. Create the first
+  local identity through Keycloak before continuing. Institutional deployments should instead
+  connect their organization-managed OIDC identity provider.
 
 The choice is recorded for that local installation. Changing modes requires a separate clean
 installation; the launcher will not reuse one mode's database volume for the other.
@@ -20,6 +21,16 @@ progress and waits up to ten minutes before returning a readiness diagnostic. If
 loopback port is unavailable, change the corresponding `AYUVAHAK_HTTP_PORT` or
 `AYUVAHAK_KEYCLOAK_PORT` in `.env` and retry.
 
+## Create a local identity in Empty mode
+
+The packaged Empty installation includes a local Keycloak realm, but it does not create a human
+identity or an AyuVahak password. Open the loopback Keycloak administration page using the port in
+`.env` (by default `http://localhost:8081/admin`). Sign in with the local administrator name and
+generated password stored in that same ignored `.env` file. Select the `ayuvahak` realm, create a
+human user, set a local password, and record the user's Keycloak ID. That ID is the OIDC `sub` used
+by the AyuVahak bootstrap command below. Keep this local identity confined to the disposable local
+installation.
+
 ## Establish the first AyuVahak grant
 
 An IdP account does not automatically grant AyuVahak access. After the application and database are
@@ -29,7 +40,7 @@ ready, run the existing operator-controlled one-shot grant through the packaged 
 # Synthetic Demo: targets the subject in infra/keycloak/demo-manifest.json
 scripts/local/Initialize-AyuVahak.ps1
 
-# Empty: provide the exact `sub` claim from the configured identity provider
+# Empty: provide the Keycloak user ID (`sub`) created above, or the exact `sub` from your configured IdP
 scripts/local/Initialize-AyuVahak.ps1 -GranteeIdentifier "<OIDC subject>"
 ```
 
@@ -41,7 +52,7 @@ If the result is unknown, inspect the local state before trying again.
 Synthetic Demo sign-in is `synthetic.person` with the local-only password
 `local-only-not-a-secret`. This fixed demonstration credential is intentionally public and is valid
 only in the loopback-bound Synthetic Demo realm. Never use it outside that disposable mode. Empty
-mode contains no default AyuVahak administrator or shared application password.
+mode contains no default human identity or shared application password.
 
 ## Add Directory setup access
 
