@@ -402,6 +402,55 @@ p {
   max-width: 1080px;
 }
 
+.workspace-subsection {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.workspace-subsection > h3 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.text-button {
+  padding: 0;
+  border: 0;
+  color: #145c76;
+  background: transparent;
+  font: inherit;
+  font-weight: 700;
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+  cursor: pointer;
+}
+
+.text-button:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 3px;
+}
+
+.recommendation-list {
+  display: grid;
+  gap: 0.75rem;
+  padding-left: 1.4rem;
+}
+
+.recommendation-list li {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 0.55rem;
+  background: #fbfdfd;
+}
+
+.recommendation-list li span {
+  overflow-wrap: anywhere;
+  color: #405864;
+  font-size: 0.9rem;
+}
+
 .workspace-intro,
 .workspace-state,
 .capacity-result {

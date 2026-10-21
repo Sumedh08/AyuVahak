@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createOwnerApiClient, type OwnerApiClient } from "./api/owner";
 import {
+  createReferralMatchingApiClient,
+  type ReferralMatchingApiClient,
+} from "./api/referral-matching";
+import {
   createSessionClient,
   SessionApiError,
   type SessionClient,
@@ -10,6 +14,8 @@ import type { AuthClient } from "./auth/oidc";
 import { AppShell } from "./components/AppShell";
 import { CapacityWorkspace } from "./workspaces/CapacityWorkspace";
 import { DirectoryWorkspace } from "./workspaces/DirectoryWorkspace";
+import { MatchingWorkspace } from "./workspaces/MatchingWorkspace";
+import { ReferralWorkspace } from "./workspaces/ReferralWorkspace";
 
 const defaultSessionClient = createSessionClient();
 
@@ -27,12 +33,14 @@ export interface AppProps {
   readonly authClient: AuthClient;
   readonly sessionClient?: SessionClient;
   readonly ownerApiClient?: OwnerApiClient;
+  readonly referralMatchingApiClient?: ReferralMatchingApiClient;
 }
 
 export function App({
   authClient,
   sessionClient = defaultSessionClient,
   ownerApiClient,
+  referralMatchingApiClient,
 }: AppProps) {
   const [view, setView] = useState<ViewState>({ status: "loading" });
   const [currentPath, setCurrentPath] = useState(() => window.location.pathname);
@@ -40,6 +48,10 @@ export function App({
   const ownerClient = useMemo(
     () => ownerApiClient ?? createOwnerApiClient(getAccessToken),
     [getAccessToken, ownerApiClient],
+  );
+  const referralMatchingClient = useMemo(
+    () => referralMatchingApiClient ?? createReferralMatchingApiClient(getAccessToken),
+    [getAccessToken, referralMatchingApiClient],
   );
 
   useEffect(() => {
@@ -207,6 +219,18 @@ export function App({
             session={view.session}
             getAccessToken={getAccessToken}
             apiClient={ownerClient}
+          />
+        ) : currentPath === "/referrals" || currentPath.startsWith("/referrals/") ? (
+          <ReferralWorkspace
+            session={view.session}
+            getAccessToken={getAccessToken}
+            apiClient={referralMatchingClient}
+          />
+        ) : currentPath === "/matching" || currentPath.startsWith("/matching/") ? (
+          <MatchingWorkspace
+            session={view.session}
+            getAccessToken={getAccessToken}
+            apiClient={referralMatchingClient}
           />
         ) : undefined;
       return (

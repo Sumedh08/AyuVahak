@@ -154,6 +154,17 @@ export function capacityScopes(
   );
 }
 
+/** Returns only recognized Directory origin scopes granted for the requested authority. */
+export function originScopesForAuthority(
+  session: SessionProjection,
+  authorityCode: string,
+): readonly Extract<OwnerScope, { kind: "ORGANIZATION" | "FACILITY" }>[] {
+  return authorizedScopes(session, authorityCode).filter(
+    (scope): scope is Extract<OwnerScope, { kind: "ORGANIZATION" | "FACILITY" }> =>
+      scope.kind === "ORGANIZATION" || scope.kind === "FACILITY",
+  );
+}
+
 function parseFacility(value: unknown): DirectoryFacility | null {
   if (
     !isRecord(value) ||
