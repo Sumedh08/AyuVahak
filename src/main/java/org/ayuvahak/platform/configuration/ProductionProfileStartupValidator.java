@@ -16,10 +16,12 @@ final class ProductionProfileStartupValidator {
 
   ProductionProfileStartupValidator(
       ProductionProfileProperties properties,
+      DeploymentModeProperties deploymentMode,
       AuthenticationProperties authentication,
       Environment environment) {
     List<String> violations = new ArrayList<>();
     validateProfile(properties, environment, violations);
+    validateDeploymentMode(deploymentMode, violations);
     validatePublicOrigin(properties.getPublicOrigin(), violations);
     validateAuthentication(authentication, violations);
     validateSecretReference(
@@ -37,6 +39,13 @@ final class ProductionProfileStartupValidator {
     if (!violations.isEmpty()) {
       throw new IllegalStateException(
           "Invalid production profile configuration: " + String.join("; ", violations));
+    }
+  }
+
+  private static void validateDeploymentMode(
+      DeploymentModeProperties deploymentMode, List<String> violations) {
+    if (deploymentMode.getMode() != DeploymentMode.EMPTY) {
+      violations.add("production deployment mode must be EMPTY");
     }
   }
 

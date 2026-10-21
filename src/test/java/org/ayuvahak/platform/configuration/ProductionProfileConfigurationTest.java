@@ -77,6 +77,8 @@ class ProductionProfileConfigurationTest {
           assertThat(context).hasNotFailed();
           assertThat(context.getBean(ProductionProfileProperties.class).getProfile())
               .isEqualTo(ProductionProfileProperties.Profile.SINGLE_SITE);
+          assertThat(context.getBean(DeploymentModeProperties.class).getMode())
+              .isEqualTo(DeploymentMode.EMPTY);
           assertThat(context.getBean(ServiceLevelPlan.class).objectives()).hasSize(1);
 
           CorsConfigurationSource source = context.getBean(CorsConfigurationSource.class);
@@ -98,6 +100,18 @@ class ProductionProfileConfigurationTest {
                       .checkOrigin("https://untrusted.example.test"))
               .isNull();
         });
+  }
+
+  @Test
+  void rejectsSyntheticDemoModeForProductionProfiles() {
+    productionRunner
+        .withPropertyValues("ayuvahak.deployment.mode=SYNTHETIC_DEMO")
+        .run(
+            context -> {
+              assertThat(context).hasFailed();
+              assertThat(context.getStartupFailure().toString())
+                  .contains("production deployment mode must be EMPTY");
+            });
   }
 
   @Test

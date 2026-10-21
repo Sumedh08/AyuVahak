@@ -2,6 +2,7 @@ package org.ayuvahak.platform;
 
 import org.ayuvahak.platform.authentication.AuthenticationProperties;
 import org.ayuvahak.platform.configuration.DatabaseProperties;
+import org.ayuvahak.platform.configuration.DeploymentModeProperties;
 import org.ayuvahak.platform.configuration.PlatformProperties;
 import org.ayuvahak.platform.idempotency.configuration.CommandIdempotencyProperties;
 import org.springframework.boot.SpringApplication;
@@ -21,6 +22,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 @EnableConfigurationProperties({
   PlatformProperties.class,
   DatabaseProperties.class,
+  DeploymentModeProperties.class,
   AuthenticationProperties.class,
   CommandIdempotencyProperties.class
 })

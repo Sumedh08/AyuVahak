@@ -22,6 +22,7 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 @Profile({"production-single-site", "production-ha"})
 @EnableConfigurationProperties({
   ProductionProfileProperties.class,
+  DeploymentModeProperties.class,
   ProductionMigrationProperties.class,
   AuthenticationProperties.class,
   ServiceLevelPlanProperties.class
@@ -31,9 +32,11 @@ public class ProductionProfileConfiguration {
   @Bean
   ProductionProfileStartupValidator productionProfileStartupValidator(
       ProductionProfileProperties properties,
+      DeploymentModeProperties deploymentMode,
       AuthenticationProperties authentication,
       Environment environment) {
-    return new ProductionProfileStartupValidator(properties, authentication, environment);
+    return new ProductionProfileStartupValidator(
+        properties, deploymentMode, authentication, environment);
   }
 
   @Bean

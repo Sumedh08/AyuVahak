@@ -7,6 +7,8 @@ import java.util.Objects;
 import java.util.TreeMap;
 import org.ayuvahak.platform.authorization.application.SubjectCapabilityQuery;
 import org.ayuvahak.platform.authorization.domain.GrantScope;
+import org.ayuvahak.platform.configuration.DeploymentMode;
+import org.ayuvahak.platform.configuration.DeploymentModeProperties;
 import org.ayuvahak.platform.core.ActorReference;
 import org.ayuvahak.platform.core.ExternalReference;
 import org.springframework.http.CacheControl;
@@ -22,9 +24,12 @@ import org.springframework.web.bind.annotation.RestController;
 public class CurrentSessionController {
 
   private final SubjectCapabilityQuery capabilities;
+  private final DeploymentModeProperties deploymentMode;
 
-  public CurrentSessionController(SubjectCapabilityQuery capabilities) {
+  public CurrentSessionController(
+      SubjectCapabilityQuery capabilities, DeploymentModeProperties deploymentMode) {
     this.capabilities = Objects.requireNonNull(capabilities, "capabilities");
+    this.deploymentMode = Objects.requireNonNull(deploymentMode, "deploymentMode");
   }
 
   @GetMapping
@@ -51,13 +56,18 @@ public class CurrentSessionController {
                     actor.identity().issuer().value(),
                     actor.identity().resourceType(),
                     actor.identity().value()),
-                views));
+                views,
+                deploymentMode.getMode()));
   }
 
-  public record SessionView(SubjectView subject, List<CapabilityView> capabilities) {
+  public record SessionView(
+      SubjectView subject,
+      List<CapabilityView> capabilities,
+      DeploymentMode deploymentMode) {
     public SessionView {
       Objects.requireNonNull(subject, "subject");
       capabilities = List.copyOf(capabilities);
+      Objects.requireNonNull(deploymentMode, "deploymentMode");
     }
   }
 

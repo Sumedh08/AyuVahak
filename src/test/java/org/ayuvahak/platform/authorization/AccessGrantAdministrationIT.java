@@ -718,6 +718,7 @@ class AccessGrantAdministrationIT {
             .andExpect(jsonPath("$.subject.issuer").value(ISSUER))
             .andExpect(jsonPath("$.subject.identifierType").value("subject"))
             .andExpect(jsonPath("$.subject.identifier").value(subject))
+            .andExpect(jsonPath("$.deploymentMode").value("EMPTY"))
             .andExpect(header().string("Cache-Control", "no-store"))
             .andExpect(jsonPath("$.capabilities.length()").value(2))
             .andExpect(jsonPath("$.capabilities[0].authorityCode").value("DirectoryCuration"))
