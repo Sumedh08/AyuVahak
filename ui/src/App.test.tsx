@@ -5,6 +5,7 @@ import type { SessionClient, SessionProjection } from "./api/session";
 import type { AuthClient } from "./auth/oidc";
 
 const session: SessionProjection = {
+  deploymentMode: "EMPTY",
   subject: {
     kind: "HUMAN",
     issuer: "https://identity.synthetic.invalid/issuer",

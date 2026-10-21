@@ -1,6 +1,7 @@
 export type SubjectKind = "HUMAN" | "SERVICE";
 export type SubjectIdentifierType = "subject" | "client_id";
 export type ScopeKind = "PLATFORM" | "ORGANIZATION" | "FACILITY";
+export type DeploymentMode = "EMPTY" | "SYNTHETIC_DEMO";
 
 export interface SubjectProjection {
   readonly kind: SubjectKind;
@@ -29,6 +30,7 @@ export interface CapabilityProjection {
 export interface SessionProjection {
   readonly subject: SubjectProjection;
   readonly capabilities: readonly CapabilityProjection[];
+  readonly deploymentMode: DeploymentMode;
 }
 
 export class SessionApiError extends Error {
@@ -139,7 +141,8 @@ function parseScope(value: unknown): ScopeProjection | null {
 export function parseSessionProjection(value: unknown): SessionProjection | null {
   if (
     !isRecord(value) ||
-    !hasOnlyKeys(value, ["subject", "capabilities"]) ||
+    !hasOnlyKeys(value, ["subject", "capabilities", "deploymentMode"]) ||
+    (value.deploymentMode !== "EMPTY" && value.deploymentMode !== "SYNTHETIC_DEMO") ||
     !isRecord(value.subject) ||
     !hasOnlyKeys(value.subject, ["kind", "issuer", "identifierType", "identifier"])
   ) {
@@ -193,6 +196,7 @@ export function parseSessionProjection(value: unknown): SessionProjection | null
       identifier: subject.identifier,
     },
     capabilities,
+    deploymentMode: value.deploymentMode,
   };
 }
 

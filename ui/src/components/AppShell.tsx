@@ -218,6 +218,12 @@ export function AppShell({ session, currentPath, onSignOut, onNavigate, children
         </aside>
 
         <main id="main-content" className="main-content" tabIndex={-1}>
+          {session.deploymentMode === "SYNTHETIC_DEMO" && (
+            <section className="demo-safety-banner" aria-label="Synthetic demonstration warning">
+              <strong>SYNTHETIC DEMONSTRATION ENVIRONMENT</strong>
+              <span>NO REAL PATIENT DATA — NOT FOR CLINICAL USE</span>
+            </section>
+          )}
           <div className="page-heading">
             <div>
               <p className="eyebrow">AYUVAHAK WORKSPACE</p>

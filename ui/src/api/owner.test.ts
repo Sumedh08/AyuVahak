@@ -13,6 +13,7 @@ const organizationId = "6d383f64-9f14-4cf6-a8a1-3e119e8fc882";
 const facilityId = "9eb1d3e6-86c4-45aa-b6bb-e15596ee05ec";
 
 const session: SessionProjection = {
+  deploymentMode: "EMPTY",
   subject: {
     kind: "HUMAN",
     issuer: "https://identity.synthetic.invalid/issuer",

@@ -4,6 +4,7 @@ import type { SessionProjection } from "../api/session";
 import { AppShell } from "./AppShell";
 
 const session: SessionProjection = {
+  deploymentMode: "EMPTY",
   subject: {
     kind: "HUMAN",
     issuer: "https://identity.synthetic.invalid/issuer",
@@ -72,6 +73,25 @@ describe("capability-aware application shell", () => {
   it("keeps the API authorization boundary explicit in navigation help", () => {
     render(<AppShell session={session} currentPath="/" onSignOut={vi.fn()} onNavigate={vi.fn()} />);
     expect(screen.getByText(/every api request is authorized by ayuvahak/i)).toBeInTheDocument();
+  });
+
+  it("shows the synthetic safety banner on every demo-mode authenticated screen", () => {
+    render(
+      <AppShell
+        session={{ ...session, deploymentMode: "SYNTHETIC_DEMO" }}
+        currentPath="/directory"
+        onSignOut={vi.fn()}
+        onNavigate={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("SYNTHETIC DEMONSTRATION ENVIRONMENT")).toBeInTheDocument();
+    expect(screen.getByText("NO REAL PATIENT DATA — NOT FOR CLINICAL USE")).toBeInTheDocument();
+  });
+
+  it("does not label an empty deployment as synthetic", () => {
+    render(<AppShell session={session} currentPath="/" onSignOut={vi.fn()} onNavigate={vi.fn()} />);
+    expect(screen.queryByText("SYNTHETIC DEMONSTRATION ENVIRONMENT")).not.toBeInTheDocument();
   });
 
   it("uses same-document navigation so the in-memory token survives workspace changes", () => {

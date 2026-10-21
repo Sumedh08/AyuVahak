@@ -7,6 +7,7 @@ import {
 } from "./session";
 
 const validSession: SessionProjection = {
+  deploymentMode: "EMPTY",
   subject: {
     kind: "HUMAN",
     issuer: "http://localhost:8081/realms/ayuvahak-local",
@@ -37,12 +38,20 @@ describe("session projection validation", () => {
 
   it("rejects unexpected fields and invalid scope shapes", () => {
     expect(parseSessionProjection({ ...validSession, roles: ["admin"] })).toBeNull();
+    expect(parseSessionProjection({ ...validSession, deploymentMode: "DEMO" })).toBeNull();
     expect(
       parseSessionProjection({
         ...validSession,
         capabilities: [{ authorityCode: "DirectoryRead", scopes: [{ kind: "FACILITY" }] }],
       }),
     ).toBeNull();
+  });
+
+  it("accepts the explicit synthetic demo deployment mode", () => {
+    expect(parseSessionProjection({ ...validSession, deploymentMode: "SYNTHETIC_DEMO" })).toEqual({
+      ...validSession,
+      deploymentMode: "SYNTHETIC_DEMO",
+    });
   });
 
   it("validates external identifiers as bounded opaque references", () => {
