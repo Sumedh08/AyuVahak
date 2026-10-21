@@ -5,6 +5,7 @@ import {
   type OperatorSupportApiClient,
   type OperatorSupportQuestionKey,
   type OperatorSupportResponse,
+  parseOperatorSupportQuestionKey,
 } from "../api/operator-support";
 import { OwnerApiError } from "../api/owner";
 
@@ -82,7 +83,7 @@ export function OperatorSupportWorkspace({
           id="operator-support-topic"
           value={questionKey}
           onChange={(event) => {
-            setQuestionKey(event.currentTarget.value as OperatorSupportQuestionKey | "");
+            setQuestionKey(parseOperatorSupportQuestionKey(event.currentTarget.value) ?? "");
             setAnswer({ status: "idle" });
           }}
         >

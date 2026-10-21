@@ -13,6 +13,10 @@ export const OPERATOR_SUPPORT_TOPICS = [
 export type OperatorSupportQuestionKey = (typeof OPERATOR_SUPPORT_TOPICS)[number]["key"];
 export type OperatorSupportStatus = "ADVISORY" | "ABSTAINED";
 
+export function parseOperatorSupportQuestionKey(value: string): OperatorSupportQuestionKey | null {
+  return OPERATOR_SUPPORT_TOPICS.find((topic) => topic.key === value)?.key ?? null;
+}
+
 export interface OperatorSupportCitation {
   readonly sourceId: string;
   readonly path: string;

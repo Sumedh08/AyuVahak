@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { createOperatorSupportApiClient } from "./operator-support";
+import {
+  createOperatorSupportApiClient,
+  OPERATOR_SUPPORT_TOPICS,
+  parseOperatorSupportQuestionKey,
+} from "./operator-support";
 
 const response = {
   status: "ADVISORY",
@@ -18,6 +22,16 @@ const response = {
 };
 
 describe("operator support API client", () => {
+  it("parses only the configured finite question topics", () => {
+    for (const topic of OPERATOR_SUPPORT_TOPICS) {
+      expect(parseOperatorSupportQuestionKey(topic.key)).toBe(topic.key);
+    }
+
+    expect(parseOperatorSupportQuestionKey("")).toBeNull();
+    expect(parseOperatorSupportQuestionKey("CAPACITY_STALENESS ")).toBeNull();
+    expect(parseOperatorSupportQuestionKey("UNSUPPORTED_TOPIC")).toBeNull();
+  });
+
   it("sends only the selected finite question key to the same-origin endpoint", async () => {
     const fetcher = vi
       .fn<typeof fetch>()
