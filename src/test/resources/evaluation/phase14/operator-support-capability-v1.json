@@ -1,0 +1,68 @@
+{
+  "version": "1.0.0",
+  "capabilityId": "operator-support",
+  "purpose": "Provide bounded, cited, non-authoritative guidance from approved AyuVahak operations documentation to an authorized human operator.",
+  "intendedUsers": ["authorized human operators"],
+  "allowedUse": [
+    "Select one finite documentation topic.",
+    "Display bounded advisory excerpts with validated source references."
+  ],
+  "prohibitedUse": [
+    "clinical diagnosis or treatment",
+    "patient triage or risk prediction",
+    "care coordination decisions",
+    "mutation of any AyuVahak workflow",
+    "authorization or privacy decisions"
+  ],
+  "defaultEnabled": false,
+  "currentProvider": {
+    "kind": "DETERMINISTIC_LOCAL_FAKE",
+    "modelVersion": null,
+    "promptTemplateVersion": null,
+    "externalInferenceConfigured": false
+  },
+  "corpusVersion": "operator-support-corpus-v1",
+  "evaluationVersion": "1.0.0",
+  "outputSchemaVersion": "operator-support-v1",
+  "allowedInputs": ["finite questionKey enum", "approved documentation excerpts"],
+  "forbiddenInputs": [
+    "PatientReference",
+    "IPS",
+    "patient names",
+    "diagnoses",
+    "clinical narratives",
+    "Referral case details",
+    "credentials",
+    "secrets",
+    "free-form user prompts"
+  ],
+  "actionAuthority": [],
+  "retention": {
+    "rawPromptRetained": false,
+    "rawAnswerRetained": false,
+    "feedbackRetained": false,
+    "telemetryFields": ["capabilityId", "questionKey", "status", "duration", "providerProfile"]
+  },
+  "humanOversight": {
+    "advisoryLabelRequired": true,
+    "canCloseOrIgnore": true,
+    "rejectionChangesBusinessState": false,
+    "automaticLearningFromFeedback": false
+  },
+  "reEvaluationTriggers": [
+    "provider",
+    "model",
+    "prompt template",
+    "corpus",
+    "purpose",
+    "allowed inputs",
+    "privacy policy",
+    "output schema",
+    "major incident"
+  ],
+  "knownLimitations": [
+    "This evaluation is not an evaluation of a model or external provider.",
+    "The deterministic fake returns approved excerpts and does not establish factuality, omission, fairness, latency, or cost properties for a model.",
+    "The current input boundary accepts only finite topic keys; future provider adapters require separate endpoint, secret, network, timeout, and provider-specific evaluation acceptance."
+  ]
+}

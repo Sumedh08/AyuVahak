@@ -3,6 +3,7 @@ package org.ayuvahak.platform.operatorsupport.application;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.ayuvahak.platform.authorization.application.AuthorizationService;
@@ -16,9 +17,14 @@ import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
 import org.ayuvahak.platform.operatorsupport.OperatorSupportEvaluationFixture;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
 
 /** Executes the versioned synthetic support-evaluation cases through the application boundary. */
 class OperatorSupportEvaluationCorpusTest {
+
+  private static final String CAPABILITY_MANIFEST =
+      "/evaluation/phase14/operator-support-capability-v1.json";
+  private static final JsonMapper JSON = JsonMapper.builder().build();
 
   private static final ActorReference OPERATOR =
       ActorReference.human(new IssuerId("urn:synthetic:operator-support-eval"), "SYN-OPERATOR-01");
@@ -88,6 +94,57 @@ class OperatorSupportEvaluationCorpusTest {
         assertThat(response.sources()).as(scenarioId + " abstention citations").isEmpty();
       }
     }
+  }
+
+  @Test
+  void versionedCapabilityManifestKeepsTheCurrentCapabilityDisabledAndNonAuthoritative()
+      throws IOException {
+    try (InputStream stream = getClass().getResourceAsStream(CAPABILITY_MANIFEST)) {
+      assertThat(stream).as("versioned capability manifest exists").isNotNull();
+      JsonNode manifest = JSON.readTree(stream);
+
+      assertThat(manifest.get("version").stringValue()).isEqualTo("1.0.0");
+      assertThat(manifest.get("capabilityId").stringValue()).isEqualTo("operator-support");
+      assertThat(manifest.get("defaultEnabled").booleanValue()).isFalse();
+      assertThat(manifest.get("currentProvider").get("kind").stringValue())
+          .isEqualTo("DETERMINISTIC_LOCAL_FAKE");
+      assertThat(manifest.get("currentProvider").get("externalInferenceConfigured").booleanValue())
+          .isFalse();
+      assertThat(manifest.get("corpusVersion").stringValue())
+          .isEqualTo(OperatorSupportCorpus.APPROVED_VERSION);
+      assertThat(manifest.get("outputSchemaVersion").stringValue())
+          .isEqualTo(OperatorSupportService.CAPABILITY_VERSION);
+      assertThat(manifest.get("actionAuthority")).isEmpty();
+      assertThat(manifest.get("retention").get("rawPromptRetained").booleanValue()).isFalse();
+      assertThat(manifest.get("retention").get("rawAnswerRetained").booleanValue()).isFalse();
+      assertThat(manifest.get("humanOversight").get("canCloseOrIgnore").booleanValue()).isTrue();
+      assertThat(manifest.get("humanOversight").get("rejectionChangesBusinessState").booleanValue())
+          .isFalse();
+
+      assertThat(stringValues(manifest.get("forbiddenInputs")))
+          .contains("PatientReference", "IPS", "diagnoses", "clinical narratives", "secrets");
+      assertThat(stringValues(manifest.get("reEvaluationTriggers")))
+          .contains(
+              "provider",
+              "model",
+              "prompt template",
+              "corpus",
+              "purpose",
+              "allowed inputs",
+              "privacy policy",
+              "output schema",
+              "major incident");
+      assertThat(stringValues(manifest.get("knownLimitations")))
+          .anyMatch(limitation -> limitation.contains("not an evaluation of a model"));
+    }
+  }
+
+  private static List<String> stringValues(JsonNode array) {
+    assertThat(array).isNotNull();
+    assertThat(array.isArray()).isTrue();
+    return java.util.stream.StreamSupport.stream(array.spliterator(), false)
+        .map(JsonNode::stringValue)
+        .toList();
   }
 
   private static void assertEvidence(

@@ -4,7 +4,7 @@
 
 ## Evaluation target
 
-The versioned synthetic case set is [operator-support-evaluation-v1.json](../../src/test/resources/evaluation/phase14/operator-support-evaluation-v1.json). It exercises the current `OperatorSupportService.answer` boundary and the finite-topic request parser. No model, network provider, external service, or operational data is used.
+The versioned synthetic case set is [operator-support-evaluation-v1.json](../../src/test/resources/evaluation/phase14/operator-support-evaluation-v1.json), and the current capability is described by [operator-support-capability-v1.json](../../src/test/resources/evaluation/phase14/operator-support-capability-v1.json). The cases exercise the current `OperatorSupportService.answer` boundary and the finite-topic request parser. No model, network provider, external service, or operational data is used. A test verifies that the manifest keeps the capability disabled by default, records no external inference or action authority, excludes raw prompt/answer retention, and lists the changes that require re-evaluation.
 
 The machine-readable evaluation contract names its owner, no-model baseline, measurement method, and acceptance rule. The cases cover exact source/citation provenance, disabled capability, unsupported topic, provider failure and timeout, unapproved citation, malformed output, oversized output, and rejection of synthetic patient-like, secret-like, and injection-like request fields. The JUnit runner maps every scenario to an executable assertion rather than treating descriptive evidence strings as acceptance. Existing workspace tests separately verify that an operator can close an advisory and that disabled assistance leaves the application available.
 
@@ -15,9 +15,9 @@ On Temurin 25.0.4.1+1, the focused Maven run passed:
 ```text
 OperatorSupportControllerTest                 3 passed
 OperatorSupportInputBoundaryEvaluationTest     1 passed
-OperatorSupportEvaluationCorpusTest            1 passed
+OperatorSupportEvaluationCorpusTest            2 passed
 OperatorSupportServiceTest                    11 passed
-Total                                         16 passed
+Total                                         17 passed
 Failures                                       0
 Errors                                         0
 Skipped                                        0
