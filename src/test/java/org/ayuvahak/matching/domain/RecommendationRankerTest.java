@@ -141,8 +141,7 @@ class RecommendationRankerTest {
         .containsExactlyElementsOf(expectedIds);
     assertThat(ranking.candidates())
         .extracting(candidate -> candidate.status().name())
-        .containsOnly(
-            Phase14GoldenCorpus.string("$.cases.matchingUuidTieBreak.expectedStatus"));
+        .containsOnly(Phase14GoldenCorpus.string("$.cases.matchingUuidTieBreak.expectedStatus"));
     assertThat(ranking.candidates())
         .extracting(candidate -> candidate.rank().orElseThrow())
         .containsExactlyElementsOf(

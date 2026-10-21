@@ -224,7 +224,8 @@ class FederatedAggregateFederationPostgresIT {
         receiptService.receive(peer, operationId, fingerprint, envelope);
 
     assertThat(first.snapshot().sourceDeployment().value())
-        .isEqualTo(Phase14GoldenCorpus.string("$.cases.federatedAggregateReceipt.sourceDeployment"));
+        .isEqualTo(
+            Phase14GoldenCorpus.string("$.cases.federatedAggregateReceipt.sourceDeployment"));
     assertThat(first.snapshot().indicatorKey())
         .isEqualTo(Phase14GoldenCorpus.string("$.cases.federatedAggregateReceipt.indicatorKey"));
     assertThat(first.snapshot().value())
@@ -234,7 +235,9 @@ class FederatedAggregateFederationPostgresIT {
     assertThat(first.state().name())
         .isEqualTo(Phase14GoldenCorpus.string("$.cases.federatedAggregateReceipt.receiptState"));
     assertThat(replay.replayed())
-        .isEqualTo(Phase14GoldenCorpus.bool("$.cases.federatedAggregateReceipt.replayReturnsPriorReceipt"));
+        .isEqualTo(
+            Phase14GoldenCorpus.bool(
+                "$.cases.federatedAggregateReceipt.replayReturnsPriorReceipt"));
     assertThat(replay.receiptId()).isEqualTo(first.receiptId());
     assertThat(
             jdbc.queryForObject(

@@ -12,7 +12,9 @@ import org.ayuvahak.platform.core.IssuerId;
 import org.ayuvahak.platform.executioncontext.ExecutionScope;
 import org.springframework.jdbc.core.JdbcTemplate;
 
-/** Identity & Access query restricted to active grants for the caller's validated actor identity. */
+/**
+ * Identity & Access query restricted to active grants for the caller's validated actor identity.
+ */
 public final class JdbcSubjectCapabilityLookup implements SubjectCapabilityLookup {
 
   private final JdbcTemplate jdbc;

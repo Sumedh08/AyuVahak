@@ -228,8 +228,12 @@ class DirectoryCapacityReferralScenarioIT {
 
   @Autowired private org.ayuvahak.platform.audit.application.AuditWriter auditWriter;
   @Autowired private javax.sql.DataSource dataSource;
-  @Autowired private org.ayuvahak.referral.application.ReferralReportingSnapshots referralReportingSnapshots;
-  @Autowired private org.ayuvahak.transfer.application.TransferReportingSnapshots transferReportingSnapshots;
+
+  @Autowired
+  private org.ayuvahak.referral.application.ReferralReportingSnapshots referralReportingSnapshots;
+
+  @Autowired
+  private org.ayuvahak.transfer.application.TransferReportingSnapshots transferReportingSnapshots;
 
   @org.springframework.beans.factory.annotation.Autowired
   @org.springframework.beans.factory.annotation.Qualifier("auditClock")
@@ -3731,7 +3735,9 @@ class DirectoryCapacityReferralScenarioIT {
             .andExpect(status().isCreated())
             .andExpect(
                 jsonPath("$.status")
-                    .value(Phase14GoldenCorpus.string("$.cases.transferAcceptance.requestAttemptStatus")))
+                    .value(
+                        Phase14GoldenCorpus.string(
+                            "$.cases.transferAcceptance.requestAttemptStatus")))
             .andReturn()
             .getResponse()
             .getContentAsString();
@@ -3829,7 +3835,8 @@ class DirectoryCapacityReferralScenarioIT {
         .as(
             "transfer reservation intent %s; Capacity operations %s",
             reservationDebug, capacityDebug)
-        .isEqualTo(Phase14GoldenCorpus.string("$.cases.transferAcceptance.capacityReservationOutcome"));
+        .isEqualTo(
+            Phase14GoldenCorpus.string("$.cases.transferAcceptance.capacityReservationOutcome"));
     String acceptanceStatus =
         com.jayway.jsonpath.JsonPath.read(
             acceptance.getResponse().getContentAsString(), "$.status");
@@ -3841,7 +3848,8 @@ class DirectoryCapacityReferralScenarioIT {
                     + "WHERE transfer_id = ?",
                 String.class,
                 UUID.fromString(transferId)))
-        .isEqualTo(Phase14GoldenCorpus.string("$.cases.transferAcceptance.capacityReservationStatus"));
+        .isEqualTo(
+            Phase14GoldenCorpus.string("$.cases.transferAcceptance.capacityReservationStatus"));
 
     String patientContextMarker = prefix + "-opaque-patient-reference";
     String receivingParticipant = prefix + "-receiving-participant";
@@ -3934,17 +3942,17 @@ class DirectoryCapacityReferralScenarioIT {
         com.jayway.jsonpath.JsonPath.read(transportRequestBody, "$.transportRequestId");
     MvcResult providerDispatch =
         mockMvc
-        .perform(
-            post("/api/v1/transport-requests/{requestId}/provider-dispatch", transportRequestId)
-                .header("Authorization", bearer(token(transportOperator)))
-                .header("X-AyuVahak-Execution-Scope", "FACILITY")
-                .header("X-AyuVahak-Organization-Id", originOrganizationId)
-                .header("X-AyuVahak-Facility-Id", originFacilityId))
-        .andExpect(status().isAccepted())
-        .andExpect(
-            jsonPath("$.state")
-                .value(Phase14GoldenCorpus.string("$.cases.transportDispatch.dispatchState")))
-        .andReturn();
+            .perform(
+                post("/api/v1/transport-requests/{requestId}/provider-dispatch", transportRequestId)
+                    .header("Authorization", bearer(token(transportOperator)))
+                    .header("X-AyuVahak-Execution-Scope", "FACILITY")
+                    .header("X-AyuVahak-Organization-Id", originOrganizationId)
+                    .header("X-AyuVahak-Facility-Id", originFacilityId))
+            .andExpect(status().isAccepted())
+            .andExpect(
+                jsonPath("$.state")
+                    .value(Phase14GoldenCorpus.string("$.cases.transportDispatch.dispatchState")))
+            .andReturn();
     assertThat(providerDispatch.getResponse().getStatus())
         .isEqualTo(Phase14GoldenCorpus.integer("$.cases.transportDispatch.dispatchHttpStatus"));
     assertThat(PROVIDER_REQUEST_TARGET.get())
@@ -4791,8 +4799,7 @@ class DirectoryCapacityReferralScenarioIT {
         inboundRequestOperation,
         "synthetic-federated-origin-peer");
     Instant requestStart = Instant.now().plusSeconds(120);
-    String receivingNamespace =
-        "urn:ayuvahak:deployment:SYN-DEPLOYMENT-RECEIVER:directory";
+    String receivingNamespace = "urn:ayuvahak:deployment:SYN-DEPLOYMENT-RECEIVER:directory";
     String federationOriginJourneyId = InternalId.generate().toString();
     org.ayuvahak.platform.core.InternalId federationOperationId = InternalId.generate();
     String federationBody =
@@ -4824,21 +4831,21 @@ class DirectoryCapacityReferralScenarioIT {
             org.ayuvahak.platform.exchange.application.FederationOperationFingerprint.calculate(
                 peerDeployment,
                 new org.ayuvahak.platform.federation.domain.DeploymentId("SYN-DEPLOYMENT-RECEIVER"),
-                new ExternalReference(
-                    new IssuerId(receivingNamespace), "Facility", facilityD),
+                new ExternalReference(new IssuerId(receivingNamespace), "Facility", facilityD),
                 inboundRequestOperation,
                 federationBody.getBytes(StandardCharsets.UTF_8));
     var federationSeedResponse =
         mockMvc
             .perform(
                 post("/api/federation/operations/transfer.remote-receiving-request")
-                    .header("Authorization", bearer(serviceToken("synthetic-federated-origin-peer")))
+                    .header(
+                        "Authorization", bearer(serviceToken("synthetic-federated-origin-peer")))
                     .header("X-AyuVahak-Federation-Source", peerDeployment.value())
                     .header("X-AyuVahak-Federation-Peer", "SYN-DEPLOYMENT-RECEIVER")
-                    .header("X-AyuVahak-Federation-Operation", inboundRequestOperation.operationCode())
-                    .header("X-AyuVahak-Operation-Id", federationOperationId.toString())
                     .header(
-                        "X-AyuVahak-Operation-Fingerprint", federationFingerprint.value())
+                        "X-AyuVahak-Federation-Operation", inboundRequestOperation.operationCode())
+                    .header("X-AyuVahak-Operation-Id", federationOperationId.toString())
+                    .header("X-AyuVahak-Operation-Fingerprint", federationFingerprint.value())
                     .contentType("application/json")
                     .content(federationBody))
             .andExpect(status().isOk())
@@ -4911,8 +4918,7 @@ class DirectoryCapacityReferralScenarioIT {
                 .JdbcAuthorizationGrantLookup(jdbc),
             benchmarkAuthorities);
     var benchmarkComputationOperationStore =
-        new org.ayuvahak.analytics.adapter.persistence.JdbcAnalyticsComputationOperationStore(
-            jdbc);
+        new org.ayuvahak.analytics.adapter.persistence.JdbcAnalyticsComputationOperationStore(jdbc);
     var benchmarkComputation =
         new org.ayuvahak.analytics.application.AnalyticsAggregateComputationService(
             benchmarkAnalyticsStore,
@@ -5265,11 +5271,11 @@ class DirectoryCapacityReferralScenarioIT {
               int index = computationIndex.getAndIncrement();
               var request = computationRequests.get(index);
               benchmarkComputation.enqueue(analyticsComputationContext, request);
-              long deadline =
-                  System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(10);
+              long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(10);
               while (System.nanoTime() < deadline) {
                 var operation =
-                    benchmarkComputationOperationStore.find(request.computationRequestId())
+                    benchmarkComputationOperationStore
+                        .find(request.computationRequestId())
                         .orElseThrow();
                 if (operation.state()
                     == org.ayuvahak.analytics.application.AnalyticsComputationOperation.State
@@ -5291,8 +5297,7 @@ class DirectoryCapacityReferralScenarioIT {
                 benchmarkComputation.processNext();
                 Thread.sleep(10);
               }
-              throw new AssertionError(
-                  "synthetic Analytics computation did not complete in time");
+              throw new AssertionError("synthetic Analytics computation did not complete in time");
             }));
     workload.add(
         new Phase13MixedWorkloadBenchmark.Operation(
@@ -5397,11 +5402,15 @@ class DirectoryCapacityReferralScenarioIT {
           new Phase13MixedWorkloadBenchmark.Replica(profileAName, profileAHttp, profileAJmx, app));
       try (var activeA =
               Phase13MixedWorkloadBenchmark.openSseConnection(
-                  profileA.getFirst(), notificationTokens.get(0), notificationScopeHeaders,
+                  profileA.getFirst(),
+                  notificationTokens.get(0),
+                  notificationScopeHeaders,
                   notificationCursor);
           var activeB =
               Phase13MixedWorkloadBenchmark.openSseConnection(
-                  profileA.getFirst(), notificationTokens.get(1), notificationScopeHeaders,
+                  profileA.getFirst(),
+                  notificationTokens.get(1),
+                  notificationScopeHeaders,
                   notificationCursor)) {
         var resultA =
             Phase13MixedWorkloadBenchmark.measure(
@@ -5465,11 +5474,15 @@ class DirectoryCapacityReferralScenarioIT {
       assertThat(replicaAHttp).isNotEqualTo(replicaBHttp);
       try (var activeA =
               Phase13MixedWorkloadBenchmark.openSseConnection(
-                  profileB.get(0), notificationTokens.get(0), notificationScopeHeaders,
+                  profileB.get(0),
+                  notificationTokens.get(0),
+                  notificationScopeHeaders,
                   notificationCursor);
           var activeB =
               Phase13MixedWorkloadBenchmark.openSseConnection(
-                  profileB.get(1), notificationTokens.get(1), notificationScopeHeaders,
+                  profileB.get(1),
+                  notificationTokens.get(1),
+                  notificationScopeHeaders,
                   notificationCursor)) {
         var resultB =
             Phase13MixedWorkloadBenchmark.measure(
@@ -6065,9 +6078,7 @@ class DirectoryCapacityReferralScenarioIT {
           .isEqualTo(Phase14GoldenCorpus.nullableInteger(rolePath + ".rank"));
       List<?> reasons = (List<?>) actual.get("reasons");
       List<String> actualReasonCodes =
-          reasons.stream()
-              .map(reason -> (String) ((Map<?, ?>) reason).get("code"))
-              .toList();
+          reasons.stream().map(reason -> (String) ((Map<?, ?>) reason).get("code")).toList();
       assertThat(actualReasonCodes)
           .as("exact Matching reason codes for %s", role.getKey())
           .containsExactlyElementsOf(Phase14GoldenCorpus.strings(rolePath + ".reasonCodes"));

@@ -3,7 +3,9 @@ package org.ayuvahak.platform.authorization.application;
 import java.util.Objects;
 import org.ayuvahak.platform.authorization.domain.GrantScope;
 
-/** Minimal capability projection; grant identity and lifecycle metadata are intentionally absent. */
+/**
+ * Minimal capability projection; grant identity and lifecycle metadata are intentionally absent.
+ */
 public record GrantedSubjectCapability(String authorityCode, GrantScope scope) {
 
   public GrantedSubjectCapability {

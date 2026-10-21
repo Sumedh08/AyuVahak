@@ -1,7 +1,7 @@
 package org.ayuvahak.platform.api;
 
-import java.util.List;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.TreeMap;
@@ -61,9 +61,7 @@ public class CurrentSessionController {
   }
 
   public record SessionView(
-      SubjectView subject,
-      List<CapabilityView> capabilities,
-      DeploymentMode deploymentMode) {
+      SubjectView subject, List<CapabilityView> capabilities, DeploymentMode deploymentMode) {
     public SessionView {
       Objects.requireNonNull(subject, "subject");
       capabilities = List.copyOf(capabilities);
@@ -86,7 +84,6 @@ public class CurrentSessionController {
           scope.organization().map(ScopeReference::from).orElse(null),
           scope.facility().map(ScopeReference::from).orElse(null));
     }
-
   }
 
   public record ScopeReference(String issuer, String identifierType, String identifier) {

@@ -2,8 +2,8 @@ package org.ayuvahak.platform.authorization.configuration;
 
 import java.util.ArrayList;
 import java.util.List;
-import org.ayuvahak.platform.authorization.adapter.persistence.JdbcSubjectCapabilityLookup;
 import org.ayuvahak.platform.authorization.adapter.persistence.JdbcAuthorizationGrantLookup;
+import org.ayuvahak.platform.authorization.adapter.persistence.JdbcSubjectCapabilityLookup;
 import org.ayuvahak.platform.authorization.application.AuthorizationGrantLookup;
 import org.ayuvahak.platform.authorization.application.AuthorizationService;
 import org.ayuvahak.platform.authorization.application.SubjectCapabilityLookup;

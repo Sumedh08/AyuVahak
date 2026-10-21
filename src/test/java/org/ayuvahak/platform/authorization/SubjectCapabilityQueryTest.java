@@ -39,10 +39,10 @@ class SubjectCapabilityQueryTest {
             List.of(
                 new FunctionalAuthority(
                     "DirectoryRead", Set.of(ExecutionScope.Kind.ORGANIZATION))));
-    SubjectCapabilityQuery query =
-        new SubjectCapabilityQuery(ignored -> activeGrants, catalog);
+    SubjectCapabilityQuery query = new SubjectCapabilityQuery(ignored -> activeGrants, catalog);
 
-    var result = query.findFor(ActorReference.human(new IssuerId("https://id.test"), "SYN-USER-01"));
+    var result =
+        query.findFor(ActorReference.human(new IssuerId("https://id.test"), "SYN-USER-01"));
 
     assertThat(result)
         .containsExactly(new SubjectCapabilityQuery.Capability("DirectoryRead", organizationScope));

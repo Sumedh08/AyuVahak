@@ -79,8 +79,7 @@ final class Phase13MixedWorkloadBenchmark {
       throws Exception {
     HttpResponse<String> response =
         HTTP.send(
-            HttpRequest.newBuilder(
-                    URI.create("http://127.0.0.1:" + replica.httpPort() + path))
+            HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + replica.httpPort() + path))
                 .timeout(REQUEST_TIMEOUT)
                 .header("Authorization", "Bearer " + token)
                 .header("Content-Type", "application/json")
@@ -255,8 +254,7 @@ final class Phase13MixedWorkloadBenchmark {
         new java.util.concurrent.atomic.AtomicLong();
     java.util.concurrent.atomic.AtomicLong peakHarnessJvmHeapBytes =
         new java.util.concurrent.atomic.AtomicLong();
-    AtomicInteger minimumActiveSseConnections =
-        new AtomicInteger(activeSseConnections.size());
+    AtomicInteger minimumActiveSseConnections = new AtomicInteger(activeSseConnections.size());
     ScheduledExecutorService processSampler = Executors.newSingleThreadScheduledExecutor();
     try {
       observeActiveSseConnections(activeSseConnections, minimumActiveSseConnections);

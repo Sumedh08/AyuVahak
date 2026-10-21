@@ -20,11 +20,13 @@ class CurrentSessionControllerTest {
       properties.setMode(mode);
       CurrentSessionController controller =
           new CurrentSessionController(
-              new SubjectCapabilityQuery(ignored -> List.of(), new FunctionalAuthorityCatalog(List.of())),
+              new SubjectCapabilityQuery(
+                  ignored -> List.of(), new FunctionalAuthorityCatalog(List.of())),
               properties);
 
       var response =
-          controller.currentSession(ActorReference.human(new IssuerId("urn:test:idp"), "SYN-USER-01"));
+          controller.currentSession(
+              ActorReference.human(new IssuerId("urn:test:idp"), "SYN-USER-01"));
 
       assertThat(response.getBody())
           .extracting(CurrentSessionController.SessionView::deploymentMode)

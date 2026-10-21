@@ -68,7 +68,8 @@ public final class Phase14GoldenCorpus {
               if (item instanceof String text) {
                 return text;
               }
-              throw new IllegalArgumentException("Golden corpus array contains a non-string: " + path);
+              throw new IllegalArgumentException(
+                  "Golden corpus array contains a non-string: " + path);
             })
         .toList();
   }
@@ -84,7 +85,8 @@ public final class Phase14GoldenCorpus {
               if (item instanceof Number number) {
                 return number.intValue();
               }
-              throw new IllegalArgumentException("Golden corpus array contains a non-integer: " + path);
+              throw new IllegalArgumentException(
+                  "Golden corpus array contains a non-integer: " + path);
             })
         .toList();
   }

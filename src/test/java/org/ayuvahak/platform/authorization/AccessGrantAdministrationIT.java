@@ -725,17 +725,14 @@ class AccessGrantAdministrationIT {
             .andExpect(jsonPath("$.capabilities[0].scopes.length()").value(1))
             .andExpect(jsonPath("$.capabilities[0].scopes[0].kind").value("FACILITY"))
             .andExpect(
-                jsonPath("$.capabilities[0].scopes[0].organization.identifier")
-                    .value("org-17"))
+                jsonPath("$.capabilities[0].scopes[0].organization.identifier").value("org-17"))
             .andExpect(
-                jsonPath("$.capabilities[0].scopes[0].facility.identifier")
-                    .value("facility-23"))
+                jsonPath("$.capabilities[0].scopes[0].facility.identifier").value("facility-23"))
             .andExpect(jsonPath("$.capabilities[1].authorityCode").value("DirectoryRead"))
             .andExpect(jsonPath("$.capabilities[1].scopes.length()").value(1))
             .andExpect(jsonPath("$.capabilities[1].scopes[0].kind").value("ORGANIZATION"))
             .andExpect(
-                jsonPath("$.capabilities[1].scopes[0].organization.identifier")
-                    .value("org-17"))
+                jsonPath("$.capabilities[1].scopes[0].organization.identifier").value("org-17"))
             .andReturn();
     assertThat(currentSession.getResponse().getContentAsString())
         .doesNotContain(organizationGrantId)
@@ -754,9 +751,7 @@ class AccessGrantAdministrationIT {
         .andExpect(status().isNoContent());
 
     mockMvc
-        .perform(
-            get("/api/v1/session")
-                .header("Authorization", bearer(token(subject, Map.of()))))
+        .perform(get("/api/v1/session").header("Authorization", bearer(token(subject, Map.of()))))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.capabilities.length()").value(1))
         .andExpect(jsonPath("$.capabilities[0].authorityCode").value("DirectoryCuration"))
