@@ -26,7 +26,6 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
 import java.time.Clock;
-import java.time.Duration;
 import java.time.Instant;
 import java.util.Date;
 import java.util.List;
@@ -110,7 +109,6 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.transaction.PlatformTransactionManager;
-import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
@@ -158,11 +156,7 @@ class PartnerTrustAdministrationIT {
                   .asCompatibleSubstituteFor("postgres"))
           .withDatabaseName("ayuvahak")
           .withUsername("ayuvahak")
-          .withPassword(TEST_PASSWORD)
-          .waitingFor(
-              Wait.forSuccessfulCommand("pg_isready -U ayuvahak -d ayuvahak")
-                  .withStartupTimeout(Duration.ofMinutes(3)))
-          .withStartupTimeout(Duration.ofMinutes(3));
+          .withPassword(TEST_PASSWORD);
 
   @Container private static final PostgreSQLContainer CONTAINER = POSTGRES;
   private static HttpServer jwksServer;
