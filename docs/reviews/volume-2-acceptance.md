@@ -9,18 +9,18 @@ This closeout verifies the integrated core care-coordination platform across the
 ## Starting baseline and phase freeze records
 
 - Branch at closeout start: `codex/phase-7-transfer`.
-- HEAD at closeout start: `e61648ac5c6944ab36668c34caae0eb6a6ad2650`.
+- HEAD at closeout start: `f1733f3f6a41405f572b524afe1a8a16913f7a22`.
 - Working-tree state at closeout start: dirty with local Phase 7 closeout changes; those changes were reviewed, verified, and included in the local Volume II freeze commit.
 - Git remotes: none configured (`git remote -v` returned no entries).
 - Local working tree had the Phase 7 closeout changes listed in the final freeze commit; no remote state was involved.
 
 | Phase | Acceptance evidence | Freeze commit |
 |---|---|---|
-| 3 — Care Service Directory | [Phase 3 acceptance](phase-3-acceptance.md): PASS / FROZEN | `f83211062abbd444be8b830790df689cc0729237` |
-| 4 — Capacity & Operational Readiness | [Phase 4 acceptance](phase-4-acceptance.md): PASS / FROZEN | `f9910c31dad21cef10e02be20144ac4a07fd1b3b` |
-| 5 — Referral | [Phase 5 acceptance](phase-5-acceptance.md): PASS / FROZEN | `b888198ff0af2e69da6d4d97822697f07c3839d8` |
-| 6 — Destination Matching & Recommendation | [Phase 6 acceptance](phase-6-acceptance.md): PASS / FROZEN | `124be795cedf25f275f4cf7c63885e0c3e58d0c1` |
-| 7 — Transfer Coordination | [Phase 7 acceptance](phase-7-acceptance.md): PASS / FROZEN | `f8f4e856e0c304d08f95bd29bde13be8396d2141` |
+| 3 — Care Service Directory | [Phase 3 acceptance](phase-3-acceptance.md): PASS / FROZEN | `ede8c470c3c5966ada350ad0df4020f2f0505afc` |
+| 4 — Capacity & Operational Readiness | [Phase 4 acceptance](phase-4-acceptance.md): PASS / FROZEN | `39f7edcb1286217a3e28e57e695478e6fa56fc99` |
+| 5 — Referral | [Phase 5 acceptance](phase-5-acceptance.md): PASS / FROZEN | `70b9c6d70106109d57b6de17722e8ecdf0b92f98` |
+| 6 — Destination Matching & Recommendation | [Phase 6 acceptance](phase-6-acceptance.md): PASS / FROZEN | `f0d92474c67d07dd969b817f429a75b6845c545f` |
+| 7 — Transfer Coordination | [Phase 7 acceptance](phase-7-acceptance.md): PASS / FROZEN | `1ed104a6364ccc455876b839c99846cae1a34b24` |
 
 All five acceptance records were present and individually report PASS/FROZEN. The historic Phase 7 record's 139 Surefire / 222 Failsafe counts describe its original gate; the integrated closeout run below is a distinct run after closeout remediation.
 
@@ -150,5 +150,5 @@ The source, dependency, schema, and Compose audits found no Volume III interoper
 - All tests and Compose services were local; all test data was synthetic.
 - Volume I regression: **PASS** as part of the full clean suite, including platform startup/database/migrations, identity/grants, audit, event/outbox, idempotency, observability, and architecture enforcement.
 - Volume II integrated result: **PASS / COMPLETE / FROZEN**.
-- Authoritative local Volume II freeze commit: `2a8c7fcaab60f7ca5d781ac81d838262da99894e` (`chore: freeze volume 2 core care coordination`).
+- Authoritative local Volume II freeze commit: `a33b097ae793a599b27e3d53cad4a1b534bdf395` (`chore: freeze volume 2 core care coordination`).
 - Volume III: **NOT AUTHORIZED / NOT STARTED**.

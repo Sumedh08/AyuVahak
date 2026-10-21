@@ -72,4 +72,4 @@ The host `Invoke-WebRequest` attempt timed out through its configured Windows `H
 
 ## Freeze record
 
-The local Phase 2 freeze commit is `17350c67948600677ccc92c41769b198d7037b6c`. It contains the accepted implementation, remediation, and evidence. This hash is recorded in a subsequent documentation-only commit to avoid self-reference. No remote is configured or used.
+The local Phase 2 freeze commit is `9b3e2a2539cdd6b1a417c7e92ae619ad7da654aa`. It contains the accepted implementation, remediation, and evidence. This hash is recorded in a subsequent documentation-only commit to avoid self-reference. No remote is configured or used.

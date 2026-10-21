@@ -111,4 +111,4 @@ Final review result: **0 BLOCKER, 0 MAJOR, 2 MINOR observations, 0 DOCUMENTATION
 
 All application integration targets were local Testcontainers, loopback HTTP/TLS mocks, local Keycloak, or deterministic fixtures with synthetic values. No real patient data or production credential was accessed. No external healthcare system was mutated, no public healthcare system was used as a test target, and no Git remote operation, external account creation, issue/PR/release, deployment, package publication, or container publication occurred. Git activity remained local and no remote is configured.
 
-Phase 9 freeze commit: `58c6758632e7468e5e632e05457f6c9e318ba3b9`. This file and the `AGENTS.md` program-state lines were recorded in a documentation-only follow-up commit. At the time this Phase 9 record was written, Phase 10 remained specification-frozen / implementation not authorized.
+Phase 9 freeze commit: `4eb9aa30f068b9429431b9ba54dea674e26799b1`. This file and the `AGENTS.md` program-state lines were recorded in a documentation-only follow-up commit. At the time this Phase 9 record was written, Phase 10 remained specification-frozen / implementation not authorized.

@@ -40,7 +40,7 @@ This review does not claim that Phase 2 behavior has been implemented or verifie
 
 ## Independent master-gate design/spec review
 
-The two-axis review ran against `770eb2390aac0aa131d79063354dd7e8331c81b9...HEAD`, with standards and specification axes reviewed independently. Findings were resolved before ticket generation.
+The two-axis review ran against `d6aee6e9816df0cb76312e2d9df4be890aaaf0f4...HEAD`, with standards and specification axes reviewed independently. Findings were resolved before ticket generation.
 
 | ID | Classification | Affected files | Issue and consequence | Resolution | Status |
 | --- | --- | --- | --- | --- | --- |

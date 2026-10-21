@@ -2,7 +2,7 @@
 
 **Assessment date:** 2026-10-20 (Asia/Calcutta)
 **Status:** Internal evidence-based design assessment; not a DPGA application, legal opinion, registration, certification or recognition decision.
-**Product baseline:** Frozen Volumes I–IV plus local Phase 13 remediation through `ead756e` (20 October 2026). This is not a Phase 13 freeze assessment; representative profile workloads remain a blocker and the latest canonical clean verification failed. The local vulnerability inventory/release evidence was refreshed for the current JAR, but it does not establish security clearance or release eligibility.
+**Product baseline:** Frozen Volumes I–IV plus local Phase 13 remediation through `0ca9333` (20 October 2026). This is not a Phase 13 freeze assessment; representative profile workloads remain a blocker and the latest canonical clean verification failed. The local vulnerability inventory/release evidence was refreshed for the current JAR, but it does not establish security clearance or release eligibility.
 **Research basis:** [DPGA Standard research note](../research/volume-5-dpg-standard-research.md), which records the official current public page, the latest numbered release evidence and version caveat.
 
 ## Version and assessment boundaries

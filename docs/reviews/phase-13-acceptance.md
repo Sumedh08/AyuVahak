@@ -1,24 +1,20 @@
 # Phase 13 Acceptance Record
 
-**Status:** PHASE 13 COMPLETE + FROZEN — independent review found zero BLOCKER/MAJOR. The local implementation freeze is `8d4c88b4ba5a2ffaece103baa453205e480019fa`; the separate program-state follow-up is `6714ab5c71592fc2909f713145bcf55f60bf1374`. Phase 14 has not started.
+**Status:** PHASE 13 COMPLETE + FROZEN — independent review found zero BLOCKER/MAJOR. The local implementation freeze is `57b949ab8c5fa28e95243e83df0910731dbec800`; the separate program-state follow-up is `809ff8e8c5ba79c5c8ceb9ec7d0e7b6985f3619f`. Phase 14 has not started.
 **Assessment date:** 2026-10-21.
 **Acceptance target:** local-only, synthetic data, frozen Phase 13 specification.
 
-**Benchmark revisions:** initial mixed workload `08d54de4881b53942e1e4f2007266ec9a249dc28`; final
-reviewed-candidate harness `b6a6260db9a37a96e51ae64383fedab782fec357` on
-`codex/phase-13-production-hardening`. The dated sections below preserve earlier failures and
-intermediate dispositions. The final remediation section supersedes those statuses. The canonical
-Java 25 clean verification passed at `5d252bc`; only test/benchmark code changed afterward, and the
-application JAR remains byte-identical. Both representative workload profiles pass. Independent
-review and the freeze decision are pending.
+**Benchmark revisions:** initial mixed workload `068d2bdd36f9b36ba1cd65ecab6d46c741bc3750`; final
+reviewed-candidate harness `13e9d176ac99897c393fb2ee74248340c292136b` on
+`codex/phase-13-production-hardening`. The dated sections below preserve earlier failures and intermediate dispositions. The final remediation section and freeze disposition supersede those statuses. The canonical Java 25 clean verification passed at `c9bc4a2`; only test/benchmark code changed afterward, and the application JAR remains byte-identical. Both representative workload profiles passed, and the final independent review and Phase 13 freeze are complete.
 
 ## Historical pre-remediation Java 25 gate
 
 This records the original stop condition and is retained as failure history; it is superseded by
 the authorized local Java 25 retrieval recorded in the current remediation disposition below.
 
-The continuation started at `6858a7bebbdfd699bece631e4589f74cc44f6689`; `689e0f8` is the earlier
-SPDX implementation commit, followed by documentation commits `a41bd1c` and `6858a7b`. The local
+The continuation started at `6e231d8a5e4b1a9e58f99f15b85bc66c0cad623e`; `a511e45` is the earlier
+SPDX implementation commit, followed by documentation commits `d9e5666` and `6e231d8`. The local
 `JAVA_HOME` target is inaccessible. The only executable found on `PATH` is Temurin Java 17.0.8,
 while `pom.xml` requires Java 25. `java -version` confirmed Java 17.0.8 and `mvnw -version` exited
 before Maven startup with the invalid `JAVA_HOME` error. The local installation search found no
@@ -52,7 +48,7 @@ retained for traceability. Current outcomes are listed in “Remediation disposi
 | P13-08 Backup/restore | Partial | Isolated synthetic `pg_dump`/`pg_restore`, Flyway, restored application, Platform/Referral retention reapplication, and an unresolved Analytics export barrier are exercised. The post-backup Directory update is intentionally lost at the dump recovery point. The fixture omits idempotency and representative Transfer, Transport, and federation invariants required by the frozen acceptance spec. |
 | P13-09 Release evidence | Partial | Pinned cdxgen 13.4.0 generated an SPDX 3.0.1 SBOM from the local runtime dependency tree; normalized output passed the pinned official JSON Schema and SHACL model plus local SPDX License List 3.29.0 validation. The actual AyuVahak JAR digest is bound. A local manifest/provenance/signed bundle was generated with an ephemeral synthetic signer and verified; the release remains ineligible because no reviewed dependency vulnerability inventory is bound. Release-evidence helpers have 19 passing Python tests. |
 | P13-10 Operations/DPG evidence | Partial | Local runbooks, ASVS 5.0.0 matrix, standards register, and evidence-based readiness matrix are present; governance and live deployment evidence remain open. |
-| P13-11 Integrated acceptance | Not complete | A prior canonical clean verification passed, and local SPDX 3.0.1 generation/validation now passes. The repeat at `689e0f8` failed before Maven startup because `JAVA_HOME` was unavailable. On the current continuation, only Java 17.0.8 is accessible while the project requires Java 25, so the required clean verification gate stopped before remediation. Complete retention coverage, true multi-replica acceptance, measured deployment-profile workload baselines, vulnerability inventory review, and blocker remediation remain outstanding. |
+| P13-11 Integrated acceptance | Not complete | A prior canonical clean verification passed, and local SPDX 3.0.1 generation/validation now passes. The repeat at `a511e45` failed before Maven startup because `JAVA_HOME` was unavailable. On the current continuation, only Java 17.0.8 is accessible while the project requires Java 25, so the required clean verification gate stopped before remediation. Complete retention coverage, true multi-replica acceptance, measured deployment-profile workload baselines, vulnerability inventory review, and blocker remediation remain outstanding. |
 
 ## Historical backup and restore acceptance
 
@@ -68,7 +64,7 @@ The test declares synthetic 15-minute RPO and RTO targets. In the recorded canon
 disaster declaration was 0.195s; restore elapsed time from disaster declaration through target
 database recreation, dump transfer/restore, retention reapplication, readiness, and authorized read
 was 8.121s. Both were within the synthetic targets. A later repeat canonical command at HEAD
-`689e0f8` could not start because the configured `JAVA_HOME` target was unavailable; Java 17 was
+`a511e45` could not start because the configured `JAVA_HOME` target was unavailable; Java 17 was
 accessible, but incompatible with this Java 25 project. These values are prior-run evidence, not a
 verification of that attempt. The method is a logical
 snapshot; it does not exercise WAL/PITR, scheduled backups, encryption, or off-host storage. No general production
@@ -91,7 +87,7 @@ RPO/RTO claim follows from this test.
 - Local release-evidence Python tests: 19 passed, 0 failures/errors/skips in 4.99 seconds.
 - Local SBOM generation/validation: cdxgen 13.4.0 (official pinned Windows AMD64 asset SHA-256 `0b4a6ec411a70127d72e2f6fc45277f03fa64d4237a40325d0ff117634b76375`) generated 195 runtime package nodes and 133 declared-license relationships for the local JAR. The SPDX 3.0.1 output SHA-256 is `0e5230a50e0dd4615b7b0fbf4beb87a3582fdd943e1a10498d1505130d3f5a76`; the application JAR SHA-256 is `5ae4598d12c8f660915ab556869becad57b93cacf833d5bdcf89a638037fc9f4`. Validation used pinned official schema, SHACL model/context, and SPDX License List 3.29.0 assets. Maven ran offline with repository-owned credential-free settings and a preverified cached wrapper distribution; cdxgen was loopback-only and its execution trace contained no external host activity. This is local acceptance evidence, not a published release.
 - Local manifest/provenance/evidence-pack check: a local manifest revalidated and bound the SPDX SBOM to the application JAR. A provenance record and bundle containing the JAR, manifest, SBOM, validation report and provenance verified with a two-day ephemeral synthetic PKCS#12 identity (fingerprint `2c381e4e5183906b37aecbd8b70338a121f64992a9373eb91711281cf0e62f0a`; bundle SHA-256 `dd0495d594ccd3dd16da482b09ca0b9a122f32f9566a66e8b545423be83de5e7`). The manifest remained release-ineligible because it had no reviewed dependency vulnerability inventory or production signer. The bundle stayed under ignored `.scratch` and was not published.
-- The canonical full clean verification passed before the latest local Python/doc-only release-evidence changes. Its repeat at `689e0f8` exited before the Maven build because `JAVA_HOME` was unavailable; Java 17 was accessible but cannot compile the Java 25 project. At current HEAD `6858a7b`, no accessible Java 25 runtime was found and remediation stopped before a current-tree clean verification. No JDK was fetched. The frozen integrated Phase 13 acceptance gate remains incomplete because owner retention/recovery coverage, two-replica acceptance, measured workload evidence, and vulnerability-inventory review are still missing.
+- The canonical full clean verification passed before the latest local Python/doc-only release-evidence changes. Its repeat at `a511e45` exited before the Maven build because `JAVA_HOME` was unavailable; Java 17 was accessible but cannot compile the Java 25 project. At current HEAD `6e231d8`, no accessible Java 25 runtime was found and remediation stopped before a current-tree clean verification. No JDK was fetched. The frozen integrated Phase 13 acceptance gate remains incomplete because owner retention/recovery coverage, two-replica acceptance, measured workload evidence, and vulnerability-inventory review are still missing.
 
 ## Historical readiness and DPG evidence
 
@@ -112,7 +108,7 @@ preserves that history; the final dispositions below supersede its point-in-time
 |---|---|---|
 | BLOCKER | Owner retention/restore coverage was considered incomplete outside Platform outbox and Referral restrictions. | Historical finding; closed as stale after review of the complete 16-category owner register and executable-action evidence below. |
 | BLOCKER | Two-application-replica acceptance was not evidenced; worker-claim tests did not prove the frozen multi-replica scenario. | Historical finding; closed by the accepted two-packaged-process failover acceptance and current Profile B benchmark. |
-| BLOCKER | No measured synthetic workload baseline was recorded for either supported deployment profile. | Historical finding; closed by the measured mixed Profile A/B workload at final harness commit `b6a6260`. |
+| BLOCKER | No measured synthetic workload baseline was recorded for either supported deployment profile. | Historical finding; closed by the measured mixed Profile A/B workload at final harness commit `13e9d17`. |
 | MAJOR | Rate limits lacked required tenant/scope, peer/partner, and operation budgets; per-process buckets could multiply across replicas. | Historical finding; closed by the previously accepted PostgreSQL-shared request-budget evidence. |
 | MAJOR | The restore fixture omitted required idempotency and representative Transfer, Transport, and federation invariants. | Historical finding; closed by the previously accepted expanded restore fixture. |
 | MAJOR | No reviewed dependency vulnerability inventory was bound to the release manifest; release eligibility remained false. | Historical finding; closed by the previously accepted digest-bound OSV/CISA inventory. |
@@ -130,8 +126,8 @@ At that historical checkpoint, the following conditions were considered unmet:
    two-replica acceptance scenario.
 4. The required measured synthetic workload baseline has not yet been recorded for either supported
    deployment profile.
-5. The repeat full clean verification at `689e0f8` could not start because `JAVA_HOME` was
-   unavailable. At current HEAD `6858a7b`, the accessible Java 17 runtime does not meet the Java 25
+5. The repeat full clean verification at `a511e45` could not start because `JAVA_HOME` was
+   unavailable. At current HEAD `6e231d8`, the accessible Java 17 runtime does not meet the Java 25
    project requirement, and no accessible Java 25 installation was found. The previous clean
    verification is historical evidence only; current verification is blocked.
 
@@ -153,9 +149,9 @@ was added.
 
 ### Toolchain and repository
 
-- Starting remediation HEAD was `0145f8112fc91ea8d5d1a99d515448ae293fda32`; code remediation commits
-  are `e4d27f2b3620fa3ac9315126a832d09096cc6527` and
-  `ead756e94d3a57ddf5e0b6e2be423b501c7d77dc`. The branch is
+- Starting remediation HEAD was `5502d286d2c51bd193ce1bff18ecd2cc594788b1`; code remediation commits
+  are `10ca0a98bcc048d2af14dc044d3bf0c29c5f2dc8` and
+  `0ca93332d1ced1ab26636ae94c911caca68fbd02`. The branch is
   `codex/phase-13-production-hardening`; `git remote -v` returned no remotes.
 - Authorized local JDK: Eclipse Temurin 25.0.4.1+1 (Adoptium), retrieved 2026-10-20 from the
   official Adoptium GitHub release asset
@@ -166,7 +162,7 @@ was added.
   `AppData\Local\AyuVahak\toolchains` directory. No system-wide Java setting changed.
 - `java -version` reports `25.0.4.1`, Temurin; `mvnw.cmd -version` reports Maven 3.10.0 and the
   same Java 25.0.4.1 runtime. A new canonical full clean verification ran after remediation at
-  code HEAD `ead756e`; it failed in Failsafe as detailed below. The earlier Java 17/
+  code HEAD `0ca9333`; it failed in Failsafe as detailed below. The earlier Java 17/
   invalid-`JAVA_HOME` failure remains historical only.
 
 ### Owner retention and restore coverage
@@ -263,7 +259,7 @@ benchmark. No production signing identity is represented.
 
 ### Latest canonical clean verification — failed
 
-At remediation HEAD `ead756e94d3a57ddf5e0b6e2be423b501c7d77dc`, the Java 25/Maven 3.10.0 canonical
+At remediation HEAD `0ca93332d1ced1ab26636ae94c911caca68fbd02`, the Java 25/Maven 3.10.0 canonical
 `clean verify` completed Surefire successfully (488 tests; 0 failures, errors or skips) but failed
 Failsafe (406 tests; 1 failure, 2 errors, 0 skips; build exit 1 after 29:02). The failure was the
 synthetic `DirectoryCapacityReferralScenarioIT` expecting IPS projection status `AVAILABLE` but
@@ -297,15 +293,15 @@ was unresolved at this snapshot. Phase 14 remains specification-frozen and imple
 ### Pinned implementation and repeatability
 
 The mixed workload and explicit Analytics queue/backlog observation were first committed at
-`08d54de4881b53942e1e4f2007266ec9a249dc28`. Review then required live authorized SSE streams and
+`068d2bdd36f9b36ba1cd65ecab6d46c741bc3750`. Review then required live authorized SSE streams and
 an assertion that they stay connected throughout measurement. The harness now holds two simultaneous
 connections per profile (one on each Profile B replica), observes disconnect callbacks, and asserts
 that the minimum active stream count remains two before and after every warm-up and measured cycle.
-The initial live-stream implementation was committed at `93463914b1c0a3bb334b24297da95f9ef8e1391f`;
-the connection-liveness assertion is in final candidate `b6a6260db9a37a96e51ae64383fedab782fec357`.
+The initial live-stream implementation was committed at `49a6cfd43b89ec0732bacd2ac9f533c05396dae8`;
+the connection-liveness assertion is in final candidate `13e9d176ac99897c393fb2ee74248340c292136b`.
 The targeted command
 `mvnw.cmd -B -ntp test-compile -Dit.test=DirectoryCapacityReferralScenarioIT#volumeTwoHappyPathRunsThroughDirectoryCapacityReferralMatchingAndTransfer failsafe:integration-test failsafe:verify`
-passed at exact candidate `b6a6260`: 1 integration test, 0 failures, 0 errors, 0 skips; elapsed
+passed at exact candidate `13e9d17`: 1 integration test, 0 failures, 0 errors, 0 skips; elapsed
 5:14. It emitted versioned `PHASE13_PROFILE_BENCHMARK` records for both profiles. Earlier executions
 of the mixed operation mix passed as well; latency varied, so results are characterization rather
 than a capacity target.
@@ -411,15 +407,15 @@ finite characterization samples, not a performance SLO or Phase 14 optimization 
 
 ### Canonical verification and unchanged executable artifact
 
-The canonical Java 25 verification at `5d252bc66881ea7fbfee4d8d81b0f2731205e1bf` is preserved as
+The canonical Java 25 verification at `c9bc4a281d1702288ad3dffbd77d491155b24ddb` is preserved as
 PASS as supplied for this continuation: Surefire 489/489, Failsafe 420/420, 0 failures, 0 errors,
 0 skips, Maven exit 0, Temurin `25.0.4.1+1`, Maven `3.10.0`, Spring Boot `4.1.1`, and 93 Flyway
 migrations. The authoritative PASS summary did not include total elapsed time. No new full
 `clean verify` was run. The earlier `AVAILABLE` to `INVALID` IPS fixture failure was addressed by the
-readiness fix in `394dbbd` and the corrected synthetic mCSD searchset fixture in `5d252bc`; the
+readiness fix in `5692029` and the corrected synthetic mCSD searchset fixture in `c9bc4a2`; the
 affected integration class then passed two targeted 9/9 reruns. Frozen Volume II/III semantics were
 not weakened. Changes after the canonical build are confined to test sources. At final benchmark
-candidate `b6a6260`, the application JAR SHA-256 is
+candidate `13e9d17`, the application JAR SHA-256 is
 `34854DD41248A22E4B29A65EC9AD9C9F055682CC53F088DB98DD9D8ED705F0B8`, unchanged from the already
 accepted artifact; artifact-bound SBOM, vulnerability, provenance and local signature evidence
 therefore remains bound to the same JAR.
@@ -441,23 +437,23 @@ and the precise behavior and evidence for each.
 
 | Gate | Result | Evidence / limit |
 |---|---|---|
-| Canonical Java 25 clean verification | PASS | Preserved result at `5d252bc`; no full rerun per instruction. |
-| Representative Profile A workload | PASS | Candidate `b6a6260`; one packaged process; 100 measured mixed operations; two live SSE streams continuously verified; 0 failures/timeouts. |
-| Representative Profile B workload | PASS | Candidate `b6a6260`; two packaged JVMs sharing disposable PostgreSQL; 100 measured mixed operations; two live SSE streams continuously verified; 0 failures/timeouts. |
+| Canonical Java 25 clean verification | PASS | Preserved result at `c9bc4a2`; no full rerun per instruction. |
+| Representative Profile A workload | PASS | Candidate `13e9d17`; one packaged process; 100 measured mixed operations; two live SSE streams continuously verified; 0 failures/timeouts. |
+| Representative Profile B workload | PASS | Candidate `13e9d17`; two packaged JVMs sharing disposable PostgreSQL; 100 measured mixed operations; two live SSE streams continuously verified; 0 failures/timeouts. |
 | Expanded backup/restore fixture | PASS | Earlier accepted local synthetic restore evidence retained; no rebuild required for this test-only benchmark change. |
 | Two-process worker/failover acceptance | PASS | Earlier accepted packaged-process acceptance retained; benchmark additionally proves two-profile workload processes. |
 | PostgreSQL-shared request budgets | PASS | Earlier accepted scoped/cross-replica budget tests retained. |
 | Reviewed vulnerability inventory | PASS | Earlier accepted local OSV/CISA inventory remains digest-bound. |
 | SPDX 3.0.1, provenance and local signature | PASS | Existing evidence remains bound to the unchanged JAR digest. |
 | Owner retention classification and executable-action tests | PASS | The stale owner-wide MAJOR is closed for the reasons above; unsupported deletion behavior remains expressly out of scope. |
-| Independent final review | PASS | Final review against the canonical baseline found 0 BLOCKER and 0 MAJOR. One test-harness maintainability MINOR remains non-blocking; the query-plan labeling MINOR was resolved in `0ed4895`. |
+| Independent final review | PASS | Final review against the canonical baseline found 0 BLOCKER and 0 MAJOR. One test-harness maintainability MINOR remains non-blocking; the query-plan labeling MINOR was resolved in `489d474`. |
 | Phase 14 implementation | NOT STARTED | No Phase 14 work was performed. |
 
 ### Independent final code review
 
 The independent review covered the benchmark and acceptance changes from canonical PASS baseline
-`5d252bc66881ea7fbfee4d8d81b0f2731205e1bf` through final documentation clarification
-`0ed489512b708fa63edaeb72460085ea443ab34e`.
+`c9bc4a281d1702288ad3dffbd77d491155b24ddb` through final documentation clarification
+`489d474c93523891802c448e9f111deea9a78e3e`.
 
 | Axis | BLOCKER | MAJOR | MINOR | DOCUMENTATION | Disposition |
 |---|---:|---:|---:|---:|---|

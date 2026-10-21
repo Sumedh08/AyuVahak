@@ -25,6 +25,6 @@ Phase 3 remains within Directory ownership and the approved Identity & Access gr
 
 ## Freeze decision
 
-**PASS.** Phase 3 is integrated and frozen locally by merge commit `f83211062abbd444be8b830790df689cc0729237`. Phase 4 may proceed under its separately approved gates.
+**PASS.** Phase 3 is integrated and frozen locally by merge commit `ede8c470c3c5966ada350ad0df4020f2f0505afc`. Phase 4 may proceed under its separately approved gates.
 
 No external healthcare system was mutated. No public FHIR or DHIS2 server was written to. No remote Git operation, issue, pull request, release, package publication, or container publication occurred. No external credentials or real patient data were used.

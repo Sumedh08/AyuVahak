@@ -1,8 +1,8 @@
 # Phase 4 Implementation Review — Capacity and Operational Readiness
 
-**Result:** PASS; Phase 4 is ready to freeze locally.  
-**Branch:** `phase4-capacity-readiness`  
-**Design base:** Phase 3 local freeze `f83211062abbd444be8b830790df689cc0729237`  
+**Result:** PASS; Phase 4 is ready to freeze locally.
+**Branch:** `phase4-capacity-readiness`
+**Design base:** Phase 3 local freeze `ede8c470c3c5966ada350ad0df4020f2f0505afc`
 **Architecture contract:** [Phase 4 specification](../specs/phase-4-capacity-readiness-spec.md) and [Capacity/readiness policy](../architecture/capacity-readiness-policy-v1.md).
 
 ## Work delivered

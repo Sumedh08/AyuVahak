@@ -1,7 +1,8 @@
 # Java and Maven build output
 **/target/
 
-# Local tooling and editor state
+# Local planning/scratch, tooling and editor state
+/.scratch/
 .scratch/tools/
 .idea/
 .vscode/

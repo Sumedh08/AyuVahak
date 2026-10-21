@@ -5,11 +5,11 @@
 
 ## Frozen phase baselines
 
-- Volume IV design freeze: `15cfcec`.
-- Phase 11 authorization baseline: `bbeb4c3d430ed02e6253490abed811de16b91404`.
-- Phase 11 implementation freeze: `5a729d1787f50ab83175266c0619cd905f1c3b43`.
-- Phase 11 verification follow-up: `c6a4b9ca29e503bacbfbbf65d0b480b0be79a05f`.
-- Phase 12 implementation freeze: `82668b7e3262e9783e6ab58cb8037a1dc77e8e06`.
+- Volume IV design freeze: `25b4c63`.
+- Phase 11 authorization baseline: `b9d33737077e6f40a334608824246214d80654fc`.
+- Phase 11 implementation freeze: `b19a8ddf98465c5d9ce0e0ebf525354c955f4b15`.
+- Phase 11 verification follow-up: `c72c9fb9dce4283d40a210c66279363fc3d7bfc1`.
+- Phase 12 implementation freeze: `2835c3455c5a0e0fe4258da64df355e2f8e7da45`.
 
 Phase 11's accepted follow-up is part of the baseline. Its local acceptance record documents outbox-backed notification projection, bounded SSE, revocation, local peer trust, owner-local federation, remote Capacity freshness, reservation recovery, and no shared business database. Phase 12 consumes bounded Referral and Transfer reporting contracts, computes versioned aggregates, gates all outbound disclosure through shared stable lineages, and uses Phase 9 for DHIS2 and aggregate-peer exchange.
 

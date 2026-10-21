@@ -2,7 +2,7 @@
 
 **Review date:** 2026-10-08
 **Scope:** Volume I Phase 2 platform kernel, identity, and trust, compared with the frozen Phase 0/1 architecture and `docs/specs/phase-2-platform-kernel-spec.md`.
-**Review baseline:** Phase 1 freeze `770eb2390aac0aa131d79063354dd7e8331c81b9`; implementation through `e9388b05` plus the working-tree audit remediation.
+**Review baseline:** Phase 1 freeze `d6aee6e9816df0cb76312e2d9df4be890aaaf0f4`; implementation through `fc6bca71` plus the working-tree audit remediation.
 
 ## Review result
 

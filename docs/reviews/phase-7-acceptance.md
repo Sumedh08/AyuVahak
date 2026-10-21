@@ -55,6 +55,6 @@ With explicit user authorization, two test-only integration fixtures were correc
 
 - No remote Git operation, public healthcare test target, external publication, external mutation, real credential, or patient data was used.
 - No Volume III implementation was created.
-- Phase 7 acceptance and independent re-review **pass**. Final review-fix commit: `f8f4e856e0c304d08f95bd29bde13be8396d2141`.
+- Phase 7 acceptance and independent re-review **pass**. Final review-fix commit: `1ed104a6364ccc455876b839c99846cae1a34b24`.
 
 See the local [P7-08 integrated acceptance ticket](../../.scratch/phase-7-transfer-coordination/issues/08-integrated-acceptance.md) and [Phase 7 specification](../specs/phase-7-transfer-coordination-spec.md) for the approved gate and complete test contract.

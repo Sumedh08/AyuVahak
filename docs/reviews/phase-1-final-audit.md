@@ -4,9 +4,9 @@
 
 **Audited branch:** `phase-1/engineering-platform`
 
-**Phase 0 base:** `eecf1215c7a69b479ad51d1c76fe06f74a0fc038`
+**Phase 0 base:** `f622578dc278da268e301be033e2e9054b62c3c1`
 
-**Final Phase 1 freeze commit:** `0e8fae5f479f06722ad7df62d0371447e3191f08`
+**Final Phase 1 freeze commit:** `d70be7e16af1d58ec04d9bed54cac522893a0ebc`
 
 **Verdict:** PASS
 
@@ -78,4 +78,4 @@ No Phase 1 code or architecture fix was required during this audit. There are no
 
 **PASS — Phase 1 is frozen.** The verified platform remains within the Phase 1 engineering-substrate scope, the complete local verification and Compose smoke path passed, and no BLOCKER or MAJOR finding remains.
 
-The Phase 1 freeze commit is `0e8fae5f479f06722ad7df62d0371447e3191f08`. This audit record was committed first and its hash recorded in the follow-up documentation-only local commit to avoid a self-referential commit hash.
+The Phase 1 freeze commit is `d70be7e16af1d58ec04d9bed54cac522893a0ebc`. This audit record was committed first and its hash recorded in the follow-up documentation-only local commit to avoid a self-referential commit hash.

@@ -2,7 +2,7 @@
 
 **Review date:** 2026-10-08  
 **Reviewed branch:** phase-1/engineering-platform  
-**Phase 0 baseline:** eecf1215c7a69b479ad51d1c76fe06f74a0fc038  
+**Phase 0 baseline:** f622578dc278da268e301be033e2e9054b62c3c1
 **Current review status:** Integrated acceptance passed; the two-axis code review is complete, and all identified findings are resolved.
 
 ## Delivered scope

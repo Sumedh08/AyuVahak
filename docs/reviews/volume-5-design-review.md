@@ -47,7 +47,7 @@ The challenge used root `AGENTS.md`, product boundaries, constitution, frozen Vo
 
 ## Independent review
 
-Two independent review passes covered the proposed Volume V changes from the authorization baseline `1223ecc9e3c89f57c8147efd8c8613fbef9a5cc2` through the specification/research draft, followed by targeted review of the remediation. Reviewers did not edit files, run tests, access external systems or create commits.
+Two independent review passes covered the proposed Volume V changes from the authorization baseline `c911de53178dcc56f61e28bb379e81833d8311f0` through the specification/research draft, followed by targeted review of the remediation. Reviewers did not edit files, run tests, access external systems or create commits.
 
 | Finding | Classification | Resolution | Status |
 |---|---|---|---|

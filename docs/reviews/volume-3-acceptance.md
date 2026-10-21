@@ -9,13 +9,13 @@ This record consolidates the phase acceptance evidence and the final cross-volum
 | Scope | Result | Freeze |
 | --- | --- | --- |
 | Volume I, Phases 0–2 | COMPLETE + FROZEN | Existing Volume I records |
-| Volume II, Phases 3–7 | COMPLETE + FROZEN | `2a8c7fcaab60f7ca5d781ac81d838262da99894e` |
-| Volume III design | FROZEN | `817f6afbfd9e0f32c09cc4506b425049848bee28` |
-| Phase 8, Healthcare Standards & Interoperability | PASS + FROZEN | `8daa691de8d481a3e7af7181a7281b3e8e0b5ea0` |
-| Phase 9, Secure External Health-System Exchange | PASS + FROZEN | `58c6758632e7468e5e632e05457f6c9e318ba3b9` |
-| Phase 10, Emergency Transport Coordination | PASS + FROZEN | `ddab38b1268266df22924a7680fa717415f0235d` |
+| Volume II, Phases 3–7 | COMPLETE + FROZEN | `a33b097ae793a599b27e3d53cad4a1b534bdf395` |
+| Volume III design | FROZEN | `d69a7834f6f455e224a4d26b1b29e34da7c77993` |
+| Phase 8, Healthcare Standards & Interoperability | PASS + FROZEN | `5231cbb0fc54d7c35dc4454b50764bfea8d3770a` |
+| Phase 9, Secure External Health-System Exchange | PASS + FROZEN | `4eb9aa30f068b9429431b9ba54dea674e26799b1` |
+| Phase 10, Emergency Transport Coordination | PASS + FROZEN | `a16685db44cee99d02ed9d6642f6f415c1150f42` |
 
-Phase-specific test, implementation, review, and safety details are in [Phase 8 acceptance](phase-8-acceptance.md), [Phase 9 acceptance](phase-9-acceptance.md), and [Phase 10 acceptance](phase-10-acceptance.md). The final Phase 10 revalidation correction is commit `2f157d140d1cd968b49b00acbb02a2f9a1210477`; the Phase 10 freeze acceptance commit is listed above.
+Phase-specific test, implementation, review, and safety details are in [Phase 8 acceptance](phase-8-acceptance.md), [Phase 9 acceptance](phase-9-acceptance.md), and [Phase 10 acceptance](phase-10-acceptance.md). The final Phase 10 revalidation correction is commit `b705448694b4762ec346bc996bb730f24006c89f`; the Phase 10 freeze acceptance commit is listed above.
 
 ## Integrated verification
 

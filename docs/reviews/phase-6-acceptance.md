@@ -39,4 +39,4 @@
 - Remote Git operation, external publication, public healthcare test target, PHI/PII, or real credential use: **none**.
 - Phase 7: **not started**; authorized to begin after this Phase 6 freeze.
 
-**Phase 6 freeze commit:** `124be795cedf25f275f4cf7c63885e0c3e58d0c1`. This hash is recorded in a subsequent documentation-only commit to avoid a self-referential reference.
+**Phase 6 freeze commit:** `f0d92474c67d07dd969b817f429a75b6845c545f`. This hash is recorded in a subsequent documentation-only commit to avoid a self-referential reference.
