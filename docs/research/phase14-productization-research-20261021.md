@@ -1,7 +1,7 @@
 # Phase 14 Productization Research
 
-**Retrieved:** 2026-10-21 (UTC)  
-**Scope:** Frontend/runtime choices, browser testing, accessibility, Spring Boot static-asset serving, and bounded HTTP/SSRF controls for the authorized productization addendum.  
+**Retrieved:** 2026-10-21 (UTC)
+**Scope:** Frontend/runtime choices, browser testing, accessibility, Spring Boot static-asset serving, and bounded HTTP/SSRF controls for the authorized productization addendum.
 **Method:** Read-only review of project/vendor documentation, standards, release pages, and package metadata. No service was mutated, no healthcare endpoint was contacted, and no real model provider was used.
 
 ## Findings at a glance
