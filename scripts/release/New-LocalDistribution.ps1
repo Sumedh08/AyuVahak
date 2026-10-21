@@ -27,7 +27,11 @@ if (-not (Test-Path -LiteralPath (Join-Path $repositoryRoot "infra\keycloak\demo
   throw "The versioned Demo identity manifest is missing."
 }
 
-$outputPath = [System.IO.Path]::GetFullPath((Join-Path $repositoryRoot $OutputDirectory))
+$outputPath = if ([System.IO.Path]::IsPathRooted($OutputDirectory)) {
+  [System.IO.Path]::GetFullPath($OutputDirectory)
+} else {
+  [System.IO.Path]::GetFullPath((Join-Path $repositoryRoot $OutputDirectory))
+}
 New-Item -ItemType Directory -Path $outputPath -Force | Out-Null
 $stagingRoot = Join-Path $outputPath ".staging"
 New-Item -ItemType Directory -Path $stagingRoot -Force | Out-Null
