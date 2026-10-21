@@ -46,6 +46,7 @@ final class Phase13MixedWorkloadBenchmark {
   static final int MEASURED_CYCLES = 5;
   static final int CONCURRENCY = 4;
   static final int OPERATIONS_PER_CYCLE = 20;
+  static final int ACTIVE_SSE_CONNECTIONS_PER_PROFILE = 2;
   static final int MAX_POOL_SIZE_PER_REPLICA = 10;
   private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(12);
   private static final ObjectMapper JSON = new ObjectMapper();
@@ -508,6 +509,13 @@ final class Phase13MixedWorkloadBenchmark {
 
   static void replaySse(Replica replica, String token, String scopeHeaders, String cursor)
       throws Exception {
+    try (var ignored = openSseConnection(replica, token, scopeHeaders, cursor)) {
+      // Opening the stream and receiving one authorized hint is the replay operation.
+    }
+  }
+
+  static SseConnection openSseConnection(
+      Replica replica, String token, String scopeHeaders, String cursor) throws Exception {
     HttpRequest.Builder request =
         HttpRequest.newBuilder(
                 URI.create(
@@ -562,10 +570,13 @@ final class Phase13MixedWorkloadBenchmark {
                     eventText.append(new String(bytes, StandardCharsets.UTF_8));
                   }
                   String normalized = eventText.toString().replace("\r\n", "\n");
-                  if (normalized.contains("\n\n")) {
-                    firstEvent.complete(normalized);
-                    subscription.get().cancel();
-                    return;
+                  int eventBoundary = normalized.indexOf("\n\n");
+                  if (eventBoundary >= 0) {
+                    String event = normalized.substring(0, eventBoundary + 2);
+                    eventText.setLength(0);
+                    if (event.contains("event:") && event.contains("data:")) {
+                      firstEvent.complete(event);
+                    }
                   }
                 }
                 subscription.get().request(1);
@@ -593,7 +604,22 @@ final class Phase13MixedWorkloadBenchmark {
       throw new AssertionError("SSE replay did not deliver a bounded hint before timeout");
     }
     if (!event.contains("event:") || !event.contains("data:")) {
+      subscription.get().cancel();
       throw new AssertionError("SSE replay did not deliver a typed notification hint");
+    }
+    return new SseConnection(subscription.get());
+  }
+
+  static final class SseConnection implements AutoCloseable {
+    private final java.util.concurrent.Flow.Subscription subscription;
+
+    private SseConnection(java.util.concurrent.Flow.Subscription subscription) {
+      this.subscription = Objects.requireNonNull(subscription);
+    }
+
+    @Override
+    public void close() {
+      subscription.cancel();
     }
   }
 

@@ -5311,6 +5311,9 @@ class DirectoryCapacityReferralScenarioIT {
             Map.entry("notification_events_after_cursor", hints.hints().size()),
             Map.entry("sse_replay_operations_per_profile", 14),
             Map.entry("sse_client_identities_per_profile", 14),
+            Map.entry(
+                "simultaneously_active_sse_connections_per_profile",
+                Phase13MixedWorkloadBenchmark.ACTIVE_SSE_CONNECTIONS_PER_PROFILE),
             Map.entry("federation_peers", 1),
             Map.entry("federation_receiving_operation_replays_per_profile", 7),
             Map.entry("analytics_indicators", 1),
@@ -5373,18 +5376,27 @@ class DirectoryCapacityReferralScenarioIT {
               logDirectory.resolve("profile-a.log"));
       profileA.add(
           new Phase13MixedWorkloadBenchmark.Replica(profileAName, profileAHttp, profileAJmx, app));
-      var resultA =
-          Phase13MixedWorkloadBenchmark.measure(
-              "PROFILE_A_PORTABLE_SINGLE_SITE",
-              profileA,
-              workload,
-              dataSource,
-              revision,
-              dimensions,
-              planFingerprints);
-      assertThat(resultA.failures()).isZero();
-      assertThat(resultA.timeouts()).isZero();
-      assertThat(resultA.measuredOperations()).isEqualTo(100);
+      try (var activeA =
+              Phase13MixedWorkloadBenchmark.openSseConnection(
+                  profileA.getFirst(), notificationTokens.get(0), notificationScopeHeaders,
+                  notificationCursor);
+          var activeB =
+              Phase13MixedWorkloadBenchmark.openSseConnection(
+                  profileA.getFirst(), notificationTokens.get(1), notificationScopeHeaders,
+                  notificationCursor)) {
+        var resultA =
+            Phase13MixedWorkloadBenchmark.measure(
+                "PROFILE_A_PORTABLE_SINGLE_SITE",
+                profileA,
+                workload,
+                dataSource,
+                revision,
+                dimensions,
+                planFingerprints);
+        assertThat(resultA.failures()).isZero();
+        assertThat(resultA.timeouts()).isZero();
+        assertThat(resultA.measuredOperations()).isEqualTo(100);
+      }
     } finally {
       profileA.forEach(replica -> stopBenchmarkProcess(replica.process()));
     }
@@ -5429,18 +5441,27 @@ class DirectoryCapacityReferralScenarioIT {
               replicaBName, replicaBHttp, replicaBJmx, replicaB));
       assertThat(replicaA.pid()).isNotEqualTo(replicaB.pid());
       assertThat(replicaAHttp).isNotEqualTo(replicaBHttp);
-      var resultB =
-          Phase13MixedWorkloadBenchmark.measure(
-              "PROFILE_B_TWO_APPLICATION_REPLICAS",
-              profileB,
-              workload,
-              dataSource,
-              revision,
-              dimensions,
-              planFingerprints);
-      assertThat(resultB.failures()).isZero();
-      assertThat(resultB.timeouts()).isZero();
-      assertThat(resultB.measuredOperations()).isEqualTo(100);
+      try (var activeA =
+              Phase13MixedWorkloadBenchmark.openSseConnection(
+                  profileB.get(0), notificationTokens.get(0), notificationScopeHeaders,
+                  notificationCursor);
+          var activeB =
+              Phase13MixedWorkloadBenchmark.openSseConnection(
+                  profileB.get(1), notificationTokens.get(1), notificationScopeHeaders,
+                  notificationCursor)) {
+        var resultB =
+            Phase13MixedWorkloadBenchmark.measure(
+                "PROFILE_B_TWO_APPLICATION_REPLICAS",
+                profileB,
+                workload,
+                dataSource,
+                revision,
+                dimensions,
+                planFingerprints);
+        assertThat(resultB.failures()).isZero();
+        assertThat(resultB.timeouts()).isZero();
+        assertThat(resultB.measuredOperations()).isEqualTo(100);
+      }
     } finally {
       profileB.forEach(replica -> stopBenchmarkProcess(replica.process()));
     }
