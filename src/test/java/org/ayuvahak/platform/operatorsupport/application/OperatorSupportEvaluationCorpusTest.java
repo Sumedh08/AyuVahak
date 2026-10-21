@@ -6,6 +6,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
 import org.ayuvahak.platform.authorization.application.AuthorizationService;
 import org.ayuvahak.platform.authorization.domain.FunctionalAuthorityCatalog;
 import org.ayuvahak.platform.configuration.OperatorSupportProperties;
@@ -15,7 +17,9 @@ import org.ayuvahak.platform.core.IssuerId;
 import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
 import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
 import org.ayuvahak.platform.operatorsupport.OperatorSupportEvaluationFixture;
+import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestFactory;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -29,8 +33,8 @@ class OperatorSupportEvaluationCorpusTest {
   private static final ActorReference OPERATOR =
       ActorReference.human(new IssuerId("urn:synthetic:operator-support-eval"), "SYN-OPERATOR-01");
 
-  @Test
-  void versionedSyntheticCasesMatchTheSupportContract() throws IOException {
+  @TestFactory
+  Stream<DynamicTest> versionedSyntheticCasesMatchTheSupportContract() throws IOException {
     JsonNode root = OperatorSupportEvaluationFixture.read();
     assertThat(root.get("version").stringValue()).isEqualTo("1.0.0");
     assertThat(root.get("purpose").stringValue())
@@ -45,54 +49,60 @@ class OperatorSupportEvaluationCorpusTest {
     assertThat(cases.isArray()).isTrue();
     assertThat(cases.size()).isEqualTo(8);
 
-    for (JsonNode scenario : cases) {
-      String scenarioId = scenario.get("id").stringValue();
-      String assertion = scenario.get("assertion").stringValue();
-      assertThat(assertion)
-          .as(scenarioId + " executable assertion mapping")
-          .isIn(
-              "EXACT_SOURCE_AND_CITATION_PROVENANCE",
-              "NO_PROVIDER_CALL_AND_EMPTY_ABSTENTION",
-              "FAILURE_DETAILS_REDACTED",
-              "INVALID_OUTPUT_NOT_EXPOSED");
-      OperatorSupportQuestionKey key =
-          OperatorSupportQuestionKey.valueOf(scenario.get("questionKey").stringValue());
-      boolean enabled = scenario.get("enabled").booleanValue();
-      String providerBehavior = scenario.get("providerBehavior").stringValue();
-      String expectedStatus = scenario.get("expectedStatus").stringValue();
-      String expectedReason = scenario.get("expectedReason").stringValue();
-      int expectedInvocations = scenario.get("expectedProviderInvocations").intValue();
-      AtomicInteger invocations = new AtomicInteger();
-      OperatorSupportService service =
-          service(
-              enabled,
-              (question, sources) -> {
-                invocations.incrementAndGet();
-                return providerResponse(providerBehavior, sources);
-              });
+    return StreamSupport.stream(cases.spliterator(), false)
+        .map(
+            scenario ->
+                DynamicTest.dynamicTest(
+                    scenario.get("id").stringValue(), () -> assertScenario(scenario)));
+  }
 
-      OperatorSupportResponse response = service.answer(OPERATOR, CorrelationId.generate(), key);
+  private void assertScenario(JsonNode scenario) {
+    String scenarioId = scenario.get("id").stringValue();
+    String assertion = scenario.get("assertion").stringValue();
+    assertThat(assertion)
+        .as(scenarioId + " executable assertion mapping")
+        .isIn(
+            "EXACT_SOURCE_AND_CITATION_PROVENANCE",
+            "NO_PROVIDER_CALL_AND_EMPTY_ABSTENTION",
+            "FAILURE_DETAILS_REDACTED",
+            "INVALID_OUTPUT_NOT_EXPOSED");
+    OperatorSupportQuestionKey key =
+        OperatorSupportQuestionKey.valueOf(scenario.get("questionKey").stringValue());
+    boolean enabled = scenario.get("enabled").booleanValue();
+    String providerBehavior = scenario.get("providerBehavior").stringValue();
+    String expectedStatus = scenario.get("expectedStatus").stringValue();
+    String expectedReason = scenario.get("expectedReason").stringValue();
+    int expectedInvocations = scenario.get("expectedProviderInvocations").intValue();
+    AtomicInteger invocations = new AtomicInteger();
+    OperatorSupportService service =
+        service(
+            enabled,
+            (question, sources) -> {
+              invocations.incrementAndGet();
+              return providerResponse(providerBehavior, sources);
+            });
 
-      assertThat(response.status().name()).as(scenarioId + " status").isEqualTo(expectedStatus);
-      assertThat(response.reasonCode().name()).as(scenarioId + " reason").isEqualTo(expectedReason);
-      assertThat(invocations.get())
-          .as(scenarioId + " provider invocation count")
-          .isEqualTo(expectedInvocations);
-      assertEvidence(assertion, response, key, invocations.get());
-      if (response.status() == OperatorSupportResponse.Status.ADVISORY) {
-        assertThat(response.sources()).as(scenarioId + " citations").isNotEmpty();
-        assertThat(response.corpusVersion())
-            .as(scenarioId + " corpus provenance")
-            .isEqualTo(OperatorSupportCorpus.APPROVED_VERSION);
-        if ("SUPPORTED_SOURCE_BACKED_ANSWER".equals(scenarioId)) {
-          assertThat(response.answer())
-              .as(scenarioId + " source support")
-              .isEqualTo(OperatorSupportCorpus.approved().sourcesFor(key).getFirst().excerpt());
-        }
-      } else {
-        assertThat(response.answer()).as(scenarioId + " abstention answer").isEmpty();
-        assertThat(response.sources()).as(scenarioId + " abstention citations").isEmpty();
+    OperatorSupportResponse response = service.answer(OPERATOR, CorrelationId.generate(), key);
+
+    assertThat(response.status().name()).as(scenarioId + " status").isEqualTo(expectedStatus);
+    assertThat(response.reasonCode().name()).as(scenarioId + " reason").isEqualTo(expectedReason);
+    assertThat(invocations.get())
+        .as(scenarioId + " provider invocation count")
+        .isEqualTo(expectedInvocations);
+    assertEvidence(assertion, response, key, invocations.get());
+    if (response.status() == OperatorSupportResponse.Status.ADVISORY) {
+      assertThat(response.sources()).as(scenarioId + " citations").isNotEmpty();
+      assertThat(response.corpusVersion())
+          .as(scenarioId + " corpus provenance")
+          .isEqualTo(OperatorSupportCorpus.APPROVED_VERSION);
+      if ("SUPPORTED_SOURCE_BACKED_ANSWER".equals(scenarioId)) {
+        assertThat(response.answer())
+            .as(scenarioId + " source support")
+            .isEqualTo(OperatorSupportCorpus.approved().sourcesFor(key).getFirst().excerpt());
       }
+    } else {
+      assertThat(response.answer()).as(scenarioId + " abstention answer").isEmpty();
+      assertThat(response.sources()).as(scenarioId + " abstention citations").isEmpty();
     }
   }
 
