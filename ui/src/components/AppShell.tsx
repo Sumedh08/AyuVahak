@@ -18,7 +18,7 @@ export const WORKSPACES: readonly WorkspaceDefinition[] = [
   {
     href: "/capacity",
     label: "Capacity",
-    authorities: ["CapacityReporting", "CapacityEvidenceReview", "CapacityReservation"],
+    authorities: ["CapacityEvidenceReview"],
     scopeKinds: ["FACILITY"],
   },
   {
@@ -225,17 +225,33 @@ export function AppShell({ session, currentPath, onSignOut, onNavigate, children
             </div>
             <span className="scope-badge">Access projection loaded</span>
           </div>
-          {children ??
+          {activeWorkspace && !canAccessActiveWorkspace ? (
+            <section className="message-card" role="status">
+              <h2>Workspace access is not listed for this session</h2>
+              <p>
+                This presentation check does not grant access. AyuVahak APIs enforce the current
+                grants and scopes for every request.
+              </p>
+              <a
+                className="button button-primary"
+                href="/"
+                onClick={(event) => handleInternalNavigation(onNavigate, event)}
+              >
+                Return to overview
+              </a>
+            </section>
+          ) : (
+            (children ??
             (currentPath === "/" ? (
               <section className="welcome-card" aria-labelledby="welcome-title">
                 <div className="welcome-icon" aria-hidden="true">
                   ↗
                 </div>
                 <p className="eyebrow">COORDINATION OVERVIEW</p>
-                <h2 id="welcome-title">Your access is ready</h2>
+                <h2 id="welcome-title">Operational summary not loaded</h2>
                 <p>
-                  Choose an available workspace to continue. AyuVahak will show coordination facts
-                  only when an authorized owner API is available.
+                  This overview does not load operational records. Choose an authorized workspace to
+                  request information from its owning AyuVahak service.
                 </p>
                 <div className="principle-row">
                   <span className="principle-check" aria-hidden="true">
@@ -249,21 +265,6 @@ export function AppShell({ session, currentPath, onSignOut, onNavigate, children
                   </span>
                   <span>Unknown and stale information is never treated as zero.</span>
                 </div>
-              </section>
-            ) : activeWorkspace && !canAccessActiveWorkspace ? (
-              <section className="message-card" role="status">
-                <h2>Workspace access is not listed for this session</h2>
-                <p>
-                  This presentation check does not grant access. AyuVahak APIs enforce the current
-                  grants and scopes for every request.
-                </p>
-                <a
-                  className="button button-primary"
-                  href="/"
-                  onClick={(event) => handleInternalNavigation(onNavigate, event)}
-                >
-                  Return to overview
-                </a>
               </section>
             ) : activeWorkspace ? (
               <section className="message-card">
@@ -285,7 +286,8 @@ export function AppShell({ session, currentPath, onSignOut, onNavigate, children
                   Return to overview
                 </a>
               </section>
-            ))}
+            )))
+          )}
         </main>
       </div>
     </div>

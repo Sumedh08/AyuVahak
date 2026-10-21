@@ -20,6 +20,7 @@ export type OidcConfigurationResult =
 export interface AuthClient {
   readonly configurationStatus: "configured" | "missing" | "invalid";
   initialize(): Promise<string | null>;
+  getAccessToken(): Promise<string | null>;
   signIn(): Promise<void>;
   clear(): Promise<void>;
 }
@@ -87,6 +88,9 @@ export function createOidcAuthClient(
       async initialize() {
         return null;
       },
+      async getAccessToken() {
+        return null;
+      },
       async signIn() {
         throw new Error("Identity provider configuration is unavailable.");
       },
@@ -99,6 +103,9 @@ export function createOidcAuthClient(
     return {
       configurationStatus: "invalid",
       async initialize() {
+        return null;
+      },
+      async getAccessToken() {
         return null;
       },
       async signIn() {
@@ -134,6 +141,9 @@ export function createOidcAuthClient(
   return {
     configurationStatus: "configured",
     initialize,
+    async getAccessToken() {
+      return usableAccessToken(await manager.getUser());
+    },
     async signIn() {
       await manager.signinRedirect();
     },

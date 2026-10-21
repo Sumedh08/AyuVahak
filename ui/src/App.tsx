@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { createOwnerApiClient, type OwnerApiClient } from "./api/owner";
 import {
   createSessionClient,
   SessionApiError,
@@ -7,6 +8,8 @@ import {
 } from "./api/session";
 import type { AuthClient } from "./auth/oidc";
 import { AppShell } from "./components/AppShell";
+import { CapacityWorkspace } from "./workspaces/CapacityWorkspace";
+import { DirectoryWorkspace } from "./workspaces/DirectoryWorkspace";
 
 const defaultSessionClient = createSessionClient();
 
@@ -23,11 +26,21 @@ type ViewState =
 export interface AppProps {
   readonly authClient: AuthClient;
   readonly sessionClient?: SessionClient;
+  readonly ownerApiClient?: OwnerApiClient;
 }
 
-export function App({ authClient, sessionClient = defaultSessionClient }: AppProps) {
+export function App({
+  authClient,
+  sessionClient = defaultSessionClient,
+  ownerApiClient,
+}: AppProps) {
   const [view, setView] = useState<ViewState>({ status: "loading" });
   const [currentPath, setCurrentPath] = useState(() => window.location.pathname);
+  const getAccessToken = useCallback(() => authClient.getAccessToken(), [authClient]);
+  const ownerClient = useMemo(
+    () => ownerApiClient ?? createOwnerApiClient(getAccessToken),
+    [getAccessToken, ownerApiClient],
+  );
 
   useEffect(() => {
     const onPopState = () => setCurrentPath(window.location.pathname);
@@ -181,15 +194,32 @@ export function App({ authClient, sessionClient = defaultSessionClient }: AppPro
           </p>
         </AuthGate>
       );
-    case "authenticated":
+    case "authenticated": {
+      const workspace =
+        currentPath === "/directory" || currentPath.startsWith("/directory/") ? (
+          <DirectoryWorkspace
+            session={view.session}
+            getAccessToken={getAccessToken}
+            apiClient={ownerClient}
+          />
+        ) : currentPath === "/capacity" || currentPath.startsWith("/capacity/") ? (
+          <CapacityWorkspace
+            session={view.session}
+            getAccessToken={getAccessToken}
+            apiClient={ownerClient}
+          />
+        ) : undefined;
       return (
         <AppShell
           session={view.session}
           currentPath={currentPath}
           onSignOut={() => void signOut()}
           onNavigate={navigate}
-        />
+        >
+          {workspace}
+        </AppShell>
       );
+    }
     default: {
       const exhaustive: never = view;
       return exhaustive;

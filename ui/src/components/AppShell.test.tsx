@@ -17,27 +17,27 @@ const session: SessionProjection = {
         {
           kind: "ORGANIZATION",
           organization: {
-            issuer: "urn:synthetic:directory",
-            identifierType: "organization",
-            identifier: "SYN-ORG-001",
+            issuer: "urn:ayuvahak:directory",
+            identifierType: "Organization",
+            identifier: "6d383f64-9f14-4cf6-a8a1-3e119e8fc882",
           },
         },
       ],
     },
     {
-      authorityCode: "CapacityReporting",
+      authorityCode: "CapacityEvidenceReview",
       scopes: [
         {
           kind: "FACILITY",
           organization: {
-            issuer: "urn:synthetic:directory",
-            identifierType: "organization",
-            identifier: "SYN-ORG-001",
+            issuer: "urn:ayuvahak:directory",
+            identifierType: "Organization",
+            identifier: "6d383f64-9f14-4cf6-a8a1-3e119e8fc882",
           },
           facility: {
-            issuer: "urn:synthetic:directory",
-            identifierType: "facility",
-            identifier: "SYN-FACILITY-A",
+            issuer: "urn:ayuvahak:directory",
+            identifierType: "Facility",
+            identifier: "9eb1d3e6-86c4-45aa-b6bb-e15596ee05ec",
           },
         },
       ],

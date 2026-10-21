@@ -18,6 +18,7 @@ function authClient(token: string | null): AuthClient {
   return {
     configurationStatus: "configured",
     initialize: vi.fn().mockResolvedValue(token),
+    getAccessToken: vi.fn().mockResolvedValue(token),
     signIn: vi.fn().mockResolvedValue(undefined),
     clear: vi.fn().mockResolvedValue(undefined),
   };
