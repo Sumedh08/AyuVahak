@@ -2,9 +2,12 @@ package org.ayuvahak.platform.authorization.configuration;
 
 import java.util.ArrayList;
 import java.util.List;
+import org.ayuvahak.platform.authorization.adapter.persistence.JdbcSubjectCapabilityLookup;
 import org.ayuvahak.platform.authorization.adapter.persistence.JdbcAuthorizationGrantLookup;
 import org.ayuvahak.platform.authorization.application.AuthorizationGrantLookup;
 import org.ayuvahak.platform.authorization.application.AuthorizationService;
+import org.ayuvahak.platform.authorization.application.SubjectCapabilityLookup;
+import org.ayuvahak.platform.authorization.application.SubjectCapabilityQuery;
 import org.ayuvahak.platform.authorization.domain.FunctionalAuthorityCatalog;
 import org.ayuvahak.platform.authorization.domain.PhaseTwoAuthorities;
 import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
@@ -59,5 +62,18 @@ public class AuthorizationConfiguration {
   AuthorizationService authorizationService(
       AuthorizationGrantLookup grantLookup, FunctionalAuthorityCatalog authorities) {
     return new AuthorizationService(grantLookup, authorities);
+  }
+
+  @Bean
+  @Lazy
+  SubjectCapabilityLookup subjectCapabilityLookup(JdbcTemplate jdbcTemplate) {
+    return new JdbcSubjectCapabilityLookup(jdbcTemplate);
+  }
+
+  @Bean
+  @Lazy
+  SubjectCapabilityQuery subjectCapabilityQuery(
+      SubjectCapabilityLookup lookup, FunctionalAuthorityCatalog authorities) {
+    return new SubjectCapabilityQuery(lookup, authorities);
   }
 }

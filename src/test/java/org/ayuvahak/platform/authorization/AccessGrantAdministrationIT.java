@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -662,6 +663,108 @@ class AccessGrantAdministrationIT {
                 .content(directoryGrantBody("synthetic-reader-02", "DirectoryRead")))
         .andExpect(status().isForbidden())
         .andExpect(jsonPath("$.code").value("AUTHORIZATION_DENIED"));
+  }
+
+  @Test
+  void currentSessionShowsOnlyAuthenticatedSubjectsRegisteredActiveCapabilitiesAndScopes()
+      throws Exception {
+    bootstrapService.provisionFirstGrant(bootstrapProperties(), "synthetic-host");
+    String subject = "synthetic-session-coordinator-01";
+
+    var organizationGrant =
+        mockMvc
+            .perform(
+                post("/api/v1/platform/access-grants")
+                    .header("Authorization", bearer(token(ADMIN_SUBJECT, Map.of())))
+                    .header(PlatformAccessGrantController.EXECUTION_SCOPE_HEADER, EXECUTION_SCOPE)
+                    .header("Idempotency-Key", "session-organization-grant-01")
+                    .contentType("application/json")
+                    .content(directoryGrantBody(subject, "DirectoryRead")))
+            .andExpect(status().isCreated())
+            .andReturn();
+    String organizationGrantId =
+        com.jayway.jsonpath.JsonPath.read(
+            organizationGrant.getResponse().getContentAsString(), "$.grantId");
+
+    String facilityGrantBody =
+        "{\"principal\":{\"kind\":\"HUMAN\",\"issuer\":\""
+            + ISSUER
+            + "\",\"subject\":\""
+            + subject
+            + "\"},\"authority\":\"DirectoryCuration\",\"scope\":{\"kind\":\"FACILITY\","
+            + "\"organization\":{\"issuer\":\"urn:ayuvahak:directory\","
+            + "\"identifier\":\"org-17\"},\"facility\":{"
+            + "\"issuer\":\"urn:ayuvahak:directory\",\"identifier\":\"facility-23\"}},"
+            + "\"reasonCode\":\"ACCESS_SETUP\"}";
+    mockMvc
+        .perform(
+            post("/api/v1/platform/access-grants")
+                .header("Authorization", bearer(token(ADMIN_SUBJECT, Map.of())))
+                .header(PlatformAccessGrantController.EXECUTION_SCOPE_HEADER, EXECUTION_SCOPE)
+                .header("Idempotency-Key", "session-facility-grant-01")
+                .contentType("application/json")
+                .content(facilityGrantBody))
+        .andExpect(status().isCreated());
+
+    var currentSession =
+        mockMvc
+            .perform(
+                get("/api/v1/session")
+                    .header(
+                        "Authorization",
+                        bearer(token(subject, Map.of("roles", java.util.List.of("admin"))))))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.subject.kind").value("HUMAN"))
+            .andExpect(jsonPath("$.subject.issuer").value(ISSUER))
+            .andExpect(jsonPath("$.subject.identifierType").value("subject"))
+            .andExpect(jsonPath("$.subject.identifier").value(subject))
+            .andExpect(header().string("Cache-Control", "no-store"))
+            .andExpect(jsonPath("$.capabilities.length()").value(2))
+            .andExpect(jsonPath("$.capabilities[0].authorityCode").value("DirectoryCuration"))
+            .andExpect(jsonPath("$.capabilities[0].scopes.length()").value(1))
+            .andExpect(jsonPath("$.capabilities[0].scopes[0].kind").value("FACILITY"))
+            .andExpect(
+                jsonPath("$.capabilities[0].scopes[0].organization.identifier")
+                    .value("org-17"))
+            .andExpect(
+                jsonPath("$.capabilities[0].scopes[0].facility.identifier")
+                    .value("facility-23"))
+            .andExpect(jsonPath("$.capabilities[1].authorityCode").value("DirectoryRead"))
+            .andExpect(jsonPath("$.capabilities[1].scopes.length()").value(1))
+            .andExpect(jsonPath("$.capabilities[1].scopes[0].kind").value("ORGANIZATION"))
+            .andExpect(
+                jsonPath("$.capabilities[1].scopes[0].organization.identifier")
+                    .value("org-17"))
+            .andReturn();
+    assertThat(currentSession.getResponse().getContentAsString())
+        .doesNotContain(organizationGrantId)
+        .doesNotContain("AccessGrantAdministration")
+        .doesNotContain("grantId")
+        .doesNotContain("grantStatus");
+
+    mockMvc
+        .perform(
+            delete("/api/v1/platform/access-grants/" + organizationGrantId)
+                .header("Authorization", bearer(token(ADMIN_SUBJECT, Map.of())))
+                .header(PlatformAccessGrantController.EXECUTION_SCOPE_HEADER, EXECUTION_SCOPE)
+                .header("Idempotency-Key", "session-organization-revoke-01")
+                .contentType("application/json")
+                .content("{\"reasonCode\":\"ACCESS_REMOVAL\"}"))
+        .andExpect(status().isNoContent());
+
+    mockMvc
+        .perform(
+            get("/api/v1/session")
+                .header("Authorization", bearer(token(subject, Map.of()))))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.capabilities.length()").value(1))
+        .andExpect(jsonPath("$.capabilities[0].authorityCode").value("DirectoryCuration"))
+        .andExpect(jsonPath("$.capabilities[0].scopes[0].kind").value("FACILITY"));
+
+    mockMvc
+        .perform(get("/api/v1/session"))
+        .andExpect(status().isUnauthorized())
+        .andExpect(jsonPath("$.code").value("AUTHENTICATION_REQUIRED"));
   }
 
   private String directoryGrantBody(String subject, String authority) {
