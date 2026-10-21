@@ -83,6 +83,26 @@ class ReferralIpsPatientContextMapperTest {
   }
 
   @Test
+  void reportsValidationDeadlineAsUnavailableWithoutReclassifyingPayloadAsInvalid() {
+    FhirR4PayloadParser deadlineParser =
+        FhirR4PayloadParser.withCoreProfiles(
+            new FhirPayloadLimits(4 * 1024 * 1024, 64, 250, 1000, Duration.ofNanos(1)));
+    ReferralIpsPatientContextMapper deadlineMapper =
+        new ReferralIpsPatientContextMapper(deadlineParser);
+
+    PatientContextSourceDocument result =
+        deadlineMapper.map(
+            bytes(ipsBundle(PATIENT_IDENTIFIER_SYSTEM, PATIENT_IDENTIFIER)),
+            "application/fhir+json",
+            patientReference(PATIENT_IDENTIFIER_SYSTEM, PATIENT_IDENTIFIER),
+            Set.of(PatientContextCategory.PROBLEMS),
+            sourceEvidence());
+
+    assertThat(result.status()).isEqualTo(PatientContextSourceDocument.Status.UNAVAILABLE);
+    assertThat(result.sections()).isEmpty();
+  }
+
+  @Test
   void syntheticIpsBundleAndItsNestedProfilesPassTheirPinnedProfiles() {
     FhirR4PayloadParser parser = FhirR4PayloadParser.withCoreProfiles(TEST_PAYLOAD_LIMITS);
     Bundle bundle =

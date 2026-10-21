@@ -290,7 +290,7 @@ class FhirR4PayloadParserTest {
   }
 
   @Test
-  void mapsQueuedValidationTimeoutToALimitFailureAndRemovesCancelledWork() throws Exception {
+  void mapsQueuedValidationTimeoutToATransientFailureAndRemovesCancelledWork() throws Exception {
     try (BoundedFhirValidationExecutor validationExecutor = new BoundedFhirValidationExecutor(1)) {
       FhirR4PayloadParser parser =
           new FhirR4PayloadParser(
@@ -316,7 +316,7 @@ class FhirR4PayloadParserTest {
         assertThatThrownBy(() -> parser.parse(payload, "application/fhir+json", PATIENT_CONTEXT))
             .isInstanceOf(FhirBoundaryException.class)
             .extracting(exception -> ((FhirBoundaryException) exception).failure())
-            .isEqualTo(FhirBoundaryFailure.LIMIT_EXCEEDED);
+            .isEqualTo(FhirBoundaryFailure.VALIDATION_TIMED_OUT);
         assertThat(validationExecutor.activeTaskCount()).isLessThanOrEqualTo(1);
         assertThat(validationExecutor.queuedTaskCount()).isZero();
       } finally {
@@ -509,7 +509,7 @@ class FhirR4PayloadParserTest {
                     PATIENT_CONTEXT))
         .isInstanceOf(FhirBoundaryException.class)
         .extracting(exception -> ((FhirBoundaryException) exception).failure())
-        .isEqualTo(FhirBoundaryFailure.LIMIT_EXCEEDED);
+        .isEqualTo(FhirBoundaryFailure.VALIDATION_TIMED_OUT);
   }
 
   @Test

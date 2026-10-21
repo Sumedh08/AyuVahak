@@ -123,6 +123,7 @@ final class ReferralIpsPatientContextMapper {
     } catch (FhirBoundaryException invalidPayload) {
       PatientContextSourceDocument.Status status =
           invalidPayload.failure() == FhirBoundaryFailure.VALIDATION_OVERLOADED
+                  || invalidPayload.failure() == FhirBoundaryFailure.VALIDATION_TIMED_OUT
               ? PatientContextSourceDocument.Status.UNAVAILABLE
               : PatientContextSourceDocument.Status.INVALID;
       return document(status, expectedPatient, List.of(), evidence);

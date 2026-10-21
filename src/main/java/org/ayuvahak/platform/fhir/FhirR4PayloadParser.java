@@ -192,12 +192,12 @@ public final class FhirR4PayloadParser {
           validationExecutor.execute(
               () -> parseAndValidate(json, profileContext), remainingProcessingTime(startedAt));
     } catch (TimeoutException exception) {
-      throw new FhirBoundaryException(FhirBoundaryFailure.LIMIT_EXCEEDED);
+      throw new FhirBoundaryException(FhirBoundaryFailure.VALIDATION_TIMED_OUT);
     } catch (RejectedExecutionException exception) {
       throw new FhirBoundaryException(FhirBoundaryFailure.VALIDATION_OVERLOADED);
     } catch (InterruptedException exception) {
       Thread.currentThread().interrupt();
-      throw new FhirBoundaryException(FhirBoundaryFailure.LIMIT_EXCEEDED);
+      throw new FhirBoundaryException(FhirBoundaryFailure.VALIDATION_TIMED_OUT);
     } catch (ExecutionException exception) {
       if (exception.getCause() instanceof FhirBoundaryException boundaryException) {
         throw boundaryException;
@@ -443,14 +443,14 @@ public final class FhirR4PayloadParser {
 
   private void enforceProcessingBudget(long startedAt) {
     if (System.nanoTime() - startedAt > limits.maxProcessingTime().toNanos()) {
-      throw new FhirBoundaryException(FhirBoundaryFailure.LIMIT_EXCEEDED);
+      throw new FhirBoundaryException(FhirBoundaryFailure.VALIDATION_TIMED_OUT);
     }
   }
 
   private Duration remainingProcessingTime(long startedAt) {
     long remainingNanos = limits.maxProcessingTime().toNanos() - (System.nanoTime() - startedAt);
     if (remainingNanos <= 0) {
-      throw new FhirBoundaryException(FhirBoundaryFailure.LIMIT_EXCEEDED);
+      throw new FhirBoundaryException(FhirBoundaryFailure.VALIDATION_TIMED_OUT);
     }
     return Duration.ofNanos(remainingNanos);
   }

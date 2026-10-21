@@ -16,6 +16,7 @@ import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.sql.Connection;
+import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
@@ -755,7 +756,8 @@ class TwoApplicationReplicaWorkerAcceptanceIT {
     }
   }
 
-  private static ConfigurableApplicationContext startReplica(String deployment) {
+  private static ConfigurableApplicationContext startReplica(String deployment) throws Exception {
+    awaitHostDatabaseReadiness();
     Map<String, String> properties =
         Map.ofEntries(
             Map.entry("spring.application.name", "ayuvahak-" + deployment.toLowerCase()),
@@ -787,6 +789,28 @@ class TwoApplicationReplicaWorkerAcceptanceIT {
     return new SpringApplicationBuilder(AyuVahakApplication.class, ReplicaTestConfiguration.class)
         .web(WebApplicationType.SERVLET)
         .run(arguments);
+  }
+
+  private static void awaitHostDatabaseReadiness() throws Exception {
+    Instant deadline = Instant.now().plusSeconds(30);
+    SQLException lastConnectionFailure = null;
+    while (Instant.now().isBefore(deadline)) {
+      try (Connection connection =
+              DriverManager.getConnection(
+                  POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword());
+          var statement = connection.createStatement();
+          var result = statement.executeQuery("SELECT 1")) {
+        if (result.next() && result.getInt(1) == 1) {
+          return;
+        }
+      } catch (SQLException notReadyOverHostPort) {
+        lastConnectionFailure = notReadyOverHostPort;
+      }
+      Thread.sleep(250);
+    }
+    throw new IllegalStateException(
+        "Disposable PostgreSQL did not accept a host JDBC query after its container readiness check",
+        lastConnectionFailure);
   }
 
   private static void assertIndependentLocalReplicas(

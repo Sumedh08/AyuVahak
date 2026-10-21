@@ -19,6 +19,7 @@ public final class FhirBoundaryException extends RuntimeException {
       case UNSUPPORTED_FHIR_RELEASE -> "FHIR release is not supported";
       case MALFORMED_JSON -> "FHIR JSON payload is malformed";
       case LIMIT_EXCEEDED -> "FHIR payload exceeds a configured processing limit";
+      case VALIDATION_TIMED_OUT -> "FHIR validation did not complete within the processing budget";
       case VALIDATION_OVERLOADED -> "FHIR validation capacity is temporarily unavailable";
       case UNSUPPORTED_PROFILE -> "FHIR profile is not available in local validation support";
       case PROFILE_VALIDATION_FAILED -> "FHIR payload does not conform to the configured profile";
