@@ -1,21 +1,74 @@
 # AyuVahak
 
-AyuVahak is a care-coordination platform. This repository implements the engineering platform and trust kernel, Care Service Directory, Capacity, Referral, deterministic advisory Matching/recommendations, Transfer Coordination, healthcare interoperability, secure external exchange, and bounded Transport coordination. The [architecture constitution](docs/architecture/constitution.md) defines the product and system boundaries.
+**Care coordination for discovering operational capacity and coordinating referrals and inter-facility transfers.**
 
-New contributors should start with the [contributor guide](docs/development/contributor-guide.md). It covers the local Docker Compose environment, build and test commands, runtime configuration, migrations, architecture checks, observability, and troubleshooting.
+AyuVahak is a healthcare care-coordination platform. It connects existing organizations and facilities through Directory, Capacity, Referral, deterministic Matching, Transfer, Transport, interoperability, federation and aggregate Analytics workflows. It is not an EHR/EMR, HIE replacement, clinical decision system, dispatch authority or patient portal. Patients are beneficiaries, not direct users.
 
-## Architecture and phase specifications
+## Project status
 
-- [Architecture documentation index](docs/architecture/README.md) — navigation for frozen volumes and current design records.
-- [Architecture constitution](docs/architecture/constitution.md) — authoritative product and system boundaries.
-- [Volume II core care coordination](docs/architecture/volume-2-core-care-coordination.md) — frozen Directory, Capacity, Referral, Matching, and Transfer ownership.
-- [Volume III design](docs/architecture/volume-3-interoperability-security-transport.md) — frozen architecture and specifications for Phases 8–10; all three phases are implemented and frozen. See the [Volume III acceptance record](docs/reviews/volume-3-acceptance.md).
-- [Volume IV](docs/architecture/volume-4-resilient-operations-federation-public-health.md) — frozen Phase 11/12 architecture and specifications; both phases are implemented and frozen. Volume IV acceptance records the integrated local verification. See the [Phase 11 acceptance record](docs/reviews/phase-11-acceptance.md), [Phase 12 acceptance record](docs/reviews/phase-12-acceptance.md), [Volume IV acceptance record](docs/reviews/volume-4-acceptance.md), [context contracts](docs/architecture/volume-4-context-contracts.md), [state machines](docs/architecture/volume-4-state-machines.md), [data ownership](docs/architecture/volume-4-data-ownership.md), [privacy matrix](docs/architecture/volume-4-privacy-matrix.md), [threat model](docs/architecture/volume-4-threat-model.md), [design review](docs/reviews/volume-4-design-review.md), and [design question register](docs/reviews/volume-4-open-questions.md).
-- [Volume V design](docs/architecture/volume-5-production-hardening-optimization-intelligence.md) — frozen architecture and specifications for Phase 13 production hardening/DPG readiness and Phase 14 optimization/optional intelligence; implementation has not started and requires separate human authorization. See the [retention governance matrix](docs/architecture/volume-5-retention-governance.md), [production gap analysis](docs/reviews/production-readiness-gap-analysis.md), [DPG gap analysis](docs/reviews/dpg-readiness-gap-analysis.md), [Phase 13 spec](docs/specs/phase-13-production-hardening-dpg-readiness-spec.md), and [Phase 14 spec](docs/specs/phase-14-optimization-intelligence-spec.md).
-- [Phase 11 specification](docs/specs/phase-11-real-time-resilience-federation-spec.md)
-- [Phase 12 specification](docs/specs/phase-12-public-health-analytics-dhis2-spec.md)
-- [Volume IV technical research](docs/research/volume-4-technical-research.md) and [ADRs 0026–0029](docs/adr/README.md)
-- [Phase 8 specification](docs/specs/phase-8-healthcare-standards-interoperability-spec.md)
-- [Phase 9 specification](docs/specs/phase-9-secure-external-exchange-spec.md)
-- [Phase 10 specification](docs/specs/phase-10-emergency-transport-coordination-spec.md)
-- [Volume III design review](docs/reviews/volume-3-design-review.md) and [open questions](docs/reviews/volume-3-open-questions.md)
+Volumes I–IV and Phase 13 are complete and frozen. The Volume V design is frozen; Phase 14 productization is in progress. There is no final downloadable release yet. Do not treat this working branch or the developer Compose stack as a production deployment.
+
+## Try the local developer installation
+
+Requirements: Docker Desktop (or compatible Docker Engine with Compose v2), PowerShell on Windows, and network access to retrieve pinned build/container dependencies on first use. The Docker build uses pinned Java 25 and Node 24 images; Maven and Node do not need to be installed on the host.
+
+On Windows, run:
+
+```powershell
+.\scripts\local\Start-AyuVahak.cmd
+```
+
+On first run the launcher asks you to choose **Synthetic Demo** or **Empty** before starting services. You can also choose explicitly with `scripts/local/Start-AyuVahak.ps1 -Mode SYNTHETIC_DEMO` or `-Mode EMPTY`. It generates per-installation local database and Keycloak administrator credentials into ignored `.env`, binds published services to loopback, and uses an isolated Compose project/volume identity. Keep `.env` private and local; it is not a production secret-management solution.
+
+Synthetic Demo imports the clearly fictional local Keycloak realm. Empty imports only the local realm/client configuration without synthetic identities. Demo business-data seeding is still being completed; until that work is accepted, the demo mode must not be mistaken for a populated workflow demonstration. The mode is locked to the installation marker; use a separate clean installation to choose another mode. Stop without deleting the database with `scripts/local/Stop-AyuVahak.cmd`. A destructive Demo-volume reset requires `scripts/local/Stop-AyuVahak.ps1 -ResetDemo` and typing the confirmation phrase; reset is unavailable in Empty mode.
+
+The local UI and backend use the same AyuVahak origin and the configured local OIDC realm. Empty mode has no demo identity; an operator must configure a human identity in the local/external IdP and use the existing one-time out-of-band grant bootstrap. An IdP account by itself does not grant AyuVahak access. No bootstrap or mode-selection endpoint is exposed to the browser.
+
+For frontend development, use Node 24.21.x from `ui/.nvmrc`:
+
+```powershell
+Set-Location ui
+npm ci
+npm run dev
+```
+
+The UI is a presentation client. Backend grants/scopes, owner APIs and audit remain authoritative. Operator Support is optional, disabled by default and restricted to approved documentation topics; it cannot change AyuVahak state. No patient/clinical input is accepted by that capability.
+
+## Core boundaries
+
+- Directory owns organization/facility facts; Capacity owns its evidence and freshness; Referral owns coordination requests; Matching is deterministic and advisory; Transfer and Transport have distinct state and authority.
+- Analytics owns aggregate definitions and snapshots. DHIS2 is downstream aggregate exchange only; it is not coordination authority.
+- Notifications are hints; federation messages do not mutate another deployment's database; authoritative reads return to the owning context.
+- The browser never accesses PostgreSQL or private persistence adapters. Navigation reflects the current session projection, while every protected API enforces server-side authorization.
+- AI does not diagnose, triage, rank destinations, reserve capacity, make acceptance/dispatch/authentication/privacy decisions or call tools. It is not required for core workflows.
+
+## Architecture and engineering
+
+- [Architecture index](docs/architecture/README.md)
+- [Architecture constitution](docs/architecture/constitution.md)
+- [Volume II care coordination](docs/architecture/volume-2-core-care-coordination.md)
+- [Volume III interoperability and security](docs/architecture/volume-3-interoperability-security-transport.md)
+- [Volume IV resilient operations, federation and Analytics](docs/architecture/volume-4-resilient-operations-federation-public-health.md)
+- [Volume V production hardening and intelligence design](docs/architecture/volume-5-production-hardening-optimization-intelligence.md)
+- [Phase 13 acceptance](docs/reviews/phase-13-acceptance.md)
+- [Phase 14 specification](docs/specs/phase-14-optimization-intelligence-spec.md)
+- [Phase 14 productization addendum](docs/specs/phase-14-productization-addendum.md)
+- [Contributor guide](docs/development/contributor-guide.md)
+
+Java verification uses the repository Maven Wrapper and Java 25:
+
+```powershell
+.\mvnw.cmd -B -ntp clean verify
+```
+
+Frontend checks run in `ui/` with `npm ci`, `npm run lint`, `npm run typecheck`, `npm test`, and `npm run build`. Acceptance fixtures are synthetic and local. No public healthcare system or real patient data is used for tests.
+
+## Standards, safety and governance
+
+AyuVahak uses standards including FHIR R4, mCSD, IPS and aggregate DHIS2 exchange at their documented boundaries. References do not imply conformance certification. Phase 13 includes a DPG readiness assessment, but this project has not been certified or registered as a Digital Public Good. It makes no HIPAA, ABDM, medical-device, clinical-safety or universal production-readiness claim.
+
+There is no root `LICENSE` file. Licensing has not been designated by the repository owner; the public repository must not be understood as granting reuse rights. Deployment organizations remain responsible for identity, TLS, secrets, backup/restore, retention, legal/privacy review, monitoring, incident response and capacity validation.
+
+## Contributing
+
+Read [AGENTS.md](AGENTS.md), the [contributor guide](docs/development/contributor-guide.md), and the applicable frozen specification before changing code. Do not add patient-facing features or allow advisory AI to acquire workflow authority. External healthcare systems are never acceptance targets.

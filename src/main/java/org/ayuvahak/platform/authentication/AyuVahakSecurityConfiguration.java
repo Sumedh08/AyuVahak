@@ -69,6 +69,33 @@ public class AyuVahakSecurityConfiguration {
         .authorizeHttpRequests(
             authorize -> {
               authorize.requestMatchers("/api/v1/system-info").permitAll();
+              authorize
+                  .requestMatchers(
+                      "/",
+                      "/index.html",
+                      "/assets/**",
+                      "/auth/callback",
+                      "/directory",
+                      "/directory/**",
+                      "/capacity",
+                      "/capacity/**",
+                      "/referrals",
+                      "/referrals/**",
+                      "/matching",
+                      "/matching/**",
+                      "/transfers",
+                      "/transfers/**",
+                      "/receiving",
+                      "/receiving/**",
+                      "/transport",
+                      "/transport/**",
+                      "/analytics",
+                      "/analytics/**",
+                      "/administration",
+                      "/administration/**",
+                      "/operator-support",
+                      "/operator-support/**")
+                  .permitAll();
               if (productionProfileProperties.getIfAvailable() != null) {
                 authorize
                     .requestMatchers(

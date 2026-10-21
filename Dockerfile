@@ -1,3 +1,17 @@
+FROM node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS frontend-build
+
+WORKDIR /ui
+COPY ui/package.json ui/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY ui/ ./
+ARG VITE_OIDC_AUTHORITY=http://localhost:8081/realms/ayuvahak
+ARG VITE_OIDC_CLIENT_ID=ayuvahak-local-client
+ARG VITE_OIDC_SCOPE="openid profile"
+ENV VITE_OIDC_AUTHORITY=${VITE_OIDC_AUTHORITY}
+ENV VITE_OIDC_CLIENT_ID=${VITE_OIDC_CLIENT_ID}
+ENV VITE_OIDC_SCOPE=${VITE_OIDC_SCOPE}
+RUN npm run build
+
 FROM eclipse-temurin:25-jdk@sha256:8c0a84ea11c8f6ed52600fc19f1040121f2a162998e9f50a5faebbbad9172dcc AS build
 
 RUN apt-get update \
@@ -9,6 +23,7 @@ WORKDIR /workspace
 COPY mvnw pom.xml ./
 COPY .mvn/ .mvn/
 COPY src/ src/
+COPY --from=frontend-build /ui/dist/ /workspace/src/main/resources/static/
 RUN chmod +x ./mvnw && ./mvnw -B -ntp -DskipTests package
 
 FROM eclipse-temurin:25-jre@sha256:fcd7fd7b387f94bb2ac461478a7436ad8e349924c374ea8313919624dceae636

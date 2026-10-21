@@ -53,11 +53,11 @@ describe("DashboardWorkspace", () => {
     expect(screen.getByText(/does not invent counts/)).toBeTruthy();
   });
 
-  it("explains when no operational workspace is authorized", () => {
+  it("guides an empty local deployment through out-of-band first access", () => {
     render(<DashboardWorkspace session={{ ...session, capabilities: [] }} />);
 
-    expect(
-      screen.getByText("No operational workspace is authorized for this session"),
-    ).toBeTruthy();
+    expect(screen.getByText("Complete local deployment setup")).toBeTruthy();
+    expect(screen.getByText(/external identity provider/)).toBeTruthy();
+    expect(screen.getByText(/cannot create accounts/)).toBeTruthy();
   });
 });

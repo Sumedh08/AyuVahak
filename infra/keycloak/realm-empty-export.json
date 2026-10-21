@@ -1,0 +1,20 @@
+{
+  "realm": "ayuvahak",
+  "enabled": true,
+  "displayName": "AyuVahak local reference realm",
+  "clients": [
+    {
+      "clientId": "ayuvahak-local-client",
+      "name": "AyuVahak local human client",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [
+        "http://localhost:*"
+      ]
+    }
+  ],
+  "users": []
+}

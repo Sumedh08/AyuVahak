@@ -24,7 +24,7 @@ services:
       KC_BOOTSTRAP_ADMIN_PASSWORD: "${AYUVAHAK_KEYCLOAK_ADMIN_PASSWORD:?Copy .env.example to .env first}"
       KC_HOSTNAME: "http://localhost:${AYUVAHAK_KEYCLOAK_PORT:-8081}"
     volumes:
-      - ./infra/keycloak/realm-export.json:/opt/keycloak/data/import/ayuvahak-realm.json:ro
+      - ./infra/keycloak/realm-empty-export.json:/opt/keycloak/data/import/ayuvahak-realm.json:ro
     ports:
       - "127.0.0.1:${AYUVAHAK_KEYCLOAK_PORT:-8081}:8080"
 
@@ -32,6 +32,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        VITE_OIDC_AUTHORITY: "${AYUVAHAK_OIDC_ISSUER:?Copy .env.example to .env first}"
+        VITE_OIDC_CLIENT_ID: "${AYUVAHAK_OIDC_CLIENT_ID:-ayuvahak-local-client}"
+        VITE_OIDC_SCOPE: "${AYUVAHAK_OIDC_SCOPE:-openid profile}"
     depends_on:
       database:
         condition: service_healthy
@@ -44,6 +48,7 @@ services:
       AYUVAHAK_OIDC_AUDIENCE: "${AYUVAHAK_OIDC_AUDIENCE:?Copy .env.example to .env first}"
       AYUVAHAK_OIDC_SERVICE_CLIENT_IDS: "${AYUVAHAK_OIDC_SERVICE_CLIENT_IDS:?Copy .env.example to .env first}"
       AYUVAHAK_OIDC_ALLOW_HTTP: "${AYUVAHAK_OIDC_ALLOW_HTTP:-false}"
+      AYUVAHAK_DEPLOYMENT_MODE: "${AYUVAHAK_DEPLOYMENT_MODE:?Choose Synthetic Demo or Empty with Start-AyuVahak.ps1}"
       AYUVAHAK_OUTBOX_DELIVERED_EVENT_RETENTION: "${AYUVAHAK_OUTBOX_DELIVERED_EVENT_RETENTION:?Copy .env.example to .env first}"
       AYUVAHAK_IDEMPOTENCY_RECEIPT_LOCK_WAIT: "${AYUVAHAK_IDEMPOTENCY_RECEIPT_LOCK_WAIT:-PT5S}"
     ports:

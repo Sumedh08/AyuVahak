@@ -1,7 +1,11 @@
 .git
 .scratch
+.local-state
 .env
 .env.*
+**/node_modules
+**/dist
+**/target
 .idea
 .vscode
 *.iml

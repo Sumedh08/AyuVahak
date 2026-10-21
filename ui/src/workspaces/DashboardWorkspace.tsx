@@ -46,7 +46,7 @@ export function DashboardWorkspace({ session }: DashboardWorkspaceProps) {
           </h3>
           <p>
             {session.deploymentMode === "SYNTHETIC_DEMO"
-              ? "Demonstration records are synthetic and must not be used for care decisions."
+              ? "This mode is reserved for unmistakably synthetic demonstration data and must never be used for care decisions."
               : "No demonstration business data is implied by this deployment mode."}
           </p>
         </article>
@@ -55,8 +55,35 @@ export function DashboardWorkspace({ session }: DashboardWorkspaceProps) {
         <h3 id="dashboard-workspaces-title">Available workspaces</h3>
         {available.length === 0 ? (
           <div className="workspace-state" role="status">
-            <h4>No operational workspace is authorized for this session</h4>
-            <p>Ask an administrator to review your grants and organization or facility scope.</p>
+            {session.deploymentMode === "EMPTY" ? (
+              <>
+                <h4>Complete local deployment setup</h4>
+                <ol>
+                  <li>
+                    Configure a human identity in the deployment&apos;s external identity provider.
+                  </li>
+                  <li>
+                    Have the local operator run the existing one-time AyuVahak grant bootstrap for
+                    that identity.
+                  </li>
+                  <li>
+                    Use Access management to add only the organization or facility grants that are
+                    needed.
+                  </li>
+                </ol>
+                <p>
+                  An identity-provider account alone does not grant AyuVahak access. This page
+                  cannot create accounts or bypass the operator-controlled bootstrap.
+                </p>
+              </>
+            ) : (
+              <>
+                <h4>No operational workspace is authorized for this session</h4>
+                <p>
+                  Ask an administrator to review your grants and organization or facility scope.
+                </p>
+              </>
+            )}
           </div>
         ) : (
           <ul className="dashboard-workspace-list">

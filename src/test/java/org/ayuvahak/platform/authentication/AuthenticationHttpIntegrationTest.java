@@ -134,6 +134,9 @@ class AuthenticationHttpIntegrationTest {
   void leavesSystemInformationPublicAndRejectsProtectedRequestWithoutBearerToken()
       throws Exception {
     mockMvc.perform(get("/api/v1/system-info")).andExpect(status().isOk());
+    assertThat(mockMvc.perform(get("/")).andReturn().getResponse().getStatus()).isNotEqualTo(401);
+    assertThat(mockMvc.perform(get("/index.html")).andReturn().getResponse().getStatus())
+        .isNotEqualTo(401);
 
     mockMvc
         .perform(get("/api/v1/platform/__test/actor").header("X-Correlation-ID", "auth-corr-1"))
