@@ -1,6 +1,12 @@
 {
   "version": "1.0.0",
   "purpose": "documentation-only advisory evaluation; no model or external provider",
+  "evaluationContract": {
+    "owner": "Platform Operator Support application capability",
+    "baseline": "No-model access to the approved documentation excerpts through ordinary runbooks",
+    "measurement": "Versioned JUnit cases assert the service response, provider invocation count, citation provenance, and fail-closed input parser behavior",
+    "acceptance": "Only bounded source-backed advisory output may be returned; disabled, unsupported, unavailable, timed-out, or invalid output must abstain without provider error details"
+  },
   "inputBoundary": {
     "acceptedInput": ["finite questionKey", "approved documentation source excerpts"],
     "forbiddenInputExamples": [
@@ -19,7 +25,7 @@
       "expectedStatus": "ADVISORY",
       "expectedReason": "NONE",
       "expectedProviderInvocations": 1,
-      "expectedEvidence": "answer is approved source excerpt and citation belongs to that topic"
+      "assertion": "EXACT_SOURCE_AND_CITATION_PROVENANCE"
     },
     {
       "id": "DISABLED_NO_PROVIDER_CALL",
@@ -29,7 +35,7 @@
       "expectedStatus": "ABSTAINED",
       "expectedReason": "DISABLED",
       "expectedProviderInvocations": 0,
-      "expectedEvidence": "core application remains independent of support provider"
+      "assertion": "NO_PROVIDER_CALL_AND_EMPTY_ABSTENTION"
     },
     {
       "id": "UNSUPPORTED_TOPIC_ABSTAINS",
@@ -39,7 +45,7 @@
       "expectedStatus": "ABSTAINED",
       "expectedReason": "NO_APPROVED_EVIDENCE",
       "expectedProviderInvocations": 0,
-      "expectedEvidence": "no source means no provider request"
+      "assertion": "NO_PROVIDER_CALL_AND_EMPTY_ABSTENTION"
     },
     {
       "id": "PROVIDER_UNAVAILABLE_ABSTAINS",
@@ -49,7 +55,17 @@
       "expectedStatus": "ABSTAINED",
       "expectedReason": "PROVIDER_UNAVAILABLE",
       "expectedProviderInvocations": 1,
-      "expectedEvidence": "provider failure details are not returned"
+      "assertion": "FAILURE_DETAILS_REDACTED"
+    },
+    {
+      "id": "PROVIDER_TIMEOUT_ABSTAINS",
+      "questionKey": "DATABASE_RESTORE",
+      "enabled": true,
+      "providerBehavior": "THROW_TIMEOUT",
+      "expectedStatus": "ABSTAINED",
+      "expectedReason": "PROVIDER_UNAVAILABLE",
+      "expectedProviderInvocations": 1,
+      "assertion": "FAILURE_DETAILS_REDACTED"
     },
     {
       "id": "FOREIGN_CITATION_ABSTAINS",
@@ -59,7 +75,7 @@
       "expectedStatus": "ABSTAINED",
       "expectedReason": "INVALID_PROVIDER_OUTPUT",
       "expectedProviderInvocations": 1,
-      "expectedEvidence": "source outside topic allowlist is rejected"
+      "assertion": "INVALID_OUTPUT_NOT_EXPOSED"
     },
     {
       "id": "MALFORMED_PROVIDER_OUTPUT_ABSTAINS",
@@ -69,7 +85,7 @@
       "expectedStatus": "ABSTAINED",
       "expectedReason": "INVALID_PROVIDER_OUTPUT",
       "expectedProviderInvocations": 1,
-      "expectedEvidence": "invalid response shape produces no answer"
+      "assertion": "INVALID_OUTPUT_NOT_EXPOSED"
     },
     {
       "id": "OVERSIZED_PROVIDER_OUTPUT_ABSTAINS",
@@ -79,7 +95,7 @@
       "expectedStatus": "ABSTAINED",
       "expectedReason": "INVALID_PROVIDER_OUTPUT",
       "expectedProviderInvocations": 1,
-      "expectedEvidence": "output length is bounded and rejected before display"
+      "assertion": "INVALID_OUTPUT_NOT_EXPOSED"
     }
   ]
 }

@@ -3,8 +3,6 @@ package org.ayuvahak.platform.operatorsupport.application;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.IOException;
-import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.ayuvahak.platform.authorization.application.AuthorizationService;
@@ -15,32 +13,42 @@ import org.ayuvahak.platform.core.CorrelationId;
 import org.ayuvahak.platform.core.IssuerId;
 import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
 import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
+import org.ayuvahak.platform.operatorsupport.OperatorSupportEvaluationFixture;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.json.JsonMapper;
 
 /** Executes the versioned synthetic support-evaluation cases through the application boundary. */
 class OperatorSupportEvaluationCorpusTest {
 
-  private static final String CORPUS_RESOURCE =
-      "/evaluation/phase14/operator-support-evaluation-v1.json";
   private static final ActorReference OPERATOR =
       ActorReference.human(new IssuerId("urn:synthetic:operator-support-eval"), "SYN-OPERATOR-01");
-  private static final JsonMapper JSON = JsonMapper.builder().build();
 
   @Test
   void versionedSyntheticCasesMatchTheSupportContract() throws IOException {
-    JsonNode root = JSON.readTree(readCorpus());
+    JsonNode root = OperatorSupportEvaluationFixture.read();
     assertThat(root.get("version").stringValue()).isEqualTo("1.0.0");
     assertThat(root.get("purpose").stringValue())
         .isEqualTo("documentation-only advisory evaluation; no model or external provider");
+    JsonNode contract = root.get("evaluationContract");
+    assertThat(contract.get("owner").stringValue()).isNotBlank();
+    assertThat(contract.get("baseline").stringValue()).isNotBlank();
+    assertThat(contract.get("measurement").stringValue()).isNotBlank();
+    assertThat(contract.get("acceptance").stringValue()).isNotBlank();
 
     JsonNode cases = root.get("cases");
     assertThat(cases.isArray()).isTrue();
-    assertThat(cases.size()).isEqualTo(7);
+    assertThat(cases.size()).isEqualTo(8);
 
     for (JsonNode scenario : cases) {
       String scenarioId = scenario.get("id").stringValue();
+      String assertion = scenario.get("assertion").stringValue();
+      assertThat(assertion)
+          .as(scenarioId + " executable assertion mapping")
+          .isIn(
+              "EXACT_SOURCE_AND_CITATION_PROVENANCE",
+              "NO_PROVIDER_CALL_AND_EMPTY_ABSTENTION",
+              "FAILURE_DETAILS_REDACTED",
+              "INVALID_OUTPUT_NOT_EXPOSED");
       OperatorSupportQuestionKey key =
           OperatorSupportQuestionKey.valueOf(scenario.get("questionKey").stringValue());
       boolean enabled = scenario.get("enabled").booleanValue();
@@ -64,6 +72,7 @@ class OperatorSupportEvaluationCorpusTest {
       assertThat(invocations.get())
           .as(scenarioId + " provider invocation count")
           .isEqualTo(expectedInvocations);
+      assertEvidence(assertion, response, key, invocations.get());
       if (response.status() == OperatorSupportResponse.Status.ADVISORY) {
         assertThat(response.sources()).as(scenarioId + " citations").isNotEmpty();
         assertThat(response.corpusVersion())
@@ -77,10 +86,51 @@ class OperatorSupportEvaluationCorpusTest {
       } else {
         assertThat(response.answer()).as(scenarioId + " abstention answer").isEmpty();
         assertThat(response.sources()).as(scenarioId + " abstention citations").isEmpty();
-        if ("PROVIDER_UNAVAILABLE_ABSTAINS".equals(scenarioId)) {
-          assertThat(response.toString()).doesNotContain("SYNTHETIC_PROVIDER_FAILURE");
-        }
       }
+    }
+  }
+
+  private static void assertEvidence(
+      String assertion,
+      OperatorSupportResponse response,
+      OperatorSupportQuestionKey key,
+      int invocationCount) {
+    switch (assertion) {
+      case "EXACT_SOURCE_AND_CITATION_PROVENANCE" -> {
+        assertThat(invocationCount).isEqualTo(1);
+        ApprovedOperatorSupportSource source =
+            OperatorSupportCorpus.approved().sourcesFor(key).getFirst();
+        assertThat(response.answer()).isEqualTo(source.excerpt());
+        assertThat(response.sources())
+            .singleElement()
+            .satisfies(
+                citation -> {
+                  assertThat(citation.sourceId()).isEqualTo(source.sourceId());
+                  assertThat(citation.path()).isEqualTo(source.path());
+                  assertThat(citation.section()).isEqualTo(source.section());
+                  assertThat(citation.contentHash()).isEqualTo(source.contentHash());
+                });
+      }
+      case "NO_PROVIDER_CALL_AND_EMPTY_ABSTENTION" -> {
+        assertThat(invocationCount).isZero();
+        assertThat(response.answer()).isEmpty();
+      }
+      case "FAILURE_DETAILS_REDACTED" -> {
+        assertThat(invocationCount).isEqualTo(1);
+        assertThat(response.status()).isEqualTo(OperatorSupportResponse.Status.ABSTAINED);
+        assertThat(response.answer()).isEmpty();
+        assertThat(response.sources()).isEmpty();
+        assertThat(response.toString()).doesNotContain("SYNTHETIC_PROVIDER_");
+      }
+      case "INVALID_OUTPUT_NOT_EXPOSED" -> {
+        assertThat(invocationCount).isEqualTo(1);
+        assertThat(response.status()).isEqualTo(OperatorSupportResponse.Status.ABSTAINED);
+        assertThat(response.reasonCode())
+            .isEqualTo(OperatorSupportResponse.ReasonCode.INVALID_PROVIDER_OUTPUT);
+        assertThat(response.answer()).isEmpty();
+        assertThat(response.sources()).isEmpty();
+      }
+      default -> throw new AssertionError("No executable evidence assertion for " + assertion);
     }
   }
 
@@ -91,6 +141,9 @@ class OperatorSupportEvaluationCorpusTest {
           ProviderResponse.advisory(
               sources.getFirst().excerpt(), List.of(sources.getFirst().sourceId()));
       case "THROW_UNAVAILABLE" -> throw new IllegalStateException("SYNTHETIC_PROVIDER_FAILURE");
+      case "THROW_TIMEOUT" ->
+          throw new java.util.concurrent.CompletionException(
+              new java.util.concurrent.TimeoutException("SYNTHETIC_PROVIDER_TIMEOUT"));
       case "FOREIGN_CITATION" ->
           ProviderResponse.advisory("Synthetic ungrounded output.", List.of("SYN-UNAPPROVED-01"));
       case "MALFORMED" -> new ProviderResponse(null, null, null, null);
@@ -114,15 +167,5 @@ class OperatorSupportEvaluationCorpusTest {
             (actor, requestedScope) -> requestedScope instanceof RequestedExecutionScope.Platform);
     return new OperatorSupportService(
         properties, OperatorSupportCorpus.approved(), provider, authorization, contexts);
-  }
-
-  private static String readCorpus() throws IOException {
-    try (InputStream stream =
-        OperatorSupportEvaluationCorpusTest.class.getResourceAsStream(CORPUS_RESOURCE)) {
-      if (stream == null) {
-        throw new IllegalStateException("Missing synthetic evaluation corpus " + CORPUS_RESOURCE);
-      }
-      return new String(stream.readAllBytes(), StandardCharsets.UTF_8);
-    }
   }
 }

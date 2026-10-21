@@ -6,7 +6,7 @@
 
 The versioned synthetic case set is [operator-support-evaluation-v1.json](../../src/test/resources/evaluation/phase14/operator-support-evaluation-v1.json). It exercises the current `OperatorSupportService.answer` boundary and the finite-topic request parser. No model, network provider, external service, or operational data is used.
 
-The cases cover a source-backed advisory, disabled capability, unsupported topic, provider failure, unapproved citation, malformed output, oversized output, and rejection of synthetic patient-like, secret-like, and injection-like request fields. Existing workspace tests separately verify that an operator can close an advisory and that disabled assistance leaves the application available.
+The machine-readable evaluation contract names its owner, no-model baseline, measurement method, and acceptance rule. The cases cover exact source/citation provenance, disabled capability, unsupported topic, provider failure and timeout, unapproved citation, malformed output, oversized output, and rejection of synthetic patient-like, secret-like, and injection-like request fields. The JUnit runner maps every scenario to an executable assertion rather than treating descriptive evidence strings as acceptance. Existing workspace tests separately verify that an operator can close an advisory and that disabled assistance leaves the application available.
 
 ## Local result
 
@@ -23,7 +23,7 @@ Errors                                         0
 Skipped                                        0
 ```
 
-The evaluation uses the deterministic local provider only. It confirms bounded source/citation and failure behavior at the current application boundary; it does not establish factuality, omission, fairness, latency, cost, or safety properties for any model. There is no configured external provider profile or inference adapter in this acceptance slice, so real-provider evaluation remains future work under the existing Phase 14 governance and deployment gates.
+The evaluation uses the deterministic local provider and synthetic throwing doubles only. The timeout case exercises exception redaction at the application boundary; it does not measure or prove an HTTP deadline. It confirms bounded source/citation and failure behavior at the current application boundary; it does not establish factuality, omission, fairness, latency, cost, or safety properties for any model. There is no configured external provider profile or inference adapter in this acceptance slice, so real-provider evaluation remains future work under the existing Phase 14 governance and deployment gates.
 
 ## Limits and follow-up
 
