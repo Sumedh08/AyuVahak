@@ -5389,6 +5389,7 @@ class DirectoryCapacityReferralScenarioIT {
                 "PROFILE_A_PORTABLE_SINGLE_SITE",
                 profileA,
                 workload,
+                List.of(activeA, activeB),
                 dataSource,
                 revision,
                 dimensions,
@@ -5396,6 +5397,8 @@ class DirectoryCapacityReferralScenarioIT {
         assertThat(resultA.failures()).isZero();
         assertThat(resultA.timeouts()).isZero();
         assertThat(resultA.measuredOperations()).isEqualTo(100);
+        assertThat(resultA.minimumActiveSseConnectionsObserved())
+            .isEqualTo(Phase13MixedWorkloadBenchmark.ACTIVE_SSE_CONNECTIONS_PER_PROFILE);
       }
     } finally {
       profileA.forEach(replica -> stopBenchmarkProcess(replica.process()));
@@ -5454,6 +5457,7 @@ class DirectoryCapacityReferralScenarioIT {
                 "PROFILE_B_TWO_APPLICATION_REPLICAS",
                 profileB,
                 workload,
+                List.of(activeA, activeB),
                 dataSource,
                 revision,
                 dimensions,
@@ -5461,6 +5465,8 @@ class DirectoryCapacityReferralScenarioIT {
         assertThat(resultB.failures()).isZero();
         assertThat(resultB.timeouts()).isZero();
         assertThat(resultB.measuredOperations()).isEqualTo(100);
+        assertThat(resultB.minimumActiveSseConnectionsObserved())
+            .isEqualTo(Phase13MixedWorkloadBenchmark.ACTIVE_SSE_CONNECTIONS_PER_PROFILE);
       }
     } finally {
       profileB.forEach(replica -> stopBenchmarkProcess(replica.process()));

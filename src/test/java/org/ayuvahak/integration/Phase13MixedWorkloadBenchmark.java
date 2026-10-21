@@ -212,12 +212,15 @@ final class Phase13MixedWorkloadBenchmark {
       String profile,
       List<Replica> replicas,
       List<Operation> weightedMix,
+      List<SseConnection> activeSseConnections,
       DataSource database,
       String sourceRevision,
       Map<String, Integer> workloadDimensions,
       Map<String, String> queryPlanFingerprints)
       throws Exception {
-    if (replicas.isEmpty() || weightedMix.size() != OPERATIONS_PER_CYCLE) {
+    if (replicas.isEmpty()
+        || weightedMix.size() != OPERATIONS_PER_CYCLE
+        || activeSseConnections.isEmpty()) {
       throw new IllegalArgumentException("benchmark profile/mix has an invalid size");
     }
     for (int count : workloadDimensions.values()) {
@@ -252,8 +255,11 @@ final class Phase13MixedWorkloadBenchmark {
         new java.util.concurrent.atomic.AtomicLong();
     java.util.concurrent.atomic.AtomicLong peakHarnessJvmHeapBytes =
         new java.util.concurrent.atomic.AtomicLong();
+    AtomicInteger minimumActiveSseConnections =
+        new AtomicInteger(activeSseConnections.size());
     ScheduledExecutorService processSampler = Executors.newSingleThreadScheduledExecutor();
     try {
+      observeActiveSseConnections(activeSseConnections, minimumActiveSseConnections);
       for (int cycle = 0; cycle < WARMUP_CYCLES; cycle++) {
         runCycle(
             workers,
@@ -264,6 +270,7 @@ final class Phase13MixedWorkloadBenchmark {
             null,
             failures,
             timeouts);
+        observeActiveSseConnections(activeSseConnections, minimumActiveSseConnections);
       }
       latenciesByOperation.clear();
       resetStatementStatistics(database);
@@ -303,6 +310,7 @@ final class Phase13MixedWorkloadBenchmark {
           TimeUnit.MILLISECONDS);
       measuredStarted = System.nanoTime();
       for (int cycle = 0; cycle < MEASURED_CYCLES; cycle++) {
+        observeActiveSseConnections(activeSseConnections, minimumActiveSseConnections);
         runCycle(
             workers,
             weightedMix,
@@ -312,6 +320,7 @@ final class Phase13MixedWorkloadBenchmark {
             latenciesNanos,
             failures,
             timeouts);
+        observeActiveSseConnections(activeSseConnections, minimumActiveSseConnections);
       }
       Map<String, Integer> expectedMeasuredOperations = new LinkedHashMap<>();
       for (Operation operation : weightedMix) {
@@ -379,6 +388,7 @@ final class Phase13MixedWorkloadBenchmark {
               replicas.size() * MAX_POOL_SIZE_PER_REPLICA + harnessPoolCapacity,
               queryCount,
               Map.copyOf(workloadDimensions),
+              minimumActiveSseConnections.get(),
               summarizeOperationLatency(latenciesByOperation),
               queryPlanFingerprints,
               backlog,
@@ -444,6 +454,19 @@ final class Phase13MixedWorkloadBenchmark {
       if (total != null) {
         total.add(result.elapsedNanos());
       }
+    }
+  }
+
+  private static void observeActiveSseConnections(
+      List<SseConnection> connections, AtomicInteger minimumActiveConnections) {
+    int active = (int) connections.stream().filter(SseConnection::isActive).count();
+    minimumActiveConnections.accumulateAndGet(active, Math::min);
+    if (active != connections.size()) {
+      throw new AssertionError(
+          "an SSE connection terminated during the benchmark; expected="
+              + connections.size()
+              + ", active="
+              + active);
     }
   }
 
@@ -550,6 +573,7 @@ final class Phase13MixedWorkloadBenchmark {
     var firstEvent = new java.util.concurrent.CompletableFuture<String>();
     var subscription =
         new java.util.concurrent.atomic.AtomicReference<java.util.concurrent.Flow.Subscription>();
+    var active = new java.util.concurrent.atomic.AtomicBoolean();
     var eventText = new StringBuilder();
     response
         .body()
@@ -575,6 +599,7 @@ final class Phase13MixedWorkloadBenchmark {
                     String event = normalized.substring(0, eventBoundary + 2);
                     eventText.setLength(0);
                     if (event.contains("event:") && event.contains("data:")) {
+                      active.set(true);
                       firstEvent.complete(event);
                     }
                   }
@@ -584,11 +609,13 @@ final class Phase13MixedWorkloadBenchmark {
 
               @Override
               public void onError(Throwable failure) {
+                active.set(false);
                 firstEvent.completeExceptionally(failure);
               }
 
               @Override
               public void onComplete() {
+                active.set(false);
                 firstEvent.completeExceptionally(
                     new java.io.EOFException("SSE stream completed before a hint arrived"));
               }
@@ -607,18 +634,27 @@ final class Phase13MixedWorkloadBenchmark {
       subscription.get().cancel();
       throw new AssertionError("SSE replay did not deliver a typed notification hint");
     }
-    return new SseConnection(subscription.get());
+    return new SseConnection(subscription.get(), active);
   }
 
   static final class SseConnection implements AutoCloseable {
     private final java.util.concurrent.Flow.Subscription subscription;
+    private final java.util.concurrent.atomic.AtomicBoolean active;
 
-    private SseConnection(java.util.concurrent.Flow.Subscription subscription) {
+    private SseConnection(
+        java.util.concurrent.Flow.Subscription subscription,
+        java.util.concurrent.atomic.AtomicBoolean active) {
       this.subscription = Objects.requireNonNull(subscription);
+      this.active = Objects.requireNonNull(active);
+    }
+
+    boolean isActive() {
+      return active.get();
     }
 
     @Override
     public void close() {
+      active.set(false);
       subscription.cancel();
     }
   }
@@ -925,6 +961,7 @@ final class Phase13MixedWorkloadBenchmark {
       int configuredCombinedDbPoolCapacity,
       long postgresStatementCalls,
       Map<String, Integer> workloadDimensions,
+      int minimumActiveSseConnectionsObserved,
       Map<String, LatencySummary> operationLatency,
       Map<String, String> queryPlanFingerprints,
       BacklogSnapshot backlog,
