@@ -8,6 +8,7 @@ import org.ayuvahak.platform.idempotency.configuration.CommandIdempotencyPropert
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.ConfigurableApplicationContext;
 
 @SpringBootApplication(
     scanBasePackages = {
@@ -29,6 +30,16 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 public class AyuVahakApplication {
 
   public static void main(String[] args) {
-    SpringApplication.run(AyuVahakApplication.class, args);
+    ConfigurableApplicationContext context =
+        SpringApplication.run(AyuVahakApplication.class, args);
+    closeBootstrapContextIfRequested(context);
+  }
+
+  static void closeBootstrapContextIfRequested(ConfigurableApplicationContext context) {
+    boolean oneShotBootstrapEnabled =
+        context.getEnvironment().getProperty("ayuvahak.bootstrap.enabled", Boolean.class, false);
+    if (oneShotBootstrapEnabled) {
+      context.close();
+    }
   }
 }
