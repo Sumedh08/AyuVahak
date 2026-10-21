@@ -73,6 +73,7 @@ import org.ayuvahak.platform.federation.application.DeploymentIdentityRegistrati
 import org.ayuvahak.platform.federation.domain.DeploymentId;
 import org.ayuvahak.platform.idempotency.CommandReceiptKey;
 import org.ayuvahak.platform.idempotency.RequestFingerprint;
+import org.ayuvahak.testsupport.Phase14GoldenCorpus;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -209,7 +210,8 @@ class FederatedAggregateFederationPostgresIT {
 
   @Test
   void authenticatedPeerReceiptReplaysExactlyAndConflictsOnChangedRequestOrContent() {
-    FederatedAggregateEnvelope envelope = envelope(7);
+    FederatedAggregateEnvelope envelope =
+        envelope(Phase14GoldenCorpus.integer("$.cases.federatedAggregateReceipt.aggregateValue"));
     byte[] requestBytes =
         "SYNTHETIC-AGGREGATE-ENVELOPE".getBytes(java.nio.charset.StandardCharsets.UTF_8);
     FederationOperationFingerprint fingerprint = fingerprint(requestBytes);
@@ -221,13 +223,24 @@ class FederatedAggregateFederationPostgresIT {
     FederatedAggregateReceipt replay =
         receiptService.receive(peer, operationId, fingerprint, envelope);
 
-    assertThat(first.state()).isEqualTo(FederatedAggregateReceipt.State.COMBINABLE);
-    assertThat(replay.replayed()).isTrue();
+    assertThat(first.snapshot().sourceDeployment().value())
+        .isEqualTo(Phase14GoldenCorpus.string("$.cases.federatedAggregateReceipt.sourceDeployment"));
+    assertThat(first.snapshot().indicatorKey())
+        .isEqualTo(Phase14GoldenCorpus.string("$.cases.federatedAggregateReceipt.indicatorKey"));
+    assertThat(first.snapshot().value())
+        .isEqualTo(Phase14GoldenCorpus.integer("$.cases.federatedAggregateReceipt.aggregateValue"));
+    assertThat(first.snapshot().completeness().name())
+        .isEqualTo(Phase14GoldenCorpus.string("$.cases.federatedAggregateReceipt.completeness"));
+    assertThat(first.state().name())
+        .isEqualTo(Phase14GoldenCorpus.string("$.cases.federatedAggregateReceipt.receiptState"));
+    assertThat(replay.replayed())
+        .isEqualTo(Phase14GoldenCorpus.bool("$.cases.federatedAggregateReceipt.replayReturnsPriorReceipt"));
     assertThat(replay.receiptId()).isEqualTo(first.receiptId());
     assertThat(
             jdbc.queryForObject(
                 "SELECT count(*) FROM analytics.federated_aggregate_receipt", Integer.class))
-        .isEqualTo(1);
+        .isEqualTo(
+            Phase14GoldenCorpus.integer("$.cases.federatedAggregateReceipt.persistedReceiptCount"));
     assertThat(
             jdbc.queryForObject(
                 "SELECT count(*) FROM audit.audit_record WHERE action_code = 'ANALYTICS_FEDERATED_AGGREGATE_RECEIVED'",
@@ -246,7 +259,10 @@ class FederatedAggregateFederationPostgresIT {
             FederatedAggregateException.class,
             failure ->
                 assertThat(failure.reason())
-                    .isEqualTo(FederatedAggregateException.Reason.RECEIPT_CONFLICT));
+                    .isEqualTo(
+                        FederatedAggregateException.Reason.valueOf(
+                            Phase14GoldenCorpus.string(
+                                "$.cases.federatedAggregateReceipt.changedRequestOrContent"))));
     assertThatThrownBy(
             () ->
                 receiptService.receive(
@@ -259,7 +275,10 @@ class FederatedAggregateFederationPostgresIT {
             FederatedAggregateException.class,
             failure ->
                 assertThat(failure.reason())
-                    .isEqualTo(FederatedAggregateException.Reason.RECEIPT_CONFLICT));
+                    .isEqualTo(
+                        FederatedAggregateException.Reason.valueOf(
+                            Phase14GoldenCorpus.string(
+                                "$.cases.federatedAggregateReceipt.changedRequestOrContent"))));
   }
 
   @Test

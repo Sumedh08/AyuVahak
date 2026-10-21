@@ -82,6 +82,7 @@ import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
 import org.ayuvahak.referral.application.PatientContextCategory;
 import org.ayuvahak.referral.application.PatientContextDisclosureDecision;
 import org.ayuvahak.referral.application.PatientContextDisclosurePolicy;
+import org.ayuvahak.testsupport.Phase14GoldenCorpus;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -3692,6 +3693,13 @@ class DirectoryCapacityReferralScenarioIT {
     assertThat(readCapacityOutcomeCodes(recommendationBody, facilityB)).contains("READY_CURRENT");
     assertThat(readCapacityOutcomeCodes(recommendationBody, facilityC)).contains("STALE_EXPIRED");
     assertThat(readCandidateRank(recommendationBody, facilityB)).isEqualTo(1);
+    assertMatchingAgainstGolden(
+        recommendationBody,
+        Map.of(
+            "facilityA", facilityA,
+            "facilityB", facilityB,
+            "facilityC", facilityC,
+            "facilityD", facilityD));
     String recommendationId = com.jayway.jsonpath.JsonPath.read(recommendationBody, "$.id");
     String matchingSnapshot =
         jdbc.queryForObject(
@@ -3721,7 +3729,9 @@ class DirectoryCapacityReferralScenarioIT {
                             + facilityB
                             + "\",\"transportRequired\":true}"))
             .andExpect(status().isCreated())
-            .andExpect(jsonPath("$.status").value("PENDING"))
+            .andExpect(
+                jsonPath("$.status")
+                    .value(Phase14GoldenCorpus.string("$.cases.transferAcceptance.requestAttemptStatus")))
             .andReturn()
             .getResponse()
             .getContentAsString();
@@ -3819,18 +3829,19 @@ class DirectoryCapacityReferralScenarioIT {
         .as(
             "transfer reservation intent %s; Capacity operations %s",
             reservationDebug, capacityDebug)
-        .isEqualTo("RESERVED");
+        .isEqualTo(Phase14GoldenCorpus.string("$.cases.transferAcceptance.capacityReservationOutcome"));
     String acceptanceStatus =
         com.jayway.jsonpath.JsonPath.read(
             acceptance.getResponse().getContentAsString(), "$.status");
-    assertThat(acceptanceStatus).isEqualTo("READY");
+    assertThat(acceptanceStatus)
+        .isEqualTo(Phase14GoldenCorpus.string("$.cases.transferAcceptance.acceptanceStatus"));
     assertThat(
             jdbc.queryForObject(
                 "SELECT reservation_status FROM capacity.coordination_reservation "
                     + "WHERE transfer_id = ?",
                 String.class,
                 UUID.fromString(transferId)))
-        .isEqualTo("ACTIVE");
+        .isEqualTo(Phase14GoldenCorpus.string("$.cases.transferAcceptance.capacityReservationStatus"));
 
     String patientContextMarker = prefix + "-opaque-patient-reference";
     String receivingParticipant = prefix + "-receiving-participant";
@@ -3913,13 +3924,16 @@ class DirectoryCapacityReferralScenarioIT {
                     .contentType("application/json")
                     .content("{}"))
             .andExpect(status().isCreated())
-            .andExpect(jsonPath("$.status").value("REQUESTED"))
+            .andExpect(
+                jsonPath("$.status")
+                    .value(Phase14GoldenCorpus.string("$.cases.transportDispatch.requestStatus")))
             .andReturn()
             .getResponse()
             .getContentAsString();
     String transportRequestId =
         com.jayway.jsonpath.JsonPath.read(transportRequestBody, "$.transportRequestId");
-    mockMvc
+    MvcResult providerDispatch =
+        mockMvc
         .perform(
             post("/api/v1/transport-requests/{requestId}/provider-dispatch", transportRequestId)
                 .header("Authorization", bearer(token(transportOperator)))
@@ -3927,7 +3941,12 @@ class DirectoryCapacityReferralScenarioIT {
                 .header("X-AyuVahak-Organization-Id", originOrganizationId)
                 .header("X-AyuVahak-Facility-Id", originFacilityId))
         .andExpect(status().isAccepted())
-        .andExpect(jsonPath("$.state").value("ACKNOWLEDGED"));
+        .andExpect(
+            jsonPath("$.state")
+                .value(Phase14GoldenCorpus.string("$.cases.transportDispatch.dispatchState")))
+        .andReturn();
+    assertThat(providerDispatch.getResponse().getStatus())
+        .isEqualTo(Phase14GoldenCorpus.integer("$.cases.transportDispatch.dispatchHttpStatus"));
     assertThat(PROVIDER_REQUEST_TARGET.get())
         .isEqualTo("POST /api/transport-requests/" + transportRequestId + "/dispatches");
     assertThat(PROVIDER_REQUESTS).hasValue(1);
@@ -6024,6 +6043,59 @@ class DirectoryCapacityReferralScenarioIT {
         com.jayway.jsonpath.JsonPath.read(
             body, "$.candidates[?(@.facility.identifier == '" + facilityId + "')].status");
     assertThat(outcomes).containsExactly(expected);
+  }
+
+  private static void assertMatchingAgainstGolden(
+      String body, Map<String, String> facilityIdByRole) {
+    String casePath = "$.cases.matchingCrossContext";
+    String actualOutcome = com.jayway.jsonpath.JsonPath.read(body, "$.outcome");
+    assertThat(actualOutcome)
+        .isEqualTo(Phase14GoldenCorpus.string(casePath + ".evaluationOutcome"));
+    List<?> rows = com.jayway.jsonpath.JsonPath.read(body, "$.candidates");
+    assertThat(rows).hasSize(Phase14GoldenCorpus.integer(casePath + ".candidateCount"));
+
+    for (Map.Entry<String, String> role : facilityIdByRole.entrySet()) {
+      String rolePath = casePath + ".candidateExpectations." + role.getKey();
+      Map<String, Object> actual = candidateRepresentation(body, role.getValue());
+      assertThat(actual.get("status"))
+          .as("synthetic Matching status for %s", role.getKey())
+          .isEqualTo(Phase14GoldenCorpus.string(rolePath + ".status"));
+      assertThat(actual.get("rank"))
+          .as("synthetic Matching rank for %s", role.getKey())
+          .isEqualTo(Phase14GoldenCorpus.nullableInteger(rolePath + ".rank"));
+      List<?> reasons = (List<?>) actual.get("reasons");
+      List<String> actualReasonCodes =
+          reasons.stream()
+              .map(reason -> (String) ((Map<?, ?>) reason).get("code"))
+              .toList();
+      assertThat(actualReasonCodes)
+          .as("exact Matching reason codes for %s", role.getKey())
+          .containsExactlyElementsOf(Phase14GoldenCorpus.strings(rolePath + ".reasonCodes"));
+
+      String expectedCapacityOutcome =
+          Phase14GoldenCorpus.stringOrNull(rolePath + ".capacityOutcomePresent");
+      if (expectedCapacityOutcome != null) {
+        assertThat(readCapacityOutcomeCodes(body, role.getValue()))
+            .as("owner-projected Capacity outcome for %s", role.getKey())
+            .contains(expectedCapacityOutcome);
+      }
+    }
+
+    List<String> actualRankedRoles =
+        facilityIdByRole.keySet().stream()
+            .filter(
+                role ->
+                    "RANKED_ELIGIBLE"
+                        .equals(
+                            candidateRepresentation(body, facilityIdByRole.get(role))
+                                .get("status")))
+            .sorted(
+                java.util.Comparator.comparingInt(
+                    role -> readCandidateRank(body, facilityIdByRole.get(role))))
+            .toList();
+    assertThat(actualRankedRoles)
+        .as("eligible Matching candidates in exact deterministic rank order")
+        .containsExactlyElementsOf(Phase14GoldenCorpus.strings(casePath + ".rankedCandidateRoles"));
   }
 
   private static int readCandidateRank(String body, String facilityId) {

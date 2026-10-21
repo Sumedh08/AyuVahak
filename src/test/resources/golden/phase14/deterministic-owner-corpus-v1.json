@@ -1,0 +1,112 @@
+{
+  "corpusId": "ayuvahak-deterministic-owner-golden",
+  "schemaVersion": 1,
+  "corpusVersion": "1.0.0",
+  "syntheticOnly": true,
+  "sourceOfExpectedOutcomes": "Frozen owner contracts and independently stated expected outcomes; fixture identifiers are synthetic.",
+  "cases": {
+    "matchingCrossContext": {
+      "seam": "POST /api/v1/recommendations in DirectoryCapacityReferralScenarioIT.volumeTwoHappyPathRunsThroughDirectoryCapacityReferralMatchingAndTransfer",
+      "evaluationOutcome": "COMPLETE",
+      "candidateCount": 4,
+      "rankedCandidateRoles": ["facilityB", "facilityD"],
+      "candidateExpectations": {
+        "facilityA": {
+          "status": "INELIGIBLE",
+          "rank": null,
+          "reasonCodes": ["CAPABILITY_NOT_ASSERTED"],
+          "capacityOutcomePresent": null
+        },
+        "facilityB": {
+          "status": "RANKED_ELIGIBLE",
+          "rank": 1,
+          "reasonCodes": [],
+          "capacityOutcomePresent": "READY_CURRENT"
+        },
+        "facilityC": {
+          "status": "INDETERMINATE",
+          "rank": null,
+          "reasonCodes": [
+            "CAPACITY_EVIDENCE_STALE",
+            "CAPACITY_EVIDENCE_STALE",
+            "CAPACITY_EVIDENCE_STALE"
+          ],
+          "capacityOutcomePresent": "STALE_EXPIRED"
+        },
+        "facilityD": {
+          "status": "RANKED_ELIGIBLE",
+          "rank": 2,
+          "reasonCodes": [],
+          "capacityOutcomePresent": "READY_CURRENT"
+        }
+      }
+    },
+    "matchingUuidTieBreak": {
+      "seam": "RecommendationRanker.rank public domain operation",
+      "primaryMetric": "STRAIGHT_LINE_DISTANCE",
+      "allCoordinatesEqual": true,
+      "inputFacilityIds": [
+        "00000000-0000-4000-8000-000000000003",
+        "00000000-0000-4000-8000-000000000001",
+        "00000000-0000-4000-8000-000000000002"
+      ],
+      "expectedRankedFacilityIds": [
+        "00000000-0000-4000-8000-000000000001",
+        "00000000-0000-4000-8000-000000000002",
+        "00000000-0000-4000-8000-000000000003"
+      ],
+      "expectedRanks": [1, 2, 3],
+      "expectedStatus": "RANKED_ELIGIBLE",
+      "expectedReasonCodes": []
+    },
+    "transferAcceptance": {
+      "seam": "Transfer owner authenticated HTTP API in DirectoryCapacityReferralScenarioIT",
+      "requestAttemptStatus": "PENDING",
+      "acceptanceStatus": "READY",
+      "capacityReservationStatus": "ACTIVE",
+      "capacityReservationOutcome": "RESERVED"
+    },
+    "transportDispatch": {
+      "seam": "Transport owner authenticated HTTP API and local synthetic provider mock",
+      "requestStatus": "REQUESTED",
+      "dispatchHttpStatus": 202,
+      "dispatchState": "ACKNOWLEDGED"
+    },
+    "analyticsComputation": {
+      "seam": "AnalyticsComputationService.processNext application boundary in AnalyticsAggregateComputationPostgresIT",
+      "indicatorKey": "SYN-OPS-COUNT",
+      "indicatorVersion": 1,
+      "localPeriodStart": "2026-03-29",
+      "localPeriodEndExclusive": "2026-03-30",
+      "timeZoneId": "Europe/Berlin",
+      "sourceMeasureValues": {
+        "REFERRAL_SUBMITTED": 4,
+        "TRANSFER_COMPLETED": 2
+      },
+      "aggregation": "SUM",
+      "operationState": "COMPLETED",
+      "completeness": "COMPLETE",
+      "value": 6,
+      "startInclusiveUtc": "2026-03-28T23:00:00Z",
+      "endExclusiveUtc": "2026-03-29T22:00:00Z",
+      "inputCount": 2,
+      "idempotentReplaySnapshotCount": 1
+    },
+    "federatedAggregateReceipt": {
+      "seam": "FederatedAggregateReceiptService.receive local PostgreSQL application boundary in FederatedAggregateFederationPostgresIT",
+      "sourceDeployment": "SYN-DEPLOYMENT-A",
+      "indicatorKey": "SYN-INDICATOR-001",
+      "aggregateValue": 7,
+      "completeness": "COMPLETE",
+      "receiptState": "COMBINABLE",
+      "replayReturnsPriorReceipt": true,
+      "persistedReceiptCount": 1,
+      "changedRequestOrContent": "RECEIPT_CONFLICT"
+    }
+  },
+  "limitations": [
+    "Directory and Capacity outcomes in this corpus are observed through the integrated Matching API response, which consumes their bounded owner evidence; the corpus does not claim a new standalone aggregate Directory or Capacity query API.",
+    "Analytics has no ordinary authenticated summary HTTP endpoint in the frozen implementation; this corpus exercises its public application computation service using synthetic owner snapshots and PostgreSQL persistence.",
+    "Federated Analytics receipt is exercised at its public application service boundary with local synthetic deployment identities; no remote peer or network is used."
+  ]
+}

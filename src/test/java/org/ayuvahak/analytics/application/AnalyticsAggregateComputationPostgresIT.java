@@ -39,6 +39,7 @@ import org.ayuvahak.platform.core.IssuerId;
 import org.ayuvahak.platform.executioncontext.ExecutionContext;
 import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
 import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
+import org.ayuvahak.testsupport.Phase14GoldenCorpus;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -122,7 +123,15 @@ class AnalyticsAggregateComputationPostgresIT {
     store.publishDefinition(definition);
     var reader =
         new SyntheticOwnerReader(
-            List.of(input(referralSubmitted(), 4), input(transferCompleted(), 2)));
+            List.of(
+                input(
+                    referralSubmitted(),
+                    Phase14GoldenCorpus.integer(
+                        "$.cases.analyticsComputation.sourceMeasureValues.REFERRAL_SUBMITTED")),
+                input(
+                    transferCompleted(),
+                    Phase14GoldenCorpus.integer(
+                        "$.cases.analyticsComputation.sourceMeasureValues.TRANSFER_COMPLETED"))));
     var service = service(reader, true);
     InternalId computationId = InternalId.generate();
 
@@ -131,17 +140,26 @@ class AnalyticsAggregateComputationPostgresIT {
     assertThat(reader.readCount()).isZero();
 
     AnalyticsComputationOperation completed = service.processNext().orElseThrow();
-    assertThat(completed.state()).isEqualTo(AnalyticsComputationOperation.State.COMPLETED);
+    assertThat(completed.state().name())
+        .isEqualTo(Phase14GoldenCorpus.string("$.cases.analyticsComputation.operationState"));
     AggregateSnapshot result =
         store.findSnapshotById(completed.snapshotId().orElseThrow()).orElseThrow();
     assertThat(reader.readCount()).isEqualTo(2);
 
-    assertThat(result.completeness()).isEqualTo(AggregateCompleteness.COMPLETE);
-    assertThat(result.value()).hasValue(6L);
+    assertThat(result.completeness().name())
+        .isEqualTo(Phase14GoldenCorpus.string("$.cases.analyticsComputation.completeness"));
+    assertThat(result.value())
+        .hasValue(Phase14GoldenCorpus.integer("$.cases.analyticsComputation.value"));
     assertThat(result.period().startInclusiveUtc())
-        .isEqualTo(Instant.parse("2026-03-28T23:00:00Z"));
-    assertThat(result.period().endExclusiveUtc()).isEqualTo(Instant.parse("2026-03-29T22:00:00Z"));
-    assertThat(result.inputs()).hasSize(2);
+        .isEqualTo(
+            Instant.parse(
+                Phase14GoldenCorpus.string("$.cases.analyticsComputation.startInclusiveUtc")));
+    assertThat(result.period().endExclusiveUtc())
+        .isEqualTo(
+            Instant.parse(
+                Phase14GoldenCorpus.string("$.cases.analyticsComputation.endExclusiveUtc")));
+    assertThat(result.inputs())
+        .hasSize(Phase14GoldenCorpus.integer("$.cases.analyticsComputation.inputCount"));
     assertThat(result.inputs())
         .extracting(org.ayuvahak.analytics.domain.AggregateInput::sourceCutoff)
         .containsExactlyInAnyOrder(
@@ -156,11 +174,14 @@ class AnalyticsAggregateComputationPostgresIT {
 
     assertThat(replay.snapshotId()).isEqualTo(result.snapshotId());
     assertThat(replay.inputFingerprint()).isEqualTo(result.inputFingerprint());
-    assertThat(replay.value()).hasValue(6L);
+    assertThat(replay.value())
+        .hasValue(Phase14GoldenCorpus.integer("$.cases.analyticsComputation.value"));
     assertThat(store.findDefinition("SYN-OPS-COUNT", 1)).contains(definition);
     assertThat(
             jdbc.queryForObject("SELECT count(*) FROM analytics.aggregate_snapshot", Integer.class))
-        .isEqualTo(1);
+        .isEqualTo(
+            Phase14GoldenCorpus.integer(
+                "$.cases.analyticsComputation.idempotentReplaySnapshotCount"));
   }
 
   @Test

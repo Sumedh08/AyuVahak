@@ -23,6 +23,7 @@ import org.ayuvahak.matching.domain.RecommendationRanker.Request;
 import org.ayuvahak.matching.domain.RecommendationRanker.TravelTimeEstimate;
 import org.ayuvahak.platform.core.ExternalReference;
 import org.ayuvahak.platform.core.IssuerId;
+import org.ayuvahak.testsupport.Phase14GoldenCorpus;
 import org.junit.jupiter.api.Test;
 
 class RecommendationRankerTest {
@@ -101,6 +102,58 @@ class RecommendationRankerTest {
     assertThat(ranking.candidates())
         .extracting(Ranking.CandidateRanking::facility)
         .containsExactly(NEAR, FAR);
+  }
+
+  @Test
+  void matchesVersionedSyntheticGoldenCorpusForEqualMetricUuidTieBreak() {
+    String inputPath = "$.cases.matchingUuidTieBreak.inputFacilityIds";
+    String expectedPath = "$.cases.matchingUuidTieBreak.expectedRankedFacilityIds";
+    List<String> inputIds = Phase14GoldenCorpus.strings(inputPath);
+    List<String> expectedIds = Phase14GoldenCorpus.strings(expectedPath);
+    assertThat(Phase14GoldenCorpus.integer("$.schemaVersion")).isEqualTo(1);
+    assertThat(Phase14GoldenCorpus.bool("$.syntheticOnly")).isTrue();
+    assertThat(Phase14GoldenCorpus.string("$.corpusVersion")).isEqualTo("1.0.0");
+    assertThat(Phase14GoldenCorpus.bool("$.cases.matchingUuidTieBreak.allCoordinatesEqual"))
+        .isTrue();
+
+    List<CandidateResult> candidates =
+        inputIds.stream().map(id -> eligible(ref("Facility", id))).toList();
+    Map<ExternalReference, Coordinate> coordinates =
+        inputIds.stream()
+            .map(id -> ref("Facility", id))
+            .collect(
+                java.util.stream.Collectors.toMap(
+                    facility -> facility, ignored -> new Coordinate(72.9, 19.1)));
+    Ranking ranking =
+        ranker.rank(
+            request(
+                new Evaluation(Completeness.COMPLETE, List.of(), candidates),
+                coordinates,
+                new Policy(
+                    MetricKind.valueOf(
+                        Phase14GoldenCorpus.string("$.cases.matchingUuidTieBreak.primaryMetric")),
+                    false,
+                    Map.of()),
+                List.of()));
+
+    assertThat(ranking.candidates())
+        .extracting(candidate -> candidate.facility().value())
+        .containsExactlyElementsOf(expectedIds);
+    assertThat(ranking.candidates())
+        .extracting(candidate -> candidate.status().name())
+        .containsOnly(
+            Phase14GoldenCorpus.string("$.cases.matchingUuidTieBreak.expectedStatus"));
+    assertThat(ranking.candidates())
+        .extracting(candidate -> candidate.rank().orElseThrow())
+        .containsExactlyElementsOf(
+            Phase14GoldenCorpus.integers("$.cases.matchingUuidTieBreak.expectedRanks"));
+    assertThat(ranking.candidates())
+        .allSatisfy(
+            candidate ->
+                assertThat(candidate.reasonCodes())
+                    .containsExactlyElementsOf(
+                        Phase14GoldenCorpus.strings(
+                            "$.cases.matchingUuidTieBreak.expectedReasonCodes")));
   }
 
   @Test
