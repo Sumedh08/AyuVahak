@@ -72,4 +72,21 @@ describe("OperatorSupportWorkspace", () => {
     ).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Operator support" })).toBeTruthy();
   });
+
+  it("does not submit a value outside the finite topic catalog", () => {
+    const answer = vi.fn();
+    const apiClient: OperatorSupportApiClient = { answer };
+    render(
+      <OperatorSupportWorkspace getAccessToken={async () => "unused"} apiClient={apiClient} />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Documentation topic"), {
+      target: { value: "UNSUPPORTED_FROM_BROWSER" },
+    });
+    const submit = screen.getByRole("button", { name: "Show advisory guidance" });
+
+    expect(submit).toBeDisabled();
+    fireEvent.click(submit);
+    expect(answer).not.toHaveBeenCalled();
+  });
 });
