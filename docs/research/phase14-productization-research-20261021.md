@@ -93,6 +93,14 @@ OWASP’s SSRF Prevention Cheat Sheet recommends allowlisting when the applicati
 6. Evaluate accessibility against WCAG 2.2 AA for the full screen/process scope using automated checks plus manual keyboard/assistive-technology review; report evidence without certification claims.
 7. Keep LLM provider selection administrator-controlled and server-side, bounded by destination and data-class policy; test only a local fake/mock.
 
+## 6. Browser OIDC client boundary
+
+The `oidc-client-ts` documentation describes the browser `UserManager` flow for Authorization Code with PKCE, and its settings expose `disablePKCE` with PKCE enabled by default. Its `InMemoryWebStorage` implementation provides a `WebStorageStateStore` backend that does not persist the user record across page reloads. Sources: [oidc-client-ts project documentation](https://authts.github.io/oidc-client-ts/), [UserManagerSettings reference](https://authts.github.io/oidc-client-ts/interfaces/UserManagerSettings.html), [InMemoryWebStorage reference](https://authts.github.io/oidc-client-ts/classes/InMemoryWebStorage.html), [upstream releases](https://github.com/authts/oidc-client-ts/releases).
+
+**Does not imply:** Keeping the user record in memory prevents script injection, protects a token from malicious same-origin code, or makes browser-held bearer tokens equivalent to an HttpOnly cookie. The OIDC protocol also needs temporary state and a PKCE verifier during redirect processing.
+
+**AyuVahak decision:** Use the public-client Authorization Code flow with PKCE, no client secret, an in-memory OIDC user store, and session-scoped storage only for temporary redirect state. Disable automatic silent renewal and session monitoring in the initial shell. API calls receive only the current access token, never an ID token, and use the same origin. Keep workspace navigation inside the single-page application so navigation does not unnecessarily discard the memory-only user. Do not treat the shell or client token as authorization evidence; the backend `/api/v1/session` projection and each owner API remain authoritative.
+
 ## Source register
 
 All URLs below are first-party project/standard sources or canonical package metadata as observed on 2026-10-21.
