@@ -5,7 +5,7 @@
 
 The original repository was preserved in an immutable local Git mirror and bundle before rewriting. The bundle SHA-256 is `B62F914022FB983FA0A6CF300F5D1E6FE8582C2164B2877449675871F5B17E5D`. The original ignored `.scratch` working-tree material was preserved separately outside the repository. The target GitHub repository had no branches or tags when inspected.
 
-The authoritative Phase 13 branch history was rewritten with `git-filter-repo` 2.47.0 to remove tracked `.scratch/**` paths from every commit. Empty commits were retained (`--prune-empty never`): all 271 original commits remain in order with their messages and authorship, and 271 commits are reachable in the sanitized branch. No pre-existing tags were present; annotated freeze tags are recreated at mapped commits. Other paths were not filtered.
+The authoritative Phase 13 branch history was rewritten with `git-filter-repo` 2.47.0 to remove tracked `.scratch/**` paths from every commit. Empty commits were retained (`--prune-empty never`): all 271 original commits remain in order with their messages and authorship. The sanitized tip adds a documentation-only follow-up. No pre-existing tags were present; annotated freeze tags are recreated at mapped commits. Other paths were not filtered.
 
 The complete old-to-new commit map is preserved locally alongside the backup. This table records important freeze, governance, authorization, and acceptance checkpoints. Other commit references in tracked documentation and `AGENTS.md` were updated to their mapped IDs.
 
@@ -65,7 +65,7 @@ The sanitized acceptance record preserves the canonical Java 25 result and remed
 
 ## Sanitized history audit
 
-The sanitized branch contains 271 reachable commits. The history audit examined 1,216 historical path names and 2,492 unique reachable blobs. It found zero historical `.scratch/**` paths and zero tracked build/cache directories, local runtime databases, log files, local JDK/toolchain archives, or other matched temporary-artifact paths. The root `.gitignore` rule `/.scratch/` was verified with `git check-ignore`.
+The final pre-publication audit enumerated all reachable commits, historical paths, and blob contents. It found zero historical `.scratch/**` paths and zero tracked build/cache directories, local runtime databases, log files, local JDK/toolchain archives, or other matched temporary-artifact paths. The root `.gitignore` rule `/.scratch/` was verified with `git check-ignore`.
 
 A local content scan found no GitHub/AWS token-shaped credential, no user-specific Windows or POSIX home path, and no usable PEM private-key block. Its generic credential-keyword heuristic produced code-symbol and test-fixture matches; every string assignment hit was in synthetic integration tests and included an explicit test/demo/synthetic marker. The sole PEM marker is a header-only malformed input in `PartnerTrustConfigurationTest`, with no private-key body or matching end marker, used to verify rejection. The tracked `src/test/resources/exchange/synthetic-partner.p12` remains a named synthetic test fixture. These test assets were retained as legitimate test material; no production credentials were found.
 
