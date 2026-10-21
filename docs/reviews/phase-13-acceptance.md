@@ -474,3 +474,12 @@ pool measurements. No frozen business semantics changed, no external system was 
 
 All mandatory Phase 13 gates are satisfied. The Phase 13 freeze and separate program-state
 governance follow-up are recorded above; Phase 14 remains not started.
+
+### Retro
+
+The repository CI already runs the canonical Java 25 `clean verify`, and the acceptance record
+preserves the focused benchmark command and both profile outputs. No new build guardrail was needed.
+The remaining maintainability follow-up is to consider factoring the test-only benchmark helper's
+process lifecycle, HTTP/SSE handling, JMX/database sampling and result reporting into smaller
+helpers. That is non-blocking and was left unchanged so the accepted characterization and scope
+remain stable. No Phase 14 work was started.
