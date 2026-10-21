@@ -1,6 +1,6 @@
 # Phase 13 Acceptance Record
 
-**Status:** ACCEPTANCE PASS — independent review complete with zero BLOCKER/MAJOR; local Phase 13 freeze and governance commits are pending. Phase 14 has not started.
+**Status:** PHASE 13 COMPLETE + FROZEN — independent review found zero BLOCKER/MAJOR. The local implementation freeze is `8d4c88b4ba5a2ffaece103baa453205e480019fa`; the separate program-state follow-up is `6714ab5c71592fc2909f713145bcf55f60bf1374`. Phase 14 has not started.
 **Assessment date:** 2026-10-21.
 **Acceptance target:** local-only, synthetic data, frozen Phase 13 specification.
 
@@ -472,5 +472,5 @@ use documented service-boundary calls from the benchmark harness JVM with separa
 pool measurements. No frozen business semantics changed, no external system was used, and no Phase
 14 scope was introduced.
 
-All mandatory Phase 13 gates are satisfied. Phase 13 is ready for the local freeze and separate
-program-state governance follow-up; Phase 14 remains not started.
+All mandatory Phase 13 gates are satisfied. The Phase 13 freeze and separate program-state
+governance follow-up are recorded above; Phase 14 remains not started.
