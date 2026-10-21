@@ -1,6 +1,7 @@
 # Phase 13 Acceptance Record
 
-**Status:** PHASE 13 COMPLETE + FROZEN — independent review found zero BLOCKER/MAJOR. The local implementation freeze is `57b949ab8c5fa28e95243e83df0910731dbec800`; the separate program-state follow-up is `809ff8e8c5ba79c5c8ceb9ec7d0e7b6985f3619f`. Phase 14 has not started.
+**Phase 13 disposition:** COMPLETE + FROZEN — independent review found zero BLOCKER/MAJOR. The local implementation freeze is `57b949ab8c5fa28e95243e83df0910731dbec800`; the separate program-state follow-up is `809ff8e8c5ba79c5c8ceb9ec7d0e7b6985f3619f`.
+**Current program note (2026-10-22):** This record captures Phase 13 acceptance and remains unchanged as an evidence record. Phase 14 productization is now authorized and in progress under the separate Volume V master prompt; the historical “not started” statements below describe their original dated checkpoints. Volume V is not complete.
 **Assessment date:** 2026-10-21.
 **Acceptance target:** local-only, synthetic data, frozen Phase 13 specification.
 
