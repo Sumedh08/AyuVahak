@@ -204,8 +204,39 @@ try {
       if ($listener) { $listener.Stop() }
     }
   }
-  & docker @dockerArguments up --detach
-  if ($LASTEXITCODE -ne 0) { throw "Docker Compose failed to start the local services." }
+
+  # Start database and identity first. Their cold-start work competes with the bounded local FHIR
+  # profile warm-up for CPU and memory on developer machines; starting all three together caused
+  # the packaged application to hit its existing fail-closed warm-up deadline.
+  & docker @dockerArguments up --detach database keycloak
+  if ($LASTEXITCODE -ne 0) { throw "Docker Compose failed to start the local database and identity provider." }
+  $databaseName = [string]$values["AYUVAHAK_DATABASE_NAME"]
+  $databaseUsername = [string]$values["AYUVAHAK_DATABASE_USERNAME"]
+  $discoveryUri = "$($issuerUri.AbsoluteUri.TrimEnd('/'))/.well-known/openid-configuration"
+  $dependencyDeadline = (Get-Date).AddMinutes(5)
+  $nextDependencyProgress = (Get-Date).AddSeconds(30)
+  $databaseReady = $false
+  $identityReady = $false
+  while ((Get-Date) -lt $dependencyDeadline) {
+    & docker @dockerArguments exec --no-TTY database pg_isready --quiet --username $databaseUsername --dbname $databaseName 2>$null
+    $databaseReady = $LASTEXITCODE -eq 0
+    try {
+      $identityDocument = Invoke-RestMethod -Uri $discoveryUri -TimeoutSec 3
+      $identityReady = [string]$identityDocument.issuer -eq $issuerUri.AbsoluteUri.TrimEnd('/')
+    } catch { $identityReady = $false }
+    if ($databaseReady -and $identityReady) { break }
+    if ((Get-Date) -ge $nextDependencyProgress) {
+      Write-Host "Waiting for the local database and identity provider to become ready."
+      $nextDependencyProgress = (Get-Date).AddSeconds(30)
+    }
+    Start-Sleep -Seconds 3
+  }
+  if (-not $databaseReady -or -not $identityReady) {
+    throw "The local database and identity provider did not both become ready within five minutes. Inspect their Compose health and logs. No credentials were printed."
+  }
+
+  & docker @dockerArguments up --detach app
+  if ($LASTEXITCODE -ne 0) { throw "Docker Compose failed to start the AyuVahak application." }
   $port = [int]$values["AYUVAHAK_HTTP_PORT"]
   $readinessUri = "http://127.0.0.1:$port/actuator/health/readiness"
   # A measured clean local installation can spend several minutes initializing the bundled FHIR

@@ -13,10 +13,12 @@ Run `scripts/local/Start-AyuVahak.ps1` and choose one of:
 
 The choice is recorded for that local installation. Changing modes requires a separate clean
 installation; the launcher will not reuse one mode's database volume for the other.
-On the first start, the application may take several minutes to initialize its local standards
-validation support. The launcher reports progress and waits up to ten minutes before returning a
-readiness diagnostic. If a configured loopback port is unavailable, change the corresponding
-`AYUVAHAK_HTTP_PORT` or `AYUVAHAK_KEYCLOAK_PORT` in `.env` and retry.
+On the first start, the local database and Keycloak initialize before AyuVahak starts. This keeps
+their cold-start work from competing with the application's bounded FHIR standards-profile
+initialization. The application may then take several minutes to become ready; the launcher reports
+progress and waits up to ten minutes before returning a readiness diagnostic. If a configured
+loopback port is unavailable, change the corresponding `AYUVAHAK_HTTP_PORT` or
+`AYUVAHAK_KEYCLOAK_PORT` in `.env` and retry.
 
 ## Establish the first AyuVahak grant
 
