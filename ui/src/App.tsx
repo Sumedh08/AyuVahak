@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { type AnalyticsApiClient, createAnalyticsApiClient } from "./api/analytics";
 import { createOwnerApiClient, type OwnerApiClient } from "./api/owner";
 import {
   createReferralMatchingApiClient,
@@ -10,12 +11,16 @@ import {
   type SessionClient,
   type SessionProjection,
 } from "./api/session";
+import { createTransferApiClient, type TransferApiClient } from "./api/transfer";
 import type { AuthClient } from "./auth/oidc";
 import { AppShell } from "./components/AppShell";
+import { AnalyticsWorkspace } from "./workspaces/AnalyticsWorkspace";
 import { CapacityWorkspace } from "./workspaces/CapacityWorkspace";
 import { DirectoryWorkspace } from "./workspaces/DirectoryWorkspace";
 import { MatchingWorkspace } from "./workspaces/MatchingWorkspace";
 import { ReferralWorkspace } from "./workspaces/ReferralWorkspace";
+import { TransferWorkspace } from "./workspaces/TransferWorkspace";
+import { TransportWorkspace } from "./workspaces/TransportWorkspace";
 
 const defaultSessionClient = createSessionClient();
 
@@ -34,6 +39,8 @@ export interface AppProps {
   readonly sessionClient?: SessionClient;
   readonly ownerApiClient?: OwnerApiClient;
   readonly referralMatchingApiClient?: ReferralMatchingApiClient;
+  readonly transferApiClient?: TransferApiClient;
+  readonly analyticsApiClient?: AnalyticsApiClient;
 }
 
 export function App({
@@ -41,6 +48,8 @@ export function App({
   sessionClient = defaultSessionClient,
   ownerApiClient,
   referralMatchingApiClient,
+  transferApiClient,
+  analyticsApiClient,
 }: AppProps) {
   const [view, setView] = useState<ViewState>({ status: "loading" });
   const [currentPath, setCurrentPath] = useState(() => window.location.pathname);
@@ -52,6 +61,14 @@ export function App({
   const referralMatchingClient = useMemo(
     () => referralMatchingApiClient ?? createReferralMatchingApiClient(getAccessToken),
     [getAccessToken, referralMatchingApiClient],
+  );
+  const transferClient = useMemo(
+    () => transferApiClient ?? createTransferApiClient(getAccessToken),
+    [getAccessToken, transferApiClient],
+  );
+  const analyticsClient = useMemo(
+    () => analyticsApiClient ?? createAnalyticsApiClient(getAccessToken),
+    [getAccessToken, analyticsApiClient],
   );
 
   useEffect(() => {
@@ -231,6 +248,32 @@ export function App({
             session={view.session}
             getAccessToken={getAccessToken}
             apiClient={referralMatchingClient}
+          />
+        ) : currentPath === "/transfers" || currentPath.startsWith("/transfers/") ? (
+          <TransferWorkspace
+            session={view.session}
+            getAccessToken={getAccessToken}
+            apiClient={transferClient}
+            view="transfers"
+          />
+        ) : currentPath === "/receiving" || currentPath.startsWith("/receiving/") ? (
+          <TransferWorkspace
+            session={view.session}
+            getAccessToken={getAccessToken}
+            apiClient={transferClient}
+            view="receiving"
+          />
+        ) : currentPath === "/transport" || currentPath.startsWith("/transport/") ? (
+          <TransportWorkspace
+            session={view.session}
+            getAccessToken={getAccessToken}
+            apiClient={transferClient}
+          />
+        ) : currentPath === "/analytics" || currentPath.startsWith("/analytics/") ? (
+          <AnalyticsWorkspace
+            session={view.session}
+            getAccessToken={getAccessToken}
+            apiClient={analyticsClient}
           />
         ) : undefined;
       return (

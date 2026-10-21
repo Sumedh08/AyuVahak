@@ -3,6 +3,7 @@ package org.ayuvahak.analytics.application;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -15,6 +16,7 @@ import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.UUID;
 import org.ayuvahak.analytics.adapter.persistence.JdbcAnalyticsComputationOperationStore;
+import org.ayuvahak.analytics.adapter.persistence.JdbcAnalyticsSnapshotReadStore;
 import org.ayuvahak.analytics.adapter.persistence.JdbcAnalyticsStore;
 import org.ayuvahak.analytics.domain.AggregateCompleteness;
 import org.ayuvahak.analytics.domain.AggregateSnapshot;
@@ -182,6 +184,34 @@ class AnalyticsAggregateComputationPostgresIT {
         .isEqualTo(
             Phase14GoldenCorpus.integer(
                 "$.cases.analyticsComputation.idempotentReplaySnapshotCount"));
+  }
+
+  @Test
+  void analyticsWorkspaceReadIsScopeBoundedAndExposesOnlyAggregateSnapshotFields() {
+    store.publishDefinition(definition(1, List.of(referralSubmitted())));
+    AggregateSnapshot snapshot =
+        compute(
+            service(new SyntheticOwnerReader(List.of(input(referralSubmitted(), 4))), true),
+            request(InternalId.generate()));
+    JdbcAnalyticsSnapshotReadStore reads = new JdbcAnalyticsSnapshotReadStore(jdbc);
+
+    List<AnalyticsSnapshotSummary> organizationRows =
+        reads.findRecent(ORGANIZATION, Optional.empty(), 0, 10);
+    List<AnalyticsSnapshotSummary> facilityRows =
+        reads.findRecent(ORGANIZATION, Optional.of(FACILITY), 0, 10);
+
+    assertThat(organizationRows)
+        .singleElement()
+        .satisfies(
+            row -> {
+              assertThat(row.snapshotId()).isEqualTo(snapshot.snapshotId());
+              assertThat(row.indicatorKey()).isEqualTo("SYN-OPS-COUNT");
+              assertThat(row.completeness()).isEqualTo(AggregateCompleteness.COMPLETE);
+              assertThat(row.value()).contains(BigDecimal.valueOf(4));
+              assertThat(row.revision()).isEmpty();
+              assertThat(row.exportState()).isEmpty();
+            });
+    assertThat(facilityRows).isEmpty();
   }
 
   @Test

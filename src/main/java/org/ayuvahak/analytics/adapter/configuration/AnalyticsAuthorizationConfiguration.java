@@ -14,6 +14,11 @@ class AnalyticsAuthorizationConfiguration {
   }
 
   @Bean
+  FunctionalAuthority analyticsAggregateReadAuthority() {
+    return AnalyticsAuthorities.aggregateRead();
+  }
+
+  @Bean
   FunctionalAuthority analyticsLateAggregateRevisionAuthority() {
     return AnalyticsAuthorities.lateAggregateRevision();
   }

@@ -43,6 +43,7 @@ export const WORKSPACES: readonly WorkspaceDefinition[] = [
     href: "/receiving",
     label: "Receiving work",
     authorities: [
+      "TransferViewAuthority",
       "ClinicalSuitabilityAuthority",
       "OperationalReadinessAuthority",
       "AcceptanceAuthority",
@@ -53,6 +54,7 @@ export const WORKSPACES: readonly WorkspaceDefinition[] = [
     href: "/transport",
     label: "Transport",
     authorities: [
+      "TransferViewAuthority",
       "TransportRequestAuthority",
       "TransportDispatchCoordinationAuthority",
       "TransportStatusAuthority",
@@ -63,6 +65,7 @@ export const WORKSPACES: readonly WorkspaceDefinition[] = [
     href: "/analytics",
     label: "Analytics",
     authorities: [
+      "AnalyticsAggregateRead",
       "AnalyticsAggregateComputation",
       "AnalyticsDisclosureReview",
       "AnalyticsDhis2Export",

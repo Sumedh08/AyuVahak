@@ -593,6 +593,27 @@ tbody th .facility-id-label {
   gap: 0.75rem;
 }
 
+.state-tag {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.6rem;
+  padding: 0.15rem 0.55rem;
+  border: 1px solid #b7c8ce;
+  border-radius: 999px;
+  color: #23414c;
+  background: #f0f5f6;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.025em;
+  white-space: nowrap;
+}
+
+.analytics-value {
+  display: block;
+  margin-top: 0.45rem;
+  font-variant-numeric: tabular-nums;
+}
+
 .pager {
   color: #4b626e;
   font-size: 0.84rem;

@@ -15,6 +15,12 @@ public final class AnalyticsAuthorities {
         Set.of(ExecutionScope.Kind.ORGANIZATION, ExecutionScope.Kind.FACILITY));
   }
 
+  public static FunctionalAuthority aggregateRead() {
+    return new FunctionalAuthority(
+        "AnalyticsAggregateRead",
+        Set.of(ExecutionScope.Kind.ORGANIZATION, ExecutionScope.Kind.FACILITY));
+  }
+
   public static FunctionalAuthority lateAggregateRevision() {
     return new FunctionalAuthority(
         "AnalyticsLateAggregateRevision", Set.of(ExecutionScope.Kind.ORGANIZATION));
