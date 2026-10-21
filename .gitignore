@@ -1,5 +1,7 @@
 # Java and Maven build output
 **/target/
+ui/node_modules/
+ui/dist/
 
 # Local planning/scratch, tooling and editor state
 /.scratch/

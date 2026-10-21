@@ -8,6 +8,33 @@ permissions:
   contents: read
 
 jobs:
+  frontend:
+    name: React and TypeScript verification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version-file: ui/.nvmrc
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install locked frontend dependencies
+        working-directory: ui
+        run: npm ci
+
+      - name: Verify frontend
+        working-directory: ui
+        run: |
+          npm run lint
+          npm run typecheck
+          npm test
+          npm run build
+
   verify:
     name: Java 25 and PostgreSQL/PostGIS verification
     runs-on: ubuntu-24.04
