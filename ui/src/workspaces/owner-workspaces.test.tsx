@@ -100,9 +100,23 @@ function apiClient(overrides: Partial<OwnerApiClient> = {}): OwnerApiClient {
   return {
     loadDirectoryFacilities: vi.fn().mockResolvedValue(directoryPage),
     loadCurrentCapacity: vi.fn().mockResolvedValue(capacityProjection("UNKNOWN", null)),
+    createOrganization: vi.fn().mockResolvedValue(organizationId),
+    createFacility: vi.fn().mockResolvedValue(facilityId),
     ...overrides,
   };
 }
+
+const directorySetupSession: SessionProjection = {
+  ...session,
+  deploymentMode: "SYNTHETIC_DEMO",
+  capabilities: [
+    ...session.capabilities,
+    {
+      authorityCode: "DirectoryCuration",
+      scopes: [{ kind: "PLATFORM" }],
+    },
+  ],
+};
 
 describe("read-only Directory workspace", () => {
   it("shows only facilities returned by the scoped owner API", async () => {
@@ -143,6 +157,77 @@ describe("read-only Directory workspace", () => {
       await screen.findByRole("heading", { name: "Directory access was denied" }),
     ).toBeInTheDocument();
     expect(screen.queryByText("Synthetic Facility A")).not.toBeInTheDocument();
+  });
+
+  it("shows setup only for DirectoryCuration and submits a synthetic organization through the owner", async () => {
+    const api = apiClient();
+    render(
+      <DirectoryWorkspace
+        session={directorySetupSession}
+        getAccessToken={async () => "token"}
+        apiClient={api}
+      />,
+    );
+
+    expect(await screen.findByRole("heading", { name: "Directory setup" })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Organization name"), {
+      target: { value: "SYN-ORG-001" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create organization" }));
+
+    await waitFor(() =>
+      expect(api.createOrganization).toHaveBeenCalledWith(
+        { key: "PLATFORM", kind: "PLATFORM" },
+        "SYN-ORG-001",
+        expect.any(String),
+        expect.any(String),
+      ),
+    );
+    expect(await screen.findByRole("status")).toHaveTextContent("Organization created");
+  });
+
+  it("does not show curation forms to a read-only Directory user", async () => {
+    render(
+      <DirectoryWorkspace
+        session={session}
+        getAccessToken={async () => "token"}
+        apiClient={apiClient()}
+      />,
+    );
+
+    await screen.findByRole("cell", { name: organizationId });
+    expect(screen.queryByRole("heading", { name: "Directory setup" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Create organization" })).not.toBeInTheDocument();
+  });
+
+  it("preserves the same facility command and idempotency key when retrying an unknown result", async () => {
+    const createFacility = vi
+      .fn<OwnerApiClient["createFacility"]>()
+      .mockRejectedValueOnce(new OwnerApiError(null, "OUTCOME_UNKNOWN"))
+      .mockResolvedValue(facilityId);
+    const api = apiClient({
+      createFacility,
+    });
+    render(
+      <DirectoryWorkspace
+        session={directorySetupSession}
+        getAccessToken={async () => "token"}
+        apiClient={api}
+      />,
+    );
+
+    await screen.findByRole("heading", { name: "Directory setup" });
+    fireEvent.change(screen.getByLabelText("Managing organization ID"), {
+      target: { value: organizationId },
+    });
+    fireEvent.change(screen.getByLabelText("Facility name"), {
+      target: { value: "SYN-FACILITY-A" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create facility" }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Retry same facility request" }));
+    await waitFor(() => expect(createFacility).toHaveBeenCalledTimes(2));
+    expect(createFacility.mock.calls[1]).toEqual(createFacility.mock.calls[0]);
   });
 });
 

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   capacityScopes,
   createOwnerApiClient,
+  directoryCurationScopes,
   directoryScopes,
   type OwnerApiError,
   parseCapacityCurrent,
@@ -54,6 +55,20 @@ const session: SessionProjection = {
             issuer: "urn:ayuvahak:directory",
             identifierType: "Facility",
             identifier: facilityId,
+          },
+        },
+      ],
+    },
+    {
+      authorityCode: "DirectoryCuration",
+      scopes: [
+        { kind: "PLATFORM" },
+        {
+          kind: "ORGANIZATION",
+          organization: {
+            issuer: "urn:ayuvahak:directory",
+            identifierType: "Organization",
+            identifier: organizationId,
           },
         },
       ],
@@ -121,6 +136,10 @@ describe("owner API session scope mapping", () => {
     ]);
     expect(capacityScopes(session)).toEqual([
       { key: `FACILITY:${facilityId}`, kind: "FACILITY", organizationId, facilityId },
+    ]);
+    expect(directoryCurationScopes(session)).toEqual([
+      { key: "PLATFORM", kind: "PLATFORM" },
+      { key: `ORGANIZATION:${organizationId}`, kind: "ORGANIZATION", organizationId },
     ]);
   });
 
@@ -204,6 +223,99 @@ describe("owner API response contracts", () => {
 });
 
 describe("same-origin owner API client", () => {
+  it("creates an organization with an idempotent Directory owner command", async () => {
+    const organizationId = "ad2bd27f-b084-4cce-a7e9-77ab31e21a22";
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(JSON.stringify({ id: organizationId }), { status: 201 }));
+    const api = createOwnerApiClient(async () => "synthetic-access-token", fetcher);
+    const idempotencyKey = "de93e6fc-72b6-45bb-b73b-90a9ddce5211";
+
+    await expect(
+      api.createOrganization(
+        { key: "PLATFORM", kind: "PLATFORM" },
+        "SYN-ORG-001",
+        idempotencyKey,
+        "2026-10-22T00:00:00Z",
+      ),
+    ).resolves.toBe(organizationId);
+
+    const [path, request] = fetcher.mock.calls[0] ?? [];
+    expect(path).toBe("/api/v1/directory/organizations");
+    expect(request?.method).toBe("POST");
+    expect(request?.credentials).toBe("omit");
+    expect(request?.headers).toMatchObject({
+      "X-AyuVahak-Execution-Scope": "PLATFORM",
+      "Idempotency-Key": idempotencyKey,
+      Authorization: "Bearer synthetic-access-token",
+    });
+    expect(JSON.parse(String(request?.body))).toMatchObject({
+      name: "SYN-ORG-001",
+      source: { issuer: "urn:ayuvahak:operator-entry", resourceType: "Organization" },
+      provenance: { method: "OPERATOR_REPORTED", reasonCode: "INITIAL_SETUP" },
+    });
+  });
+
+  it("creates a facility only in an organization scope and preserves the request key on unknown outcome", async () => {
+    const facilityId = "ef286e2a-bdfb-48b7-bf4b-25a894c92d6d";
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: facilityId }), { status: 201 }))
+      .mockRejectedValueOnce(new TypeError("synthetic network interruption"));
+    const api = createOwnerApiClient(async () => "synthetic-access-token", fetcher);
+    const scope = {
+      key: `ORGANIZATION:${organizationId}`,
+      kind: "ORGANIZATION" as const,
+      organizationId,
+    };
+    const idempotencyKey = "de93e6fc-72b6-45bb-b73b-90a9ddce5211";
+
+    await expect(
+      api.createFacility(
+        scope,
+        organizationId,
+        "SYN-FACILITY-A",
+        idempotencyKey,
+        "2026-10-22T00:00:00Z",
+      ),
+    ).resolves.toBe(facilityId);
+    await expect(
+      api.createFacility(
+        scope,
+        organizationId,
+        "SYN-FACILITY-A",
+        idempotencyKey,
+        "2026-10-22T00:00:00Z",
+      ),
+    ).rejects.toMatchObject({ code: "OUTCOME_UNKNOWN" });
+
+    expect(fetcher.mock.calls[0]?.[0]).toBe("/api/v1/directory/facilities");
+    expect(fetcher.mock.calls[0]?.[1]?.headers).toMatchObject({
+      "X-AyuVahak-Execution-Scope": "ORGANIZATION",
+      "X-AyuVahak-Organization-Id": organizationId,
+      "Idempotency-Key": idempotencyKey,
+    });
+    expect(fetcher.mock.calls[1]?.[1]?.headers).toMatchObject({
+      "Idempotency-Key": idempotencyKey,
+    });
+    expect(fetcher.mock.calls[1]?.[1]?.body).toBe(fetcher.mock.calls[0]?.[1]?.body);
+  });
+
+  it("rejects attempts to create an organization outside platform scope before transport", async () => {
+    const fetcher = vi.fn<typeof fetch>();
+    const api = createOwnerApiClient(async () => "synthetic-access-token", fetcher);
+    const scope = {
+      key: `ORGANIZATION:${organizationId}`,
+      kind: "ORGANIZATION" as const,
+      organizationId,
+    };
+
+    await expect(
+      api.createOrganization(scope, "SYN-ORG-001", crypto.randomUUID(), "2026-10-22T00:00:00Z"),
+    ).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
   it("requests only the selected Directory scope and obtains a fresh in-memory token", async () => {
     const fetcher = vi
       .fn<typeof fetch>()

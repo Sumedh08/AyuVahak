@@ -62,7 +62,9 @@ export type OwnerApiErrorCode =
   | "FORBIDDEN"
   | "UNAVAILABLE"
   | "INVALID_RESPONSE"
-  | "INVALID_REQUEST";
+  | "INVALID_REQUEST"
+  | "CONFLICT"
+  | "OUTCOME_UNKNOWN";
 
 export class OwnerApiError extends Error {
   constructor(
@@ -144,6 +146,10 @@ function scopeForOwner(scope: ScopeProjection): OwnerScope | null {
 
 export function directoryScopes(session: SessionProjection): readonly OwnerScope[] {
   return authorizedScopes(session, "DirectoryRead");
+}
+
+export function directoryCurationScopes(session: SessionProjection): readonly OwnerScope[] {
+  return authorizedScopes(session, "DirectoryCuration");
 }
 
 export function capacityScopes(
@@ -325,6 +331,19 @@ export interface OwnerApiClient {
     dimension: string,
     signal?: AbortSignal,
   ): Promise<CapacityCurrentProjection>;
+  createOrganization(
+    scope: OwnerScope,
+    name: string,
+    idempotencyKey: string,
+    observedAt: string,
+  ): Promise<string>;
+  createFacility(
+    scope: OwnerScope,
+    managingOrganizationId: string,
+    name: string,
+    idempotencyKey: string,
+    observedAt: string,
+  ): Promise<string>;
 }
 
 export function createOwnerApiClient(
@@ -371,6 +390,59 @@ export function createOwnerApiClient(
     } catch (error: unknown) {
       if (error instanceof OwnerApiError) throw error;
       throw new OwnerApiError(response.status, "INVALID_RESPONSE");
+    }
+  }
+
+  async function create(
+    path: string,
+    scope: OwnerScope,
+    body: UnknownRecord,
+    idempotencyKey: string,
+  ): Promise<string> {
+    const token = await getAccessToken();
+    if (!token || token.length > 8192 || !/^[A-Za-z0-9\-._~+/]+=*$/.test(token)) {
+      throw new OwnerApiError(401, "UNAUTHENTICATED");
+    }
+    if (!INTERNAL_ID.test(idempotencyKey)) {
+      throw new OwnerApiError(null, "INVALID_REQUEST");
+    }
+    const headers: Record<string, string> = {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+      "Idempotency-Key": idempotencyKey,
+      "X-AyuVahak-Execution-Scope": scope.kind,
+    };
+    if (scope.kind !== "PLATFORM") headers["X-AyuVahak-Organization-Id"] = scope.organizationId;
+    if (scope.kind === "FACILITY") headers["X-AyuVahak-Facility-Id"] = scope.facilityId;
+
+    let response: Response;
+    try {
+      response = await fetcher(path, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+        credentials: "omit",
+        cache: "no-store",
+      });
+    } catch {
+      throw new OwnerApiError(null, "OUTCOME_UNKNOWN");
+    }
+    if (response.status === 401) throw new OwnerApiError(401, "UNAUTHENTICATED");
+    if (response.status === 403) throw new OwnerApiError(403, "FORBIDDEN");
+    if (response.status === 400 || response.status === 422) {
+      throw new OwnerApiError(response.status, "INVALID_REQUEST");
+    }
+    if (response.status === 409) throw new OwnerApiError(409, "CONFLICT");
+    if (response.status >= 500) throw new OwnerApiError(response.status, "OUTCOME_UNKNOWN");
+    if (!response.ok) throw new OwnerApiError(response.status, "UNAVAILABLE");
+    try {
+      const result = parseCreatedResource(await response.json());
+      if (result === null) throw new OwnerApiError(response.status, "OUTCOME_UNKNOWN");
+      return result;
+    } catch (error: unknown) {
+      if (error instanceof OwnerApiError) throw error;
+      throw new OwnerApiError(response.status, "OUTCOME_UNKNOWN");
     }
   }
 
@@ -421,5 +493,74 @@ export function createOwnerApiClient(
         return projection;
       });
     },
+    createOrganization(scope, name, idempotencyKey, observedAt) {
+      if (
+        scope.kind !== "PLATFORM" ||
+        name.trim() !== name ||
+        name.length < 1 ||
+        name.length > 256 ||
+        Number.isNaN(Date.parse(observedAt))
+      ) {
+        return Promise.reject(new OwnerApiError(null, "INVALID_REQUEST"));
+      }
+      return create(
+        "/api/v1/directory/organizations",
+        scope,
+        {
+          name,
+          parentOrganizationId: null,
+          source: {
+            issuer: "urn:ayuvahak:operator-entry",
+            resourceType: "Organization",
+            reference: `LOCAL-OPERATOR-${idempotencyKey}`,
+          },
+          provenance: {
+            method: "OPERATOR_REPORTED",
+            observedAt,
+            reasonCode: "INITIAL_SETUP",
+          },
+        },
+        idempotencyKey,
+      );
+    },
+    createFacility(scope, managingOrganizationId, name, idempotencyKey, observedAt) {
+      if (
+        (scope.kind !== "PLATFORM" && scope.kind !== "ORGANIZATION") ||
+        !INTERNAL_ID.test(managingOrganizationId) ||
+        (scope.kind === "ORGANIZATION" && scope.organizationId !== managingOrganizationId) ||
+        name.trim() !== name ||
+        name.length < 1 ||
+        name.length > 256 ||
+        Number.isNaN(Date.parse(observedAt))
+      ) {
+        return Promise.reject(new OwnerApiError(null, "INVALID_REQUEST"));
+      }
+      return create(
+        "/api/v1/directory/facilities",
+        scope,
+        {
+          name,
+          managingOrganizationId,
+          source: {
+            issuer: "urn:ayuvahak:operator-entry",
+            resourceType: "Facility",
+            reference: `LOCAL-OPERATOR-${idempotencyKey}`,
+          },
+          provenance: {
+            method: "OPERATOR_REPORTED",
+            observedAt,
+            reasonCode: "INITIAL_SETUP",
+          },
+        },
+        idempotencyKey,
+      );
+    },
   };
+}
+
+function parseCreatedResource(value: unknown): string | null {
+  if (!isRecord(value) || typeof value.id !== "string" || !INTERNAL_ID.test(value.id)) {
+    return null;
+  }
+  return value.id;
 }

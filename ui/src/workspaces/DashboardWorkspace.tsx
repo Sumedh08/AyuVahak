@@ -67,8 +67,12 @@ export function DashboardWorkspace({ session }: DashboardWorkspaceProps) {
                     that identity.
                   </li>
                   <li>
-                    Use Access management to add only the organization or facility grants that are
-                    needed.
+                    A grant administrator can assign Directory setup to a separate operator; the
+                    current operator cannot grant themselves additional access.
+                  </li>
+                  <li>
+                    Use Directory setup to create the organization and facilities, then use Access
+                    management to grant only the scopes needed by each operator.
                   </li>
                 </ol>
                 <p>

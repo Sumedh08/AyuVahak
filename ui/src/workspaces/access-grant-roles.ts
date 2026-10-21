@@ -16,11 +16,19 @@ export const GRANT_ROLE_TEMPLATES: readonly GrantRoleTemplate[] = [
     authorities: ["AccessGrantAdministration"],
   },
   {
+    key: "platform-directory-setup",
+    label: "Platform Directory setup operator",
+    description:
+      "Can read and curate the platform Directory during deployment setup. Grant to a separate operator identity.",
+    scope: "PLATFORM",
+    authorities: ["DirectoryRead", "DirectoryCuration"],
+  },
+  {
     key: "organization-directory-administrator",
     label: "Organization Directory administrator",
     description: "Can curate Directory records within one organization scope.",
     scope: "ORGANIZATION",
-    authorities: ["DirectoryCuration"],
+    authorities: ["DirectoryRead", "DirectoryCuration"],
   },
   {
     key: "referral-coordinator-organization",
