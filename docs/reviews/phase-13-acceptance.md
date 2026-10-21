@@ -1,6 +1,6 @@
 # Phase 13 Acceptance Record
 
-**Status:** BENCHMARK PASS — final independent review pending; Phase 13 is not frozen and Phase 14 has not started.
+**Status:** ACCEPTANCE PASS — independent review complete with zero BLOCKER/MAJOR; local Phase 13 freeze and governance commits are pending. Phase 14 has not started.
 **Assessment date:** 2026-10-21.
 **Acceptance target:** local-only, synthetic data, frozen Phase 13 specification.
 
@@ -437,7 +437,7 @@ legal retention approval, or physical PatientReference minimization. No retentio
 basis was invented. See `docs/development/production-retention-register.md` for the 16 owner rows
 and the precise behavior and evidence for each.
 
-### Final gate status before independent review
+### Final acceptance gate status
 
 | Gate | Result | Evidence / limit |
 |---|---|---|
@@ -450,7 +450,27 @@ and the precise behavior and evidence for each.
 | Reviewed vulnerability inventory | PASS | Earlier accepted local OSV/CISA inventory remains digest-bound. |
 | SPDX 3.0.1, provenance and local signature | PASS | Existing evidence remains bound to the unchanged JAR digest. |
 | Owner retention classification and executable-action tests | PASS | The stale owner-wide MAJOR is closed for the reasons above; unsupported deletion behavior remains expressly out of scope. |
-| Independent final review | PENDING | Phase 13 must not freeze until BLOCKER=0 and MAJOR=0. |
+| Independent final review | PASS | Final review against the canonical baseline found 0 BLOCKER and 0 MAJOR. One test-harness maintainability MINOR remains non-blocking; the query-plan labeling MINOR was resolved in `0ed4895`. |
 | Phase 14 implementation | NOT STARTED | No Phase 14 work was performed. |
 
-Phase 13 remains unfrozen pending the independent review and any required narrow remediation.
+### Independent final code review
+
+The independent review covered the benchmark and acceptance changes from canonical PASS baseline
+`5d252bc66881ea7fbfee4d8d81b0f2731205e1bf` through final documentation clarification
+`0ed489512b708fa63edaeb72460085ea443ab34e`.
+
+| Axis | BLOCKER | MAJOR | MINOR | DOCUMENTATION | Disposition |
+|---|---:|---:|---:|---:|---|
+| Standards | 0 | 0 | 1 | 0 | The test-only benchmark helper combines packaged-process lifecycle, HTTP/SSE handling, JMX, database instrumentation, percentile calculations and reporting. This is a maintainability judgement call; no correctness or safety issue was found. |
+| Specification | 0 | 0 | 0 unresolved | 0 | A minor query-plan wording issue was resolved: the recorded hashes are explicitly identified as simplified relation-level EXPLAIN probes, not full application SQL plans. |
+
+The spec review confirmed the measured Profile A uses one packaged JVM and Profile B uses two
+packaged JVMs on separate ports against the same disposable PostgreSQL database. The timed mix
+exercises all declared contexts, maintains two live authorized SSE connections, reports its process
+and database measurements, and makes no production-capacity claim. Analytics and local mock export
+use documented service-boundary calls from the benchmark harness JVM with separate CPU, heap and
+pool measurements. No frozen business semantics changed, no external system was used, and no Phase
+14 scope was introduced.
+
+All mandatory Phase 13 gates are satisfied. Phase 13 is ready for the local freeze and separate
+program-state governance follow-up; Phase 14 remains not started.
