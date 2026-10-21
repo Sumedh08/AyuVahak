@@ -1,5 +1,6 @@
 package org.ayuvahak.platform.fhir;
 
+import ca.uhn.fhir.context.FhirContext;
 import ca.uhn.fhir.context.support.IValidationSupport;
 import ca.uhn.fhir.validation.FhirValidator;
 import ca.uhn.fhir.validation.ValidationOptions;
@@ -19,6 +20,7 @@ final class FhirProfileStartupWarmup implements Callable<Void> {
   private static final String CORE_PATIENT_PROFILE =
       "http://hl7.org/fhir/StructureDefinition/Patient";
 
+  private final FhirContext fhirContext;
   private final IValidationSupport validationSupport;
   private final FhirValidator validator;
   private final Object validatorLock;
@@ -28,6 +30,7 @@ final class FhirProfileStartupWarmup implements Callable<Void> {
   private final String ipsBundleProfile;
 
   FhirProfileStartupWarmup(
+      FhirContext fhirContext,
       IValidationSupport validationSupport,
       FhirValidator validator,
       Object validatorLock,
@@ -35,6 +38,7 @@ final class FhirProfileStartupWarmup implements Callable<Void> {
       String ipsPatientProfile,
       String ipsCompositionProfile,
       String ipsBundleProfile) {
+    this.fhirContext = fhirContext;
     this.validationSupport = validationSupport;
     this.validator = validator;
     this.validatorLock = validatorLock;
@@ -56,10 +60,22 @@ final class FhirProfileStartupWarmup implements Callable<Void> {
   private void validate(IBaseResource resource, String profile) {
     requireProfile(profile);
     ValidationOptions options = new ValidationOptions().addProfile(profile);
+    IBaseResource parserWarmedResource = roundTripThroughJsonParser(resource);
     synchronized (validatorLock) {
       // Results are intentionally ignored: these incomplete synthetic resources exercise local
-      // profile initialization. Actual conformance is enforced on each parsed request.
-      validator.validateWithResult(resource, options);
+      // profile initialization and parser model loading. Actual conformance is enforced on each
+      // parsed request.
+      validator.validateWithResult(parserWarmedResource, options);
+    }
+  }
+
+  private IBaseResource roundTripThroughJsonParser(IBaseResource resource) {
+    try {
+      String json = fhirContext.newJsonParser().encodeResourceToString(resource);
+      return fhirContext.newJsonParser().parseResource(json);
+    } catch (RuntimeException exception) {
+      throw new IllegalStateException(
+          "Synthetic FHIR profile warm-up resource was not parseable", exception);
     }
   }
 

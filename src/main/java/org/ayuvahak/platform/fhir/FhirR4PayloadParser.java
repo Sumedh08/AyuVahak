@@ -132,6 +132,7 @@ public final class FhirR4PayloadParser {
     try {
       VALIDATION_EXECUTOR.execute(
           new FhirProfileStartupWarmup(
+              FHIR_CONTEXT,
               VALIDATION_SUPPORT,
               VALIDATOR,
               VALIDATOR_LOCK,
