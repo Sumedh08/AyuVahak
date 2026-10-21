@@ -2,6 +2,8 @@ package org.ayuvahak.platform.fhir;
 
 import ca.uhn.fhir.context.FhirContext;
 import ca.uhn.fhir.context.support.IValidationSupport;
+import ca.uhn.fhir.parser.IParser;
+import ca.uhn.fhir.parser.StrictErrorHandler;
 import ca.uhn.fhir.validation.FhirValidator;
 import ca.uhn.fhir.validation.ValidationOptions;
 import java.util.concurrent.Callable;
@@ -50,6 +52,7 @@ final class FhirProfileStartupWarmup implements Callable<Void> {
 
   @Override
   public Void call() {
+    warmJsonParser();
     validate(new Patient(), CORE_PATIENT_PROFILE);
     validate(new Organization(), mcsdOrganizationProfile);
     validate(new Patient(), ipsPatientProfile);
@@ -60,22 +63,24 @@ final class FhirProfileStartupWarmup implements Callable<Void> {
   private void validate(IBaseResource resource, String profile) {
     requireProfile(profile);
     ValidationOptions options = new ValidationOptions().addProfile(profile);
-    IBaseResource parserWarmedResource = roundTripThroughJsonParser(resource);
     synchronized (validatorLock) {
       // Results are intentionally ignored: these incomplete synthetic resources exercise local
-      // profile initialization and parser model loading. Actual conformance is enforced on each
-      // parsed request.
-      validator.validateWithResult(parserWarmedResource, options);
+      // profile initialization. Actual conformance is enforced on each parsed request.
+      validator.validateWithResult(resource, options);
     }
   }
 
-  private IBaseResource roundTripThroughJsonParser(IBaseResource resource) {
+  private void warmJsonParser() {
     try {
-      String json = fhirContext.newJsonParser().encodeResourceToString(resource);
-      return fhirContext.newJsonParser().parseResource(json);
+      IParser parser = fhirContext.newJsonParser();
+      parser.setParserErrorHandler(new StrictErrorHandler());
+      parser.parseResource(
+          """
+          {"resourceType":"Bundle","type":"searchset","timestamp":"2000-01-01T00:00:00Z","entry":[{"fullUrl":"https://synthetic.example.test/fhir/Organization/SYN-ORG-WARMUP","resource":{"resourceType":"Organization","id":"SYN-ORG-WARMUP","meta":{"profile":["https://profiles.ihe.net/ITI/mCSD/StructureDefinition/IHE.mCSD.Organization|4.0.0"],"versionId":"1","lastUpdated":"2000-01-01T00:00:00Z"},"active":true,"name":"Synthetic Directory Warm-up"}}]}
+          """);
     } catch (RuntimeException exception) {
       throw new IllegalStateException(
-          "Synthetic FHIR profile warm-up resource was not parseable", exception);
+          "Synthetic FHIR JSON parser warm-up resource was not parseable", exception);
     }
   }
 
