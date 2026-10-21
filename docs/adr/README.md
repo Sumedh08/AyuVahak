@@ -49,6 +49,8 @@ ADRs record durable AyuVahak architecture decisions, their context, and the rati
 | [0031](0031-release-evidence-is-verifiable-not-a-security-claim.md) | Release evidence is verifiable, not a security claim | Accepted |
 | [0032](0032-intelligence-is-optional-and-non-authoritative.md) | Intelligence is optional and non-authoritative | Accepted |
 | [0033](0033-measured-optimization-preserves-domain-semantics.md) | Measured optimization preserves domain semantics | Accepted |
+| [0034](0034-same-origin-role-aware-presentation-client.md) | Same-origin role-aware presentation remains non-authoritative | Accepted for authorized Volume V productization |
+| [0035](0035-explicit-local-demo-or-empty-first-run.md) | Local distribution requires an explicit Synthetic Demo or Empty first-run choice | Accepted for authorized Volume V productization |
 
 ADR 0005 and ADR 0007 have dated amendments for the Phase 2 identity/token boundary and at-least-once/per-aggregate event delivery semantics. These amendments clarify the existing decisions; they do not change the Phase 1 baseline or begin Phase 2 implementation.
 
@@ -66,5 +68,5 @@ ADRs 0023–0025 record the Volume III design decisions: Referral controls and t
 
 ADRs 0026–0029 record the frozen Volume IV decisions: realtime client delivery is a bounded hint channel; federation uses explicit revocable peers and home authority; Analytics consumes owner-produced versioned aggregates; and DHIS2 receives downstream aggregate DataValueSets through Phase 9. Phases 11–12 are implemented and frozen; see their acceptance records.
 
-ADRs 0030–0033 record the frozen Volume V design decisions: portable production profiles require measured recovery evidence; release evidence is verifiable but not a security claim; intelligence is optional and non-authoritative; and optimization preserves domain semantics. They accompany the frozen Phase 13/14 specifications and do not authorize implementation, which requires separate human authorization.
+ADRs 0030–0033 record the frozen Volume V design decisions: portable production profiles require measured recovery evidence; release evidence is verifiable but not a security claim; intelligence is optional and non-authoritative; and optimization preserves domain semantics. ADRs 0034–0035 record the separately authorized productization addendum: a same-origin presentation client uses server-evaluated grants/scopes, and local first-run explicitly selects Synthetic Demo or Empty. The addendum does not change owner authority or the frozen original Phase 14 specification.
 

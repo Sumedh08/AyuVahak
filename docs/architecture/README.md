@@ -24,12 +24,14 @@ Start with the [architecture constitution](constitution.md) for product boundari
 - [Design review](../reviews/volume-4-design-review.md)
 - [Resolved design-question register](../reviews/volume-4-open-questions.md)
 
-## Volume V — design frozen; implementation not started
+## Volume V — design frozen; Phase 14 authorized and in progress
 
 - [Volume V architecture](volume-5-production-hardening-optimization-intelligence.md): production hardening, DPG evidence, measured optimization and optional non-authoritative intelligence.
 - [Retention and deletion governance matrix](volume-5-retention-governance.md): frozen owner-by-owner lifecycle and recovery-safe disposal requirements.
 - [Phase 13 specification](../specs/phase-13-production-hardening-dpg-readiness-spec.md)
 - [Phase 14 specification](../specs/phase-14-optimization-intelligence-spec.md)
+- [Phase 14 productization addendum](../specs/phase-14-productization-addendum.md): role-aware UI, explicit local Demo/Empty setup, operator support and downloadable distribution.
+- [Phase 14 productization research](../research/phase14-productization-research-20261021.md): dated official toolchain/accessibility/static-asset/SSRF source basis.
 - [Production readiness gap analysis](../reviews/production-readiness-gap-analysis.md)
 - [DPG readiness gap analysis](../reviews/dpg-readiness-gap-analysis.md)
 - [Volume V threat model](volume-5-threat-model.md)
@@ -37,4 +39,4 @@ Start with the [architecture constitution](constitution.md) for product boundari
 - [Volume V question disposition](../reviews/volume-5-open-questions.md)
 - [Official research index](../research/README.md) and [design research notes](../research/volume-5-production-security-supply-chain-research.md), [DPG Standard](../research/volume-5-dpg-standard-research.md), and [AI governance](../research/volume-5-ai-governance-research.md)
 
-Root [AGENTS.md](../../AGENTS.md) is authoritative for program state and execution authorization. Volumes I–IV are implemented and frozen. Volume V design and Phase 13/14 specifications are frozen; implementation requires separate human authorization.
+Root [AGENTS.md](../../AGENTS.md) is authoritative for program state and execution authorization. Volumes I–IV and Phase 13 are implemented and frozen. Volume V design and the original Phase 13/14 specifications remain frozen; the current Volume V master prompt authorizes the separate Phase 14 productization addendum and implementation. Volume V is not complete until integrated acceptance and freeze.
