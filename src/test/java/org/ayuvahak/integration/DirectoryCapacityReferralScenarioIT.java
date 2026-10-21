@@ -4708,9 +4708,12 @@ class DirectoryCapacityReferralScenarioIT {
         "{\"resourceType\":\"Bundle\",\"type\":\"searchset\","
             + "\"timestamp\":\""
             + updatedAt
-            + "\",\"entry\":[{\"fullUrl\":\"https://partner.test/fhir/Organization/"
+            + "\",\"link\":[{\"relation\":\"self\","
+            + "\"url\":\"https://partner.test/fhir?_type=Organization&_count=100\"}],"
+            + "\"entry\":[{\"fullUrl\":\"https://partner.test/fhir/Organization/"
             + sourceId
-            + "\",\"resource\":{\"resourceType\":\"Organization\",\"id\":\""
+            + "\",\"search\":{\"mode\":\"match\"},"
+            + "\"resource\":{\"resourceType\":\"Organization\",\"id\":\""
             + sourceId
             + "\",\"meta\":{\"profile\":[\""
             + MCSD_PROFILE
