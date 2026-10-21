@@ -32,6 +32,7 @@ Start with the [architecture constitution](constitution.md) for product boundari
 - [Phase 14 specification](../specs/phase-14-optimization-intelligence-spec.md)
 - [Phase 14 productization addendum](../specs/phase-14-productization-addendum.md): role-aware UI, explicit local Demo/Empty setup, operator support and downloadable distribution.
 - [Phase 14 productization research](../research/phase14-productization-research-20261021.md): dated official toolchain/accessibility/static-asset/SSRF source basis.
+- [Operator-support evaluation evidence](../reviews/phase-14-operator-support-evaluation.md): deterministic local contract coverage only; not model evaluation or Phase 14 acceptance.
 - [Production readiness gap analysis](../reviews/production-readiness-gap-analysis.md)
 - [DPG readiness gap analysis](../reviews/dpg-readiness-gap-analysis.md)
 - [Volume V threat model](volume-5-threat-model.md)
