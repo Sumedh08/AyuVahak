@@ -227,6 +227,8 @@ class DirectoryCapacityReferralScenarioIT {
 
   @Autowired private org.ayuvahak.platform.audit.application.AuditWriter auditWriter;
   @Autowired private javax.sql.DataSource dataSource;
+  @Autowired private org.ayuvahak.referral.application.ReferralReportingSnapshots referralReportingSnapshots;
+  @Autowired private org.ayuvahak.transfer.application.TransferReportingSnapshots transferReportingSnapshots;
 
   @org.springframework.beans.factory.annotation.Autowired
   @org.springframework.beans.factory.annotation.Qualifier("auditClock")
@@ -3349,9 +3351,26 @@ class DirectoryCapacityReferralScenarioIT {
           ExternalReference facility,
           org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.AllowedOperation
               requestOperation) {
+    return configureAndAuthorizeSyntheticFederationPeer(
+        partnerName,
+        peer,
+        organization,
+        facility,
+        requestOperation,
+        "synthetic-origin-peer-" + UUID.randomUUID());
+  }
+
+  private org.ayuvahak.platform.exchange.application.FederationPeerInboundAuthorization
+      configureAndAuthorizeSyntheticFederationPeer(
+          String partnerName,
+          org.ayuvahak.platform.federation.domain.DeploymentId peer,
+          ExternalReference organization,
+          ExternalReference facility,
+          org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.AllowedOperation
+              requestOperation,
+          String peerServiceClientId) {
     var partnerKey = new org.ayuvahak.platform.exchange.domain.PartnerKey(partnerName);
-    var principal =
-        ActorReference.service(new IssuerId(ISSUER), "synthetic-origin-peer-" + UUID.randomUUID());
+    var principal = ActorReference.service(new IssuerId(ISSUER), peerServiceClientId);
     var statusOperation =
         org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration.AllowedOperation
             .transferRemoteReservationStatus(
@@ -4745,46 +4764,71 @@ class DirectoryCapacityReferralScenarioIT {
     var peerDeployment =
         new org.ayuvahak.platform.federation.domain.DeploymentId(
             "SYN-PHASE13-ORIGIN-" + prefix.substring(prefix.length() - 8).toUpperCase());
-    var inboundAuthorization =
-        configureAndAuthorizeSyntheticFederationPeer(
-            "synthetic-p13-bench-" + prefix.substring(prefix.length() - 8),
-            peerDeployment,
-            destinationOrganization,
-            destinationFacility,
-            inboundRequestOperation);
+    configureAndAuthorizeSyntheticFederationPeer(
+        "synthetic-p13-bench-" + prefix.substring(prefix.length() - 8),
+        peerDeployment,
+        destinationOrganization,
+        destinationFacility,
+        inboundRequestOperation,
+        "synthetic-federated-origin-peer");
     Instant requestStart = Instant.now().plusSeconds(120);
-    var federationRequest =
-        new org.ayuvahak.transfer.application.FederatedReceivingRequestInput(
-            InternalId.generate(),
-            "SYN-FACILITY-ORIGIN",
-            destinationOrganization,
-            destinationFacility,
-            capacityDimension,
-            "unit",
-            BigDecimal.ONE,
-            requestStart,
-            requestStart.plusSeconds(1800));
+    String receivingNamespace =
+        "urn:ayuvahak:deployment:SYN-DEPLOYMENT-RECEIVER:directory";
+    String federationOriginJourneyId = InternalId.generate().toString();
     org.ayuvahak.platform.core.InternalId federationOperationId = InternalId.generate();
-    byte[] federationBody =
-        "SYNTHETIC-PHASE13-BENCHMARK-RECEIVING-REQUEST".getBytes(StandardCharsets.UTF_8);
+    String federationBody =
+        "{\"protocolProfile\":\"AyuVahak-Federation-v1\","
+            + "\"sourceDeploymentId\":\""
+            + peerDeployment.value()
+            + "\",\"originContext\":\"transfer\","
+            + "\"originResourceType\":\"TransferJourney\",\"originJourneyId\":\""
+            + federationOriginJourneyId
+            + "\",\"originFacilityId\":\"SYN-FACILITY-ORIGIN\","
+            + "\"destinationOrganization\":{\"issuer\":\""
+            + receivingNamespace
+            + "\",\"resourceType\":\"Organization\",\"value\":\""
+            + destinationOrganizationId
+            + "\"},\"destinationFacility\":{\"issuer\":\""
+            + receivingNamespace
+            + "\",\"resourceType\":\"Facility\",\"value\":\""
+            + facilityD
+            + "\"},\"capacityDimensionCode\":\""
+            + capacityDimension
+            + "\",\"capacityUnit\":\"unit\",\"capacityQuantity\":1,"
+            + "\"capacityIntervalStart\":\""
+            + requestStart
+            + "\",\"capacityIntervalEnd\":\""
+            + requestStart.plusSeconds(1800)
+            + "\"}";
     org.ayuvahak.platform.exchange.application.FederationOperationFingerprint
         federationFingerprint =
             org.ayuvahak.platform.exchange.application.FederationOperationFingerprint.calculate(
                 peerDeployment,
                 new org.ayuvahak.platform.federation.domain.DeploymentId("SYN-DEPLOYMENT-RECEIVER"),
-                destinationFacility,
+                new ExternalReference(
+                    new IssuerId(receivingNamespace), "Facility", facilityD),
                 inboundRequestOperation,
-                federationBody);
+                federationBody.getBytes(StandardCharsets.UTF_8));
+    var federationSeedResponse =
+        mockMvc
+            .perform(
+                post("/api/federation/operations/transfer.remote-receiving-request")
+                    .header("Authorization", bearer(serviceToken("synthetic-federated-origin-peer")))
+                    .header("X-AyuVahak-Federation-Source", peerDeployment.value())
+                    .header("X-AyuVahak-Federation-Peer", "SYN-DEPLOYMENT-RECEIVER")
+                    .header("X-AyuVahak-Federation-Operation", inboundRequestOperation.operationCode())
+                    .header("X-AyuVahak-Operation-Id", federationOperationId.toString())
+                    .header(
+                        "X-AyuVahak-Operation-Fingerprint", federationFingerprint.value())
+                    .contentType("application/json")
+                    .content(federationBody))
+            .andExpect(status().isOk())
+            .andReturn();
     String federationRequestId =
-        federatedReceivingCommands
-            .receive(
-                inboundAuthorization,
-                federationOperationId,
-                federationFingerprint,
-                federationRequest)
-            .request()
-            .id()
-            .toString();
+        new tools.jackson.databind.ObjectMapper()
+            .readTree(federationSeedResponse.getResponse().getContentAsByteArray())
+            .get("receivingRequestId")
+            .asText();
 
     String suffix = prefix.substring(prefix.length() - 8).toUpperCase();
     String indicatorKey = "SYN-P13-IND-" + suffix;
@@ -4805,6 +4849,18 @@ class DirectoryCapacityReferralScenarioIT {
     grantService(
         exportWorker,
         org.ayuvahak.analytics.domain.AnalyticsAuthorities.dhis2Export().code(),
+        "ORGANIZATION",
+        originOrganizationId,
+        null);
+    grantService(
+        exportWorker,
+        org.ayuvahak.referral.domain.ReferralAuthorities.reportingSnapshot().code(),
+        "ORGANIZATION",
+        originOrganizationId,
+        null);
+    grantService(
+        exportWorker,
+        org.ayuvahak.transfer.domain.TransferAuthorities.reportingSnapshots().code(),
         "ORGANIZATION",
         originOrganizationId,
         null);
@@ -4835,6 +4891,18 @@ class DirectoryCapacityReferralScenarioIT {
             new org.ayuvahak.platform.authorization.adapter.persistence
                 .JdbcAuthorizationGrantLookup(jdbc),
             benchmarkAuthorities);
+    var benchmarkComputationOperationStore =
+        new org.ayuvahak.analytics.adapter.persistence.JdbcAnalyticsComputationOperationStore(
+            jdbc);
+    var benchmarkComputation =
+        new org.ayuvahak.analytics.application.AnalyticsAggregateComputationService(
+            benchmarkAnalyticsStore,
+            benchmarkComputationOperationStore,
+            new org.ayuvahak.analytics.adapter.reporting.OwnerReportingSnapshotAdapter(
+                referralReportingSnapshots, transferReportingSnapshots),
+            benchmarkAuthorization,
+            executionContextFactory,
+            auditClock);
     var benchmarkDisclosure =
         new org.ayuvahak.analytics.application.AnalyticsDisclosureReservationService(
             new org.ayuvahak.analytics.adapter.persistence.JdbcDisclosureReservationStore(jdbc),
@@ -4889,6 +4957,9 @@ class DirectoryCapacityReferralScenarioIT {
     Instant now = Instant.now();
     List<org.ayuvahak.analytics.domain.AggregateSnapshot> snapshots = new java.util.ArrayList<>();
     List<UUID> exportOperationIds = new java.util.ArrayList<>();
+    List<org.ayuvahak.analytics.application.AnalyticsComputationRequest> computationRequests =
+        new java.util.ArrayList<>();
+    List<InternalId> computationOperationIds = new java.util.ArrayList<>();
     LocalDate firstMonth = LocalDate.of(2025, 1, 1);
     for (int index = 0; index < 14; index++) {
       LocalDate start = firstMonth.plusMonths(index);
@@ -4919,6 +4990,11 @@ class DirectoryCapacityReferralScenarioIT {
           snapshot, UUID.randomUUID(), now, now.plus(Duration.ofDays(365)));
       snapshots.add(snapshot);
       exportOperationIds.add(UUID.randomUUID());
+      InternalId computationRequestId = InternalId.generate();
+      computationOperationIds.add(computationRequestId);
+      computationRequests.add(
+          new org.ayuvahak.analytics.application.AnalyticsComputationRequest(
+              computationRequestId, indicatorKey, 1, start, end, cutoff));
     }
 
     var adminContext =
@@ -5004,28 +5080,19 @@ class DirectoryCapacityReferralScenarioIT {
             auditWriter,
             transactionManager,
             auditClock);
-    var benchmarkRevisionQueries =
-        new org.ayuvahak.analytics.application.AnalyticsSnapshotRevisionService(
-            benchmarkAnalyticsStore,
-            benchmarkRevisionStore,
-            benchmarkAuthorization,
-            auditWriter,
-            analyticsTransactions,
-            auditClock,
-            Duration.ofDays(30));
     var exportContext =
         executionContextFactory.forBackgroundWork(
             ActorReference.service(new IssuerId(ISSUER), exportWorker),
             RequestedExecutionScope.organization(originOrganization),
             new CorrelationId(prefix + "-analytics-export"),
             Optional.empty());
-    var analyticsReadContext =
+    var analyticsComputationContext =
         executionContextFactory.forBackgroundWork(
             ActorReference.service(new IssuerId(ISSUER), exportWorker),
             RequestedExecutionScope.organization(originOrganization),
-            new CorrelationId(prefix + "-analytics-snapshot-read"),
+            new CorrelationId(prefix + "-analytics-aggregate-computation"),
             Optional.empty());
-    java.util.concurrent.atomic.AtomicInteger snapshotQueryIndex =
+    java.util.concurrent.atomic.AtomicInteger computationIndex =
         new java.util.concurrent.atomic.AtomicInteger();
     java.util.concurrent.atomic.AtomicInteger exportIndex =
         new java.util.concurrent.atomic.AtomicInteger();
@@ -5052,7 +5119,7 @@ class DirectoryCapacityReferralScenarioIT {
         new java.util.concurrent.atomic.AtomicInteger();
     String referralToken = token(benchmarkActor);
     String transferToken = token(benchmarkActor);
-    String federationToken = token(benchmarkActor);
+    String federationToken = serviceToken("synthetic-federated-origin-peer");
     String notificationScopeHeaders = scopeHeaders;
     var workload = new java.util.ArrayList<Phase13MixedWorkloadBenchmark.Operation>(20);
     for (int index = 0; index < 4; index++) {
@@ -5153,24 +5220,60 @@ class DirectoryCapacityReferralScenarioIT {
     }
     workload.add(
         new Phase13MixedWorkloadBenchmark.Operation(
-            "federated_receiving_request_read",
-            replica ->
-                Phase13MixedWorkloadBenchmark.sendGet(
-                    replica,
-                    "/api/v1/federated-receiving-requests/" + federationRequestId,
-                    federationToken,
-                    scopeHeaders)));
+            "federation_receiving_operation_replay",
+            replica -> {
+              var response =
+                  Phase13MixedWorkloadBenchmark.sendFederationOperation(
+                      replica,
+                      "/api/federation/operations/transfer.remote-receiving-request",
+                      federationToken,
+                      peerDeployment.value(),
+                      inboundRequestOperation.operationCode(),
+                      federationOperationId.toString(),
+                      federationFingerprint.value(),
+                      federationBody);
+              assertThat(
+                      new tools.jackson.databind.ObjectMapper()
+                          .readTree(response.body())
+                          .get("receivingRequestId")
+                          .asText())
+                  .isEqualTo(federationRequestId);
+            }));
     workload.add(
         new Phase13MixedWorkloadBenchmark.Operation(
-            "analytics_snapshot_revision_read",
+            "analytics_aggregate_computation",
             ignored -> {
-              var snapshot =
-                  snapshots.get(
-                      Math.floorMod(snapshotQueryIndex.getAndIncrement(), snapshots.size()));
-              assertThat(
-                      benchmarkRevisionQueries.currentRevision(
-                          analyticsReadContext, snapshot.snapshotId()))
-                  .isPresent();
+              int index = computationIndex.getAndIncrement();
+              var request = computationRequests.get(index);
+              benchmarkComputation.enqueue(analyticsComputationContext, request);
+              long deadline =
+                  System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(10);
+              while (System.nanoTime() < deadline) {
+                var operation =
+                    benchmarkComputationOperationStore.find(request.computationRequestId())
+                        .orElseThrow();
+                if (operation.state()
+                    == org.ayuvahak.analytics.application.AnalyticsComputationOperation.State
+                        .COMPLETED) {
+                  assertThat(operation.snapshotId()).isPresent();
+                  assertThat(
+                          benchmarkAnalyticsStore.findSnapshotById(
+                              operation.snapshotId().orElseThrow()))
+                      .isPresent();
+                  return;
+                }
+                if (operation.state()
+                    == org.ayuvahak.analytics.application.AnalyticsComputationOperation.State
+                        .FAILED_PERMANENT) {
+                  throw new AssertionError(
+                      "synthetic Analytics computation failed: "
+                          + operation.failureClass().orElse("unknown"));
+                }
+                benchmarkComputation.processNext();
+                Thread.sleep(10);
+              }
+              throw new AssertionError(
+                  "synthetic Analytics computation did not complete in time");
             }));
     workload.add(
         new Phase13MixedWorkloadBenchmark.Operation(
@@ -5207,12 +5310,14 @@ class DirectoryCapacityReferralScenarioIT {
             Map.entry("transport_workflow_records", 1),
             Map.entry("notification_events_after_cursor", hints.hints().size()),
             Map.entry("sse_replay_operations_per_profile", 14),
-            Map.entry("sse_clients_per_profile", 14),
+            Map.entry("sse_client_identities_per_profile", 14),
             Map.entry("federation_peers", 1),
-            Map.entry("federation_receiving_request_operations_per_profile", 7),
+            Map.entry("federation_receiving_operation_replays_per_profile", 7),
             Map.entry("analytics_indicators", 1),
             Map.entry("analytics_periods", 14),
-            Map.entry("analytics_snapshots", 14),
+            Map.entry("analytics_seed_snapshots_for_export", 14),
+            Map.entry("analytics_computation_operations_per_profile", 7),
+            Map.entry("analytics_snapshots_computed_per_profile", 7),
             Map.entry("export_operations_per_profile_including_warmup", 7));
     assertThat(dimensions.values()).allMatch(count -> count > 0);
     String notificationScopeKey =
@@ -5341,6 +5446,22 @@ class DirectoryCapacityReferralScenarioIT {
     }
     assertThat(exportIndex.get()).isEqualTo(14);
     assertThat(matchingEvaluationIndex.get()).isEqualTo(14);
+    assertThat(computationIndex.get()).isEqualTo(14);
+    assertThat(computationOperationIds).hasSize(14);
+    for (InternalId computationId : computationOperationIds) {
+      var completed = benchmarkComputationOperationStore.find(computationId).orElseThrow();
+      assertThat(completed.state())
+          .isEqualTo(
+              org.ayuvahak.analytics.application.AnalyticsComputationOperation.State.COMPLETED);
+      assertThat(completed.snapshotId()).isPresent();
+    }
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM transfer.federated_receiving_request "
+                    + "WHERE request_operation_id = ?",
+                Integer.class,
+                federationOperationId.value()))
+        .isEqualTo(1);
     assertThat(mockExportCalls.get()).isEqualTo(14);
   }
 

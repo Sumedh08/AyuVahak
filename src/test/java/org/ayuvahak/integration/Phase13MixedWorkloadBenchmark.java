@@ -66,6 +66,35 @@ final class Phase13MixedWorkloadBenchmark {
 
   private Phase13MixedWorkloadBenchmark() {}
 
+  static HttpResponse<String> sendFederationOperation(
+      Replica replica,
+      String path,
+      String token,
+      String sourceDeployment,
+      String operation,
+      String operationId,
+      String fingerprint,
+      String body)
+      throws Exception {
+    HttpResponse<String> response =
+        HTTP.send(
+            HttpRequest.newBuilder(
+                    URI.create("http://127.0.0.1:" + replica.httpPort() + path))
+                .timeout(REQUEST_TIMEOUT)
+                .header("Authorization", "Bearer " + token)
+                .header("Content-Type", "application/json")
+                .header("X-AyuVahak-Federation-Source", sourceDeployment)
+                .header("X-AyuVahak-Federation-Peer", "SYN-DEPLOYMENT-RECEIVER")
+                .header("X-AyuVahak-Federation-Operation", operation)
+                .header("X-AyuVahak-Operation-Id", operationId)
+                .header("X-AyuVahak-Operation-Fingerprint", fingerprint)
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build(),
+            HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+    requireSuccess(response);
+    return response;
+  }
+
   static Process startApplication(
       String applicationName,
       int httpPort,
@@ -132,8 +161,13 @@ final class Phase13MixedWorkloadBenchmark {
             .redirectErrorStream(true)
             .redirectOutput(logFile.toFile())
             .start();
-    awaitHealth(process, httpPort, logFile, Duration.ofSeconds(90));
-    return process;
+    try {
+      awaitHealth(process, httpPort, logFile, Duration.ofSeconds(90));
+      return process;
+    } catch (Exception | Error startupFailure) {
+      stop(process);
+      throw startupFailure;
+    }
   }
 
   static void awaitHealth(Process process, int port, Path logFile, Duration timeout)
@@ -204,11 +238,18 @@ final class Phase13MixedWorkloadBenchmark {
     AtomicInteger nextReplica = new AtomicInteger();
     AtomicInteger peakDbActive = new AtomicInteger();
     AtomicInteger peakDbConnections = new AtomicInteger();
+    AtomicInteger peakHarnessDbActive = new AtomicInteger();
+    AtomicInteger peakHarnessDbConnections = new AtomicInteger();
+    AtomicInteger peakCombinedDbActive = new AtomicInteger();
+    AtomicInteger peakCombinedDbConnections = new AtomicInteger();
     long measuredStarted;
     long processCpuBefore;
+    long harnessCpuBefore;
     ExecutorService workers = Executors.newFixedThreadPool(CONCURRENCY);
     ScheduledExecutorService databaseSampler = Executors.newSingleThreadScheduledExecutor();
     java.util.concurrent.atomic.AtomicLong peakJvmHeapBytes =
+        new java.util.concurrent.atomic.AtomicLong();
+    java.util.concurrent.atomic.AtomicLong peakHarnessJvmHeapBytes =
         new java.util.concurrent.atomic.AtomicLong();
     ScheduledExecutorService processSampler = Executors.newSingleThreadScheduledExecutor();
     try {
@@ -226,12 +267,14 @@ final class Phase13MixedWorkloadBenchmark {
       latenciesByOperation.clear();
       resetStatementStatistics(database);
       processCpuBefore = totalCpuNanos(replicaMetrics);
+      harnessCpuBefore = harnessProcessCpuNanos();
       processSampler.scheduleAtFixedRate(
           () -> {
             try {
               long currentHeap =
                   replicaMetrics.stream().mapToLong(ReplicaMetric::heapUsedBytes).sum();
               peakJvmHeapBytes.accumulateAndGet(currentHeap, Math::max);
+              peakHarnessJvmHeapBytes.accumulateAndGet(harnessJvmHeapUsedBytes(), Math::max);
             } catch (RuntimeException failure) {
               failures.add("process-sampler:" + failure.getClass().getSimpleName());
             }
@@ -243,8 +286,13 @@ final class Phase13MixedWorkloadBenchmark {
           () -> {
             try {
               int[] pool = databasePoolCounts(database, replicas);
+              int[] harnessPool = harnessPoolCounts(database);
               peakDbActive.accumulateAndGet(pool[0], Math::max);
               peakDbConnections.accumulateAndGet(pool[1], Math::max);
+              peakHarnessDbActive.accumulateAndGet(harnessPool[0], Math::max);
+              peakHarnessDbConnections.accumulateAndGet(harnessPool[1], Math::max);
+              peakCombinedDbActive.accumulateAndGet(pool[0] + harnessPool[0], Math::max);
+              peakCombinedDbConnections.accumulateAndGet(pool[1] + harnessPool[1], Math::max);
             } catch (SQLException failure) {
               failures.add("database-sampler:" + failure.getClass().getSimpleName());
             }
@@ -284,6 +332,8 @@ final class Phase13MixedWorkloadBenchmark {
       long measuredElapsedNanos = Math.max(1L, System.nanoTime() - measuredStarted);
       long processCpuAfter = totalCpuNanos(replicaMetrics);
       long processCpu = Math.max(0L, processCpuAfter - processCpuBefore);
+      long harnessCpu = Math.max(0L, harnessProcessCpuNanos() - harnessCpuBefore);
+      int harnessPoolCapacity = harnessPoolCapacity(database);
       long queryCount = totalStatementCalls(database);
       BacklogSnapshot backlog = backlog(database);
       String databaseVersion = databaseVersion(database);
@@ -311,9 +361,21 @@ final class Phase13MixedWorkloadBenchmark {
               processCpu,
               (double) processCpu / measuredElapsedNanos,
               peakJvmHeapBytes.get(),
+              "packaged HTTP replicas; Analytics/export use application service boundary below",
+              "analytics_aggregate_computation, local_mock_aggregate_export execute in the benchmark Spring/JUnit JVM; its CPU, heap, and Hikari pool are reported separately",
+              ProcessHandle.current().pid(),
+              harnessCpu,
+              (double) harnessCpu / measuredElapsedNanos,
+              peakHarnessJvmHeapBytes.get(),
               peakDbActive.get(),
               peakDbConnections.get(),
               replicas.size() * MAX_POOL_SIZE_PER_REPLICA,
+              peakHarnessDbActive.get(),
+              peakHarnessDbConnections.get(),
+              harnessPoolCapacity,
+              peakCombinedDbActive.get(),
+              peakCombinedDbConnections.get(),
+              replicas.size() * MAX_POOL_SIZE_PER_REPLICA + harnessPoolCapacity,
               queryCount,
               Map.copyOf(workloadDimensions),
               summarizeOperationLatency(latenciesByOperation),
@@ -607,6 +669,36 @@ final class Phase13MixedWorkloadBenchmark {
     return replicas.stream().mapToLong(ReplicaMetric::processCpuNanos).sum();
   }
 
+  private static long harnessProcessCpuNanos() {
+    java.lang.management.OperatingSystemMXBean operatingSystem =
+        ManagementFactory.getOperatingSystemMXBean();
+    if (!(operatingSystem instanceof com.sun.management.OperatingSystemMXBean extended)) {
+      throw new IllegalStateException("JVM does not expose process CPU time for the local harness");
+    }
+    return extended.getProcessCpuTime();
+  }
+
+  private static long harnessJvmHeapUsedBytes() {
+    return ManagementFactory.getMemoryMXBean().getHeapMemoryUsage().getUsed();
+  }
+
+  private static int[] harnessPoolCounts(DataSource dataSource) {
+    if (dataSource instanceof com.zaxxer.hikari.HikariDataSource hikari) {
+      var pool = hikari.getHikariPoolMXBean();
+      if (pool == null) {
+        return new int[] {0, 0};
+      }
+      return new int[] {pool.getActiveConnections(), pool.getTotalConnections()};
+    }
+    return new int[] {0, 0};
+  }
+
+  private static int harnessPoolCapacity(DataSource dataSource) {
+    return dataSource instanceof com.zaxxer.hikari.HikariDataSource hikari
+        ? hikari.getMaximumPoolSize()
+        : 0;
+  }
+
   private static void resetStatementStatistics(DataSource dataSource) throws SQLException {
     try (Connection connection = dataSource.getConnection();
         Statement statement = connection.createStatement()) {
@@ -671,11 +763,30 @@ final class Phase13MixedWorkloadBenchmark {
         unresolvedExports = result.getInt(1);
         oldestExport = Duration.ofMillis(Math.max(0L, (long) (result.getDouble(2) * 1000)));
       }
+      int pendingAnalyticsComputations;
+      int failedAnalyticsComputations;
+      Duration oldestAnalyticsComputation;
+      try (ResultSet result =
+          statement.executeQuery(
+              "SELECT COUNT(*) FILTER (WHERE operation_state IN ('PENDING','PROCESSING','RETRY_PENDING')), "
+                  + "COUNT(*) FILTER (WHERE operation_state = 'FAILED_PERMANENT'), "
+                  + "COALESCE(EXTRACT(EPOCH FROM (clock_timestamp() - MIN(created_at) FILTER "
+                  + "(WHERE operation_state IN ('PENDING','PROCESSING','RETRY_PENDING')))), 0) "
+                  + "FROM analytics.computation_operation")) {
+        result.next();
+        pendingAnalyticsComputations = result.getInt(1);
+        failedAnalyticsComputations = result.getInt(2);
+        oldestAnalyticsComputation =
+            Duration.ofMillis(Math.max(0L, (long) (result.getDouble(3) * 1000)));
+      }
       return new BacklogSnapshot(
           oldestOutbox.toMillis(),
           notificationFreshness.toMillis(),
           unresolvedExports,
-          oldestExport.toMillis());
+          oldestExport.toMillis(),
+          pendingAnalyticsComputations,
+          oldestAnalyticsComputation.toMillis(),
+          failedAnalyticsComputations);
     }
   }
 
@@ -771,9 +882,21 @@ final class Phase13MixedWorkloadBenchmark {
       long processCpuNanos,
       double processCpuCoreEquivalents,
       long peakJvmHeapBytes,
+      String applicationProcessWorkloadBoundary,
+      String benchmarkHarnessServiceBoundary,
+      long benchmarkHarnessProcessId,
+      long benchmarkHarnessCpuNanos,
+      double benchmarkHarnessCpuCoreEquivalents,
+      long peakBenchmarkHarnessJvmHeapBytes,
       int peakActiveDbConnections,
       int peakDbConnections,
       int configuredDbPoolCapacity,
+      int peakBenchmarkHarnessActiveDbConnections,
+      int peakBenchmarkHarnessDbConnections,
+      int configuredBenchmarkHarnessDbPoolCapacity,
+      int peakCombinedActiveDbConnections,
+      int peakCombinedDbConnections,
+      int configuredCombinedDbPoolCapacity,
       long postgresStatementCalls,
       Map<String, Integer> workloadDimensions,
       Map<String, LatencySummary> operationLatency,
@@ -788,7 +911,10 @@ final class Phase13MixedWorkloadBenchmark {
       long oldestPendingOutboxAgeMillis,
       long latestNotificationProjectionAgeMillis,
       int unresolvedExportOperations,
-      long oldestUnresolvedExportAgeMillis) {}
+      long oldestUnresolvedExportAgeMillis,
+      int pendingAnalyticsComputations,
+      long oldestPendingAnalyticsComputationAgeMillis,
+      int failedAnalyticsComputations) {}
 
   private record OperationResult(String operation, long elapsedNanos, Throwable failure) {}
 
