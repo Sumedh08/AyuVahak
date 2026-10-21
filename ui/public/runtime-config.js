@@ -1,0 +1,1 @@
+window.ayuvahakRuntimeConfig = window.ayuvahakRuntimeConfig || {};

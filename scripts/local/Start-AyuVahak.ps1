@@ -139,6 +139,40 @@ foreach ($secretKey in @("AYUVAHAK_DATABASE_PASSWORD", "AYUVAHAK_KEYCLOAK_ADMIN_
   if (-not $values[$secretKey]) { $values[$secretKey] = New-LocalSecret }
 }
 
+$appPort = 0
+$identityPort = 0
+if (-not [int]::TryParse([string]$values["AYUVAHAK_HTTP_PORT"], [ref]$appPort) -or
+    -not [int]::TryParse([string]$values["AYUVAHAK_KEYCLOAK_PORT"], [ref]$identityPort) -or
+    $appPort -lt 1024 -or $appPort -gt 65535 -or
+    $identityPort -lt 1024 -or $identityPort -gt 65535 -or
+    $appPort -eq $identityPort) {
+  throw "Local application and identity-provider ports must be distinct TCP ports from 1024 through 65535. No services were started."
+}
+
+$issuerUri = $null
+$issuerValue = [string]$values["AYUVAHAK_OIDC_ISSUER"]
+if (-not [uri]::TryCreate($issuerValue, [System.UriKind]::Absolute, [ref]$issuerUri) -or
+    $issuerUri.Host -ne "localhost" -or
+    $issuerUri.AbsolutePath -ne "/realms/ayuvahak" -or
+    $issuerUri.Query -or $issuerUri.Fragment -or $issuerUri.UserInfo -or
+    $issuerUri.Port -ne [int]$values["AYUVAHAK_KEYCLOAK_PORT"] -or
+    $issuerUri.Scheme -notin @("http", "https")) {
+  throw "The local OIDC issuer must use the configured localhost Keycloak port and ayuvahak realm. No services were started."
+}
+$clientId = [string]$values["AYUVAHAK_OIDC_CLIENT_ID"]
+$oidcScope = [string]$values["AYUVAHAK_OIDC_SCOPE"]
+if ($clientId -notmatch '^[A-Za-z0-9._-]{1,128}$' -or
+    $oidcScope -notmatch '^[A-Za-z0-9._ -]{1,256}$' -or
+    $oidcScope -ne $oidcScope.Trim()) {
+  throw "The local OIDC client identifier or scope is malformed. No services were started."
+}
+$runtimeConfiguration = [ordered]@{
+  oidcAuthority = $issuerUri.AbsoluteUri.TrimEnd("/")
+  oidcClientId = $clientId
+  oidcScope = $oidcScope
+} | ConvertTo-Json -Compress
+Set-Content -LiteralPath (Join-Path $stateDirectory "ui-runtime-config.js") -Value "window.ayuvahakRuntimeConfig = $runtimeConfiguration;" -Encoding ascii
+
 $environmentLines = foreach ($key in $values.Keys) { "$key=$($values[$key])" }
 Set-Content -LiteralPath $environmentPath -Value $environmentLines -Encoding ascii
 $state | ConvertTo-Json | Set-Content -LiteralPath $statePath -Encoding ascii
@@ -159,19 +193,38 @@ try {
     Write-Host "Plan-only verification succeeded; no containers were started."
     exit 0
   }
+  foreach ($port in @($appPort, $identityPort)) {
+    $listener = $null
+    try {
+      $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $port)
+      $listener.Start()
+    } catch {
+      throw "Local port $port is unavailable. Set distinct AYUVAHAK_HTTP_PORT and AYUVAHAK_KEYCLOAK_PORT values in .env, then retry. No containers were started."
+    } finally {
+      if ($listener) { $listener.Stop() }
+    }
+  }
   & docker @dockerArguments up --detach
   if ($LASTEXITCODE -ne 0) { throw "Docker Compose failed to start the local services." }
   $port = [int]$values["AYUVAHAK_HTTP_PORT"]
   $readinessUri = "http://127.0.0.1:$port/actuator/health/readiness"
-  $deadline = (Get-Date).AddMinutes(3)
+  # A measured clean local installation can spend several minutes initializing the bundled FHIR
+  # validation profiles after its database migrations complete. Keep a generous finite bound.
+  $deadline = (Get-Date).AddMinutes(10)
+  $nextProgressMessage = (Get-Date).AddSeconds(30)
   $ready = $false
   while ((Get-Date) -lt $deadline) {
     try {
       $response = Invoke-RestMethod -Uri $readinessUri -TimeoutSec 3
       if ($response.status -eq "UP") { $ready = $true; break }
-    } catch { Start-Sleep -Seconds 3 }
+    } catch { }
+    if ((Get-Date) -ge $nextProgressMessage) {
+      Write-Host "AyuVahak is initializing its local database and standards support. First startup may take several minutes."
+      $nextProgressMessage = (Get-Date).AddSeconds(30)
+    }
+    Start-Sleep -Seconds 3
   }
-  if (-not $ready) { throw "Services started but AyuVahak did not become ready within three minutes. Inspect with docker compose logs app. No credentials were printed." }
+  if (-not $ready) { throw "Services started but AyuVahak did not become ready within ten minutes. Inspect with docker compose logs app. No credentials were printed." }
   $url = "http://localhost:$port"
   Write-Host "AyuVahak is ready at $url"
   if ($selectedMode -eq "SYNTHETIC_DEMO") {

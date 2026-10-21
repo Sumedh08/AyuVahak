@@ -6,6 +6,7 @@ ui/dist/
 # Local planning/scratch, tooling and editor state
 /.scratch/
 /.local-state/
+release-output/
 .scratch/tools/
 .idea/
 .vscode/

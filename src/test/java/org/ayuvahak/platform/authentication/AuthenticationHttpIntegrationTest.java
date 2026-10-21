@@ -137,6 +137,8 @@ class AuthenticationHttpIntegrationTest {
     assertThat(mockMvc.perform(get("/")).andReturn().getResponse().getStatus()).isNotEqualTo(401);
     assertThat(mockMvc.perform(get("/index.html")).andReturn().getResponse().getStatus())
         .isNotEqualTo(401);
+    assertThat(mockMvc.perform(get("/runtime-config.js")).andReturn().getResponse().getStatus())
+        .isNotEqualTo(401);
 
     mockMvc
         .perform(get("/api/v1/platform/__test/actor").header("X-Correlation-ID", "auth-corr-1"))

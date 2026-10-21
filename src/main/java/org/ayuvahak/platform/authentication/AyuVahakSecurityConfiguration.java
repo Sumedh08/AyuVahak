@@ -73,6 +73,7 @@ public class AyuVahakSecurityConfiguration {
                   .requestMatchers(
                       "/",
                       "/index.html",
+                      "/runtime-config.js",
                       "/assets/**",
                       "/auth/callback",
                       "/directory",

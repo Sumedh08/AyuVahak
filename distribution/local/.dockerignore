@@ -1,0 +1,15 @@
+.env
+.local-state/
+.scratch/
+.git/
+target/
+node_modules/
+release-output/
+logs/
+test-results/
+*.log
+*.pem
+*.p12
+*.pfx
+*.jks
+*.keystore
