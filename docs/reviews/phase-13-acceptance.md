@@ -1,14 +1,15 @@
 # Phase 13 Acceptance Record
 
-**Status:** INCOMPLETE — Phase 13 is not frozen and Phase 14 has not started.
-**Assessment date:** 2026-10-20.
+**Status:** BENCHMARK PASS — independent review pending; Phase 13 is not frozen and Phase 14 has not started.
+**Assessment date:** 2026-10-21.
 **Acceptance target:** local-only, synthetic data, frozen Phase 13 specification.
 
-**Current remediation code baseline:** `ead756e94d3a57ddf5e0b6e2be423b501c7d77dc` on
-`codex/phase-13-production-hardening`. The sections below beginning with “Historical” preserve
-the earlier failed acceptance record. The dated remediation disposition at the end supersedes its
-pre-remediation statuses. Final release-evidence matching is complete for the current JAR, but the
-canonical clean verification failed and the representative Profile A/B workload remains a blocker.
+**Current benchmark code baseline:** `08d54de4881b53942e1e4f2007266ec9a249dc28` on
+`codex/phase-13-production-hardening`. The dated sections below preserve earlier failures and
+intermediate dispositions. The final remediation section supersedes those statuses. The canonical
+Java 25 clean verification passed at `5d252bc`; only test/benchmark code changed afterward, and the
+application JAR remains byte-identical. Both representative workload profiles now pass. Independent
+review and the freeze decision are pending.
 
 ## Historical pre-remediation Java 25 gate
 
@@ -145,7 +146,7 @@ resource, external vulnerability target, public registry, production secret, rea
 portal, or remote Git write was used. No Phase 14 code, dependencies, tickets, or optimization work
 was added.
 
-## Remediation disposition — 2026-10-20
+## First remediation disposition — 2026-10-20 (historical snapshot)
 
 ### Toolchain and repository
 
@@ -214,7 +215,7 @@ replicas, refill, and operation-class distinction. SSE connection leases are int
 per node; the request/subscription budget is shared in PostgreSQL. The per-node connection cap is
 not described as a deployment-global count. IP remains supplementary to identity and authorization.
 
-### Profile A/B benchmark: measured but not representative
+### Profile A/B benchmark at that snapshot: replay-only
 
 The current harness produced successful measurements, but its only measured operation is
 `notification_projection_replay_only`. It seeds five synthetic organization scopes and 128 safe
@@ -273,7 +274,7 @@ separate local PostGIS startup and child-process startup errors have also passed
 earlier attempts. These observations show suite-load instability but do not change the failed
 canonical result.
 
-### Current gate disposition
+### Gate disposition at that snapshot (superseded by final remediation below)
 
 | Finding/gate | Current result | Evidence / limit |
 |---|---|---|
@@ -286,4 +287,148 @@ canonical result.
 | Canonical Java 25 clean verify on remediation HEAD | FAIL | Surefire 488/488 passed; Failsafe 406 tests, 1 failure and 2 errors, 0 skips. See failure categories above and the complete local log. |
 
 No Phase 13 freeze or governance transition is made while the representative profile workload gate
-remains unresolved. Phase 14 remains specification-frozen and implementation-not-started.
+was unresolved at this snapshot. Phase 14 remains specification-frozen and implementation-not-started.
+
+## Final benchmark remediation — 2026-10-21
+
+### Pinned implementation and repeatability
+
+The mixed workload and explicit Analytics queue/backlog observation are committed at
+`08d54de4881b53942e1e4f2007266ec9a249dc28`. The targeted command
+`mvnw.cmd -B -ntp test-compile -Dit.test=DirectoryCapacityReferralScenarioIT#volumeTwoHappyPathRunsThroughDirectoryCapacityReferralMatchingAndTransfer failsafe:integration-test failsafe:verify`
+passed at this exact revision: 1 integration test, 0 failures, 0 errors, 0 skips; elapsed 5:34.
+It emitted a versioned `PHASE13_PROFILE_BENCHMARK` record for each profile. Two earlier executions
+of the same operation mix also passed at the preceding benchmark worktree; their latency varied,
+so results are reported as characterization rather than a capacity target.
+
+The harness uses a fixed 20-operation cycle, two warm-up cycles, five measured cycles per profile,
+four concurrent workers, and a deterministic round-robin operation/replica assignment. Each profile
+therefore times 100 operations. It has no randomized operation selection and requires no random
+seed. Workload setup and warm-up are outside the measured interval. The timed cycle is:
+
+| Operation | Per measured cycle | Share | Measured operations/profile |
+|---|---:|---:|---:|
+| Directory facility lookup | 4 | 20% | 20 |
+| Capacity readiness evaluation | 3 | 15% | 15 |
+| Referral read | 2 | 10% | 10 |
+| Matching recommendation read | 1 | 5% | 5 |
+| Matching recommendation evaluation | 1 | 5% | 5 |
+| Transfer read | 2 | 10% | 10 |
+| Transport request read | 2 | 10% | 10 |
+| Scoped notification/SSE replay | 2 | 10% | 10 |
+| Local federated receiving-operation replay | 1 | 5% | 5 |
+| Analytics aggregate computation | 1 | 5% | 5 |
+| Local mock aggregate export | 1 | 5% | 5 |
+| **Total** | **20** | **100%** | **100** |
+
+All domain dimensions are non-zero and asserted by the test. Per profile, the synthetic fixture has
+2 organizations, 5 facilities, 3 Capacity observations used by readiness, 2 Referrals, 1 Transfer,
+1 Transport workflow record, 1 projected notification event, 14 scoped SSE client identities, 1
+synthetic federation peer, 1 Analytics indicator, 14 distinct reporting periods and 14 seed
+snapshots for export. Each profile performs 7 Matching reads and 7 Matching evaluations, 14 replay
+queries across warm-up and measurement, 7 receiving-operation replays across warm-up and measurement,
+7 Analytics computation requests with 7 resulting snapshots, and 7 export operations. The timed
+part of each profile includes 5 Matching evaluations, 5 receiving-operation replays, 5 Analytics
+computations and 5 local mock exports. The test asserts the computed snapshots complete, federation
+replay returns the same receiving request identity, exactly one receiver receipt exists for the
+stable operation identity, and the local mock receives all 14 exports across both profiles.
+
+Analytics computation and local mock export have application service-boundary implementations but
+no packaged HTTP operation in the frozen application contract. The harness invokes those service
+boundaries from the benchmark Spring/JUnit process and reports its CPU, heap and Hikari pool
+separately. All other timed classes use the packaged application HTTP process(es). This process
+boundary is included in the measurements and is not represented as work performed by the packaged
+replica(s).
+
+### Environment and pinned-revision measurements
+
+The local acceptance environment was Windows 11, Temurin Java `25.0.4.1+1-LTS`, PostgreSQL 18.6,
+Docker Desktop 29.3.1, 8 reported processors, and a Docker runtime reporting 5,930 MiB. The database
+was disposable `postgis/postgis:18-3.6` at image digest
+`sha256:60f6ad1d21ea86a67d47780b9a0d1e1d200500f62b19293fa834d0dea80b8677`. Both profiles used the
+same synthetic database fixture and the same measured mix.
+
+| Metric | Profile A — single packaged application process | Profile B — two packaged application processes |
+|---|---:|---:|
+| App process IDs / HTTP ports | `43136` / `62014` | `53704`, `65576` / `61191`, `61192` |
+| Measured operations; failures; timeouts | `100; 0; 0` | `100; 0; 0` |
+| Measured duration | `6.846 s` | `7.437 s` |
+| Overall p50 / p95 / p99 | `134.6935 / 708.3880 / 1553.7636 ms` | `125.7089 / 961.3826 / 1921.8939 ms` |
+| Throughput | `14.6062 operations/s` | `13.4461 operations/s` |
+| Packaged app CPU time / core-equivalent | `6.750 s / 0.986` | `9.359 s / 1.258` (sum across two JVMs) |
+| Packaged app peak JVM heap | `643,301,376 bytes` | `1,193,267,712 bytes` (sum across two JVMs) |
+| Benchmark harness CPU time / core-equivalent | `2.484 s / 0.363` | `1.500 s / 0.202` |
+| Benchmark harness peak JVM heap | `549,978,112 bytes` | `600,309,760 bytes` |
+| App active DB connections, sampled peak / pool capacity | `5 / 10` | `13 / 20` |
+| Harness active DB connections, sampled peak / pool capacity | `2 / 10` | `2 / 10` |
+| Combined active DB connections, sampled peak / combined capacity | `6 / 20` | `14 / 30` |
+| PostgreSQL statement calls during measured interval | `3,089` | `2,944` |
+| Oldest pending outbox age at interval end | `57,035 ms` | `199,972 ms` |
+| Age of newest notification projection at interval end | `57,838 ms` | `200,981 ms` |
+| Pending/failed Analytics computations at interval end | `0 / 0` | `0 / 0` |
+| Unresolved exports / oldest unresolved export age | `0 / 0 ms` | `0 / 0 ms` |
+
+CPU and heap values for packaged application JVMs exclude the benchmark harness. DB pool peaks are
+sampled every 300 ms; JVM heap is sampled every 200 ms. The outbox age is the oldest row in the
+pending/leased/stalled/unhandled delivery states. The notification value is projection freshness
+(age of the most recently projected record), not a source-to-projection latency claim. Analytics
+backlog includes pending, processing and retry-pending computation operations; permanent failures
+are recorded separately. Query-plan fingerprints for the pinned run are:
+
+| Path | Fingerprint |
+|---|---|
+| Directory facility lookup | `729e1c60cd012b0356bc3ad835bd3a55a80dd18d80957b89b32e64e154b6666a` |
+| Capacity observation lookup | `9b03eb0cbdf195ec386e2787a60e242d88cabdae4355ae30fcf2ac7882df7ac7` |
+| Notification replay | `e6430a87d70e73264c3e4f5c3fa19eced38c631b6b9ac55982a9eb0f17f09cea` |
+
+Profile B did not show a throughput gain over Profile A in this local small synthetic scenario;
+its p95/p99 were also higher on this run. Neither result is converted into a production capacity,
+availability or scaling claim. Two preceding runs of the same workload mix also completed with
+zero errors/timeouts, while p50/p95/p99 and throughput varied across runs. These are finite
+characterization samples, not a performance SLO or Phase 14 optimization exercise.
+
+### Canonical verification and unchanged executable artifact
+
+The canonical Java 25 verification at `5d252bc66881ea7fbfee4d8d81b0f2731205e1bf` is preserved as
+PASS as supplied for this continuation: Surefire 489/489, Failsafe 420/420, 0 failures, 0 errors,
+0 skips, Maven exit 0, Temurin `25.0.4.1+1`, Maven `3.10.0`, Spring Boot `4.1.1`, and 93 Flyway
+migrations. The authoritative PASS summary did not include total elapsed time. No new full
+`clean verify` was run. The earlier `AVAILABLE` to `INVALID` IPS fixture failure was addressed by the
+readiness fix in `394dbbd` and the corrected synthetic mCSD searchset fixture in `5d252bc`; the
+affected integration class then passed two targeted 9/9 reruns. Frozen Volume II/III semantics were
+not weakened. Changes after the canonical build are confined to test sources. At benchmark revision
+`08d54de`, the application JAR SHA-256 is
+`34854DD41248A22E4B29A65EC9AD9C9F055682CC53F088DB98DD9D8ED705F0B8`, unchanged from the already
+accepted artifact; artifact-bound SBOM, vulnerability, provenance and local signature evidence
+therefore remains bound to the same JAR.
+
+### Retention disposition reconciliation
+
+The earlier owner-wide retention/restore **MAJOR** is closed as stale. The frozen requirement is
+met by the 16-category owner register and the explicit separation between executable action,
+owner-provided validity/expiry semantics, configuration/evidence-only lifecycle, and history or
+unresolved-state preservation. Acceptance exercises the executable Platform outbox/notification
+and Referral restrictions/holds, Capacity expiry-to-stale semantics, and the expanded restore
+fixture with owner reapplication before readiness. The other categories are expressly classified
+without claiming a generic purge/minimization adapter. This is not a claim of universal deletion,
+legal retention approval, or physical PatientReference minimization. No retention duration or legal
+basis was invented. See `docs/development/production-retention-register.md` for the 16 owner rows
+and the precise behavior and evidence for each.
+
+### Final gate status before independent review
+
+| Gate | Result | Evidence / limit |
+|---|---|---|
+| Canonical Java 25 clean verification | PASS | Preserved result at `5d252bc`; no full rerun per instruction. |
+| Representative Profile A workload | PASS | Pinned revision; one packaged process; 100 measured mixed operations; 0 failures/timeouts. |
+| Representative Profile B workload | PASS | Pinned revision; two packaged JVMs sharing disposable PostgreSQL; 100 measured mixed operations; 0 failures/timeouts. |
+| Expanded backup/restore fixture | PASS | Earlier accepted local synthetic restore evidence retained; no rebuild required for this test-only benchmark change. |
+| Two-process worker/failover acceptance | PASS | Earlier accepted packaged-process acceptance retained; benchmark additionally proves two-profile workload processes. |
+| PostgreSQL-shared request budgets | PASS | Earlier accepted scoped/cross-replica budget tests retained. |
+| Reviewed vulnerability inventory | PASS | Earlier accepted local OSV/CISA inventory remains digest-bound. |
+| SPDX 3.0.1, provenance and local signature | PASS | Existing evidence remains bound to the unchanged JAR digest. |
+| Owner retention classification and executable-action tests | PASS | The stale owner-wide MAJOR is closed for the reasons above; unsupported deletion behavior remains expressly out of scope. |
+| Independent final review | PENDING | Phase 13 must not freeze until BLOCKER=0 and MAJOR=0. |
+| Phase 14 implementation | NOT STARTED | No Phase 14 work was performed. |
+
+Phase 13 remains unfrozen pending the independent review and any required narrow remediation.
