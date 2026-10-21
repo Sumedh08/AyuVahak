@@ -74,7 +74,7 @@ class EventDeliveryOperationsIT {
   private static final String OPERATOR = "synthetic-event-operator-11";
   private static final RSAKey SIGNING_KEY = newSigningKey();
   private static final PostgreSQLContainer POSTGRES =
-      new PostgreSQLContainer(
+      org.ayuvahak.testcontainers.PostgresTestContainerFactory.create(
               DockerImageName.parse(
                       "postgis/postgis:18-3.6@sha256:60f6ad1d21ea86a67d47780b9a0d1e1d200500f62b19293fa834d0dea80b8677")
                   .asCompatibleSubstituteFor("postgres"))

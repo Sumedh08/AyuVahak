@@ -37,7 +37,7 @@ class ProductionRequestBudgetStorePostgresIT {
 
   @Container
   private static final PostgreSQLContainer POSTGRES =
-      new PostgreSQLContainer(POSTGIS_IMAGE)
+      org.ayuvahak.testcontainers.PostgresTestContainerFactory.create(POSTGIS_IMAGE)
           .withDatabaseName("ayuvahak")
           .withUsername("ayuvahak")
           .withPassword(TEST_PASSWORD);

@@ -165,7 +165,7 @@ class DirectoryCapacityReferralScenarioIT {
   private static final java.util.concurrent.atomic.AtomicInteger PROVIDER_REQUESTS =
       new java.util.concurrent.atomic.AtomicInteger();
   private static final PostgreSQLContainer POSTGRES =
-      new PostgreSQLContainer(
+      org.ayuvahak.testcontainers.PostgresTestContainerFactory.create(
               DockerImageName.parse(
                       "postgis/postgis:18-3.6@sha256:60f6ad1d21ea86a67d47780b9a0d1e1d200500f62b19293fa834d0dea80b8677")
                   .asCompatibleSubstituteFor("postgres"))
@@ -174,7 +174,7 @@ class DirectoryCapacityReferralScenarioIT {
           .withPassword(TEST_PASSWORD);
 
   private static final PostgreSQLContainer ORIGIN_POSTGRES =
-      new PostgreSQLContainer(
+      org.ayuvahak.testcontainers.PostgresTestContainerFactory.create(
               DockerImageName.parse(
                       "postgis/postgis:18-3.6@sha256:60f6ad1d21ea86a67d47780b9a0d1e1d200500f62b19293fa834d0dea80b8677")
                   .asCompatibleSubstituteFor("postgres"))

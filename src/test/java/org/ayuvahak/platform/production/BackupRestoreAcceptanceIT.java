@@ -1200,7 +1200,7 @@ class BackupRestoreAcceptanceIT {
   }
 
   private static PostgreSQLContainer database() {
-    return new PostgreSQLContainer(POSTGIS_IMAGE)
+    return org.ayuvahak.testcontainers.PostgresTestContainerFactory.create(POSTGIS_IMAGE)
         .withDatabaseName("ayuvahak")
         .withUsername("ayuvahak")
         .withPassword(PASSWORD)

@@ -29,7 +29,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
-import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
 
 class AuthorizationDecisionIT {
@@ -53,7 +53,7 @@ class AuthorizationDecisionIT {
       new FunctionalAuthority("TestScopeProbe", EnumSet.allOf(ExecutionScope.Kind.class));
 
   private static final PostgreSQLContainer postgres =
-      new PostgreSQLContainer(
+      org.ayuvahak.testcontainers.PostgresTestContainerFactory.create(
               DockerImageName.parse(
                       "postgis/postgis:18-3.6@sha256:60f6ad1d21ea86a67d47780b9a0d1e1d200500f62b19293fa834d0dea80b8677")
                   .asCompatibleSubstituteFor("postgres"))
