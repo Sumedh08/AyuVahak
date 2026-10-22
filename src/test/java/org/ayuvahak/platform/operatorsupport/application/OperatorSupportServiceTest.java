@@ -229,6 +229,59 @@ class OperatorSupportServiceTest {
   }
 
   @Test
+  void profileStatusIsAuthorizedAndNeverReturnsEndpointOrSecretReference() {
+    OperatorSupportProperties properties = new OperatorSupportProperties();
+    properties.setEnabled(false);
+    properties.setSecretReference("env:SYNTHETIC_OPERATOR_SUPPORT_SECRET");
+    AuthorizationService authorization =
+        new AuthorizationService(
+            (actor, authority, scope) -> true,
+            new FunctionalAuthorityCatalog(List.of(OperatorSupportAuthorities.read())));
+    ExecutionContextFactory contexts =
+        new ExecutionContextFactory(
+            (actor, requestedScope) -> requestedScope instanceof RequestedExecutionScope.Platform);
+    OperatorSupportService service =
+        new OperatorSupportService(
+            properties,
+            OperatorSupportCorpus.approved(),
+            new DeterministicLocalOperatorSupportProvider(),
+            authorization,
+            contexts);
+
+    OperatorSupportProfileStatus status =
+        service.profileStatus(OPERATOR, CorrelationId.generate());
+
+    assertThat(status.enabled()).isFalse();
+    assertThat(status.provider()).isEqualTo("DETERMINISTIC_LOCAL");
+    assertThat(status.secretReferenceConfigured()).isFalse();
+    assertThat(status.toString()).doesNotContain("SYNTHETIC_OPERATOR_SUPPORT_SECRET");
+    assertThat(status.toString()).doesNotContain("endpoint");
+  }
+
+  @Test
+  void profileStatusRequiresTheSameOperatorSupportGrantAsAnswers() {
+    OperatorSupportProperties properties = new OperatorSupportProperties();
+    AuthorizationService authorization =
+        new AuthorizationService(
+            (actor, authority, scope) -> false,
+            new FunctionalAuthorityCatalog(List.of(OperatorSupportAuthorities.read())));
+    ExecutionContextFactory contexts =
+        new ExecutionContextFactory(
+            (actor, requestedScope) -> requestedScope instanceof RequestedExecutionScope.Platform);
+    OperatorSupportService service =
+        new OperatorSupportService(
+            properties,
+            OperatorSupportCorpus.approved(),
+            new DeterministicLocalOperatorSupportProvider(),
+            authorization,
+            contexts);
+
+    assertThatThrownBy(() -> service.profileStatus(OPERATOR, CorrelationId.generate()))
+        .isInstanceOf(org.ayuvahak.platform.api.PlatformProblemException.class)
+        .hasMessage("The actor is not authorized for operator support.");
+  }
+
+  @Test
   void providerFailureAbstainsWithoutExposingFailureDetails() {
     OperatorSupportService service =
         service(

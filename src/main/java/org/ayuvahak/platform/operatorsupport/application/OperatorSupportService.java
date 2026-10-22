@@ -72,6 +72,28 @@ public final class OperatorSupportService {
     return validate(providerResponse, sources);
   }
 
+  /** Returns non-secret deployment profile status for the authorized operator-support workspace. */
+  public OperatorSupportProfileStatus profileStatus(
+      ActorReference actor, CorrelationId correlationId) {
+    requireActor(actor);
+    Objects.requireNonNull(correlationId, "correlation id");
+    authorize(actor, correlationId);
+    boolean configurationValid = true;
+    try {
+      properties.validate();
+    } catch (IllegalArgumentException invalidProfile) {
+      configurationValid = false;
+    }
+    boolean secretReferenceConfigured =
+        properties.getProvider() == OperatorSupportProperties.Provider.OPENAI_COMPATIBLE
+            && properties.getSecretReference().matches("env:[A-Za-z_][A-Za-z0-9_]{0,127}");
+    return new OperatorSupportProfileStatus(
+        properties.isEnabled(),
+        properties.getProvider().name(),
+        configurationValid,
+        secretReferenceConfigured);
+  }
+
   private void authorize(ActorReference actor, CorrelationId correlationId) {
     if (actor.kind() != ActorKind.HUMAN) {
       throw new PlatformProblemException(

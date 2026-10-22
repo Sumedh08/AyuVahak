@@ -1,8 +1,9 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   createOperatorSupportApiClient,
   OPERATOR_SUPPORT_TOPICS,
   type OperatorSupportApiClient,
+  type OperatorSupportProfileStatus,
   type OperatorSupportQuestionKey,
   type OperatorSupportResponse,
   parseOperatorSupportQuestionKey,
@@ -19,6 +20,11 @@ type AnswerState =
   | { readonly status: "loading" }
   | { readonly status: "error"; readonly code: string }
   | { readonly status: "answered"; readonly response: OperatorSupportResponse };
+
+type ProfileState =
+  | { readonly status: "loading" }
+  | { readonly status: "unavailable" }
+  | { readonly status: "loaded"; readonly profile: OperatorSupportProfileStatus };
 
 function errorCode(error: unknown): string {
   return error instanceof OwnerApiError ? error.code : "UNAVAILABLE";
@@ -49,6 +55,16 @@ export function OperatorSupportWorkspace({
   );
   const [questionKey, setQuestionKey] = useState<OperatorSupportQuestionKey | "">("");
   const [answer, setAnswer] = useState<AnswerState>({ status: "idle" });
+  const [profile, setProfile] = useState<ProfileState>({ status: "loading" });
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void api
+      .profileStatus(controller.signal)
+      .then((status) => setProfile({ status: "loaded", profile: status }))
+      .catch(() => setProfile({ status: "unavailable" }));
+    return () => controller.abort();
+  }, [api]);
 
   async function requestAnswer(): Promise<void> {
     if (!questionKey) return;
@@ -77,6 +93,42 @@ export function OperatorSupportWorkspace({
           authoritative records.
         </span>
       </div>
+      <section className="workspace-subsection" aria-labelledby="operator-support-profile-title">
+        <h3 id="operator-support-profile-title">Provider configuration</h3>
+        {profile.status === "loading" ? (
+          <p className="workspace-state" role="status" aria-busy="true">
+            Checking deployment configuration…
+          </p>
+        ) : profile.status === "unavailable" ? (
+          <p className="workspace-state" role="status">
+            Provider configuration status is unavailable. No provider state is assumed.
+          </p>
+        ) : !profile.profile.enabled ? (
+          <p className="workspace-state" role="status">
+            Operator support is disabled. Core workflows remain available.
+          </p>
+        ) : !profile.profile.configurationValid ? (
+          <p className="workspace-state workspace-error" role="status">
+            The configured provider profile is incomplete or invalid. Contact the deployment
+            administrator; no secret value is displayed here.
+          </p>
+        ) : profile.profile.provider === "DETERMINISTIC_LOCAL" ? (
+          <p className="workspace-state" role="status">
+            The deterministic local provider is enabled. No external model is called.
+          </p>
+        ) : (
+          <p className="workspace-state" role="status">
+            An external compatible provider profile is configured. Valid secret reference:{" "}
+            {profile.profile.secretReferenceConfigured ? "configured" : "missing"}. Secret values
+            are never returned.
+          </p>
+        )}
+        <p className="field-help">
+          Deployment administrators configure provider profiles in deployment settings and restart
+          the service. The endpoint is not user-supplied; see the local operator-support provider
+          configuration guide.
+        </p>
+      </section>
       <label className="field-label" htmlFor="operator-support-topic">
         Documentation topic
         <select

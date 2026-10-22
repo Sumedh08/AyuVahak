@@ -2,10 +2,8 @@ package org.ayuvahak.platform.operatorsupport.application;
 
 import java.util.List;
 import java.util.Objects;
-import org.springframework.stereotype.Component;
 
 /** No-model deterministic adapter that returns only reviewed excerpts for local acceptance. */
-@Component
 public final class DeterministicLocalOperatorSupportProvider implements OperatorSupportProvider {
 
   @Override

@@ -12,6 +12,14 @@ export const OPERATOR_SUPPORT_TOPICS = [
 
 export type OperatorSupportQuestionKey = (typeof OPERATOR_SUPPORT_TOPICS)[number]["key"];
 export type OperatorSupportStatus = "ADVISORY" | "ABSTAINED";
+export type OperatorSupportProvider = "DETERMINISTIC_LOCAL" | "OPENAI_COMPATIBLE";
+
+export interface OperatorSupportProfileStatus {
+  readonly enabled: boolean;
+  readonly provider: OperatorSupportProvider;
+  readonly configurationValid: boolean;
+  readonly secretReferenceConfigured: boolean;
+}
 
 export function parseOperatorSupportQuestionKey(value: string): OperatorSupportQuestionKey | null {
   return OPERATOR_SUPPORT_TOPICS.find((topic) => topic.key === value)?.key ?? null;
@@ -39,6 +47,7 @@ export interface OperatorSupportResponse {
 }
 
 export interface OperatorSupportApiClient {
+  profileStatus(signal?: AbortSignal): Promise<OperatorSupportProfileStatus>;
   answer(
     questionKey: OperatorSupportQuestionKey,
     signal?: AbortSignal,
@@ -159,36 +168,87 @@ function parseResponse(value: unknown): OperatorSupportResponse | null {
   };
 }
 
+function parseProfileStatus(value: unknown): OperatorSupportProfileStatus | null {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, [
+      "enabled",
+      "provider",
+      "configurationValid",
+      "secretReferenceConfigured",
+    ]) ||
+    typeof value.enabled !== "boolean" ||
+    (value.provider !== "DETERMINISTIC_LOCAL" && value.provider !== "OPENAI_COMPATIBLE") ||
+    typeof value.configurationValid !== "boolean" ||
+    typeof value.secretReferenceConfigured !== "boolean"
+  ) {
+    return null;
+  }
+  return {
+    enabled: value.enabled,
+    provider: value.provider,
+    configurationValid: value.configurationValid,
+    secretReferenceConfigured: value.secretReferenceConfigured,
+  };
+}
+
 export function createOperatorSupportApiClient(
   getAccessToken: () => Promise<string | null>,
   fetcher: typeof fetch = fetch,
 ): OperatorSupportApiClient {
+  async function authorizedFetch(
+    path: string,
+    init: RequestInit = {},
+    signal?: AbortSignal,
+  ): Promise<Response> {
+    const token = await getAccessToken();
+    if (!token || token.length > 8192 || !/^[A-Za-z0-9\-._~+/]+=*$/u.test(token)) {
+      throw new OwnerApiError(401, "UNAUTHENTICATED");
+    }
+    let response: Response;
+    try {
+      response = await fetcher(path, {
+        ...init,
+        headers: {
+          ...Object.fromEntries(new Headers(init.headers).entries()),
+          Accept: "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        credentials: "omit",
+        cache: "no-store",
+        ...(signal ? { signal } : {}),
+      });
+    } catch {
+      throw new OwnerApiError(null, "UNAVAILABLE");
+    }
+    if (response.status === 401) throw new OwnerApiError(401, "UNAUTHENTICATED");
+    if (response.status === 403) throw new OwnerApiError(403, "FORBIDDEN");
+    if (!response.ok) throw new OwnerApiError(response.status, "UNAVAILABLE");
+    return response;
+  }
+
   return {
-    async answer(questionKey, signal) {
-      const token = await getAccessToken();
-      if (!token || token.length > 8192 || !/^[A-Za-z0-9\-._~+/]+=*$/u.test(token)) {
-        throw new OwnerApiError(401, "UNAUTHENTICATED");
-      }
-      let response: Response;
+    async profileStatus(signal) {
+      const response = await authorizedFetch("/api/v1/operator-support/profile", {}, signal);
       try {
-        response = await fetcher("/api/v1/operator-support/answers", {
-          method: "POST",
-          headers: {
-            Accept: "application/json",
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({ questionKey }),
-          credentials: "omit",
-          cache: "no-store",
-          ...(signal ? { signal } : {}),
-        });
-      } catch {
-        throw new OwnerApiError(null, "UNAVAILABLE");
+        const result = parseProfileStatus(await response.json());
+        if (!result) throw new OwnerApiError(response.status, "INVALID_RESPONSE");
+        return result;
+      } catch (error: unknown) {
+        if (error instanceof OwnerApiError) throw error;
+        throw new OwnerApiError(response.status, "INVALID_RESPONSE");
       }
-      if (response.status === 401) throw new OwnerApiError(401, "UNAUTHENTICATED");
-      if (response.status === 403) throw new OwnerApiError(403, "FORBIDDEN");
-      if (!response.ok) throw new OwnerApiError(response.status, "UNAVAILABLE");
+    },
+    async answer(questionKey, signal) {
+      const response = await authorizedFetch(
+        "/api/v1/operator-support/answers",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ questionKey }),
+        },
+        signal,
+      );
       try {
         const result = parseResponse(await response.json());
         if (!result) throw new OwnerApiError(response.status, "INVALID_RESPONSE");

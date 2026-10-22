@@ -4,6 +4,7 @@ import java.util.Objects;
 import org.ayuvahak.platform.core.ActorReference;
 import org.ayuvahak.platform.core.CorrelationId;
 import org.ayuvahak.platform.operatorsupport.application.OperatorSupportQuestionKey;
+import org.ayuvahak.platform.operatorsupport.application.OperatorSupportProfileStatus;
 import org.ayuvahak.platform.operatorsupport.application.OperatorSupportResponse;
 import org.ayuvahak.platform.operatorsupport.application.OperatorSupportService;
 import org.slf4j.MDC;
@@ -12,6 +13,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -20,7 +22,7 @@ import tools.jackson.databind.JsonNode;
 
 /** Authenticated, finite-topic API for advisory documentation support. */
 @RestController
-@RequestMapping("/api/v1/operator-support/answers")
+@RequestMapping("/api/v1/operator-support")
 public class OperatorSupportController {
 
   private final OperatorSupportService service;
@@ -30,6 +32,7 @@ public class OperatorSupportController {
   }
 
   @PostMapping(
+      path = "/answers",
       consumes = MediaType.APPLICATION_JSON_VALUE,
       produces = MediaType.APPLICATION_JSON_VALUE)
   public ResponseEntity<OperatorSupportResponse> answer(
@@ -41,6 +44,17 @@ public class OperatorSupportController {
     return ResponseEntity.ok()
         .cacheControl(CacheControl.noStore())
         .body(service.answer(actor, correlationId, questionKey));
+  }
+
+  @GetMapping(path = "/profile", produces = MediaType.APPLICATION_JSON_VALUE)
+  public ResponseEntity<OperatorSupportProfileStatus> profileStatus(
+      @AuthenticationPrincipal ActorReference actor) {
+    String correlationValue = MDC.get(CorrelationIdFilter.MDC_KEY);
+    CorrelationId correlationId =
+        correlationValue == null ? CorrelationId.generate() : new CorrelationId(correlationValue);
+    return ResponseEntity.ok()
+        .cacheControl(CacheControl.noStore())
+        .body(service.profileStatus(actor, correlationId));
   }
 
   static OperatorSupportQuestionKey questionKeyFrom(JsonNode request) {

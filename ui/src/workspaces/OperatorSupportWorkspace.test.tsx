@@ -6,6 +6,12 @@ import { OperatorSupportWorkspace } from "./OperatorSupportWorkspace";
 describe("OperatorSupportWorkspace", () => {
   it("shows a cited advisory and lets the operator close it without a workflow action", async () => {
     const apiClient: OperatorSupportApiClient = {
+      profileStatus: vi.fn().mockResolvedValue({
+        enabled: true,
+        provider: "DETERMINISTIC_LOCAL",
+        configurationValid: true,
+        secretReferenceConfigured: false,
+      }),
       answer: vi.fn().mockResolvedValue({
         status: "ADVISORY",
         answer: "Confirm freshness with the Capacity owner.",
@@ -47,6 +53,12 @@ describe("OperatorSupportWorkspace", () => {
 
   it("explains disabled assistance and keeps the ordinary application available", async () => {
     const apiClient: OperatorSupportApiClient = {
+      profileStatus: vi.fn().mockResolvedValue({
+        enabled: false,
+        provider: "DETERMINISTIC_LOCAL",
+        configurationValid: true,
+        secretReferenceConfigured: false,
+      }),
       answer: vi.fn().mockResolvedValue({
         status: "ABSTAINED",
         answer: "",
@@ -75,7 +87,15 @@ describe("OperatorSupportWorkspace", () => {
 
   it("does not submit a value outside the finite topic catalog", () => {
     const answer = vi.fn();
-    const apiClient: OperatorSupportApiClient = { answer };
+    const apiClient: OperatorSupportApiClient = {
+      profileStatus: vi.fn().mockResolvedValue({
+        enabled: false,
+        provider: "DETERMINISTIC_LOCAL",
+        configurationValid: true,
+        secretReferenceConfigured: false,
+      }),
+      answer,
+    };
     render(
       <OperatorSupportWorkspace getAccessToken={async () => "unused"} apiClient={apiClient} />,
     );
