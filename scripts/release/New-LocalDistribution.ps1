@@ -3,12 +3,17 @@ param(
   [ValidatePattern('^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$')]
   [string] $Version,
   [string] $JarPath = "target/ayuvahak-platform-0.1.0.jar",
+  [Parameter(Mandatory = $true)]
+  [string] $ProvenancePath,
   [string] $OutputDirectory = "release-output"
 )
 
 $ErrorActionPreference = "Stop"
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+$evidenceModule = Join-Path $PSScriptRoot "ReleaseArtifactEvidence.psm1"
+Import-Module -Name $evidenceModule -Force
 $resolvedJar = Resolve-Path -LiteralPath (Join-Path $repositoryRoot $JarPath)
+$resolvedProvenance = Resolve-Path -LiteralPath (Join-Path $repositoryRoot $ProvenancePath)
 $webDirectory = Join-Path $repositoryRoot "ui\dist"
 $distributionTemplate = Join-Path $repositoryRoot "distribution\local"
 $requiredFiles = @(
@@ -21,12 +26,28 @@ $requiredFiles = @(
   (Join-Path $repositoryRoot "docs\installation\operator-support-provider.md")
 )
 if (-not (Test-Path -LiteralPath $resolvedJar.Path -PathType Leaf)) { throw "The application JAR is missing." }
+if (-not (Test-Path -LiteralPath $resolvedProvenance.Path -PathType Leaf)) { throw "The source/build provenance file is missing." }
 foreach ($file in $requiredFiles) {
   if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "A required release input is missing: $file" }
 }
 if (-not (Test-Path -LiteralPath (Join-Path $repositoryRoot "infra\keycloak\demo-manifest.json") -PathType Leaf)) {
   throw "The versioned Demo identity manifest is missing."
 }
+
+$sourceRevision = (& git -C $repositoryRoot rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or $sourceRevision -notmatch '^[0-9a-f]{40}$') {
+  throw "The source revision could not be recorded."
+}
+$gitStatus = @(& git -C $repositoryRoot status --porcelain --untracked-files=normal)
+if ($LASTEXITCODE -ne 0) { throw "The source tree status could not be checked." }
+$sourceTreeClean = $gitStatus.Count -eq 0
+$jarHash = (Get-FileHash -LiteralPath $resolvedJar.Path -Algorithm SHA256).Hash.ToLowerInvariant()
+$provenance = Get-Content -LiteralPath $resolvedProvenance.Path -Raw -Encoding UTF8 | ConvertFrom-Json
+Assert-ReleaseArtifactEvidence `
+  -Provenance $provenance `
+  -SourceRevision $sourceRevision `
+  -JarSha256 $jarHash `
+  -SourceTreeClean $sourceTreeClean
 
 $outputPath = if ([System.IO.Path]::IsPathRooted($OutputDirectory)) {
   [System.IO.Path]::GetFullPath($OutputDirectory)
@@ -44,6 +65,7 @@ New-Item -ItemType Directory -Path $packagePath -Force | Out-Null
 Copy-Item -Path (Join-Path $distributionTemplate "*") -Destination $packagePath -Recurse -Force
 New-Item -ItemType Directory -Path (Join-Path $packagePath "web") -Force | Out-Null
 Copy-Item -LiteralPath $resolvedJar.Path -Destination (Join-Path $packagePath "app.jar")
+Copy-Item -LiteralPath $resolvedProvenance.Path -Destination (Join-Path $packagePath "provenance.json")
 Copy-Item -Path (Join-Path $webDirectory "*") -Destination (Join-Path $packagePath "web") -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $repositoryRoot "scripts\local") -Destination (Join-Path $packagePath "scripts\local") -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $repositoryRoot "infra\keycloak") -Destination (Join-Path $packagePath "infra\keycloak") -Recurse -Force
@@ -52,16 +74,15 @@ New-Item -ItemType Directory -Path (Join-Path $packagePath "docs\installation") 
 Copy-Item -LiteralPath (Join-Path $repositoryRoot "docs\installation\local-first-run.md") -Destination (Join-Path $packagePath "docs\installation\local-first-run.md")
 Copy-Item -LiteralPath (Join-Path $repositoryRoot "docs\installation\operator-support-provider.md") -Destination (Join-Path $packagePath "docs\installation\operator-support-provider.md")
 
-$sourceRevision = (& git -C $repositoryRoot rev-parse HEAD).Trim()
-if ($LASTEXITCODE -ne 0 -or $sourceRevision -notmatch '^[0-9a-f]{40}$') {
-  throw "The source revision could not be recorded."
-}
-$jarHash = (Get-FileHash -LiteralPath (Join-Path $packagePath "app.jar") -Algorithm SHA256).Hash.ToLowerInvariant()
+$packagedJarHash = (Get-FileHash -LiteralPath (Join-Path $packagePath "app.jar") -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($packagedJarHash -ne $jarHash) { throw "The staged application artifact changed during packaging." }
 $manifest = [ordered]@{
   version = $Version
   sourceRevision = $sourceRevision
   artifact = "app.jar"
-  artifactSha256 = $jarHash
+  artifactSha256 = $packagedJarHash
+  provenance = "provenance.json"
+  provenanceSha256 = (Get-FileHash -LiteralPath (Join-Path $packagePath "provenance.json") -Algorithm SHA256).Hash.ToLowerInvariant()
   frontend = "web/"
   deploymentModeChoice = @("SYNTHETIC_DEMO", "EMPTY")
   createdAtUtc = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
@@ -94,5 +115,5 @@ Remove-Item -LiteralPath $resolvedStage -Recurse -Force
 
 Write-Host "Created $zipPath"
 Write-Host "SHA-256: $zipHash"
-Write-Host "Application JAR SHA-256: $jarHash"
+Write-Host "Application JAR SHA-256: $packagedJarHash"
 Write-Host "The archive contains no runtime credentials and has not been published."
