@@ -18,7 +18,7 @@ import org.springframework.stereotype.Repository;
 
 /** Read-only Analytics schema projection for scope-authorized aggregate snapshot summaries. */
 @Repository
-public final class JdbcAnalyticsSnapshotReadStore implements AnalyticsSnapshotReadStore {
+public class JdbcAnalyticsSnapshotReadStore implements AnalyticsSnapshotReadStore {
 
   private static final RowMapper<AnalyticsSnapshotSummary> SUMMARY_MAPPER =
       JdbcAnalyticsSnapshotReadStore::mapSummary;

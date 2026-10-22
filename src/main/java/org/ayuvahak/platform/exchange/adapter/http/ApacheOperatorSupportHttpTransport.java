@@ -33,6 +33,7 @@ import org.apache.hc.core5.util.Timeout;
 import org.ayuvahak.platform.exchange.application.PartnerTransportException;
 import org.ayuvahak.platform.exchange.domain.PartnerKey;
 import org.ayuvahak.platform.operatorsupport.application.OperatorSupportHttpTransport;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 /** Vetted, pinned-DNS HTTPS transport for the configured documentation-support provider only. */
@@ -46,6 +47,7 @@ final class ApacheOperatorSupportHttpTransport implements OperatorSupportHttpTra
   private final VettedDnsResolver.AddressLookup addressLookup;
   private final BoundedPartnerOperationExecutor operations;
 
+  @Autowired
   ApacheOperatorSupportHttpTransport(
       BoundedDnsAddressLookup addressLookup,
       BoundedPartnerOperationExecutor operations) {

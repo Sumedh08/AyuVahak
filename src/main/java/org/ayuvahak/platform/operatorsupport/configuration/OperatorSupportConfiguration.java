@@ -30,20 +30,14 @@ public class OperatorSupportConfiguration {
   }
 
   @Bean
-  DeterministicLocalOperatorSupportProvider deterministicLocalOperatorSupportProvider() {
-    return new DeterministicLocalOperatorSupportProvider();
-  }
-
-  @Bean
   OperatorSupportProvider operatorSupportProvider(
       OperatorSupportProperties properties,
-      DeterministicLocalOperatorSupportProvider deterministic,
       org.springframework.beans.factory.ObjectProvider<OperatorSupportHttpTransport> transport,
       PartnerSecretProvider secrets,
       ObjectMapper mapper) {
     if (!properties.isEnabled()
         || properties.getProvider() == OperatorSupportProperties.Provider.DETERMINISTIC_LOCAL) {
-      return deterministic;
+      return new DeterministicLocalOperatorSupportProvider();
     }
     properties.validate();
     return new OpenAiCompatibleOperatorSupportProvider(

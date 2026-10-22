@@ -21,6 +21,11 @@ public final class AnalyticsAuthorities {
         Set.of(ExecutionScope.Kind.ORGANIZATION, ExecutionScope.Kind.FACILITY));
   }
 
+  public static FunctionalAuthority indicatorDefinitionAdministration() {
+    return new FunctionalAuthority(
+        "AnalyticsIndicatorDefinitionAdministration", Set.of(ExecutionScope.Kind.PLATFORM));
+  }
+
   public static FunctionalAuthority lateAggregateRevision() {
     return new FunctionalAuthority(
         "AnalyticsLateAggregateRevision", Set.of(ExecutionScope.Kind.ORGANIZATION));

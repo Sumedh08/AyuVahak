@@ -18,7 +18,8 @@ import org.springframework.context.ConfigurableApplicationContext;
       "org.ayuvahak.referral",
       "org.ayuvahak.matching",
       "org.ayuvahak.transfer",
-      "org.ayuvahak.transport"
+      "org.ayuvahak.transport",
+      "org.ayuvahak.analytics"
     })
 @EnableConfigurationProperties({
   PlatformProperties.class,

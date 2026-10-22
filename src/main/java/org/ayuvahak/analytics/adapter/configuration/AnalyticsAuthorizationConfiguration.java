@@ -19,6 +19,11 @@ class AnalyticsAuthorizationConfiguration {
   }
 
   @Bean
+  FunctionalAuthority analyticsIndicatorDefinitionAdministrationAuthority() {
+    return AnalyticsAuthorities.indicatorDefinitionAdministration();
+  }
+
+  @Bean
   FunctionalAuthority analyticsLateAggregateRevisionAuthority() {
     return AnalyticsAuthorities.lateAggregateRevision();
   }
