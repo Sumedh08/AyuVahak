@@ -6,10 +6,8 @@ import java.io.InputStream;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.net.URI;
-import java.net.UnknownHostException;
 import java.security.GeneralSecurityException;
 import java.time.Duration;
-import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -49,8 +47,7 @@ final class ApacheOperatorSupportHttpTransport implements OperatorSupportHttpTra
 
   @Autowired
   ApacheOperatorSupportHttpTransport(
-      BoundedDnsAddressLookup addressLookup,
-      BoundedPartnerOperationExecutor operations) {
+      BoundedDnsAddressLookup addressLookup, BoundedPartnerOperationExecutor operations) {
     this(new EgressAddressPolicy(Set.of(443), Map.of()), addressLookup, operations);
   }
 
@@ -70,7 +67,8 @@ final class ApacheOperatorSupportHttpTransport implements OperatorSupportHttpTra
       char[] bearerCredential,
       Duration timeout,
       int maximumResponseBytes) {
-    validateRequest(configuredEndpoint, requestBody, bearerCredential, timeout, maximumResponseBytes);
+    validateRequest(
+        configuredEndpoint, requestBody, bearerCredential, timeout, maximumResponseBytes);
     int port = configuredEndpoint.getPort() == -1 ? 443 : configuredEndpoint.getPort();
     VettedDnsResolver resolver;
     SSLContext sslContext;
@@ -114,7 +112,8 @@ final class ApacheOperatorSupportHttpTransport implements OperatorSupportHttpTra
     request.setHeader("Authorization", "Bearer " + new String(bearerCredential));
     request.setEntity(
         new ByteArrayEntity(
-            requestBody.clone(), ContentType.APPLICATION_JSON.withCharset(java.nio.charset.StandardCharsets.UTF_8)));
+            requestBody.clone(),
+            ContentType.APPLICATION_JSON.withCharset(java.nio.charset.StandardCharsets.UTF_8)));
     HttpClientContext context = HttpClientContext.create();
     try (manager;
         CloseableHttpClient client =
@@ -133,8 +132,7 @@ final class ApacheOperatorSupportHttpTransport implements OperatorSupportHttpTra
               client.execute(
                   request,
                   context,
-                  response ->
-                      responseBody(response, context, resolver, maximumResponseBytes)),
+                  response -> responseBody(response, context, resolver, maximumResponseBytes)),
           timeout,
           () -> {
             request.cancel();

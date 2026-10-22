@@ -38,7 +38,8 @@ class OpenAiCompatibleOperatorSupportProviderTest {
           credentialArray.set(token);
           return """
               {"choices":[{"message":{"content":"{\\"answer\\":\\"Restore to an isolated target and verify before serving traffic.\\",\\"sourceIds\\":[\\"DATABASE_RESTORE\\"]}"}}]}
-              """.getBytes(StandardCharsets.UTF_8);
+              """
+              .getBytes(StandardCharsets.UTF_8);
         };
     PartnerSecretProvider secrets =
         reference ->
@@ -54,8 +55,7 @@ class OpenAiCompatibleOperatorSupportProviderTest {
         provider.answer(OperatorSupportQuestionKey.DATABASE_RESTORE, List.of(SOURCE));
 
     String serializedRequest = new String(requestBody.get(), StandardCharsets.UTF_8);
-    assertThat(endpoint.get())
-        .isEqualTo(URI.create("https://api.openai.com/v1/chat/completions"));
+    assertThat(endpoint.get()).isEqualTo(URI.create("https://api.openai.com/v1/chat/completions"));
     assertThat(serializedRequest)
         .contains("DATABASE_RESTORE", "Restore verification", SOURCE.excerpt())
         .doesNotContain("PatientReference", "SYN-PATIENT", "Authorization", SECRET);
@@ -65,7 +65,8 @@ class OpenAiCompatibleOperatorSupportProviderTest {
     assertThat(authorization.get()).isEqualTo(SECRET);
     assertThat(credentialArray.get()).containsOnly('\0');
     assertThat(response.status()).isEqualTo(OperatorSupportResponse.Status.ADVISORY);
-    assertThat(response.answer()).isEqualTo("Restore to an isolated target and verify before serving traffic.");
+    assertThat(response.answer())
+        .isEqualTo("Restore to an isolated target and verify before serving traffic.");
     assertThat(response.sourceIds()).containsExactly("DATABASE_RESTORE");
   }
 
@@ -99,7 +100,10 @@ class OpenAiCompatibleOperatorSupportProviderTest {
         };
     OpenAiCompatibleOperatorSupportProvider provider =
         new OpenAiCompatibleOperatorSupportProvider(
-            externalProperties(), transport, reference -> Optional.empty(), JsonMapper.builder().build());
+            externalProperties(),
+            transport,
+            reference -> Optional.empty(),
+            JsonMapper.builder().build());
 
     ProviderResponse response =
         provider.answer(OperatorSupportQuestionKey.DATABASE_RESTORE, List.of(SOURCE));

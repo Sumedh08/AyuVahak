@@ -74,10 +74,15 @@ class OperatorSupportServiceTest {
   void externalProviderAbstainsUntilTheExactProfileHasARecordedEvaluationFingerprint() {
     AtomicInteger invocations = new AtomicInteger();
     OperatorSupportProperties properties = externalProfileProperties();
-    OperatorSupportService service = service(properties, (questionKey, sources) -> {
-      invocations.incrementAndGet();
-      return ProviderResponse.advisory("unexpected without evaluation", List.of(sources.getFirst().sourceId()));
-    }, true);
+    OperatorSupportService service =
+        service(
+            properties,
+            (questionKey, sources) -> {
+              invocations.incrementAndGet();
+              return ProviderResponse.advisory(
+                  "unexpected without evaluation", List.of(sources.getFirst().sourceId()));
+            },
+            true);
 
     OperatorSupportResponse response = answer(service, OperatorSupportQuestionKey.DATABASE_RESTORE);
 
@@ -94,10 +99,15 @@ class OperatorSupportServiceTest {
     OperatorSupportCorpus corpus = OperatorSupportCorpus.approved();
     properties.setEvaluatedProfileFingerprint(
         OperatorSupportEvaluationProfile.fingerprint(properties, corpus));
-    OperatorSupportService service = service(properties, (questionKey, sources) -> {
-      invocations.incrementAndGet();
-      return ProviderResponse.advisory("reviewed profile answer", List.of(sources.getFirst().sourceId()));
-    }, true);
+    OperatorSupportService service =
+        service(
+            properties,
+            (questionKey, sources) -> {
+              invocations.incrementAndGet();
+              return ProviderResponse.advisory(
+                  "reviewed profile answer", List.of(sources.getFirst().sourceId()));
+            },
+            true);
 
     OperatorSupportResponse response = answer(service, OperatorSupportQuestionKey.DATABASE_RESTORE);
 
@@ -108,21 +118,24 @@ class OperatorSupportServiceTest {
   @Test
   void profileStatusReportsOnlyTheSafeFingerprintAndEvaluationState() {
     OperatorSupportProperties properties = externalProfileProperties();
-    OperatorSupportService service = service(properties, new DeterministicLocalOperatorSupportProvider(), true);
+    OperatorSupportService service =
+        service(properties, new DeterministicLocalOperatorSupportProvider(), true);
 
     OperatorSupportProfileStatus status = service.profileStatus(OPERATOR, CorrelationId.generate());
 
     assertThat(status.evaluationRequired()).isTrue();
     assertThat(status.evaluationCurrent()).isFalse();
     assertThat(status.requiredEvaluationFingerprint()).matches("sha256:[a-f0-9]{64}");
-    assertThat(status.toString()).doesNotContain("api.openai.com", "SYNTHETIC_OPERATOR_SUPPORT_SECRET");
+    assertThat(status.toString())
+        .doesNotContain("api.openai.com", "SYNTHETIC_OPERATOR_SUPPORT_SECRET");
   }
 
   @Test
   void invalidExternalProfileCannotReportEvaluationAsCurrent() {
     OperatorSupportProperties properties = externalProfileProperties();
     properties.setEndpoint(null);
-    OperatorSupportService service = service(properties, new DeterministicLocalOperatorSupportProvider(), true);
+    OperatorSupportService service =
+        service(properties, new DeterministicLocalOperatorSupportProvider(), true);
 
     OperatorSupportProfileStatus status = service.profileStatus(OPERATOR, CorrelationId.generate());
 
@@ -139,12 +152,14 @@ class OperatorSupportServiceTest {
 
     initial.setModel("SYNTHETIC-MODEL-002");
 
-    assertThat(OperatorSupportEvaluationProfile.fingerprint(initial, corpus)).isNotEqualTo(original);
+    assertThat(OperatorSupportEvaluationProfile.fingerprint(initial, corpus))
+        .isNotEqualTo(original);
 
     initial.setModel("SYNTHETIC-MODEL-001");
     initial.setProviderProfileRevision("SYNTHETIC-PROFILE-REVISION-2");
 
-    assertThat(OperatorSupportEvaluationProfile.fingerprint(initial, corpus)).isNotEqualTo(original);
+    assertThat(OperatorSupportEvaluationProfile.fingerprint(initial, corpus))
+        .isNotEqualTo(original);
   }
 
   @Test
@@ -325,8 +340,7 @@ class OperatorSupportServiceTest {
             authorization,
             contexts);
 
-    OperatorSupportProfileStatus status =
-        service.profileStatus(OPERATOR, CorrelationId.generate());
+    OperatorSupportProfileStatus status = service.profileStatus(OPERATOR, CorrelationId.generate());
 
     assertThat(status.enabled()).isFalse();
     assertThat(status.provider()).isEqualTo("DETERMINISTIC_LOCAL");

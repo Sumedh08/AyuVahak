@@ -7,7 +7,9 @@ import java.util.HexFormat;
 import java.util.Objects;
 import org.ayuvahak.platform.configuration.OperatorSupportProperties;
 
-/** Stable non-secret identity for the exact external operator-support profile that was evaluated. */
+/**
+ * Stable non-secret identity for the exact external operator-support profile that was evaluated.
+ */
 public final class OperatorSupportEvaluationProfile {
 
   public static final String PURPOSE_VERSION = "operator-support-purpose-v1";

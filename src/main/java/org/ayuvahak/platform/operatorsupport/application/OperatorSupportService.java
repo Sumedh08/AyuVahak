@@ -101,7 +101,8 @@ public final class OperatorSupportService {
         !evaluationRequired
             || (configurationValid
                 && !requiredEvaluationFingerprint.isEmpty()
-                && requiredEvaluationFingerprint.equals(properties.getEvaluatedProfileFingerprint()));
+                && requiredEvaluationFingerprint.equals(
+                    properties.getEvaluatedProfileFingerprint()));
     return new OperatorSupportProfileStatus(
         properties.isEnabled(),
         properties.getProvider().name(),

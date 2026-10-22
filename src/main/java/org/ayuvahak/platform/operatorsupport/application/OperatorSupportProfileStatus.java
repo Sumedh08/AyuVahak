@@ -1,6 +1,8 @@
 package org.ayuvahak.platform.operatorsupport.application;
 
-/** Safe status view that never contains an endpoint, secret reference, credential, or secret value. */
+/**
+ * Safe status view that never contains an endpoint, secret reference, credential, or secret value.
+ */
 public record OperatorSupportProfileStatus(
     boolean enabled,
     String provider,

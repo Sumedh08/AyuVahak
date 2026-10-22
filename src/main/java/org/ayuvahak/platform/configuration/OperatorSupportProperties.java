@@ -13,7 +13,8 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 public class OperatorSupportProperties {
 
   private static final Pattern MODEL = Pattern.compile("[A-Za-z0-9._:-]{1,128}");
-  private static final Pattern PROFILE_REVISION = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._:-]{0,63}");
+  private static final Pattern PROFILE_REVISION =
+      Pattern.compile("[A-Za-z0-9][A-Za-z0-9._:-]{0,63}");
   private static final Pattern ENV_REFERENCE = Pattern.compile("env:[A-Za-z_][A-Za-z0-9_]{0,127}");
   private static final Pattern EVALUATION_FINGERPRINT = Pattern.compile("sha256:[a-f0-9]{64}");
 
@@ -140,7 +141,8 @@ public class OperatorSupportProperties {
         || maxResponseBytes > 65_536
         || (!evaluatedProfileFingerprint.isEmpty()
             && !EVALUATION_FINGERPRINT.matcher(evaluatedProfileFingerprint).matches())) {
-      throw new IllegalArgumentException("The configured operator support provider profile is invalid.");
+      throw new IllegalArgumentException(
+          "The configured operator support provider profile is invalid.");
     }
   }
 
@@ -155,7 +157,8 @@ public class OperatorSupportProperties {
         || normalized.endsWith(".invalid")
         || normalized.matches("[0-9.]+")
         || normalized.contains(":")
-        || !normalized.matches("(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+")) {
+        || !normalized.matches(
+            "(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+")) {
       return false;
     }
     // Do not resolve here. The send-time transport resolves once, vets the complete answer set,

@@ -20,7 +20,8 @@ class OperatorSupportPropertiesTest {
   @Test
   void rejectsCredentialsQueryAndUnexpectedPath() {
     assertInvalid("https://user@api.openai.com/v1/chat/completions", List.of("api.openai.com"));
-    assertInvalid("https://api.openai.com/v1/chat/completions?override=true", List.of("api.openai.com"));
+    assertInvalid(
+        "https://api.openai.com/v1/chat/completions?override=true", List.of("api.openai.com"));
     assertInvalid("https://api.openai.com/v1/other", List.of("api.openai.com"));
   }
 

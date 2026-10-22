@@ -6,7 +6,6 @@ import java.util.Optional;
 import org.ayuvahak.platform.configuration.OperatorSupportProperties;
 import org.ayuvahak.platform.exchange.application.PartnerSecretMaterial;
 import org.ayuvahak.platform.exchange.application.PartnerSecretProvider;
-import org.springframework.stereotype.Component;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ArrayNode;

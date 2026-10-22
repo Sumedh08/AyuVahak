@@ -31,8 +31,7 @@ import org.springframework.context.ConfigurableApplicationContext;
 public class AyuVahakApplication {
 
   public static void main(String[] args) {
-    ConfigurableApplicationContext context =
-        SpringApplication.run(AyuVahakApplication.class, args);
+    ConfigurableApplicationContext context = SpringApplication.run(AyuVahakApplication.class, args);
     closeBootstrapContextIfRequested(context);
   }
 
