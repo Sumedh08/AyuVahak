@@ -231,7 +231,10 @@ function New-DirectoryResource(
 }
 
 function Wait-LocalReadiness([int] $Port) {
-  $deadline = (Get-Date).AddMinutes(5)
+  # A fresh packaged-JAR restart can spend 505 seconds loading the bundled FHIR profiles under
+  # local synthetic acceptance load. Match the install launcher's bounded ten-minute readiness
+  # window so the Demo-only profile restart does not time out before the app can serve requests.
+  $deadline = (Get-Date).AddMinutes(10)
   while ((Get-Date) -lt $deadline) {
     try {
       $response = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/actuator/health/readiness" `
