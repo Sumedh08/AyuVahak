@@ -58,6 +58,7 @@ import org.ayuvahak.platform.exchange.domain.FederationPeerOperations;
 import org.ayuvahak.platform.exchange.domain.PartnerProfileState;
 import org.ayuvahak.platform.exchange.domain.PartnerProfileVersion;
 import org.ayuvahak.platform.exchange.domain.PartnerTrustConfiguration;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 
 /** Single-operation Apache HttpClient transport pinned to one fully vetted DNS answer set. */
@@ -77,7 +78,7 @@ final class ApachePartnerHttpTransport
       OutboundAddressPolicy addressPolicy,
       VettedDnsResolver.AddressLookup addressLookup,
       PartnerTlsContextProvider tlsContexts,
-      BoundedPartnerOperationExecutor operations) {
+      @Qualifier("boundedPartnerOperationExecutor") BoundedPartnerOperationExecutor operations) {
     this.addressPolicy = Objects.requireNonNull(addressPolicy, "addressPolicy");
     this.addressLookup = Objects.requireNonNull(addressLookup, "addressLookup");
     this.tlsContexts = Objects.requireNonNull(tlsContexts, "tlsContexts");
