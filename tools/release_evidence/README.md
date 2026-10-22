@@ -55,8 +55,8 @@ $python = '.scratch/local-toolchain/spdx3-validate-env/Scripts/python.exe'
 & $python tools/release_evidence/release_evidence.py sbom `
   --generator .scratch/local-toolchain/spdx-3-acceptance/cdxgen-windows-amd64.exe `
   --project-root . `
-  --artifact target/ayuvahak-platform-0.1.0-SNAPSHOT.jar `
-  --application-purl 'pkg:maven/org.ayuvahak/ayuvahak-platform@0.1.0-SNAPSHOT?type=jar' `
+  --artifact target/ayuvahak-platform-0.1.0.jar `
+  --application-purl 'pkg:maven/org.ayuvahak/ayuvahak-platform@0.1.0?type=jar' `
   --maven-repository "$env:USERPROFILE/.m2/repository" `
   --validator-python $python `
   --java-home $env:JAVA_HOME `
@@ -85,7 +85,7 @@ python tools/release_evidence/release_evidence.py provenance `
   --build-type maven-package `
   --version 1.2.3-rc.1 `
   --parameter migrationRange=V1-V99 `
-  --artifact ayuvahak.jar=target/ayuvahak-platform-0.1.0-SNAPSHOT.jar `
+  --artifact ayuvahak.jar=target/ayuvahak-platform-0.1.0.jar `
   --output .scratch/release-evidence/provenance.json
 ```
 
@@ -100,7 +100,7 @@ python tools/release_evidence/release_evidence.py manifest `
   --source-revision 0123456789abcdef0123456789abcdef01234567 `
   --builder-id local://SYN-BUILDER-001 `
   --build-type maven-package `
-  --artifact ayuvahak.jar=target/ayuvahak-platform-0.1.0-SNAPSHOT.jar `
+  --artifact ayuvahak.jar=target/ayuvahak-platform-0.1.0.jar `
   --migration-range V1-V99 `
   --supported-upgrade-path '0.1.x to 1.2.3' `
   --sbom .scratch/release-evidence/ayuvahak.spdx.json `
