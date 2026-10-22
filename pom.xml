@@ -13,7 +13,7 @@
 
     <groupId>org.ayuvahak</groupId>
     <artifactId>ayuvahak-platform</artifactId>
-    <version>0.1.0-SNAPSHOT</version>
+    <version>0.1.0</version>
     <name>AyuVahak</name>
     <description>Engineering platform foundation for AyuVahak</description>
 

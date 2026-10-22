@@ -117,7 +117,7 @@ import org.testcontainers.utility.DockerImageName;
     properties = {
       "management.tracing.sampling.probability=0.0",
       "ayuvahak.authentication.audience=ayuvahak-api",
-      "ayuvahak.authentication.service-client-ids=synthetic-integration-service,synthetic-federated-origin-peer,synthetic-federated-capacity-peer,synthetic-federated-directory-peer,ayuvahak-transport-worker,ayuvahak-transfer-owner-event-consumer,synthetic-transport-provider,synthetic-mcsd-worker",
+      "ayuvahak.authentication.service-client-ids=synthetic-integration-service,synthetic-federated-origin-peer,synthetic-federated-capacity-peer,synthetic-federated-directory-peer,synthetic-p13-benchmark-peer,ayuvahak-transport-worker,ayuvahak-transfer-owner-event-consumer,synthetic-transport-provider,synthetic-mcsd-worker",
       "ayuvahak.authentication.allow-http=true",
       "ayuvahak.test.partner.enabled=true",
       "ayuvahak.transfer.request-deadline=PT1H",
@@ -4797,7 +4797,7 @@ class DirectoryCapacityReferralScenarioIT {
         destinationOrganization,
         destinationFacility,
         inboundRequestOperation,
-        "synthetic-federated-origin-peer");
+        "synthetic-p13-benchmark-peer");
     Instant requestStart = Instant.now().plusSeconds(120);
     String receivingNamespace = "urn:ayuvahak:deployment:SYN-DEPLOYMENT-RECEIVER:directory";
     String federationOriginJourneyId = InternalId.generate().toString();
@@ -4838,8 +4838,7 @@ class DirectoryCapacityReferralScenarioIT {
         mockMvc
             .perform(
                 post("/api/federation/operations/transfer.remote-receiving-request")
-                    .header(
-                        "Authorization", bearer(serviceToken("synthetic-federated-origin-peer")))
+                    .header("Authorization", bearer(serviceToken("synthetic-p13-benchmark-peer")))
                     .header("X-AyuVahak-Federation-Source", peerDeployment.value())
                     .header("X-AyuVahak-Federation-Peer", "SYN-DEPLOYMENT-RECEIVER")
                     .header(
@@ -5144,7 +5143,7 @@ class DirectoryCapacityReferralScenarioIT {
         new java.util.concurrent.atomic.AtomicInteger();
     String referralToken = token(benchmarkActor);
     String transferToken = token(benchmarkActor);
-    String federationToken = serviceToken("synthetic-federated-origin-peer");
+    String federationToken = serviceToken("synthetic-p13-benchmark-peer");
     String notificationScopeHeaders = scopeHeaders;
     var workload = new java.util.ArrayList<Phase13MixedWorkloadBenchmark.Operation>(20);
     for (int index = 0; index < 4; index++) {

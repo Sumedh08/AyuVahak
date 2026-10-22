@@ -108,7 +108,7 @@ final class Phase13MixedWorkloadBenchmark {
       Path logFile)
       throws Exception {
     Files.createDirectories(logFile.toAbsolutePath().getParent());
-    Path jar = Path.of("target", "ayuvahak-platform-0.1.0-SNAPSHOT.jar").toAbsolutePath();
+    Path jar = Path.of("target", "ayuvahak-platform-0.1.0.jar").toAbsolutePath();
     if (!Files.isRegularFile(jar)) {
       throw new AssertionError("packaged AyuVahak application JAR is missing: " + jar);
     }
@@ -129,6 +129,7 @@ final class Phase13MixedWorkloadBenchmark {
                 jar.toString(),
                 "--server.address=127.0.0.1",
                 "--server.port=" + httpPort,
+                "--ayuvahak.deployment.mode=EMPTY",
                 "--spring.flyway.enabled=false",
                 "--spring.datasource.url=" + jdbcUrl,
                 "--spring.datasource.username=" + username,
@@ -143,7 +144,7 @@ final class Phase13MixedWorkloadBenchmark {
                 "--ayuvahak.authentication.jwk-set-uri=" + jwksUri,
                 "--ayuvahak.authentication.audience=ayuvahak-api",
                 "--ayuvahak.authentication.allow-http=true",
-                "--ayuvahak.authentication.service-client-ids=synthetic-worker,synthetic-integration-service,synthetic-federated-origin-peer,synthetic-federated-capacity-peer,synthetic-federated-directory-peer,ayuvahak-transport-worker,ayuvahak-transfer-owner-event-consumer,synthetic-transport-provider,synthetic-mcsd-worker",
+                "--ayuvahak.authentication.service-client-ids=synthetic-worker,synthetic-integration-service,synthetic-federated-origin-peer,synthetic-p13-benchmark-peer,synthetic-federated-capacity-peer,synthetic-federated-directory-peer,ayuvahak-transport-worker,ayuvahak-transfer-owner-event-consumer,synthetic-transport-provider,synthetic-mcsd-worker",
                 "--ayuvahak.federation.identity.deployment-id=SYN-DEPLOYMENT-RECEIVER",
                 "--ayuvahak.federation.identity.installation-binding=SYNTHETIC-LOCAL-TEST-BINDING-ONLY-DO-NOT-USE-PRODUCTION-001",
                 "--ayuvahak.eventing.outbox.dispatcher-enabled=false",

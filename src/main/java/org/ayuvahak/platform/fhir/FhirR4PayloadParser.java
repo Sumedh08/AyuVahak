@@ -55,7 +55,10 @@ public final class FhirR4PayloadParser {
       "http://hl7.org/fhir/uv/ips/StructureDefinition/Composition-uv-ips|2.0.1";
   private static final String IPS_BUNDLE_PROFILE =
       "http://hl7.org/fhir/uv/ips/StructureDefinition/Bundle-uv-ips|2.0.1";
-  private static final Duration VALIDATION_STARTUP_WARMUP_LIMIT = Duration.ofMinutes(2);
+  // A clean packaged installation on a local Windows Docker host can take several minutes to
+  // expand and validate the bundled pinned profiles. Keep the startup gate bounded, but allow
+  // that measured cold path to finish before failing closed.
+  private static final Duration VALIDATION_STARTUP_WARMUP_LIMIT = Duration.ofMinutes(10);
   private static final FhirContext FHIR_CONTEXT = FhirContext.forR4Cached();
   private static final Object VALIDATOR_LOCK = new Object();
   private static final IValidationSupport VALIDATION_SUPPORT = createValidationSupport();
@@ -152,7 +155,7 @@ public final class FhirR4PayloadParser {
   private static ExceptionInInitializerError startupWarmupFailure(Exception cause) {
     return new ExceptionInInitializerError(
         new IllegalStateException(
-            "Pinned local FHIR R4 profile validation did not initialize within 2 minutes", cause));
+            "Pinned local FHIR R4 profile validation did not initialize within 10 minutes", cause));
   }
 
   public static FhirR4PayloadParser withCoreProfiles(FhirPayloadLimits limits) {

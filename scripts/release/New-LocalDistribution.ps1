@@ -2,7 +2,7 @@ param(
   [Parameter(Mandatory = $true)]
   [ValidatePattern('^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$')]
   [string] $Version,
-  [string] $JarPath = "target/ayuvahak-platform-0.1.0-SNAPSHOT.jar",
+  [string] $JarPath = "target/ayuvahak-platform-0.1.0.jar",
   [string] $OutputDirectory = "release-output"
 )
 
@@ -17,7 +17,8 @@ $requiredFiles = @(
   (Join-Path $distributionTemplate ".dockerignore"),
   (Join-Path $distributionTemplate "compose.yaml"),
   (Join-Path $distributionTemplate "compose.demo.yaml"),
-  (Join-Path $repositoryRoot "docs\installation\local-first-run.md")
+  (Join-Path $repositoryRoot "docs\installation\local-first-run.md"),
+  (Join-Path $repositoryRoot "docs\installation\operator-support-provider.md")
 )
 if (-not (Test-Path -LiteralPath $resolvedJar.Path -PathType Leaf)) { throw "The application JAR is missing." }
 foreach ($file in $requiredFiles) {
@@ -46,8 +47,10 @@ Copy-Item -LiteralPath $resolvedJar.Path -Destination (Join-Path $packagePath "a
 Copy-Item -Path (Join-Path $webDirectory "*") -Destination (Join-Path $packagePath "web") -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $repositoryRoot "scripts\local") -Destination (Join-Path $packagePath "scripts\local") -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $repositoryRoot "infra\keycloak") -Destination (Join-Path $packagePath "infra\keycloak") -Recurse -Force
+Copy-Item -LiteralPath (Join-Path $repositoryRoot "demo-data") -Destination (Join-Path $packagePath "demo-data") -Recurse -Force
 New-Item -ItemType Directory -Path (Join-Path $packagePath "docs\installation") -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $repositoryRoot "docs\installation\local-first-run.md") -Destination (Join-Path $packagePath "docs\installation\local-first-run.md")
+Copy-Item -LiteralPath (Join-Path $repositoryRoot "docs\installation\operator-support-provider.md") -Destination (Join-Path $packagePath "docs\installation\operator-support-provider.md")
 
 $sourceRevision = (& git -C $repositoryRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $sourceRevision -notmatch '^[0-9a-f]{40}$') {

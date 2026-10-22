@@ -105,7 +105,7 @@ class TwoApplicationReplicaWorkerAcceptanceIT {
         Path.of(".scratch", "phase-13-production-hardening-dpg-readiness", "process-acceptance");
     Files.createDirectories(logDirectory);
     try {
-      Path applicationJar = Path.of("target", "ayuvahak-platform-0.1.0-SNAPSHOT.jar");
+      Path applicationJar = Path.of("target", "ayuvahak-platform-0.1.0.jar");
       assertThat(applicationJar).as("packaged application JAR for process acceptance").exists();
       int portA = freePort();
       replicaA =
@@ -168,10 +168,9 @@ class TwoApplicationReplicaWorkerAcceptanceIT {
                 java,
                 "-Duser.timezone=UTC",
                 "-jar",
-                Path.of("target", "ayuvahak-platform-0.1.0-SNAPSHOT.jar")
-                    .toAbsolutePath()
-                    .toString(),
+                Path.of("target", "ayuvahak-platform-0.1.0.jar").toAbsolutePath().toString(),
                 "--server.port=" + port,
+                "--ayuvahak.deployment.mode=EMPTY",
                 "--spring.flyway.enabled=false",
                 "--spring.datasource.url=" + jdbcUrl,
                 "--spring.datasource.username=" + POSTGRES.getUsername(),
@@ -210,7 +209,8 @@ class TwoApplicationReplicaWorkerAcceptanceIT {
   }
 
   private static void awaitProcessHealth(Process process, int port) throws Exception {
-    Instant deadline = Instant.now().plusSeconds(90);
+    // A full-suite packaged JVM took 338 seconds to become live under measured local load.
+    Instant deadline = Instant.now().plus(Duration.ofMinutes(8));
     while (Instant.now().isBefore(deadline)) {
       if (!process.isAlive()) {
         throw new AssertionError(
