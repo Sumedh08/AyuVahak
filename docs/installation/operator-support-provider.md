@@ -18,6 +18,7 @@ AYUVAHAK_OPERATOR_SUPPORT_PROVIDER=OPENAI_COMPATIBLE
 AYUVAHAK_OPERATOR_SUPPORT_ENDPOINT=https://api.openai.com/v1/chat/completions
 AYUVAHAK_OPERATOR_SUPPORT_ALLOWED_HOSTS=api.openai.com
 AYUVAHAK_OPERATOR_SUPPORT_MODEL=<deployment-approved-model-id>
+AYUVAHAK_OPERATOR_SUPPORT_PROVIDER_PROFILE_REVISION=<non-secret-revision>
 AYUVAHAK_OPERATOR_SUPPORT_SECRET_REFERENCE=env:AYUVAHAK_OPERATOR_SUPPORT_API_KEY
 AYUVAHAK_OPERATOR_SUPPORT_TIMEOUT=PT8S
 AYUVAHAK_OPERATOR_SUPPORT_MAX_RESPONSE_BYTES=16384
@@ -51,11 +52,15 @@ AYUVAHAK_OPERATOR_SUPPORT_EVALUATED_PROFILE_FINGERPRINT=sha256:<64 lowercase hex
 
 An authorized operator can read the current required fingerprint and whether it matches from
 `GET /api/v1/operator-support/profile`. The fingerprint covers the provider endpoint and model,
-egress allowlist, timeout and response bound, approved corpus version and content hashes, capability
-contract, purpose, prompt-template, input-policy, and output-schema versions. It contains no secret.
+non-secret provider profile revision, secret reference name, egress allowlist, timeout and response
+bound, approved corpus version and content hashes, capability contract, actual prompt text, purpose,
+prompt-template, input-policy, and output-schema versions. It contains no secret value.
 Changes to any covered field invalidate the configured fingerprint and cause the service to abstain
 with `RE_EVALUATION_REQUIRED` until a new deployment review is recorded. Bump the corresponding
-purpose/template/input-policy or capability version when its semantics change.
+purpose/template/input-policy or capability version when its semantics change. Increment the
+non-secret provider profile revision when rotating the provider account/tenant, credential identity,
+retention/training terms, jurisdiction, or any provider-side policy that could affect handling. Do
+not hash or expose the credential itself.
 
 Setting this value is a deployment-governance attestation: the accountable deployment owner must
 complete and retain the applicable local synthetic evaluation and review record for the exact

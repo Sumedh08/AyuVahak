@@ -13,6 +13,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 public class OperatorSupportProperties {
 
   private static final Pattern MODEL = Pattern.compile("[A-Za-z0-9._:-]{1,128}");
+  private static final Pattern PROFILE_REVISION = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._:-]{0,63}");
   private static final Pattern ENV_REFERENCE = Pattern.compile("env:[A-Za-z_][A-Za-z0-9_]{0,127}");
   private static final Pattern EVALUATION_FINGERPRINT = Pattern.compile("sha256:[a-f0-9]{64}");
 
@@ -20,6 +21,7 @@ public class OperatorSupportProperties {
   private Provider provider = Provider.DETERMINISTIC_LOCAL;
   private URI endpoint;
   private String model = "";
+  private String providerProfileRevision = "";
   private String secretReference = "";
   private String evaluatedProfileFingerprint = "";
   private List<String> allowedHosts = List.of();
@@ -65,6 +67,14 @@ public class OperatorSupportProperties {
 
   public String getSecretReference() {
     return secretReference;
+  }
+
+  public String getProviderProfileRevision() {
+    return providerProfileRevision;
+  }
+
+  public void setProviderProfileRevision(String providerProfileRevision) {
+    this.providerProfileRevision = providerProfileRevision == null ? "" : providerProfileRevision;
   }
 
   public String getEvaluatedProfileFingerprint() {
@@ -121,6 +131,7 @@ public class OperatorSupportProperties {
         || !isPublicHostnameShape(endpoint.getHost())
         || allowedHosts.stream().noneMatch(host -> host.equalsIgnoreCase(endpoint.getHost()))
         || !MODEL.matcher(model).matches()
+        || !PROFILE_REVISION.matcher(providerProfileRevision).matches()
         || !ENV_REFERENCE.matcher(secretReference).matches()
         || timeout == null
         || timeout.compareTo(Duration.ofSeconds(1)) < 0

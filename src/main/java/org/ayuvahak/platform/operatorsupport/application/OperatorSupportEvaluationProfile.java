@@ -28,9 +28,12 @@ public final class OperatorSupportEvaluationProfile {
             PURPOSE_VERSION,
             PROMPT_TEMPLATE_VERSION,
             INPUT_POLICY_VERSION,
+            OpenAiCompatibleOperatorSupportProvider.evaluationTemplate(),
             properties.getProvider().name(),
             Objects.toString(properties.getEndpoint(), ""),
             properties.getModel(),
+            properties.getProviderProfileRevision(),
+            properties.getSecretReference(),
             properties.getAllowedHosts().stream()
                 .map(host -> host.toLowerCase(java.util.Locale.ROOT))
                 .sorted()

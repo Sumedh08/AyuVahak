@@ -27,6 +27,7 @@
   "purposeVersion": "operator-support-purpose-v1",
   "promptTemplateVersion": "operator-support-prompt-v1",
   "inputPolicyVersion": "operator-support-input-policy-v1",
+  "providerProfileRevision": "deployment-configured-non-secret-version",
   "allowedInputs": ["finite questionKey enum", "approved documentation excerpts"],
   "forbiddenInputs": [
     "PatientReference",

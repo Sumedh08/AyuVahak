@@ -27,7 +27,7 @@ The evaluation uses the deterministic local provider and synthetic throwing doub
 
 ## Limits and follow-up
 
-- An external provider adapter is now available only behind the profile fingerprint gate. The fingerprint changes when the provider/model/endpoint/egress and request bounds, approved corpus content, purpose, prompt-template, input-policy, or output contract version changes. A configured matching fingerprint is an accountable deployment-owner attestation, not proof that the real provider was evaluated. No real provider was contacted in this acceptance.
+- An external provider adapter is now available only behind the profile fingerprint gate. The fingerprint changes when the provider/model/endpoint/profile revision/egress and request bounds, approved corpus content, actual prompt, purpose, prompt-template, input-policy, or output contract version changes. A configured matching fingerprint is an accountable deployment-owner attestation, not proof that the real provider was evaluated. No real provider was contacted in this acceptance.
 - The static documentation corpus has a version identifier and content hashes. The runtime fingerprints those hashes so a corpus edit invalidates the prior external profile review.
 - Injection-like content is rejected when submitted as an extra request field. There is no model that consumes document text, so this does not claim prompt-injection resistance for future inference.
 - The UI close action discards the displayed advisory locally; it does not persist feedback or alter an owner workflow.

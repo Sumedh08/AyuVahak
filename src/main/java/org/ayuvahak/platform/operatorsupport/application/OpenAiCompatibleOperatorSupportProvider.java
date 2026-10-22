@@ -25,6 +25,10 @@ public final class OpenAiCompatibleOperatorSupportProvider implements OperatorSu
           + "Do not invent facts. If the excerpts do not answer the topic, return an empty answer "
           + "and an empty sourceIds array. Cite one to four supplied source IDs. No tools or actions.";
 
+  static String evaluationTemplate() {
+    return INSTRUCTIONS;
+  }
+
   private final OperatorSupportProperties properties;
   private final OperatorSupportHttpTransport transport;
   private final PartnerSecretProvider secrets;

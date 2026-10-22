@@ -138,6 +138,7 @@ class OpenAiCompatibleOperatorSupportProviderTest {
     properties.setProvider(OperatorSupportProperties.Provider.OPENAI_COMPATIBLE);
     properties.setEndpoint(URI.create("https://api.openai.com/v1/chat/completions"));
     properties.setModel("SYNTHETIC-MODEL-001");
+    properties.setProviderProfileRevision("SYNTHETIC-PROFILE-REVISION-1");
     properties.setSecretReference("env:SYN_OPERATOR_SUPPORT_KEY");
     properties.setAllowedHosts(List.of("api.openai.com"));
     properties.setTimeout(Duration.ofSeconds(2));

@@ -140,6 +140,11 @@ class OperatorSupportServiceTest {
     initial.setModel("SYNTHETIC-MODEL-002");
 
     assertThat(OperatorSupportEvaluationProfile.fingerprint(initial, corpus)).isNotEqualTo(original);
+
+    initial.setModel("SYNTHETIC-MODEL-001");
+    initial.setProviderProfileRevision("SYNTHETIC-PROFILE-REVISION-2");
+
+    assertThat(OperatorSupportEvaluationProfile.fingerprint(initial, corpus)).isNotEqualTo(original);
   }
 
   @Test
@@ -398,6 +403,7 @@ class OperatorSupportServiceTest {
     properties.setProvider(OperatorSupportProperties.Provider.OPENAI_COMPATIBLE);
     properties.setEndpoint(java.net.URI.create("https://api.openai.com/v1/chat/completions"));
     properties.setModel("SYNTHETIC-MODEL-001");
+    properties.setProviderProfileRevision("SYNTHETIC-PROFILE-REVISION-1");
     properties.setSecretReference("env:SYNTHETIC_OPERATOR_SUPPORT_SECRET");
     properties.setAllowedHosts(List.of("api.openai.com"));
     return properties;
