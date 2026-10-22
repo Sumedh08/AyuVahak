@@ -116,13 +116,18 @@ if ($values.Count -eq 0) {
   }
 }
 
+$defaultKeycloakPort = if ($values["AYUVAHAK_KEYCLOAK_PORT"]) {
+  [string]$values["AYUVAHAK_KEYCLOAK_PORT"]
+} else {
+  "8081"
+}
 $defaults = [ordered]@{
   AYUVAHAK_DATABASE_NAME = "ayuvahak"
   AYUVAHAK_DATABASE_USERNAME = "ayuvahak"
   AYUVAHAK_HTTP_PORT = "8080"
   AYUVAHAK_KEYCLOAK_ADMIN_USERNAME = "local-admin"
   AYUVAHAK_KEYCLOAK_PORT = "8081"
-  AYUVAHAK_OIDC_ISSUER = "http://localhost:8081/realms/ayuvahak"
+  AYUVAHAK_OIDC_ISSUER = "http://localhost:$defaultKeycloakPort/realms/ayuvahak"
   AYUVAHAK_OIDC_JWK_SET_URI = "http://keycloak:8080/realms/ayuvahak/protocol/openid-connect/certs"
   AYUVAHAK_OIDC_AUDIENCE = "ayuvahak-api"
   AYUVAHAK_OIDC_CLIENT_ID = "ayuvahak-local-client"
@@ -134,6 +139,13 @@ $defaults = [ordered]@{
 }
 foreach ($key in $defaults.Keys) {
   if (-not $values[$key]) { $values[$key] = $defaults[$key] }
+}
+# The generated local issuer follows the selected loopback Keycloak port. Preserve an
+# administrator-specified issuer, but repair the original launcher default when the port changes.
+if ([string]$values["AYUVAHAK_OIDC_ISSUER"] -eq "http://localhost:8081/realms/ayuvahak" -and
+    [string]$values["AYUVAHAK_KEYCLOAK_PORT"] -ne "8081") {
+  $values["AYUVAHAK_OIDC_ISSUER"] =
+    "http://localhost:$($values['AYUVAHAK_KEYCLOAK_PORT'])/realms/ayuvahak"
 }
 foreach ($secretKey in @("AYUVAHAK_DATABASE_PASSWORD", "AYUVAHAK_KEYCLOAK_ADMIN_PASSWORD")) {
   if (-not $values[$secretKey]) { $values[$secretKey] = New-LocalSecret }
