@@ -54,6 +54,20 @@ describe("session projection validation", () => {
     });
   });
 
+  it("accepts platform-scoped capabilities without absent organization or facility fields", () => {
+    const session: SessionProjection = {
+      ...validSession,
+      capabilities: [
+        {
+          authorityCode: "AccessGrantAdministration",
+          scopes: [{ kind: "PLATFORM" }],
+        },
+      ],
+    };
+
+    expect(parseSessionProjection(session)).toEqual(session);
+  });
+
   it("validates external identifiers as bounded opaque references", () => {
     expect(
       parseSessionProjection({

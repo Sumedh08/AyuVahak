@@ -113,7 +113,7 @@ export function App({
       try {
         const accessToken = await authClient.initialize();
         if (!active) return;
-        if (window.location.pathname === "/auth/callback") setCurrentPath("/");
+        setCurrentPath(window.location.pathname);
         if (!accessToken) {
           setView({ status: "unauthenticated" });
           return;

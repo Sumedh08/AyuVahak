@@ -27,6 +27,17 @@ Describe "Start-AyuVahak local port defaults" {
       $environment = Get-Content -LiteralPath (Join-Path $testRoot ".env")
       $environment -contains "AYUVAHAK_OIDC_ISSUER=http://localhost:18081/realms/ayuvahak" |
         Should Be $true
+      $realm = Get-Content -LiteralPath (Join-Path $testRoot ".local-state\keycloak-realm-import.json") -Raw |
+        ConvertFrom-Json
+      $humanClient = @($realm.clients | Where-Object { $_.clientId -eq "ayuvahak-local-client" })
+      $humanClient.Count | Should Be 1
+      $humanClient[0].webOrigins | Should Be @("http://localhost:18080")
+      $humanClient[0].redirectUris | Should Be @(
+        "http://localhost:18080/auth/callback",
+        "http://localhost:18080/"
+      )
+      $humanClient[0].protocolMappers.config.'included.custom.audience' |
+        Should Be "ayuvahak-api"
       ($output -join "`n") | Should Match "Plan-only verification succeeded"
     } finally {
       if (Test-Path -LiteralPath $testRoot) {

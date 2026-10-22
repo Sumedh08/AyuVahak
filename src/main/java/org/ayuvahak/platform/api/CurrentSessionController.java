@@ -1,5 +1,6 @@
 package org.ayuvahak.platform.api;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -77,6 +78,7 @@ public class CurrentSessionController {
     }
   }
 
+  @JsonInclude(JsonInclude.Include.NON_NULL)
   public record ScopeView(String kind, ScopeReference organization, ScopeReference facility) {
     static ScopeView from(GrantScope scope) {
       return new ScopeView(

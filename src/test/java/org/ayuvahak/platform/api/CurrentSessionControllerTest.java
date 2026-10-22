@@ -10,8 +10,16 @@ import org.ayuvahak.platform.configuration.DeploymentModeProperties;
 import org.ayuvahak.platform.core.ActorReference;
 import org.ayuvahak.platform.core.IssuerId;
 import org.junit.jupiter.api.Test;
+import tools.jackson.databind.ObjectMapper;
 
 class CurrentSessionControllerTest {
+
+  @Test
+  void serializesPlatformScopeWithoutAbsentOrganizationOrFacilityProperties() throws Exception {
+    var scope = new CurrentSessionController.ScopeView("PLATFORM", null, null);
+
+    assertThat(new ObjectMapper().writeValueAsString(scope)).isEqualTo("{\"kind\":\"PLATFORM\"}");
+  }
 
   @Test
   void exposesOnlyConfiguredDeploymentModeAsSessionPresentationMetadata() {

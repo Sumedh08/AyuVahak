@@ -2,4 +2,4 @@ services:
   keycloak:
     command: ["start-dev", "--import-realm"]
     volumes:
-      - ./infra/keycloak/realm-export.json:/opt/keycloak/data/import/ayuvahak-realm.json:ro
+      - ./.local-state/keycloak-realm-import.json:/opt/keycloak/data/import/ayuvahak-realm.json:ro

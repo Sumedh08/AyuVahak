@@ -41,6 +41,26 @@ describe("authentication and session states", () => {
     expect(sessionClient.loadSession).not.toHaveBeenCalled();
   });
 
+  it("renders the root workspace after OIDC replaces the callback URL", async () => {
+    window.history.replaceState(null, "", "/auth/callback");
+    const auth = authClient("synthetic-token");
+    vi.mocked(auth.initialize).mockImplementation(async () => {
+      window.history.replaceState(null, "", "/");
+      return "synthetic-token";
+    });
+    const sessionClient: SessionClient = { loadSession: vi.fn().mockResolvedValue(session) };
+
+    render(<App authClient={auth} sessionClient={sessionClient} />);
+
+    expect(await screen.findByRole("heading", { name: "Overview", level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Overview", level: 2 })).toBeInTheDocument();
+    expect(sessionClient.loadSession).toHaveBeenCalledWith(
+      "synthetic-token",
+      expect.any(AbortSignal),
+    );
+    window.history.replaceState(null, "", "/");
+  });
+
   it("displays an explicit service-identity denial for the human workspace", async () => {
     const serviceSession: SessionProjection = {
       ...session,

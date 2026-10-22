@@ -178,6 +178,20 @@ if ($clientId -notmatch '^[A-Za-z0-9._-]{1,128}$' -or
     $oidcScope -ne $oidcScope.Trim()) {
   throw "The local OIDC client identifier or scope is malformed. No services were started."
 }
+$realmSourcePath = Join-Path $repositoryRoot "infra\keycloak\realm-empty-export.json"
+if ($selectedMode -eq "SYNTHETIC_DEMO") {
+  $realmSourcePath = Join-Path $repositoryRoot "infra\keycloak\realm-export.json"
+}
+$realmConfiguration = Get-Content -LiteralPath $realmSourcePath -Raw | ConvertFrom-Json
+$humanClients = @($realmConfiguration.clients | Where-Object { $_.clientId -eq $clientId })
+if ($humanClients.Count -ne 1) {
+  throw "The selected local identity realm must define exactly one configured human client. No services were started."
+}
+$localApplicationOrigin = "http://localhost:$appPort"
+$humanClients[0].redirectUris = @("$localApplicationOrigin/auth/callback", "$localApplicationOrigin/")
+$humanClients[0].webOrigins = @($localApplicationOrigin)
+$realmImportPath = Join-Path $stateDirectory "keycloak-realm-import.json"
+$realmConfiguration | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $realmImportPath -Encoding utf8
 $runtimeConfiguration = [ordered]@{
   oidcAuthority = $issuerUri.AbsoluteUri.TrimEnd("/")
   oidcClientId = $clientId

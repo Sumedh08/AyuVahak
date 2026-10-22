@@ -23,7 +23,7 @@ services:
       KC_HOSTNAME: "http://localhost:${AYUVAHAK_KEYCLOAK_PORT:-8081}"
     volumes:
       - keycloak-data:/opt/keycloak/data
-      - ./infra/keycloak/realm-empty-export.json:/opt/keycloak/data/import/ayuvahak-realm.json:ro
+      - ./.local-state/keycloak-realm-import.json:/opt/keycloak/data/import/ayuvahak-realm.json:ro
     ports:
       - "127.0.0.1:${AYUVAHAK_KEYCLOAK_PORT:-8081}:8080"
 
