@@ -43,7 +43,6 @@ export const WORKSPACES: readonly WorkspaceDefinition[] = [
     href: "/receiving",
     label: "Receiving work",
     authorities: [
-      "TransferViewAuthority",
       "ClinicalSuitabilityAuthority",
       "OperationalReadinessAuthority",
       "AcceptanceAuthority",
