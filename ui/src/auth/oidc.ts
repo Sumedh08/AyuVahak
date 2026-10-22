@@ -10,6 +10,7 @@ export interface OidcConfiguration {
   readonly authority: string;
   readonly clientId: string;
   readonly scope: string;
+  readonly expectedApplicationOrigin: string;
 }
 
 export type OidcConfigurationResult =
@@ -24,6 +25,14 @@ export interface AuthClient {
   signIn(): Promise<void>;
   clear(): Promise<void>;
 }
+
+type OidcEnvironment = Pick<
+  ImportMetaEnv,
+  | "VITE_OIDC_AUTHORITY"
+  | "VITE_OIDC_CLIENT_ID"
+  | "VITE_OIDC_SCOPE"
+  | "VITE_EXPECTED_APPLICATION_ORIGIN"
+>;
 
 function safeAuthority(authority: string): boolean {
   try {
@@ -42,6 +51,26 @@ function safeAuthority(authority: string): boolean {
   }
 }
 
+function safeApplicationOrigin(expectedOrigin: string, browserOrigin: string): boolean {
+  try {
+    const expected = new URL(expectedOrigin);
+    const browser = new URL(browserOrigin);
+    const loopbackHost = ["localhost", "127.0.0.1", "[::1]"].includes(expected.hostname);
+    return (
+      expectedOrigin === expected.origin &&
+      expected.origin === browser.origin &&
+      expected.username === "" &&
+      expected.password === "" &&
+      expected.pathname === "/" &&
+      expected.search === "" &&
+      expected.hash === "" &&
+      (expected.protocol === "https:" || (expected.protocol === "http:" && loopbackHost))
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function createOidcSettings(
   configuration: OidcConfiguration,
   browser: Pick<Window, "location" | "sessionStorage">,
@@ -49,9 +78,11 @@ export function createOidcSettings(
   const authority = configuration.authority.trim();
   const clientId = configuration.clientId.trim();
   const scope = configuration.scope.trim();
+  const expectedApplicationOrigin = configuration.expectedApplicationOrigin.trim();
 
   if (
     !safeAuthority(authority) ||
+    !safeApplicationOrigin(expectedApplicationOrigin, browser.location.origin) ||
     clientId.length === 0 ||
     clientId.length > 128 ||
     /\s/.test(clientId) ||
@@ -63,8 +94,8 @@ export function createOidcSettings(
   return {
     authority,
     client_id: clientId,
-    redirect_uri: new URL("/auth/callback", browser.location.origin).toString(),
-    post_logout_redirect_uri: browser.location.origin,
+    redirect_uri: new URL("/auth/callback", expectedApplicationOrigin).toString(),
+    post_logout_redirect_uri: expectedApplicationOrigin,
     response_type: "code",
     scope,
     disablePKCE: false,
@@ -155,11 +186,12 @@ export function createOidcAuthClient(
 }
 
 export function oidcConfigurationFromEnvironment(
-  environment: ImportMetaEnv,
+  environment: OidcEnvironment,
 ): OidcConfiguration | null {
   const authority = environment.VITE_OIDC_AUTHORITY?.trim();
   const clientId = environment.VITE_OIDC_CLIENT_ID?.trim();
+  const expectedApplicationOrigin = environment.VITE_EXPECTED_APPLICATION_ORIGIN?.trim();
   const scope = environment.VITE_OIDC_SCOPE?.trim() || "openid profile";
-  if (!authority || !clientId) return null;
-  return { authority, clientId, scope };
+  if (!authority || !clientId || !expectedApplicationOrigin) return null;
+  return { authority, clientId, scope, expectedApplicationOrigin };
 }

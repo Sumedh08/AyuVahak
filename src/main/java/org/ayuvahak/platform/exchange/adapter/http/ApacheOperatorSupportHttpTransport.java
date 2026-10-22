@@ -32,6 +32,7 @@ import org.ayuvahak.platform.exchange.application.PartnerTransportException;
 import org.ayuvahak.platform.exchange.domain.PartnerKey;
 import org.ayuvahak.platform.operatorsupport.application.OperatorSupportHttpTransport;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 
 /** Vetted, pinned-DNS HTTPS transport for the configured documentation-support provider only. */
@@ -47,7 +48,8 @@ final class ApacheOperatorSupportHttpTransport implements OperatorSupportHttpTra
 
   @Autowired
   ApacheOperatorSupportHttpTransport(
-      BoundedDnsAddressLookup addressLookup, BoundedPartnerOperationExecutor operations) {
+      BoundedDnsAddressLookup addressLookup,
+      @Qualifier("operatorSupportOperationExecutor") BoundedPartnerOperationExecutor operations) {
     this(new EgressAddressPolicy(Set.of(443), Map.of()), addressLookup, operations);
   }
 

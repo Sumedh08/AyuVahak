@@ -278,6 +278,7 @@ public final class ProductionRequestAbuseFilter extends OncePerRequestFilter {
     return switch (trafficClass) {
       case ANONYMOUS -> limits.getAnonymousRequestsPerMinute();
       case READ -> limits.getAuthenticatedReadRequestsPerMinute();
+      case OPERATOR_SUPPORT -> limits.getOperatorSupportRequestsPerMinute();
       case SENSITIVE_WRITE -> limits.getSensitiveWriteRequestsPerMinute();
       case ADMIN -> limits.getAdminRequestsPerMinute();
       case FEDERATION -> limits.getFederationRequestsPerMinute();
@@ -303,6 +304,9 @@ public final class ProductionRequestAbuseFilter extends OncePerRequestFilter {
     }
     if (!isAuthenticated()) {
       return TrafficClass.ANONYMOUS;
+    }
+    if (path.startsWith("/api/v1/operator-support/")) {
+      return TrafficClass.OPERATOR_SUPPORT;
     }
     return switch (request.getMethod()) {
       case "GET", "HEAD", "OPTIONS" -> TrafficClass.READ;
@@ -368,6 +372,7 @@ public final class ProductionRequestAbuseFilter extends OncePerRequestFilter {
   private enum TrafficClass {
     ANONYMOUS,
     READ,
+    OPERATOR_SUPPORT,
     SENSITIVE_WRITE,
     ADMIN,
     SSE,

@@ -263,6 +263,7 @@ $identity = Get-Content -LiteralPath $identityManifestPath -Raw -Encoding UTF8 |
 if ($manifest.version -ne 2 -or $manifest.mode -ne "SYNTHETIC_DEMO" -or
     $manifest.manifestId -ne "SYN-AYUVAHAK-DEMO-V2" -or
     $identity.version -ne 1 -or $identity.mode -ne "SYNTHETIC_DEMO" -or
+    $identity.seedCredentialMode -ne "GENERATED_PER_INSTALLATION" -or
     $identity.seedUsername -ne "synthetic.demo-seeder" -or
     $identity.seedClientId -ne "ayuvahak-demo-seed-client") {
   Stop-Safely "The local versioned Demo manifest is unsupported or invalid. No API request was sent."
@@ -334,12 +335,14 @@ if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
 
 $keycloakTokenUri = "$script:issuer/protocol/openid-connect/token"
 $bootstrapUsername = [string]$identity.bootstrapUsername
-$bootstrapPassword = "local-only-not-a-secret"
+$bootstrapPassword = [string]$values["AYUVAHAK_DEMO_PASSWORD"]
 $seedUsername = [string]$identity.seedUsername
-$seedPassword = [string]$identity.seedPassword
+$seedPassword = [string]$values["AYUVAHAK_DEMO_PASSWORD"]
+$transferAgentClientSecret = [string]$values["AYUVAHAK_TRANSFER_AGENT_CLIENT_SECRET"]
 if (-not $bootstrapUsername -or -not $seedUsername -or
-    $bootstrapPassword -ne $seedPassword -or $seedPassword -ne "local-only-not-a-secret") {
-  Stop-Safely "The loopback-only synthetic Demo identity configuration is incomplete. No API request was sent."
+    $bootstrapPassword.Length -lt 32 -or $seedPassword -ne $bootstrapPassword -or
+    $transferAgentClientSecret.Length -lt 32) {
+  Stop-Safely "Per-install Synthetic Demo credentials are missing or invalid. Reinitialize the local Demo installation deliberately. No API request was sent."
 }
 
 try {
@@ -642,7 +645,7 @@ $seederToken = [string]$seederTokenResponse.access_token
 $serviceTokenResponse = Invoke-LocalToken -TokenUri $keycloakTokenUri -Form @{
   grant_type = "client_credentials"
   client_id = "transfer-agent"
-  client_secret = "local-only-not-a-secret"
+  client_secret = $transferAgentClientSecret
 } -Purpose "local transfer-agent service token"
 $serviceToken = [string]$serviceTokenResponse.access_token
 

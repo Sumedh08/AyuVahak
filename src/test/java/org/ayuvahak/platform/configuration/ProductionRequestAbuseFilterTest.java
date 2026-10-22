@@ -153,6 +153,30 @@ class ProductionRequestAbuseFilterTest {
   }
 
   @Test
+  void operatorSupportHasASeparateDatabaseSharedPerPrincipalBudget() throws Exception {
+    ProductionProfileProperties properties = properties(100);
+    properties.getLimits().setOperatorSupportRequestsPerMinute(1);
+    TestBudgetStore sharedStore = new TestBudgetStore();
+    ProductionRequestAbuseFilter firstReplica =
+        new ProductionRequestAbuseFilter(properties, sharedStore);
+    ProductionRequestAbuseFilter secondReplica =
+        new ProductionRequestAbuseFilter(properties, sharedStore);
+    ActorReference actor =
+        ActorReference.human(new IssuerId("https://identity.example.test/issuer"), "SYN-USER-1");
+    SecurityContextHolder.getContext().setAuthentication(new ActorAuthentication(actor));
+
+    assertThat(
+            invoke(firstReplica, request("POST", "/api/v1/operator-support/answers", "192.0.2.1"))
+                .getStatus())
+        .isEqualTo(200);
+    assertRateLimited(
+        invoke(secondReplica, request("POST", "/api/v1/operator-support/answers", "198.51.100.2")));
+    assertThat(
+            invoke(secondReplica, request("GET", "/api/v1/directory", "198.51.100.2")).getStatus())
+        .isEqualTo(200);
+  }
+
+  @Test
   void anonymousLimitUsesRemoteAddressAndDoesNotTrustForwardedHeaders() throws Exception {
     var filter = filter(properties(10, 1));
     MockHttpServletRequest firstRequest = request("GET", "/api/v1/system-info", "192.0.2.1");
@@ -320,6 +344,7 @@ class ProductionRequestAbuseFilterTest {
     limits.setPartnerRequestsPerMinute(10_000);
     limits.setAnonymousRequestsPerMinute(anonymousLimit);
     limits.setAuthenticatedReadRequestsPerMinute(authenticatedReadLimit);
+    limits.setOperatorSupportRequestsPerMinute(10_000);
     limits.setSensitiveWriteRequestsPerMinute(1);
     limits.setAdminRequestsPerMinute(1);
     limits.setSseConnectionsPerPrincipal(sseLimit);

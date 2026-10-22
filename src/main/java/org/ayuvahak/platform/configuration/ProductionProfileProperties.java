@@ -147,6 +147,8 @@ public class ProductionProfileProperties {
 
     @NotNull @Positive private Integer authenticatedReadRequestsPerMinute;
 
+    @NotNull @Positive private Integer operatorSupportRequestsPerMinute;
+
     @NotNull @Positive private Integer sensitiveWriteRequestsPerMinute;
 
     @NotNull @Positive private Integer adminRequestsPerMinute;
@@ -199,6 +201,14 @@ public class ProductionProfileProperties {
 
     public void setAuthenticatedReadRequestsPerMinute(Integer value) {
       authenticatedReadRequestsPerMinute = value;
+    }
+
+    public Integer getOperatorSupportRequestsPerMinute() {
+      return operatorSupportRequestsPerMinute;
+    }
+
+    public void setOperatorSupportRequestsPerMinute(Integer value) {
+      operatorSupportRequestsPerMinute = value;
     }
 
     public Integer getSensitiveWriteRequestsPerMinute() {

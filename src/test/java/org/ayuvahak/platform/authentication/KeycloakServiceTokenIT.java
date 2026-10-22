@@ -49,7 +49,8 @@ class KeycloakServiceTokenIT {
               Wait.forHttp("/realms/ayuvahak/.well-known/openid-configuration")
                   .forPort(8080)
                   .forStatusCode(200)
-                  // The clean full-suite run completed realm import at the former five-minute bound.
+                  // The clean full-suite run completed realm import at the former five-minute
+                  // bound.
                   .withStartupTimeout(Duration.ofMinutes(10)));
 
   private final HttpClient httpClient =

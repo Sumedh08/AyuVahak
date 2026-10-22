@@ -160,6 +160,12 @@ class OperatorSupportServiceTest {
 
     assertThat(OperatorSupportEvaluationProfile.fingerprint(initial, corpus))
         .isNotEqualTo(original);
+
+    initial.setProviderProfileRevision("SYNTHETIC-PROFILE-REVISION-1");
+    initial.setProcessingJurisdiction("SYNTH-REGION-B");
+
+    assertThat(OperatorSupportEvaluationProfile.fingerprint(initial, corpus))
+        .isNotEqualTo(original);
   }
 
   @Test
@@ -420,6 +426,17 @@ class OperatorSupportServiceTest {
     properties.setProviderProfileRevision("SYNTHETIC-PROFILE-REVISION-1");
     properties.setSecretReference("env:SYNTHETIC_OPERATOR_SUPPORT_SECRET");
     properties.setAllowedHosts(List.of("api.openai.com"));
+    properties.setUseCase(OperatorSupportProperties.UseCase.DOCUMENTATION_OPERATOR_SUPPORT);
+    properties.setAllowedDataClass(
+        OperatorSupportProperties.AllowedDataClass.APPROVED_DOCUMENTATION_ONLY);
+    properties.setProviderRetentionDisposition(
+        OperatorSupportProperties.ProviderRetentionDisposition.DOCUMENTED_LIMITED_RETENTION);
+    properties.setProviderTrainingUse(OperatorSupportProperties.ProviderTrainingUse.NO_TRAINING);
+    properties.setProcessingJurisdiction("SYNTH-REGION-A");
+    properties.setProviderMonthlySpendCap(new java.math.BigDecimal("10.00"));
+    properties.setProviderMonthlySpendCapCurrency("USD");
+    properties.setProviderSpendCapEnforced(true);
+    properties.setProviderSpendCapControlReference("ref:SYNTH-OPERATOR-SUPPORT-BUDGET-1");
     return properties;
   }
 

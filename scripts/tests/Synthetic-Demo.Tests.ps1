@@ -27,7 +27,7 @@ Describe "Synthetic Demo business-data manifest" {
     }
   }
 
-  It "defines complete fictional profiles for the loopback-only Demo identities" {
+  It "keeps Demo identity credential values as runtime-only placeholders" {
     $identityPath = Join-Path $repositoryRoot "infra\keycloak\realm-export.json"
     $realm = Get-Content -LiteralPath $identityPath -Raw -Encoding UTF8 | ConvertFrom-Json
     $bootstrap = @($realm.users | Where-Object username -eq "synthetic.system-admin")
@@ -53,11 +53,18 @@ Describe "Synthetic Demo business-data manifest" {
       $user.lastName | Should Not BeNullOrEmpty
       $user.email | Should Match '^[a-z0-9.-]+@example\.invalid$'
       $user.emailVerified | Should Be $true
-      $user.credentials[0].value | Should Be "local-only-not-a-secret"
+      $user.credentials[0].value | Should Be "__AYUVAHAK_DEMO_PASSWORD__"
     }
 
-    $identityManifest = Get-Content -LiteralPath (Join-Path $repositoryRoot "infra\keycloak\demo-manifest.json") -Raw |
+    $serviceClient = @($realm.clients | Where-Object clientId -eq "transfer-agent")
+    $serviceClient.Count | Should Be 1
+    $serviceClient[0].secret | Should Be "__AYUVAHAK_TRANSFER_AGENT_CLIENT_SECRET__"
+
+    $identityManifestRaw = Get-Content -LiteralPath (Join-Path $repositoryRoot "infra\keycloak\demo-manifest.json") -Raw
+    $identityManifest = $identityManifestRaw |
       ConvertFrom-Json
+    ($identityManifest.PSObject.Properties.Name -contains "seedPassword") | Should Be $false
+    $identityManifest.seedCredentialMode | Should Be "GENERATED_PER_INSTALLATION"
     @($identityManifest.personas).Count | Should Be 6
     foreach ($persona in $identityManifest.personas) {
       @($personas | Where-Object { $_.username -eq $persona.username -and $_.id -eq $persona.subject }).Count |
@@ -76,6 +83,55 @@ Describe "Synthetic Demo business-data manifest" {
     $seedScript | Should Match 'analyst'
     $seedScript | Should Match 'Grant-Authority \$adminToken "HUMAN" \$subject \$authority \$scope \$organizationId \$facilityId'
     $seedScript | Should Match 'No persona grants were created'
+  }
+
+  It "generates per-install Demo credentials and uses them only in the local realm import" {
+    $testRoot = Join-Path $env:TEMP ("ayuvahak-demo-launcher-test-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $testRoot | Out-Null
+    try {
+      Copy-Item -LiteralPath (Join-Path $repositoryRoot "compose.yaml") -Destination $testRoot
+      Copy-Item -LiteralPath (Join-Path $repositoryRoot "compose.demo.yaml") -Destination $testRoot
+      Copy-Item -LiteralPath (Join-Path $repositoryRoot "Dockerfile") -Destination $testRoot
+      Copy-Item -LiteralPath (Join-Path $repositoryRoot "scripts\local") `
+        -Destination (Join-Path $testRoot "scripts\local") -Recurse
+      Copy-Item -LiteralPath (Join-Path $repositoryRoot "infra\keycloak") `
+        -Destination (Join-Path $testRoot "infra\keycloak") -Recurse
+
+      $powershell = Get-Command powershell.exe, pwsh.exe -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+      if (-not $powershell) { throw "PowerShell is required to exercise the local launcher." }
+      $output = & $powershell.Source -NoLogo -NoProfile -ExecutionPolicy Bypass `
+        -File (Join-Path $testRoot "scripts\local\Start-AyuVahak.ps1") `
+        -Mode SYNTHETIC_DEMO -PlanOnly 2>&1
+      $exitCode = $LASTEXITCODE
+
+      $exitCode | Should Be 0
+      $environment = Get-Content -LiteralPath (Join-Path $testRoot ".env")
+      $demoPassword = [string](($environment | Where-Object { $_ -like "AYUVAHAK_DEMO_PASSWORD=*" }) -replace '^AYUVAHAK_DEMO_PASSWORD=', '')
+      $transferSecret = [string](($environment | Where-Object { $_ -like "AYUVAHAK_TRANSFER_AGENT_CLIENT_SECRET=*" }) -replace '^AYUVAHAK_TRANSFER_AGENT_CLIENT_SECRET=', '')
+      $demoPassword.Length | Should BeGreaterThan 40
+      $transferSecret.Length | Should BeGreaterThan 40
+      $demoPassword | Should Match '^[A-Za-z0-9_-]{43}$'
+      $transferSecret | Should Match '^[A-Za-z0-9_-]{43}$'
+
+      $realm = Get-Content -LiteralPath (Join-Path $testRoot ".local-state\keycloak-realm-import.json") -Raw |
+        ConvertFrom-Json
+      foreach ($user in $realm.users) {
+        $user.credentials[0].value | Should Be $demoPassword
+      }
+      @($realm.clients | Where-Object clientId -eq "transfer-agent")[0].secret | Should Be $transferSecret
+      ($output -join "`n") | Should Not Match [regex]::Escape($demoPassword)
+      ($output -join "`n") | Should Not Match [regex]::Escape($transferSecret)
+    } finally {
+      if (Test-Path -LiteralPath $testRoot) {
+        $resolvedTemp = [System.IO.Path]::GetFullPath($env:TEMP).TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
+        $resolvedTestRoot = [System.IO.Path]::GetFullPath($testRoot)
+        if (-not $resolvedTestRoot.StartsWith($resolvedTemp, [System.StringComparison]::OrdinalIgnoreCase)) {
+          throw "Refusing to clean a Demo launcher test path outside the temporary directory."
+        }
+        Remove-Item -LiteralPath $resolvedTestRoot -Recurse -Force
+      }
+    }
   }
 }
 

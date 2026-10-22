@@ -54,9 +54,11 @@ If the local app is running, the helper stops it briefly while the isolated non-
 process initializes, then restarts it and waits for readiness. The database and identity provider
 remain running. If the result is unknown, inspect the local state before trying again.
 
-Synthetic Demo identities use the local-only password `local-only-not-a-secret`. This fixed
-demonstration credential is intentionally public and is valid only in the loopback-bound Synthetic
-Demo realm. Never use it outside that disposable mode. `synthetic.system-admin` is the bootstrap access
+Synthetic Demo identity passwords and the transfer-agent client secret are generated independently
+for each new local installation and stored only in the ignored local `.env` file. They are never
+printed by the launcher. Keep that file private and back it up with the local installation. Older
+Demo installations created with fixed credentials must be deliberately reset after preserving any
+needed synthetic data before this launcher version can start them. `synthetic.system-admin` is the bootstrap access
 administrator; `synthetic.demo-seeder` is a separate fixture operator. The role-specific browser
 personas are `synthetic.org-admin`, `synthetic.referral-coordinator`,
 `synthetic.receiving-coordinator`, `synthetic.capacity-manager`,
@@ -93,8 +95,7 @@ persisted request timestamps and idempotency keys. If the seed state or installa
 be verified, use the explicitly confirmed Demo reset before starting again.
 
 The Demo realm includes a separate `synthetic.demo-seeder` browser identity for the seed workflow.
-Its public local-only credential is the same fixed demonstration string shown above and is usable
-only through the loopback-bound Demo realm. A Demo-only public OIDC client enables the local command
+Its generated per-install credential is usable only through the loopback-bound Demo realm. A Demo-only public OIDC client enables the local command
 to use that identity; it is absent from Empty and production configuration. The bootstrap
 administrator, role-specific browser personas and seed identity are separate, so the initial
 administrator does not grant new authority to itself.

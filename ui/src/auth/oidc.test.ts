@@ -1,10 +1,15 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { createOidcSettings, type OidcConfiguration } from "./oidc";
+import {
+  createOidcSettings,
+  type OidcConfiguration,
+  oidcConfigurationFromEnvironment,
+} from "./oidc";
 
 const configuration: OidcConfiguration = {
   authority: "http://localhost:8081/realms/ayuvahak-local",
   clientId: "ayuvahak-browser",
   scope: "openid profile ayuvahak-api",
+  expectedApplicationOrigin: window.location.origin,
 };
 
 describe("OIDC public-client configuration", () => {
@@ -49,7 +54,27 @@ describe("OIDC public-client configuration", () => {
     { ...configuration, authority: "https://user:secret@example.invalid/issuer" },
     { ...configuration, scope: "profile" },
     { ...configuration, clientId: "" },
+    { ...configuration, expectedApplicationOrigin: "https://unexpected.example" },
+    { ...configuration, expectedApplicationOrigin: `${window.location.origin}/path` },
   ])("fails closed for an unsafe or incomplete provider configuration", (candidate) => {
     expect(createOidcSettings(candidate, window)).toBeNull();
+  });
+
+  it("requires an explicitly configured expected application origin", () => {
+    expect(
+      oidcConfigurationFromEnvironment({
+        VITE_OIDC_AUTHORITY: configuration.authority,
+        VITE_OIDC_CLIENT_ID: configuration.clientId,
+        VITE_OIDC_SCOPE: configuration.scope,
+      }),
+    ).toBeNull();
+    expect(
+      oidcConfigurationFromEnvironment({
+        VITE_OIDC_AUTHORITY: configuration.authority,
+        VITE_OIDC_CLIENT_ID: configuration.clientId,
+        VITE_OIDC_SCOPE: configuration.scope,
+        VITE_EXPECTED_APPLICATION_ORIGIN: configuration.expectedApplicationOrigin,
+      }),
+    ).toEqual(configuration);
   });
 });

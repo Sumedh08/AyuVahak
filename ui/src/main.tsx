@@ -13,6 +13,9 @@ const authEnvironment = {
   ...(runtimeAuth?.oidcAuthority ? { VITE_OIDC_AUTHORITY: runtimeAuth.oidcAuthority } : {}),
   ...(runtimeAuth?.oidcClientId ? { VITE_OIDC_CLIENT_ID: runtimeAuth.oidcClientId } : {}),
   ...(runtimeAuth?.oidcScope ? { VITE_OIDC_SCOPE: runtimeAuth.oidcScope } : {}),
+  ...(runtimeAuth?.applicationOrigin
+    ? { VITE_EXPECTED_APPLICATION_ORIGIN: runtimeAuth.applicationOrigin }
+    : {}),
 };
 const authClient = createOidcAuthClient(oidcConfigurationFromEnvironment(authEnvironment));
 createRoot(rootElement).render(

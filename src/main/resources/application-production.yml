@@ -49,6 +49,7 @@ ayuvahak:
       partner-requests-per-minute: ${AYUVAHAK_LIMIT_PARTNER_PER_MINUTE:}
       anonymous-requests-per-minute: ${AYUVAHAK_LIMIT_ANONYMOUS_PER_MINUTE:}
       authenticated-read-requests-per-minute: ${AYUVAHAK_LIMIT_AUTHENTICATED_READ_PER_MINUTE:}
+      operator-support-requests-per-minute: ${AYUVAHAK_LIMIT_OPERATOR_SUPPORT_PER_MINUTE:}
       sensitive-write-requests-per-minute: ${AYUVAHAK_LIMIT_SENSITIVE_WRITE_PER_MINUTE:}
       admin-requests-per-minute: ${AYUVAHAK_LIMIT_ADMIN_PER_MINUTE:}
       sse-connections-per-principal: ${AYUVAHAK_LIMIT_SSE_PER_PRINCIPAL:}

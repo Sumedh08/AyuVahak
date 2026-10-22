@@ -36,6 +36,15 @@ public final class OperatorSupportEvaluationProfile {
             properties.getModel(),
             properties.getProviderProfileRevision(),
             properties.getSecretReference(),
+            properties.getUseCase().name(),
+            properties.getAllowedDataClass().name(),
+            properties.getProviderRetentionDisposition().name(),
+            properties.getProviderTrainingUse().name(),
+            properties.getProcessingJurisdiction(),
+            Objects.toString(properties.getProviderMonthlySpendCap(), ""),
+            properties.getProviderMonthlySpendCapCurrency(),
+            Boolean.toString(properties.isProviderSpendCapEnforced()),
+            properties.getProviderSpendCapControlReference(),
             properties.getAllowedHosts().stream()
                 .map(host -> host.toLowerCase(java.util.Locale.ROOT))
                 .sorted()

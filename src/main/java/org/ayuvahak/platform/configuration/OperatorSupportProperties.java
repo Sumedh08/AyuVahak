@@ -1,5 +1,6 @@
 package org.ayuvahak.platform.configuration;
 
+import java.math.BigDecimal;
 import java.net.URI;
 import java.time.Duration;
 import java.util.List;
@@ -28,10 +29,115 @@ public class OperatorSupportProperties {
   private List<String> allowedHosts = List.of();
   private Duration timeout = Duration.ofSeconds(8);
   private int maxResponseBytes = 16_384;
+  private UseCase useCase = UseCase.UNASSESSED;
+  private AllowedDataClass allowedDataClass = AllowedDataClass.UNASSESSED;
+  private ProviderRetentionDisposition providerRetentionDisposition =
+      ProviderRetentionDisposition.UNASSESSED;
+  private ProviderTrainingUse providerTrainingUse = ProviderTrainingUse.UNASSESSED;
+  private String processingJurisdiction = "";
+  private BigDecimal providerMonthlySpendCap;
+  private String providerMonthlySpendCapCurrency = "";
+  private boolean providerSpendCapEnforced;
+  private String providerSpendCapControlReference = "";
 
   public enum Provider {
     DETERMINISTIC_LOCAL,
     OPENAI_COMPATIBLE
+  }
+
+  public enum UseCase {
+    DOCUMENTATION_OPERATOR_SUPPORT,
+    UNASSESSED
+  }
+
+  public enum AllowedDataClass {
+    APPROVED_DOCUMENTATION_ONLY,
+    UNASSESSED
+  }
+
+  public enum ProviderRetentionDisposition {
+    NO_PROMPT_RETENTION,
+    DOCUMENTED_LIMITED_RETENTION,
+    UNASSESSED
+  }
+
+  public enum ProviderTrainingUse {
+    NO_TRAINING,
+    TRAINING_ALLOWED,
+    UNASSESSED
+  }
+
+  public UseCase getUseCase() {
+    return useCase;
+  }
+
+  public void setUseCase(UseCase useCase) {
+    this.useCase = Objects.requireNonNull(useCase, "useCase");
+  }
+
+  public AllowedDataClass getAllowedDataClass() {
+    return allowedDataClass;
+  }
+
+  public void setAllowedDataClass(AllowedDataClass allowedDataClass) {
+    this.allowedDataClass = Objects.requireNonNull(allowedDataClass, "allowedDataClass");
+  }
+
+  public ProviderRetentionDisposition getProviderRetentionDisposition() {
+    return providerRetentionDisposition;
+  }
+
+  public void setProviderRetentionDisposition(ProviderRetentionDisposition value) {
+    this.providerRetentionDisposition =
+        Objects.requireNonNull(value, "providerRetentionDisposition");
+  }
+
+  public ProviderTrainingUse getProviderTrainingUse() {
+    return providerTrainingUse;
+  }
+
+  public void setProviderTrainingUse(ProviderTrainingUse value) {
+    this.providerTrainingUse = Objects.requireNonNull(value, "providerTrainingUse");
+  }
+
+  public String getProcessingJurisdiction() {
+    return processingJurisdiction;
+  }
+
+  public void setProcessingJurisdiction(String value) {
+    this.processingJurisdiction = value == null ? "" : value;
+  }
+
+  public BigDecimal getProviderMonthlySpendCap() {
+    return providerMonthlySpendCap;
+  }
+
+  public void setProviderMonthlySpendCap(BigDecimal value) {
+    this.providerMonthlySpendCap = value;
+  }
+
+  public String getProviderMonthlySpendCapCurrency() {
+    return providerMonthlySpendCapCurrency;
+  }
+
+  public void setProviderMonthlySpendCapCurrency(String value) {
+    this.providerMonthlySpendCapCurrency = value == null ? "" : value;
+  }
+
+  public boolean isProviderSpendCapEnforced() {
+    return providerSpendCapEnforced;
+  }
+
+  public void setProviderSpendCapEnforced(boolean value) {
+    this.providerSpendCapEnforced = value;
+  }
+
+  public String getProviderSpendCapControlReference() {
+    return providerSpendCapControlReference;
+  }
+
+  public void setProviderSpendCapControlReference(String value) {
+    this.providerSpendCapControlReference = value == null ? "" : value;
   }
 
   public boolean isEnabled() {
@@ -134,6 +240,18 @@ public class OperatorSupportProperties {
         || !MODEL.matcher(model).matches()
         || !PROFILE_REVISION.matcher(providerProfileRevision).matches()
         || !ENV_REFERENCE.matcher(secretReference).matches()
+        || useCase != UseCase.DOCUMENTATION_OPERATOR_SUPPORT
+        || allowedDataClass != AllowedDataClass.APPROVED_DOCUMENTATION_ONLY
+        || (providerRetentionDisposition != ProviderRetentionDisposition.NO_PROMPT_RETENTION
+            && providerRetentionDisposition
+                != ProviderRetentionDisposition.DOCUMENTED_LIMITED_RETENTION)
+        || providerTrainingUse != ProviderTrainingUse.NO_TRAINING
+        || !processingJurisdiction.matches("[A-Z0-9][A-Z0-9-]{1,31}")
+        || providerMonthlySpendCap == null
+        || providerMonthlySpendCap.signum() <= 0
+        || !providerMonthlySpendCapCurrency.matches("[A-Z]{3}")
+        || !providerSpendCapEnforced
+        || !providerSpendCapControlReference.matches("ref:[A-Za-z0-9._:/-]{1,120}")
         || timeout == null
         || timeout.compareTo(Duration.ofSeconds(1)) < 0
         || timeout.compareTo(Duration.ofSeconds(30)) > 0

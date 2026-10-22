@@ -32,7 +32,7 @@
       "enabled": true,
       "publicClient": false,
       "clientAuthenticatorType": "client-secret",
-      "secret": "local-only-not-a-secret",
+      "secret": "__AYUVAHAK_TRANSFER_AGENT_CLIENT_SECRET__",
       "standardFlowEnabled": false,
       "directAccessGrantsEnabled": false,
       "serviceAccountsEnabled": true,
@@ -95,7 +95,7 @@
       "credentials": [
         {
           "type": "password",
-          "value": "local-only-not-a-secret",
+          "value": "__AYUVAHAK_DEMO_PASSWORD__",
           "temporary": false
         }
       ]
@@ -111,7 +111,7 @@
       "credentials": [
         {
           "type": "password",
-          "value": "local-only-not-a-secret",
+          "value": "__AYUVAHAK_DEMO_PASSWORD__",
           "temporary": false
         }
       ]
@@ -124,7 +124,7 @@
       "email": "synthetic.org-admin@example.invalid",
       "enabled": true,
       "emailVerified": true,
-      "credentials": [{ "type": "password", "value": "local-only-not-a-secret", "temporary": false }]
+      "credentials": [{ "type": "password", "value": "__AYUVAHAK_DEMO_PASSWORD__", "temporary": false }]
     },
     {
       "id": "5c9cb463-0000-4000-8000-000000000017",
@@ -134,7 +134,7 @@
       "email": "synthetic.referral-coordinator@example.invalid",
       "enabled": true,
       "emailVerified": true,
-      "credentials": [{ "type": "password", "value": "local-only-not-a-secret", "temporary": false }]
+      "credentials": [{ "type": "password", "value": "__AYUVAHAK_DEMO_PASSWORD__", "temporary": false }]
     },
     {
       "id": "5c9cb463-0000-4000-8000-000000000018",
@@ -144,7 +144,7 @@
       "email": "synthetic.receiving-coordinator@example.invalid",
       "enabled": true,
       "emailVerified": true,
-      "credentials": [{ "type": "password", "value": "local-only-not-a-secret", "temporary": false }]
+      "credentials": [{ "type": "password", "value": "__AYUVAHAK_DEMO_PASSWORD__", "temporary": false }]
     },
     {
       "id": "5c9cb463-0000-4000-8000-000000000019",
@@ -154,7 +154,7 @@
       "email": "synthetic.capacity-manager@example.invalid",
       "enabled": true,
       "emailVerified": true,
-      "credentials": [{ "type": "password", "value": "local-only-not-a-secret", "temporary": false }]
+      "credentials": [{ "type": "password", "value": "__AYUVAHAK_DEMO_PASSWORD__", "temporary": false }]
     },
     {
       "id": "5c9cb463-0000-4000-8000-000000000020",
@@ -164,7 +164,7 @@
       "email": "synthetic.transport-coordinator@example.invalid",
       "enabled": true,
       "emailVerified": true,
-      "credentials": [{ "type": "password", "value": "local-only-not-a-secret", "temporary": false }]
+      "credentials": [{ "type": "password", "value": "__AYUVAHAK_DEMO_PASSWORD__", "temporary": false }]
     },
     {
       "id": "5c9cb463-0000-4000-8000-000000000021",
@@ -174,7 +174,7 @@
       "email": "synthetic.analyst@example.invalid",
       "enabled": true,
       "emailVerified": true,
-      "credentials": [{ "type": "password", "value": "local-only-not-a-secret", "temporary": false }]
+      "credentials": [{ "type": "password", "value": "__AYUVAHAK_DEMO_PASSWORD__", "temporary": false }]
     }
   ]
 }

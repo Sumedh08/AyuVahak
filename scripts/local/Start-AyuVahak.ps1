@@ -25,6 +25,11 @@ function New-LocalSecret {
   return [Convert]::ToBase64String($bytes).TrimEnd("=").Replace("+", "-").Replace("/", "_")
 }
 
+function Test-LocalSecret([object] $Value) {
+  $candidate = [string]$Value
+  return $candidate.Length -ge 32 -and $candidate -notmatch '\s'
+}
+
 function Read-EnvironmentFile([string] $Path) {
   $values = [ordered]@{}
   if (-not (Test-Path -LiteralPath $Path)) { return $values }
@@ -79,6 +84,7 @@ function Select-DeploymentMode([string] $RequestedMode, $ExistingValues) {
   return [pscustomobject]@{ mode = $selectedMode; installationId = ([guid]::NewGuid().ToString("N").Substring(0, 12)) }
 }
 
+$installationAlreadyInitialized = Test-Path -LiteralPath $statePath -PathType Leaf
 $values = Read-EnvironmentFile $environmentPath
 $state = Select-DeploymentMode $Mode $values
 $selectedMode = [string]$state.mode
@@ -109,12 +115,6 @@ if ($values.Count -eq 0) {
     throw "The local mode marker and .env disagree. AyuVahak was not started."
   }
   $values["AYUVAHAK_DEPLOYMENT_MODE"] = $selectedMode
-  if (-not $values["AYUVAHAK_DATABASE_PASSWORD"] -or $values["AYUVAHAK_DATABASE_PASSWORD"] -eq "local-only-not-a-secret") {
-    $values["AYUVAHAK_DATABASE_PASSWORD"] = New-LocalSecret
-  }
-  if (-not $values["AYUVAHAK_KEYCLOAK_ADMIN_PASSWORD"] -or $values["AYUVAHAK_KEYCLOAK_ADMIN_PASSWORD"] -eq "local-only-not-a-secret") {
-    $values["AYUVAHAK_KEYCLOAK_ADMIN_PASSWORD"] = New-LocalSecret
-  }
 }
 
 $defaultKeycloakPort = if ($values["AYUVAHAK_KEYCLOAK_PORT"]) {
@@ -140,6 +140,31 @@ $defaults = [ordered]@{
 }
 foreach ($key in $defaults.Keys) {
   if (-not $values[$key]) { $values[$key] = $defaults[$key] }
+}
+if ($installationAlreadyInitialized) {
+  $requiredLocalSecrets = @("AYUVAHAK_DATABASE_PASSWORD", "AYUVAHAK_KEYCLOAK_ADMIN_PASSWORD")
+  if ($selectedMode -eq "SYNTHETIC_DEMO") {
+    $requiredLocalSecrets += @("AYUVAHAK_DEMO_PASSWORD", "AYUVAHAK_TRANSFER_AGENT_CLIENT_SECRET")
+  }
+  foreach ($secretKey in $requiredLocalSecrets) {
+    if (-not (Test-LocalSecret $values[$secretKey])) {
+      throw "An initialized local installation has a missing or weak required credential. Preserve any needed data, then migrate or recreate that installation deliberately. No services were started."
+    }
+  }
+} else {
+  foreach ($secretKey in @("AYUVAHAK_DATABASE_PASSWORD", "AYUVAHAK_KEYCLOAK_ADMIN_PASSWORD")) {
+    if (-not (Test-LocalSecret $values[$secretKey])) { $values[$secretKey] = New-LocalSecret }
+  }
+}
+if ($selectedMode -eq "SYNTHETIC_DEMO") {
+  $demoCredentialKeys = @("AYUVAHAK_DEMO_PASSWORD", "AYUVAHAK_TRANSFER_AGENT_CLIENT_SECRET")
+  if (-not $installationAlreadyInitialized) {
+    foreach ($secretKey in $demoCredentialKeys) {
+      if (-not (Test-LocalSecret $values[$secretKey])) {
+        $values[$secretKey] = New-LocalSecret
+      }
+    }
+  }
 }
 # The local profiles need explicit grantable identities for in-process owner adapters.
 # Only transfer-agent is an OAuth client in the local realm; the other identifiers do not
@@ -172,10 +197,6 @@ if ([string]$values["AYUVAHAK_OIDC_ISSUER"] -eq "http://localhost:8081/realms/ay
   $values["AYUVAHAK_OIDC_ISSUER"] =
     "http://localhost:$($values['AYUVAHAK_KEYCLOAK_PORT'])/realms/ayuvahak"
 }
-foreach ($secretKey in @("AYUVAHAK_DATABASE_PASSWORD", "AYUVAHAK_KEYCLOAK_ADMIN_PASSWORD")) {
-  if (-not $values[$secretKey]) { $values[$secretKey] = New-LocalSecret }
-}
-
 $appPort = 0
 $identityPort = 0
 if (-not [int]::TryParse([string]$values["AYUVAHAK_HTTP_PORT"], [ref]$appPort) -or
@@ -208,11 +229,29 @@ if ($selectedMode -eq "SYNTHETIC_DEMO") {
   $realmSourcePath = Join-Path $repositoryRoot "infra\keycloak\realm-export.json"
 }
 $realmConfiguration = Get-Content -LiteralPath $realmSourcePath -Raw -Encoding UTF8 | ConvertFrom-Json
+if ($selectedMode -eq "SYNTHETIC_DEMO") {
+  $passwordPlaceholderCount = 0
+  foreach ($demoUser in $realmConfiguration.users) {
+    foreach ($credential in $demoUser.credentials) {
+      if ($credential.type -eq "password" -and $credential.value -eq "__AYUVAHAK_DEMO_PASSWORD__") {
+        $credential.value = [string]$values["AYUVAHAK_DEMO_PASSWORD"]
+        $passwordPlaceholderCount++
+      }
+    }
+  }
+  $transferClients = @($realmConfiguration.clients | Where-Object { $_.clientId -eq "transfer-agent" })
+  if ($passwordPlaceholderCount -lt 1 -or $transferClients.Count -ne 1 -or
+      [string]$transferClients[0].secret -ne "__AYUVAHAK_TRANSFER_AGENT_CLIENT_SECRET__") {
+    throw "The versioned Synthetic Demo realm is missing expected credential placeholders. No services were started."
+  }
+  $transferClients[0].secret = [string]$values["AYUVAHAK_TRANSFER_AGENT_CLIENT_SECRET"]
+}
 $humanClients = @($realmConfiguration.clients | Where-Object { $_.clientId -eq $clientId })
 if ($humanClients.Count -ne 1) {
   throw "The selected local identity realm must define exactly one configured human client. No services were started."
 }
 $localApplicationOrigin = "http://localhost:$appPort"
+$values["AYUVAHAK_PUBLIC_ORIGIN"] = $localApplicationOrigin
 $humanClients[0].redirectUris = @("$localApplicationOrigin/auth/callback", "$localApplicationOrigin/")
 $humanClients[0].webOrigins = @($localApplicationOrigin)
 $realmImportPath = Join-Path $stateDirectory "keycloak-realm-import.json"
@@ -221,6 +260,7 @@ $runtimeConfiguration = [ordered]@{
   oidcAuthority = $issuerUri.AbsoluteUri.TrimEnd("/")
   oidcClientId = $clientId
   oidcScope = $oidcScope
+  applicationOrigin = $localApplicationOrigin
 } | ConvertTo-Json -Compress
 Set-Content -LiteralPath (Join-Path $stateDirectory "ui-runtime-config.js") -Value "window.ayuvahakRuntimeConfig = $runtimeConfiguration;" -Encoding ascii
 if ($selectedMode -eq "SYNTHETIC_DEMO") {

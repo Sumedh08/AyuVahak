@@ -34,6 +34,7 @@ class OperatorSupportPropertiesTest {
     properties.setModel("SYNTHETIC-MODEL-001");
     properties.setSecretReference("env:SYN_OPERATOR_SUPPORT_KEY");
     properties.setAllowedHosts(List.of("api.openai.com"));
+    applyReviewedProviderGovernance(properties);
 
     assertThatThrownBy(properties::validate)
         .isInstanceOf(IllegalArgumentException.class)
@@ -49,9 +50,42 @@ class OperatorSupportPropertiesTest {
     properties.setProviderProfileRevision("SYNTHETIC-PROFILE-REVISION-1");
     properties.setSecretReference("env:SYN_OPERATOR_SUPPORT_KEY");
     properties.setAllowedHosts(allowedHosts);
+    applyReviewedProviderGovernance(properties);
 
     assertThatThrownBy(properties::validate)
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessage("The configured operator support provider profile is invalid.");
+  }
+
+  @Test
+  void rejectsExternalProviderWithoutExplicitDataHandlingAndProviderBudgetReview() {
+    OperatorSupportProperties properties = new OperatorSupportProperties();
+    properties.setEnabled(true);
+    properties.setProvider(OperatorSupportProperties.Provider.OPENAI_COMPATIBLE);
+    properties.setEndpoint(URI.create("https://api.openai.com/v1/chat/completions"));
+    properties.setModel("SYNTHETIC-MODEL-001");
+    properties.setProviderProfileRevision("SYNTHETIC-PROFILE-REVISION-1");
+    properties.setSecretReference("env:SYN_OPERATOR_SUPPORT_KEY");
+    properties.setAllowedHosts(List.of("api.openai.com"));
+    applyReviewedProviderGovernance(properties);
+
+    properties.setProviderTrainingUse(OperatorSupportProperties.ProviderTrainingUse.UNASSESSED);
+    assertThatThrownBy(properties::validate)
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessage("The configured operator support provider profile is invalid.");
+  }
+
+  private static void applyReviewedProviderGovernance(OperatorSupportProperties properties) {
+    properties.setUseCase(OperatorSupportProperties.UseCase.DOCUMENTATION_OPERATOR_SUPPORT);
+    properties.setAllowedDataClass(
+        OperatorSupportProperties.AllowedDataClass.APPROVED_DOCUMENTATION_ONLY);
+    properties.setProviderRetentionDisposition(
+        OperatorSupportProperties.ProviderRetentionDisposition.DOCUMENTED_LIMITED_RETENTION);
+    properties.setProviderTrainingUse(OperatorSupportProperties.ProviderTrainingUse.NO_TRAINING);
+    properties.setProcessingJurisdiction("SYNTH-REGION-A");
+    properties.setProviderMonthlySpendCap(new java.math.BigDecimal("10.00"));
+    properties.setProviderMonthlySpendCapCurrency("USD");
+    properties.setProviderSpendCapEnforced(true);
+    properties.setProviderSpendCapControlReference("ref:SYNTH-OPERATOR-SUPPORT-BUDGET-1");
   }
 }

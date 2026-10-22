@@ -25,4 +25,9 @@ class ExchangeHttpConfiguration {
   BoundedPartnerOperationExecutor boundedPartnerOperationExecutor() {
     return new BoundedPartnerOperationExecutor(8, 32);
   }
+
+  @Bean(destroyMethod = "close")
+  BoundedPartnerOperationExecutor operatorSupportOperationExecutor() {
+    return new BoundedPartnerOperationExecutor(2, 8);
+  }
 }

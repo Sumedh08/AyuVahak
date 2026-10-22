@@ -22,6 +22,16 @@ AYUVAHAK_OPERATOR_SUPPORT_PROVIDER_PROFILE_REVISION=<non-secret-revision>
 AYUVAHAK_OPERATOR_SUPPORT_SECRET_REFERENCE=env:AYUVAHAK_OPERATOR_SUPPORT_API_KEY
 AYUVAHAK_OPERATOR_SUPPORT_TIMEOUT=PT8S
 AYUVAHAK_OPERATOR_SUPPORT_MAX_RESPONSE_BYTES=16384
+AYUVAHAK_OPERATOR_SUPPORT_USE_CASE=DOCUMENTATION_OPERATOR_SUPPORT
+AYUVAHAK_OPERATOR_SUPPORT_ALLOWED_DATA_CLASS=APPROVED_DOCUMENTATION_ONLY
+AYUVAHAK_OPERATOR_SUPPORT_RETENTION_DISPOSITION=NO_PROMPT_RETENTION
+AYUVAHAK_OPERATOR_SUPPORT_TRAINING_USE=NO_TRAINING
+AYUVAHAK_OPERATOR_SUPPORT_PROCESSING_JURISDICTION=<reviewed deployment jurisdiction code>
+AYUVAHAK_OPERATOR_SUPPORT_MONTHLY_SPEND_CAP=<positive provider-side monthly cap>
+AYUVAHAK_OPERATOR_SUPPORT_MONTHLY_SPEND_CAP_CURRENCY=<ISO-4217 currency>
+AYUVAHAK_OPERATOR_SUPPORT_SPEND_CAP_ENFORCED=true
+AYUVAHAK_OPERATOR_SUPPORT_SPEND_CAP_CONTROL_REFERENCE=ref:<reviewed provider budget control>
+AYUVAHAK_LIMIT_OPERATOR_SUPPORT_PER_MINUTE=<deployment-reviewed per-user limit>
 ```
 
 Place the actual key in the deployment's secret environment under the referenced name. AyuVahak
@@ -29,6 +39,14 @@ resolves it through the existing secret-provider abstraction for the duration of
 returns or persists the value. The endpoint host must be explicitly allowlisted; the HTTPS transport
 vets all DNS answers against the production egress policy, pins the vetted addresses for the request,
 verifies the connected peer, disables redirects/retries, and bounds request, response, and time.
+
+The external profile fails closed unless the administrator records the finite documentation-only
+purpose/data class, provider retention disposition, no-training policy, processing jurisdiction and
+provider-side monthly spending cap/control reference. These are deployment review attestations, not
+claims AyuVahak can verify against the provider. The spending cap is enforced at the provider account;
+AyuVahak enforces its own per-principal request budget and bounded, isolated provider executor. The
+production request budget is database-shared across replicas. The per-user value must be included in
+the deployment's production profile and reviewed with the expected provider latency/cost.
 
 The status shown in the operator-support workspace reports whether a syntactically valid secret
 reference is present; it never reads back or verifies the referenced secret value. Resolution is
@@ -53,7 +71,9 @@ AYUVAHAK_OPERATOR_SUPPORT_EVALUATED_PROFILE_FINGERPRINT=sha256:<64 lowercase hex
 An authorized operator can read the current required fingerprint and whether it matches from
 `GET /api/v1/operator-support/profile`. The fingerprint covers the provider endpoint and model,
 non-secret provider profile revision, secret reference name, egress allowlist, timeout and response
-bound, approved corpus version and content hashes, capability contract, actual prompt text, purpose,
+bound, allowed data class, provider retention/training dispositions, processing jurisdiction,
+provider-side monthly spend cap and control reference, approved corpus version and content hashes,
+capability contract, actual prompt text, purpose,
 prompt-template, input-policy, and output-schema versions. It contains no secret value.
 Changes to any covered field invalidate the configured fingerprint and cause the service to abstain
 with `RE_EVALUATION_REQUIRED` until a new deployment review is recorded. Bump the corresponding

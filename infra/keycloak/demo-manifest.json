@@ -6,8 +6,8 @@
   "seedUsername": "synthetic.demo-seeder",
   "seedSubject": "5c9cb463-0000-4000-8000-000000000015",
   "seedClientId": "ayuvahak-demo-seed-client",
-  "seedCredentialNotice": "Public fixed credential confined to the loopback-bound Synthetic Demo realm; it is not a secret.",
-  "seedPassword": "local-only-not-a-secret",
+  "seedCredentialMode": "GENERATED_PER_INSTALLATION",
+  "seedCredentialMode": "GENERATED_PER_INSTALLATION",
   "loginNotice": "Local-only demonstration identity. Never use this account outside a loopback-bound synthetic installation.",
   "personas": [
     {
