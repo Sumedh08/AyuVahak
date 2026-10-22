@@ -16,6 +16,14 @@ export const GRANT_ROLE_TEMPLATES: readonly GrantRoleTemplate[] = [
     authorities: ["AccessGrantAdministration"],
   },
   {
+    key: "operator-support-reader",
+    label: "Operator support reader",
+    description:
+      "Can view bounded advisory documentation support and safe provider status. Cannot change configuration or AyuVahak state.",
+    scope: "PLATFORM",
+    authorities: ["OperatorSupportRead"],
+  },
+  {
     key: "platform-directory-setup",
     label: "Platform Directory setup operator",
     description:

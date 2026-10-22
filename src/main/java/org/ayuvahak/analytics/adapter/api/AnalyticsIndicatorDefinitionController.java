@@ -96,7 +96,9 @@ public final class AnalyticsIndicatorDefinitionController {
         contexts.forInteractiveRequest(actor, RequestedExecutionScope.platform(), correlationId());
     IndicatorDefinitionVersion published = administration.publish(context, proposed);
     return ResponseEntity.status(HttpStatus.CREATED)
-        .body(new DefinitionVersionView(published.key(), published.version(), published.fingerprint()));
+        .body(
+            new DefinitionVersionView(
+                published.key(), published.version(), published.fingerprint()));
   }
 
   private static IndicatorDefinitionVersion parseDefinition(JsonNode body) {
@@ -126,7 +128,8 @@ public final class AnalyticsIndicatorDefinitionController {
 
   private static IndicatorDefinitionGovernance governance(JsonNode node) {
     Optional<Instant> effectiveUntil = optionalInstant(node, "effectiveUntil");
-    Optional<Duration> maximumAge = optionalLong(node, "maximumSourceAgeSeconds").map(Duration::ofSeconds);
+    Optional<Duration> maximumAge =
+        optionalLong(node, "maximumSourceAgeSeconds").map(Duration::ofSeconds);
     Optional<String> policyKey = optionalText(node, "requiredDisclosurePolicyKey");
     Optional<IndicatorDefinitionGovernance.AuthorityDefinition> authority =
         optionalObject(node, "authorityDefinition")
@@ -148,7 +151,8 @@ public final class AnalyticsIndicatorDefinitionController {
             node,
             "completenessRequirement"),
         maximumAge,
-        enumValue(IndicatorDefinitionGovernance.SensitivityClassification.class, node, "sensitivity"),
+        enumValue(
+            IndicatorDefinitionGovernance.SensitivityClassification.class, node, "sensitivity"),
         policyKey,
         authority);
   }
@@ -161,7 +165,8 @@ public final class AnalyticsIndicatorDefinitionController {
     for (JsonNode item : node) {
       requireObject(item, MEASURE_FIELDS);
       SourceMeasure.Owner owner = enumValue(SourceMeasure.Owner.class, item, "owner");
-      SourceMeasure.Attribution attribution = enumValue(SourceMeasure.Attribution.class, item, "attribution");
+      SourceMeasure.Attribution attribution =
+          enumValue(SourceMeasure.Attribution.class, item, "attribution");
       String key = requiredText(item, "key");
       measures.add(
           owner == SourceMeasure.Owner.REFERRAL
@@ -176,7 +181,8 @@ public final class AnalyticsIndicatorDefinitionController {
     return SourceMeasure.referral(key);
   }
 
-  private static EnumSet<IndicatorDefinitionGovernance.ReportingDimension> dimensions(JsonNode node) {
+  private static EnumSet<IndicatorDefinitionGovernance.ReportingDimension> dimensions(
+      JsonNode node) {
     if (node == null || !node.isArray() || node.isEmpty()) throw invalidDefinition();
     EnumSet<IndicatorDefinitionGovernance.ReportingDimension> result =
         EnumSet.noneOf(IndicatorDefinitionGovernance.ReportingDimension.class);
@@ -193,13 +199,15 @@ public final class AnalyticsIndicatorDefinitionController {
 
   private static String requiredText(JsonNode node, String name) {
     JsonNode value = node.get(name);
-    if (value == null || !value.isString() || value.stringValue().isBlank()) throw invalidDefinition();
+    if (value == null || !value.isString() || value.stringValue().isBlank())
+      throw invalidDefinition();
     return value.stringValue();
   }
 
   private static int requiredInteger(JsonNode node, String name) {
     JsonNode value = node.get(name);
-    if (value == null || !value.isIntegralNumber() || !value.canConvertToInt()) throw invalidDefinition();
+    if (value == null || !value.isIntegralNumber() || !value.canConvertToInt())
+      throw invalidDefinition();
     return value.intValue();
   }
 
@@ -243,10 +251,11 @@ public final class AnalyticsIndicatorDefinitionController {
 
   private static void requireObject(JsonNode node, java.util.Set<String> fields) {
     if (node == null || !node.isObject()) throw invalidDefinition();
-    node.properties().forEach(
-        property -> {
-          if (!fields.contains(property.getKey())) throw invalidDefinition();
-        });
+    node.properties()
+        .forEach(
+            property -> {
+              if (!fields.contains(property.getKey())) throw invalidDefinition();
+            });
   }
 
   private static PlatformProblemException invalidDefinition() {

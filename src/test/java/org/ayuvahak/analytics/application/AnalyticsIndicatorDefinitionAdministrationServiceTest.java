@@ -12,10 +12,8 @@ import java.util.Optional;
 import java.util.UUID;
 import org.ayuvahak.analytics.domain.AggregateSnapshot;
 import org.ayuvahak.analytics.domain.AnalyticsAuthorities;
-import org.ayuvahak.analytics.domain.AggregateInput;
 import org.ayuvahak.analytics.domain.IndicatorDefinitionGovernance;
 import org.ayuvahak.analytics.domain.IndicatorDefinitionVersion;
-import org.ayuvahak.analytics.domain.AggregateCompleteness;
 import org.ayuvahak.analytics.domain.SourceMeasure;
 import org.ayuvahak.platform.api.PlatformProblemException;
 import org.ayuvahak.platform.audit.application.AuditRecordAppender;
@@ -57,11 +55,15 @@ class AnalyticsIndicatorDefinitionAdministrationServiceTest {
 
     assertThat(result).isEqualTo(definition);
     assertThat(harness.store.published).containsExactly(definition);
-    assertThat(harness.audit.records).singleElement().satisfies(evidence -> {
-      assertThat(evidence.actionCode()).isEqualTo("ANALYTICS_INDICATOR_DEFINITION_PUBLISHED");
-      assertThat(evidence.targetType()).isEqualTo("IndicatorDefinitionVersion");
-      assertThat(evidence.outcome().name()).isEqualTo("SUCCEEDED");
-    });
+    assertThat(harness.audit.records)
+        .singleElement()
+        .satisfies(
+            evidence -> {
+              assertThat(evidence.actionCode())
+                  .isEqualTo("ANALYTICS_INDICATOR_DEFINITION_PUBLISHED");
+              assertThat(evidence.targetType()).isEqualTo("IndicatorDefinitionVersion");
+              assertThat(evidence.outcome().name()).isEqualTo("SUCCEEDED");
+            });
   }
 
   @Test
@@ -72,8 +74,9 @@ class AnalyticsIndicatorDefinitionAdministrationServiceTest {
         .isInstanceOf(PlatformProblemException.class);
 
     assertThat(harness.store.published).isEmpty();
-    assertThat(harness.audit.records).singleElement().satisfies(evidence ->
-        assertThat(evidence.outcome().name()).isEqualTo("DENIED"));
+    assertThat(harness.audit.records)
+        .singleElement()
+        .satisfies(evidence -> assertThat(evidence.outcome().name()).isEqualTo("DENIED"));
   }
 
   private static ExecutionContext context() {

@@ -16,6 +16,43 @@ const session: SessionProjection = {
 };
 
 describe("AccessManagementWorkspace", () => {
+  it("offers a read-only template for the optional operator-support profile status", async () => {
+    const apiClient: AccessGrantApiClient = {
+      list: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
+      create: vi.fn().mockResolvedValue(undefined),
+      revoke: vi.fn().mockResolvedValue(undefined),
+    };
+    render(
+      <AccessManagementWorkspace
+        session={session}
+        getAccessToken={async () => "unused"}
+        apiClient={apiClient}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Access preset"), {
+      target: { value: "operator-support-reader" },
+    });
+    fireEvent.change(screen.getByLabelText("IdP subject"), {
+      target: { value: "synthetic-support-operator" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Apply template grants" }));
+
+    await waitFor(() => expect(apiClient.create).toHaveBeenCalledTimes(1));
+    expect(apiClient.create).toHaveBeenCalledWith(
+      {
+        kind: "HUMAN",
+        issuer: session.subject.issuer,
+        subject: "synthetic-support-operator",
+      },
+      "OperatorSupportRead",
+      { kind: "PLATFORM" },
+    );
+    expect(
+      await screen.findByText("Created 1 separate grants from “Operator support reader”."),
+    ).toBeTruthy();
+  });
+
   it("expands a selected preset into backend-authorized grant requests", async () => {
     const apiClient: AccessGrantApiClient = {
       list: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),

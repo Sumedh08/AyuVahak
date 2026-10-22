@@ -135,7 +135,9 @@ public final class AnalyticsIndicatorDefinitionAdministrationService {
               context == null
                   ? AuditAuthorizationOutcome.NOT_EVALUATED
                   : AuditAuthorizationOutcome.DENIED,
-              context == null ? new CorrelationId(UUID.randomUUID().toString()) : context.correlationId()));
+              context == null
+                  ? new CorrelationId(UUID.randomUUID().toString())
+                  : context.correlationId()));
     } catch (AuditPersistenceUnavailableException unavailable) {
       throw problem(
           HttpStatus.SERVICE_UNAVAILABLE,

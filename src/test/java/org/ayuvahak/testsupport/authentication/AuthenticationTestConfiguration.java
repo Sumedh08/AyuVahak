@@ -26,7 +26,7 @@ public class AuthenticationTestConfiguration {
   @ConditionalOnMissingBean(BuildProperties.class)
   BuildProperties buildProperties() {
     Properties properties = new Properties();
-    properties.setProperty("version", "0.1.0-SNAPSHOT");
+    properties.setProperty("version", "0.1.0");
     return new BuildProperties(properties);
   }
 

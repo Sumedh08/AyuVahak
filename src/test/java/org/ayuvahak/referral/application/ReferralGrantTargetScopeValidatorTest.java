@@ -62,6 +62,43 @@ class ReferralGrantTargetScopeValidatorTest {
   }
 
   @Test
+  void validatesOperationalReferralGrantsAgainstActiveDirectoryScopes() {
+    var validator =
+        new ReferralGrantTargetScopeValidator(
+            new DirectoryScopeReferenceLookup() {
+              @Override
+              public boolean isActiveOrganization(ExternalReference organization) {
+                return ORGANIZATION.equals(organization);
+              }
+
+              @Override
+              public boolean isActiveFacilityInOrganization(
+                  ExternalReference organization, ExternalReference facility) {
+                return ORGANIZATION.equals(organization) && FACILITY.equals(facility);
+              }
+            });
+    var organizationScope = RequestedExecutionScope.organization(ORGANIZATION);
+    var facilityScope = RequestedExecutionScope.facility(ORGANIZATION, FACILITY);
+
+    assertThat(validator.supports(ReferralAuthorities.create())).isTrue();
+    assertThat(validator.isValid(ReferralAuthorities.create(), organizationScope)).isTrue();
+    assertThat(validator.isValid(ReferralAuthorities.create(), facilityScope)).isTrue();
+    assertThat(
+            validator.isValid(
+                ReferralAuthorities.create(),
+                RequestedExecutionScope.facility(
+                    ORGANIZATION,
+                    new ExternalReference(DIRECTORY, "Facility", "SYN-INACTIVE-FACILITY"))))
+        .isFalse();
+    assertThat(validator.supports(ReferralAuthorities.submit())).isTrue();
+    assertThat(validator.isValid(ReferralAuthorities.submit(), facilityScope)).isTrue();
+    assertThat(validator.supports(ReferralAuthorities.read())).isTrue();
+    assertThat(validator.isValid(ReferralAuthorities.read(), organizationScope)).isTrue();
+    assertThat(validator.supports(ReferralAuthorities.retention())).isTrue();
+    assertThat(validator.isValid(ReferralAuthorities.retention(), facilityScope)).isTrue();
+  }
+
+  @Test
   void validatesReportingGrantForAnActiveOrganizationOrFacility() {
     var validator =
         new ReferralGrantTargetScopeValidator(

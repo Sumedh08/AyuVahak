@@ -1,5 +1,7 @@
 package org.ayuvahak.matching.adapter.configuration;
 
+import org.ayuvahak.directory.application.DirectoryScopeReferenceLookup;
+import org.ayuvahak.matching.application.MatchingGrantTargetScopeValidator;
 import org.ayuvahak.matching.application.MatchingOwnerReadContexts;
 import org.ayuvahak.matching.application.MatchingPolicyCatalog;
 import org.ayuvahak.matching.domain.MatchingAuthorities;
@@ -29,6 +31,12 @@ class MatchingAuthorityConfiguration {
   @Bean
   FunctionalAuthority recommendationReadAuthority() {
     return MatchingAuthorities.readRecommendation();
+  }
+
+  @Bean
+  MatchingGrantTargetScopeValidator matchingGrantTargetScopeValidator(
+      DirectoryScopeReferenceLookup directoryScopeReferenceLookup) {
+    return new MatchingGrantTargetScopeValidator(directoryScopeReferenceLookup);
   }
 
   @Bean

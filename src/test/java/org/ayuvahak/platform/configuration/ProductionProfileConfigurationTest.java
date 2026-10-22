@@ -31,6 +31,7 @@ class ProductionProfileConfigurationTest {
           .withUserConfiguration(ProductionProfileConfiguration.class)
           .withPropertyValues(
               "spring.profiles.active=production-single-site",
+              "ayuvahak.deployment.mode=EMPTY",
               "server.port=8080",
               "management.server.port=9091",
               "management.server.address=127.0.0.1",

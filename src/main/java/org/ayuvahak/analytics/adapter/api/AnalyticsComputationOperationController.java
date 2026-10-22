@@ -82,7 +82,9 @@ public final class AnalyticsComputationOperationController {
     try {
       AnalyticsComputationOperation operation = computations.enqueue(context, request);
       return ResponseEntity.accepted()
-          .body(new OperationAcceptedView(operation.requestId().toString(), operation.state().name()));
+          .body(
+              new OperationAcceptedView(
+                  operation.requestId().toString(), operation.state().name()));
     } catch (AnalyticsComputationException failure) {
       throw mapFailure(failure);
     } catch (IllegalArgumentException invalid) {
@@ -139,10 +141,11 @@ public final class AnalyticsComputationOperationController {
 
   private static void requireOnlyFields(JsonNode body) {
     if (body == null || !body.isObject()) throw invalidRequest();
-    body.properties().forEach(
-        field -> {
-          if (!REQUEST_FIELDS.contains(field.getKey())) throw invalidRequest();
-        });
+    body.properties()
+        .forEach(
+            field -> {
+              if (!REQUEST_FIELDS.contains(field.getKey())) throw invalidRequest();
+            });
     if (body.size() != REQUEST_FIELDS.size()) throw invalidRequest();
   }
 
@@ -154,22 +157,35 @@ public final class AnalyticsComputationOperationController {
 
   private static int integer(JsonNode body, String name) {
     JsonNode value = body.get(name);
-    if (value == null || !value.isIntegralNumber() || !value.canConvertToInt()) throw invalidRequest();
+    if (value == null || !value.isIntegralNumber() || !value.canConvertToInt())
+      throw invalidRequest();
     return value.intValue();
   }
 
   private static PlatformProblemException mapFailure(AnalyticsComputationException failure) {
     if (failure.reason() == AnalyticsComputationException.Reason.NOT_AUTHORIZED) {
-      return problem(HttpStatus.FORBIDDEN, PlatformErrorCode.AUTHORIZATION_DENIED, "Analytics computation is not authorized.");
+      return problem(
+          HttpStatus.FORBIDDEN,
+          PlatformErrorCode.AUTHORIZATION_DENIED,
+          "Analytics computation is not authorized.");
     }
     if (failure.reason() == AnalyticsComputationException.Reason.DEFINITION_NOT_FOUND) {
-      return problem(HttpStatus.NOT_FOUND, PlatformErrorCode.NOT_FOUND, "The approved indicator version is unavailable.");
+      return problem(
+          HttpStatus.NOT_FOUND,
+          PlatformErrorCode.NOT_FOUND,
+          "The approved indicator version is unavailable.");
     }
-    return problem(HttpStatus.UNPROCESSABLE_ENTITY, PlatformErrorCode.VALIDATION_FAILED, "The Analytics computation request could not be accepted.");
+    return problem(
+        HttpStatus.UNPROCESSABLE_ENTITY,
+        PlatformErrorCode.VALIDATION_FAILED,
+        "The Analytics computation request could not be accepted.");
   }
 
   private static PlatformProblemException invalidRequest() {
-    return problem(HttpStatus.UNPROCESSABLE_ENTITY, PlatformErrorCode.VALIDATION_FAILED, "The Analytics computation request contains unsupported or invalid fields.");
+    return problem(
+        HttpStatus.UNPROCESSABLE_ENTITY,
+        PlatformErrorCode.VALIDATION_FAILED,
+        "The Analytics computation request contains unsupported or invalid fields.");
   }
 
   private static CorrelationId correlationId() {

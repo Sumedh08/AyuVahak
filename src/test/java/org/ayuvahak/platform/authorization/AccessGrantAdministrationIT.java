@@ -522,6 +522,35 @@ class AccessGrantAdministrationIT {
                 String.class))
         .isEqualTo("FACILITY:org-17:facility-23");
 
+    String referralFacilityBody =
+        "{\"principal\":{\"kind\":\"HUMAN\",\"issuer\":\""
+            + ISSUER
+            + "\",\"subject\":\"synthetic-referral-coordinator-01\"},"
+            + "\"authority\":\"ReferralCreate\",\"scope\":{\"kind\":\"FACILITY\","
+            + "\"organization\":{\"issuer\":\"urn:ayuvahak:directory\","
+            + "\"identifier\":\"org-17\"},\"facility\":{"
+            + "\"issuer\":\"urn:ayuvahak:directory\",\"identifier\":\"facility-23\"}},"
+            + "\"reasonCode\":\"ACCESS_SETUP\"}";
+    mockMvc
+        .perform(
+            post("/api/v1/platform/access-grants")
+                .header("Authorization", bearer(token(ADMIN_SUBJECT, Map.of())))
+                .header(PlatformAccessGrantController.EXECUTION_SCOPE_HEADER, EXECUTION_SCOPE)
+                .header("Idempotency-Key", "referral-facility-grant-01")
+                .contentType("application/json")
+                .content(referralFacilityBody))
+        .andExpect(status().isCreated());
+
+    mockMvc
+        .perform(
+            post("/api/v1/platform/access-grants")
+                .header("Authorization", bearer(token(ADMIN_SUBJECT, Map.of())))
+                .header(PlatformAccessGrantController.EXECUTION_SCOPE_HEADER, EXECUTION_SCOPE)
+                .header("Idempotency-Key", "referral-read-facility-grant-01")
+                .contentType("application/json")
+                .content(referralFacilityBody.replace("\"ReferralCreate\"", "\"ReferralRead\"")))
+        .andExpect(status().isCreated());
+
     mockMvc
         .perform(
             get("/api/v1/platform/access-grants")

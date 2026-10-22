@@ -77,7 +77,7 @@ class PlatformHttpIntegrationTest {
             .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
             .andExpect(jsonPath("$.serviceName").value("AyuVahak"))
             .andExpect(jsonPath("$.apiMajorVersion").value(1))
-            .andExpect(jsonPath("$.applicationVersion").value("0.1.0-SNAPSHOT"))
+            .andExpect(jsonPath("$.applicationVersion").value("0.1.0"))
             .andExpect(
                 header()
                     .string(
@@ -257,7 +257,7 @@ class PlatformHttpIntegrationTest {
         BuildProperties.class)
     BuildProperties buildProperties() {
       Properties properties = new Properties();
-      properties.setProperty("version", "0.1.0-SNAPSHOT");
+      properties.setProperty("version", "0.1.0");
       return new BuildProperties(properties);
     }
 

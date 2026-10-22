@@ -55,7 +55,8 @@ class AnalyticsAdministrationApiIT {
   private static final String ADMIN = "synthetic-analytics-definition-admin";
   private static final String SERVICE = "synthetic-analytics";
   private static final String DIRECTORY_ISSUER = "urn:ayuvahak:directory";
-  private static final UUID ORGANIZATION_ID = UUID.fromString("7cc4dd8c-0000-4000-8000-000000000031");
+  private static final UUID ORGANIZATION_ID =
+      UUID.fromString("7cc4dd8c-0000-4000-8000-000000000031");
   private static final RSAKey SIGNING_KEY = newSigningKey("analytics-admin-fixture");
   private static final PostgreSQLContainer POSTGRES =
       org.ayuvahak.testcontainers.PostgresTestContainerFactory.create(
@@ -127,7 +128,9 @@ class AnalyticsAdministrationApiIT {
                 .header("Authorization", bearer(token(ADMIN, null)))
                 .header("X-AyuVahak-Execution-Scope", "PLATFORM")
                 .contentType("application/json")
-                .content(body.replace("Synthetic local referral count", "Synthetic local referral count v2")))
+                .content(
+                    body.replace(
+                        "Synthetic local referral count", "Synthetic local referral count v2")))
         .andExpect(status().isConflict());
 
     mockMvc
@@ -145,7 +148,10 @@ class AnalyticsAdministrationApiIT {
                 .header("Authorization", bearer(token(ADMIN, null)))
                 .header("X-AyuVahak-Execution-Scope", "PLATFORM")
                 .contentType("application/json")
-                .content(body.replace("\"zeroAllowed\":true", "\"zeroAllowed\":true,\"patientId\":\"SYN-PATIENT-PRIVATE\"")))
+                .content(
+                    body.replace(
+                        "\"zeroAllowed\":true",
+                        "\"zeroAllowed\":true,\"patientId\":\"SYN-PATIENT-PRIVATE\"")))
         .andExpect(status().isUnprocessableEntity());
   }
 
@@ -153,11 +159,9 @@ class AnalyticsAdministrationApiIT {
   void acceptsOnlyAServiceActorWithAnOrganizationScopedComputationGrant() throws Exception {
     seedOrganization();
     grantService(
-        SERVICE,
-        "AnalyticsAggregateComputation",
-        "ORGANIZATION",
-        ORGANIZATION_ID.toString());
-    String cutoff = Instant.now().minusSeconds(30).truncatedTo(java.time.temporal.ChronoUnit.MICROS).toString();
+        SERVICE, "AnalyticsAggregateComputation", "ORGANIZATION", ORGANIZATION_ID.toString());
+    String cutoff =
+        Instant.now().minusSeconds(30).truncatedTo(java.time.temporal.ChronoUnit.MICROS).toString();
     String request =
         "{\"computationRequestId\":\""
             + UUID.randomUUID()
@@ -222,7 +226,8 @@ class AnalyticsAdministrationApiIT {
         scope);
   }
 
-  private void grantService(String clientId, String authority, String scope, String organizationId) {
+  private void grantService(
+      String clientId, String authority, String scope, String organizationId) {
     jdbc.update(
         "INSERT INTO identity_access.authorization_grant "
             + "(grant_id, principal_kind, principal_issuer, principal_identifier_type, "
@@ -277,7 +282,8 @@ class AnalyticsAdministrationApiIT {
     try {
       return new RSAKeyGenerator(2048).keyID(keyId).generate();
     } catch (Exception exception) {
-      throw new IllegalStateException("Could not create a synthetic Analytics API test key.", exception);
+      throw new IllegalStateException(
+          "Could not create a synthetic Analytics API test key.", exception);
     }
   }
 
