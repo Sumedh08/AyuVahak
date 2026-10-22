@@ -11,6 +11,9 @@ describe("OperatorSupportWorkspace", () => {
         provider: "DETERMINISTIC_LOCAL",
         configurationValid: true,
         secretReferenceConfigured: false,
+        evaluationRequired: false,
+        evaluationCurrent: true,
+        requiredEvaluationFingerprint: "",
       }),
       answer: vi.fn().mockResolvedValue({
         status: "ADVISORY",
@@ -58,6 +61,9 @@ describe("OperatorSupportWorkspace", () => {
         provider: "DETERMINISTIC_LOCAL",
         configurationValid: true,
         secretReferenceConfigured: false,
+        evaluationRequired: false,
+        evaluationCurrent: true,
+        requiredEvaluationFingerprint: "",
       }),
       answer: vi.fn().mockResolvedValue({
         status: "ABSTAINED",
@@ -85,6 +91,36 @@ describe("OperatorSupportWorkspace", () => {
     expect(screen.getByRole("heading", { name: "Operator support" })).toBeTruthy();
   });
 
+  it("pauses an external provider until its exact profile has a current review", async () => {
+    const answer = vi.fn();
+    const apiClient: OperatorSupportApiClient = {
+      profileStatus: vi.fn().mockResolvedValue({
+        enabled: true,
+        provider: "OPENAI_COMPATIBLE",
+        configurationValid: true,
+        secretReferenceConfigured: true,
+        evaluationRequired: true,
+        evaluationCurrent: false,
+        requiredEvaluationFingerprint: `sha256:${"b".repeat(64)}`,
+      }),
+      answer,
+    };
+    render(
+      <OperatorSupportWorkspace getAccessToken={async () => "unused"} apiClient={apiClient} />,
+    );
+
+    expect(
+      await screen.findByText(
+        /External provider use is paused until this exact profile is reviewed/u,
+      ),
+    ).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Documentation topic"), {
+      target: { value: "DATABASE_RESTORE" },
+    });
+    expect(screen.getByRole("button", { name: "Show advisory guidance" })).toBeDisabled();
+    expect(answer).not.toHaveBeenCalled();
+  });
+
   it("does not submit a value outside the finite topic catalog", () => {
     const answer = vi.fn();
     const apiClient: OperatorSupportApiClient = {
@@ -93,6 +129,9 @@ describe("OperatorSupportWorkspace", () => {
         provider: "DETERMINISTIC_LOCAL",
         configurationValid: true,
         secretReferenceConfigured: false,
+        evaluationRequired: false,
+        evaluationCurrent: true,
+        requiredEvaluationFingerprint: "",
       }),
       answer,
     };

@@ -40,6 +40,30 @@ transport/provider fake and never calls an external model. Do not use real patie
 operational records, secrets, or credentials as provider input. Review the provider's retention,
 training-use, jurisdiction, and contractual terms before a deployment administrator enables it.
 
+## Re-evaluation gate
+
+An enabled external profile is paused unless deployment configuration contains the exact profile
+fingerprint that was reviewed and evaluated:
+
+```text
+AYUVAHAK_OPERATOR_SUPPORT_EVALUATED_PROFILE_FINGERPRINT=sha256:<64 lowercase hex characters>
+```
+
+An authorized operator can read the current required fingerprint and whether it matches from
+`GET /api/v1/operator-support/profile`. The fingerprint covers the provider endpoint and model,
+egress allowlist, timeout and response bound, approved corpus version and content hashes, capability
+contract, purpose, prompt-template, input-policy, and output-schema versions. It contains no secret.
+Changes to any covered field invalidate the configured fingerprint and cause the service to abstain
+with `RE_EVALUATION_REQUIRED` until a new deployment review is recorded. Bump the corresponding
+purpose/template/input-policy or capability version when its semantics change.
+
+Setting this value is a deployment-governance attestation: the accountable deployment owner must
+complete and retain the applicable local synthetic evaluation and review record for the exact
+fingerprint before setting it. The automated test suite uses only deterministic fakes; it does not
+evaluate a real external model or establish provider quality, factuality, fairness, or clinical
+safety. Do not set the fingerprint merely to enable the integration. If the deployment cannot
+perform and retain that review, leave external operator support disabled.
+
 Configuration changes require a restart. The UI reports advisory/disabled behavior without exposing
 the endpoint secret or its value. A response failure or invalid citation abstains; ordinary
 documentation and all care-coordination operations remain available.

@@ -25,6 +25,7 @@ import org.springframework.stereotype.Service;
 public final class OperatorSupportService {
 
   public static final String CAPABILITY_VERSION = "operator-support-v1";
+  public static final String EVALUATION_CONTRACT_VERSION = "operator-support-evaluation-v1";
   private static final int MAX_ANSWER_LENGTH = 1400;
   private static final int MAX_CITATIONS = 4;
 
@@ -58,6 +59,10 @@ public final class OperatorSupportService {
       return abstained(OperatorSupportResponse.ReasonCode.DISABLED);
     }
 
+    if (!isEvaluationCurrent()) {
+      return abstained(OperatorSupportResponse.ReasonCode.RE_EVALUATION_REQUIRED);
+    }
+
     List<ApprovedOperatorSupportSource> sources = corpus.sourcesFor(questionKey);
     if (sources.isEmpty()) {
       return abstained(OperatorSupportResponse.ReasonCode.NO_APPROVED_EVIDENCE);
@@ -87,11 +92,42 @@ public final class OperatorSupportService {
     boolean secretReferenceConfigured =
         properties.getProvider() == OperatorSupportProperties.Provider.OPENAI_COMPATIBLE
             && properties.getSecretReference().matches("env:[A-Za-z_][A-Za-z0-9_]{0,127}");
+    boolean evaluationRequired = isExternalProviderEnabled();
+    String requiredEvaluationFingerprint =
+        evaluationRequired && configurationValid
+            ? OperatorSupportEvaluationProfile.fingerprint(properties, corpus)
+            : "";
+    boolean evaluationCurrent =
+        !evaluationRequired
+            || (configurationValid
+                && !requiredEvaluationFingerprint.isEmpty()
+                && requiredEvaluationFingerprint.equals(properties.getEvaluatedProfileFingerprint()));
     return new OperatorSupportProfileStatus(
         properties.isEnabled(),
         properties.getProvider().name(),
         configurationValid,
-        secretReferenceConfigured);
+        secretReferenceConfigured,
+        evaluationRequired,
+        evaluationCurrent,
+        requiredEvaluationFingerprint);
+  }
+
+  private boolean isEvaluationCurrent() {
+    if (!isExternalProviderEnabled()) {
+      return true;
+    }
+    try {
+      properties.validate();
+      return OperatorSupportEvaluationProfile.fingerprint(properties, corpus)
+          .equals(properties.getEvaluatedProfileFingerprint());
+    } catch (IllegalArgumentException invalidProfile) {
+      return false;
+    }
+  }
+
+  private boolean isExternalProviderEnabled() {
+    return properties.isEnabled()
+        && properties.getProvider() == OperatorSupportProperties.Provider.OPENAI_COMPATIBLE;
   }
 
   private void authorize(ActorReference actor, CorrelationId correlationId) {

@@ -57,6 +57,9 @@ describe("operator support API client", () => {
       provider: "OPENAI_COMPATIBLE",
       configurationValid: true,
       secretReferenceConfigured: true,
+      evaluationRequired: true,
+      evaluationCurrent: true,
+      requiredEvaluationFingerprint: `sha256:${"a".repeat(64)}`,
     } as const;
     const fetcher = vi
       .fn<typeof fetch>()
@@ -85,6 +88,9 @@ describe("operator support API client", () => {
           provider: "OPENAI_COMPATIBLE",
           configurationValid: true,
           secretReferenceConfigured: true,
+          evaluationRequired: true,
+          evaluationCurrent: true,
+          requiredEvaluationFingerprint: `sha256:${"a".repeat(64)}`,
           endpoint: "https://provider.example/v1/chat/completions",
           apiKey: "SYN-SECRET-MUST-NOT-RETURN",
         }),

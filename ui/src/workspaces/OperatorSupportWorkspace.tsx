@@ -40,6 +40,8 @@ function abstentionMessage(reasonCode: OperatorSupportResponse["reasonCode"]): s
       return "The support response did not meet validation requirements, so no answer is shown.";
     case "PROVIDER_UNAVAILABLE":
       return "The configured support provider is unavailable. Continue with the ordinary documentation and runbooks.";
+    case "RE_EVALUATION_REQUIRED":
+      return "The external provider profile has changed or has not been evaluated. Operator support is paused until the deployment records a matching review.";
     case "NONE":
       return "No advisory response is available.";
   }
@@ -56,6 +58,11 @@ export function OperatorSupportWorkspace({
   const [questionKey, setQuestionKey] = useState<OperatorSupportQuestionKey | "">("");
   const [answer, setAnswer] = useState<AnswerState>({ status: "idle" });
   const [profile, setProfile] = useState<ProfileState>({ status: "loading" });
+  const providerPaused =
+    profile.status === "loaded" &&
+    profile.profile.enabled &&
+    profile.profile.evaluationRequired &&
+    !profile.profile.evaluationCurrent;
 
   useEffect(() => {
     const controller = new AbortController();
@@ -112,6 +119,12 @@ export function OperatorSupportWorkspace({
             The configured provider profile is incomplete or invalid. Contact the deployment
             administrator; no secret value is displayed here.
           </p>
+        ) : profile.profile.evaluationRequired && !profile.profile.evaluationCurrent ? (
+          <p className="workspace-state workspace-error" role="status">
+            External provider use is paused until this exact profile is reviewed. Record the
+            required evaluation fingerprint in deployment configuration after the local evaluation:
+            <code>{profile.profile.requiredEvaluationFingerprint}</code>
+          </p>
         ) : profile.profile.provider === "DETERMINISTIC_LOCAL" ? (
           <p className="workspace-state" role="status">
             The deterministic local provider is enabled. No external model is called.
@@ -120,7 +133,7 @@ export function OperatorSupportWorkspace({
           <p className="workspace-state" role="status">
             An external compatible provider profile is configured. Valid secret reference:{" "}
             {profile.profile.secretReferenceConfigured ? "configured" : "missing"}. Secret values
-            are never returned.
+            are never returned. The configured evaluation matches this profile.
           </p>
         )}
         <p className="field-help">
@@ -150,7 +163,7 @@ export function OperatorSupportWorkspace({
       <button
         className="button button-primary"
         type="button"
-        disabled={!questionKey || answer.status === "loading"}
+        disabled={!questionKey || answer.status === "loading" || providerPaused}
         onClick={() => void requestAnswer()}
       >
         {answer.status === "loading" ? "Checking approved guidance…" : "Show advisory guidance"}

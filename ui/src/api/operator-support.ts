@@ -19,6 +19,9 @@ export interface OperatorSupportProfileStatus {
   readonly provider: OperatorSupportProvider;
   readonly configurationValid: boolean;
   readonly secretReferenceConfigured: boolean;
+  readonly evaluationRequired: boolean;
+  readonly evaluationCurrent: boolean;
+  readonly requiredEvaluationFingerprint: string;
 }
 
 export function parseOperatorSupportQuestionKey(value: string): OperatorSupportQuestionKey | null {
@@ -43,7 +46,8 @@ export interface OperatorSupportResponse {
     | "DISABLED"
     | "NO_APPROVED_EVIDENCE"
     | "INVALID_PROVIDER_OUTPUT"
-    | "PROVIDER_UNAVAILABLE";
+    | "PROVIDER_UNAVAILABLE"
+    | "RE_EVALUATION_REQUIRED";
 }
 
 export interface OperatorSupportApiClient {
@@ -139,6 +143,7 @@ function parseResponse(value: unknown): OperatorSupportResponse | null {
       "NO_APPROVED_EVIDENCE",
       "INVALID_PROVIDER_OUTPUT",
       "PROVIDER_UNAVAILABLE",
+      "RE_EVALUATION_REQUIRED",
     ].includes(String(value.reasonCode))
   ) {
     return null;
@@ -176,11 +181,19 @@ function parseProfileStatus(value: unknown): OperatorSupportProfileStatus | null
       "provider",
       "configurationValid",
       "secretReferenceConfigured",
+      "evaluationRequired",
+      "evaluationCurrent",
+      "requiredEvaluationFingerprint",
     ]) ||
     typeof value.enabled !== "boolean" ||
     (value.provider !== "DETERMINISTIC_LOCAL" && value.provider !== "OPENAI_COMPATIBLE") ||
     typeof value.configurationValid !== "boolean" ||
-    typeof value.secretReferenceConfigured !== "boolean"
+    typeof value.secretReferenceConfigured !== "boolean" ||
+    typeof value.evaluationRequired !== "boolean" ||
+    typeof value.evaluationCurrent !== "boolean" ||
+    typeof value.requiredEvaluationFingerprint !== "string" ||
+    (value.requiredEvaluationFingerprint !== "" &&
+      !/^sha256:[a-f0-9]{64}$/u.test(value.requiredEvaluationFingerprint))
   ) {
     return null;
   }
@@ -189,6 +202,9 @@ function parseProfileStatus(value: unknown): OperatorSupportProfileStatus | null
     provider: value.provider,
     configurationValid: value.configurationValid,
     secretReferenceConfigured: value.secretReferenceConfigured,
+    evaluationRequired: value.evaluationRequired,
+    evaluationCurrent: value.evaluationCurrent,
+    requiredEvaluationFingerprint: value.requiredEvaluationFingerprint,
   };
 }
 

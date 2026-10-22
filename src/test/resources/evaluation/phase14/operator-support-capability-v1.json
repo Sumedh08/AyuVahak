@@ -24,6 +24,9 @@
   "corpusVersion": "operator-support-corpus-v1",
   "evaluationVersion": "1.0.0",
   "outputSchemaVersion": "operator-support-v1",
+  "purposeVersion": "operator-support-purpose-v1",
+  "promptTemplateVersion": "operator-support-prompt-v1",
+  "inputPolicyVersion": "operator-support-input-policy-v1",
   "allowedInputs": ["finite questionKey enum", "approved documentation excerpts"],
   "forbiddenInputs": [
     "PatientReference",

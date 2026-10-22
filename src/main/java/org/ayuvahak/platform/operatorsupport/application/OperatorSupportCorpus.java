@@ -107,4 +107,8 @@ public final class OperatorSupportCorpus {
     Objects.requireNonNull(questionKey, "question key");
     return byQuestion.get(questionKey);
   }
+
+  public List<ApprovedOperatorSupportSource> sourcesForAllTopics() {
+    return byQuestion.values().stream().flatMap(List::stream).distinct().toList();
+  }
 }

@@ -22,7 +22,8 @@ public record OperatorSupportResponse(
     DISABLED,
     NO_APPROVED_EVIDENCE,
     INVALID_PROVIDER_OUTPUT,
-    PROVIDER_UNAVAILABLE
+    PROVIDER_UNAVAILABLE,
+    RE_EVALUATION_REQUIRED
   }
 
   public OperatorSupportResponse {

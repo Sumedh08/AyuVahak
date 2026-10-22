@@ -71,6 +71,78 @@ class OperatorSupportServiceTest {
   }
 
   @Test
+  void externalProviderAbstainsUntilTheExactProfileHasARecordedEvaluationFingerprint() {
+    AtomicInteger invocations = new AtomicInteger();
+    OperatorSupportProperties properties = externalProfileProperties();
+    OperatorSupportService service = service(properties, (questionKey, sources) -> {
+      invocations.incrementAndGet();
+      return ProviderResponse.advisory("unexpected without evaluation", List.of(sources.getFirst().sourceId()));
+    }, true);
+
+    OperatorSupportResponse response = answer(service, OperatorSupportQuestionKey.DATABASE_RESTORE);
+
+    assertThat(response.status()).isEqualTo(OperatorSupportResponse.Status.ABSTAINED);
+    assertThat(response.reasonCode())
+        .isEqualTo(OperatorSupportResponse.ReasonCode.RE_EVALUATION_REQUIRED);
+    assertThat(invocations).hasValue(0);
+  }
+
+  @Test
+  void exactEvaluatedExternalProfileCanInvokeItsProvider() {
+    AtomicInteger invocations = new AtomicInteger();
+    OperatorSupportProperties properties = externalProfileProperties();
+    OperatorSupportCorpus corpus = OperatorSupportCorpus.approved();
+    properties.setEvaluatedProfileFingerprint(
+        OperatorSupportEvaluationProfile.fingerprint(properties, corpus));
+    OperatorSupportService service = service(properties, (questionKey, sources) -> {
+      invocations.incrementAndGet();
+      return ProviderResponse.advisory("reviewed profile answer", List.of(sources.getFirst().sourceId()));
+    }, true);
+
+    OperatorSupportResponse response = answer(service, OperatorSupportQuestionKey.DATABASE_RESTORE);
+
+    assertThat(response.status()).isEqualTo(OperatorSupportResponse.Status.ADVISORY);
+    assertThat(invocations).hasValue(1);
+  }
+
+  @Test
+  void profileStatusReportsOnlyTheSafeFingerprintAndEvaluationState() {
+    OperatorSupportProperties properties = externalProfileProperties();
+    OperatorSupportService service = service(properties, new DeterministicLocalOperatorSupportProvider(), true);
+
+    OperatorSupportProfileStatus status = service.profileStatus(OPERATOR, CorrelationId.generate());
+
+    assertThat(status.evaluationRequired()).isTrue();
+    assertThat(status.evaluationCurrent()).isFalse();
+    assertThat(status.requiredEvaluationFingerprint()).matches("sha256:[a-f0-9]{64}");
+    assertThat(status.toString()).doesNotContain("api.openai.com", "SYNTHETIC_OPERATOR_SUPPORT_SECRET");
+  }
+
+  @Test
+  void invalidExternalProfileCannotReportEvaluationAsCurrent() {
+    OperatorSupportProperties properties = externalProfileProperties();
+    properties.setEndpoint(null);
+    OperatorSupportService service = service(properties, new DeterministicLocalOperatorSupportProvider(), true);
+
+    OperatorSupportProfileStatus status = service.profileStatus(OPERATOR, CorrelationId.generate());
+
+    assertThat(status.configurationValid()).isFalse();
+    assertThat(status.evaluationCurrent()).isFalse();
+    assertThat(status.requiredEvaluationFingerprint()).isEmpty();
+  }
+
+  @Test
+  void evaluationFingerprintChangesWhenProviderProfileChanges() {
+    OperatorSupportProperties initial = externalProfileProperties();
+    OperatorSupportCorpus corpus = OperatorSupportCorpus.approved();
+    String original = OperatorSupportEvaluationProfile.fingerprint(initial, corpus);
+
+    initial.setModel("SYNTHETIC-MODEL-002");
+
+    assertThat(OperatorSupportEvaluationProfile.fingerprint(initial, corpus)).isNotEqualTo(original);
+  }
+
+  @Test
   void advisoryIsVersionedAndCitationsAreRestrictedToQuestionSources() {
     OperatorSupportCorpus corpus = OperatorSupportCorpus.approved();
     OperatorSupportQuestionKey key = OperatorSupportQuestionKey.DATABASE_RESTORE;
@@ -317,6 +389,24 @@ class OperatorSupportServiceTest {
       boolean enabled, OperatorSupportProvider provider, boolean grantAllowed) {
     OperatorSupportProperties properties = new OperatorSupportProperties();
     properties.setEnabled(enabled);
+    return service(properties, provider, grantAllowed);
+  }
+
+  private static OperatorSupportProperties externalProfileProperties() {
+    OperatorSupportProperties properties = new OperatorSupportProperties();
+    properties.setEnabled(true);
+    properties.setProvider(OperatorSupportProperties.Provider.OPENAI_COMPATIBLE);
+    properties.setEndpoint(java.net.URI.create("https://api.openai.com/v1/chat/completions"));
+    properties.setModel("SYNTHETIC-MODEL-001");
+    properties.setSecretReference("env:SYNTHETIC_OPERATOR_SUPPORT_SECRET");
+    properties.setAllowedHosts(List.of("api.openai.com"));
+    return properties;
+  }
+
+  private static OperatorSupportService service(
+      OperatorSupportProperties properties,
+      OperatorSupportProvider provider,
+      boolean grantAllowed) {
     AuthorizationService authorization =
         new AuthorizationService(
             (actor, authority, scope) -> grantAllowed,

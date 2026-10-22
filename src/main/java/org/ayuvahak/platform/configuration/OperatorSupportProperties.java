@@ -14,12 +14,14 @@ public class OperatorSupportProperties {
 
   private static final Pattern MODEL = Pattern.compile("[A-Za-z0-9._:-]{1,128}");
   private static final Pattern ENV_REFERENCE = Pattern.compile("env:[A-Za-z_][A-Za-z0-9_]{0,127}");
+  private static final Pattern EVALUATION_FINGERPRINT = Pattern.compile("sha256:[a-f0-9]{64}");
 
   private boolean enabled;
   private Provider provider = Provider.DETERMINISTIC_LOCAL;
   private URI endpoint;
   private String model = "";
   private String secretReference = "";
+  private String evaluatedProfileFingerprint = "";
   private List<String> allowedHosts = List.of();
   private Duration timeout = Duration.ofSeconds(8);
   private int maxResponseBytes = 16_384;
@@ -63,6 +65,15 @@ public class OperatorSupportProperties {
 
   public String getSecretReference() {
     return secretReference;
+  }
+
+  public String getEvaluatedProfileFingerprint() {
+    return evaluatedProfileFingerprint;
+  }
+
+  public void setEvaluatedProfileFingerprint(String evaluatedProfileFingerprint) {
+    this.evaluatedProfileFingerprint =
+        evaluatedProfileFingerprint == null ? "" : evaluatedProfileFingerprint;
   }
 
   public void setSecretReference(String secretReference) {
@@ -115,7 +126,9 @@ public class OperatorSupportProperties {
         || timeout.compareTo(Duration.ofSeconds(1)) < 0
         || timeout.compareTo(Duration.ofSeconds(30)) > 0
         || maxResponseBytes < 1_024
-        || maxResponseBytes > 65_536) {
+        || maxResponseBytes > 65_536
+        || (!evaluatedProfileFingerprint.isEmpty()
+            && !EVALUATION_FINGERPRINT.matcher(evaluatedProfileFingerprint).matches())) {
       throw new IllegalArgumentException("The configured operator support provider profile is invalid.");
     }
   }
