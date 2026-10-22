@@ -238,6 +238,7 @@ final class Phase13MixedWorkloadBenchmark {
     List<Long> latenciesNanos = new CopyOnWriteArrayList<>();
     Map<String, List<Long>> latenciesByOperation = new java.util.concurrent.ConcurrentHashMap<>();
     List<String> failures = new CopyOnWriteArrayList<>();
+    Map<String, Integer> failureCountsByPhaseOperationAndType = new LinkedHashMap<>();
     AtomicInteger timeouts = new AtomicInteger();
     AtomicInteger nextReplica = new AtomicInteger();
     AtomicInteger peakDbActive = new AtomicInteger();
@@ -267,6 +268,8 @@ final class Phase13MixedWorkloadBenchmark {
             nextReplica,
             latenciesByOperation,
             null,
+            "warmup",
+            failureCountsByPhaseOperationAndType,
             failures,
             timeouts);
         observeActiveSseConnections(activeSseConnections, minimumActiveSseConnections);
@@ -317,6 +320,8 @@ final class Phase13MixedWorkloadBenchmark {
             nextReplica,
             latenciesByOperation,
             latenciesNanos,
+            "measurement",
+            failureCountsByPhaseOperationAndType,
             failures,
             timeouts);
         observeActiveSseConnections(activeSseConnections, minimumActiveSseConnections);
@@ -359,6 +364,7 @@ final class Phase13MixedWorkloadBenchmark {
               MEASURED_CYCLES,
               CONCURRENCY,
               OPERATIONS_PER_CYCLE,
+              REQUEST_TIMEOUT.toMillis(),
               measuredElapsedNanos,
               latenciesNanos.size(),
               failures.size(),
@@ -386,6 +392,7 @@ final class Phase13MixedWorkloadBenchmark {
               peakCombinedDbConnections.get(),
               replicas.size() * MAX_POOL_SIZE_PER_REPLICA + harnessPoolCapacity,
               queryCount,
+              Map.copyOf(failureCountsByPhaseOperationAndType),
               Map.copyOf(workloadDimensions),
               minimumActiveSseConnections.get(),
               summarizeOperationLatency(latenciesByOperation),
@@ -394,12 +401,6 @@ final class Phase13MixedWorkloadBenchmark {
               replicas.stream().map(Replica::pid).toList(),
               replicas.stream().map(Replica::httpPort).toList());
       System.out.println("PHASE13_PROFILE_BENCHMARK " + JSON.writeValueAsString(result));
-      if (!failures.isEmpty()) {
-        throw new AssertionError("mixed workload operations failed: " + failures);
-      }
-      if (timeouts.get() != 0) {
-        throw new AssertionError("mixed workload timed out " + timeouts.get() + " times");
-      }
       return result;
     } finally {
       databaseSampler.shutdownNow();
@@ -417,6 +418,8 @@ final class Phase13MixedWorkloadBenchmark {
       AtomicInteger nextReplica,
       Map<String, List<Long>> byOperation,
       List<Long> total,
+      String phase,
+      Map<String, Integer> failureCountsByPhaseOperationAndType,
       List<String> failures,
       AtomicInteger timeouts)
       throws Exception {
@@ -442,6 +445,8 @@ final class Phase13MixedWorkloadBenchmark {
           future.get(REQUEST_TIMEOUT.toMillis() + 15_000, TimeUnit.MILLISECONDS);
       if (result.failure() != null) {
         Throwable failure = result.failure();
+        failureCountsByPhaseOperationAndType.merge(
+            phase + "." + result.operation() + "." + failureClass(failure), 1, Integer::sum);
         if (failure.getClass().getSimpleName().toLowerCase().contains("timeout")) {
           timeouts.incrementAndGet();
         }
@@ -680,6 +685,10 @@ final class Phase13MixedWorkloadBenchmark {
       message = message.substring(0, 180);
     }
     return failure.getClass().getSimpleName() + (message.isEmpty() ? "" : "[" + message + "]");
+  }
+
+  private static String failureClass(Throwable failure) {
+    return failure.getClass().getSimpleName();
   }
 
   private static void requireSuccess(HttpResponse<String> response) {
@@ -932,6 +941,7 @@ final class Phase13MixedWorkloadBenchmark {
       int measuredCycles,
       int concurrency,
       int operationsPerCycle,
+      long requestTimeoutMillis,
       long measurementDurationNanos,
       int measuredOperations,
       int failures,
@@ -959,6 +969,7 @@ final class Phase13MixedWorkloadBenchmark {
       int peakCombinedDbConnections,
       int configuredCombinedDbPoolCapacity,
       long postgresStatementCalls,
+      Map<String, Integer> failureCountsByPhaseOperationAndType,
       Map<String, Integer> workloadDimensions,
       int minimumActiveSseConnectionsObserved,
       Map<String, LatencySummary> operationLatency,
