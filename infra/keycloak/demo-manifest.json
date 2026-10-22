@@ -1,8 +1,56 @@
 {
   "version": 1,
   "mode": "SYNTHETIC_DEMO",
-  "bootstrapUsername": "synthetic.person",
+  "bootstrapUsername": "synthetic.system-admin",
   "bootstrapSubject": "5c9cb463-0000-4000-8000-000000000014",
+  "seedUsername": "synthetic.demo-seeder",
+  "seedSubject": "5c9cb463-0000-4000-8000-000000000015",
+  "seedClientId": "ayuvahak-demo-seed-client",
+  "seedCredentialNotice": "Public fixed credential confined to the loopback-bound Synthetic Demo realm; it is not a secret.",
+  "seedPassword": "local-only-not-a-secret",
   "loginNotice": "Local-only demonstration identity. Never use this account outside a loopback-bound synthetic installation.",
-  "businessData": "NOT_SEEDED"
+  "personas": [
+    {
+      "username": "synthetic.org-admin",
+      "subject": "5c9cb463-0000-4000-8000-000000000016",
+      "template": "organization-directory-administrator",
+      "organizationKey": "origin"
+    },
+    {
+      "username": "synthetic.referral-coordinator",
+      "subject": "5c9cb463-0000-4000-8000-000000000017",
+      "template": "referral-coordinator-facility",
+      "organizationKey": "origin",
+      "facilityKey": "origin"
+    },
+    {
+      "username": "synthetic.receiving-coordinator",
+      "subject": "5c9cb463-0000-4000-8000-000000000018",
+      "template": "receiving-coordinator",
+      "organizationKey": "receiving",
+      "facilityKey": "receiving"
+    },
+    {
+      "username": "synthetic.capacity-manager",
+      "subject": "5c9cb463-0000-4000-8000-000000000019",
+      "template": "capacity-manager",
+      "organizationKey": "receiving",
+      "facilityKey": "receiving"
+    },
+    {
+      "username": "synthetic.transport-coordinator",
+      "subject": "5c9cb463-0000-4000-8000-000000000020",
+      "template": "transport-coordinator",
+      "organizationKey": "origin",
+      "facilityKey": "origin"
+    },
+    {
+      "username": "synthetic.analyst",
+      "subject": "5c9cb463-0000-4000-8000-000000000021",
+      "template": "analyst",
+      "organizationKey": "origin"
+    }
+  ],
+  "businessData": "SEEDED_BY_OWNER_API_COMMAND",
+  "businessDataManifest": "demo-data/demo-manifest.json"
 }

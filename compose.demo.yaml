@@ -1,4 +1,9 @@
 services:
+  app:
+    environment:
+      SPRING_CONFIG_ADDITIONAL_LOCATION: "optional:file:/run/ayuvahak-demo-config.yml"
+    volumes:
+      - ./.local-state/demo-application.yml:/run/ayuvahak-demo-config.yml:ro
   keycloak:
     command: ["start-dev", "--import-realm"]
     volumes:

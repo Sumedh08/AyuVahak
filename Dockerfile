@@ -33,7 +33,7 @@ WORKDIR /app
 
 RUN groupadd --gid 10001 ayuvahak \
     && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin ayuvahak
-COPY --from=build --chown=10001:10001 /workspace/target/ayuvahak-platform-0.1.0-SNAPSHOT.jar /app/ayuvahak.jar
+COPY --from=build --chown=10001:10001 /workspace/target/ayuvahak-platform-0.1.0.jar /app/ayuvahak.jar
 
 USER 10001:10001
 EXPOSE 8080

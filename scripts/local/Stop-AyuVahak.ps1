@@ -7,7 +7,7 @@ $statePath = Join-Path $repositoryRoot ".local-state\installation.json"
 if (-not (Test-Path -LiteralPath $statePath) -or -not (Test-Path -LiteralPath $environmentPath)) {
   throw "AyuVahak local installation state is incomplete. No Docker command was run."
 }
-$state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+$state = Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json
 if ($state.mode -notin @("SYNTHETIC_DEMO", "EMPTY") -or $state.installationId -notmatch '^[a-f0-9]{12}$') {
   throw "The local installation marker is invalid. No Docker command was run."
 }
@@ -33,6 +33,16 @@ try {
       exit 0
     }
     & docker @arguments down --volumes --remove-orphans
+    if ($LASTEXITCODE -eq 0) {
+      foreach ($localDemoArtifact in @(".local-state\demo-seed-state.json", ".local-state\demo-application.yml")) {
+        $artifactPath = [System.IO.Path]::GetFullPath((Join-Path $repositoryRoot $localDemoArtifact))
+        $expectedPrefix = [System.IO.Path]::GetFullPath((Join-Path $repositoryRoot ".local-state")) + [System.IO.Path]::DirectorySeparatorChar
+        if (-not $artifactPath.StartsWith($expectedPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+          throw "Refusing to remove a Demo artifact outside .local-state."
+        }
+        if (Test-Path -LiteralPath $artifactPath -PathType Leaf) { Remove-Item -LiteralPath $artifactPath }
+      }
+    }
   } else {
     & docker @arguments down
   }

@@ -7,7 +7,7 @@ loopback and uses a dedicated Compose project and database volume for that insta
 
 Run `scripts/local/Start-AyuVahak.ps1` and choose one of:
 
-- **Synthetic Demo**: imports the local-only Keycloak realm and a synthetic sign-in identity.
+- **Synthetic Demo**: imports the local-only Keycloak realm and synthetic seed/operator identities.
 - **Empty**: imports an empty local Keycloak realm with no user or business data. Create the first
   local identity through Keycloak before continuing. Institutional deployments should instead
   connect their organization-managed OIDC identity provider.
@@ -15,9 +15,11 @@ Run `scripts/local/Start-AyuVahak.ps1` and choose one of:
 The choice is recorded for that local installation. Changing modes requires a separate clean
 installation; the launcher will not reuse one mode's database volume for the other.
 On the first start, the local database and Keycloak initialize before AyuVahak starts. The launcher
-allows up to eight minutes for that first dependency initialization; this bound includes a measured
-cold Keycloak start that took just over five minutes. This ordering keeps dependency initialization
-from competing with the application's bounded FHIR standards-profile initialization. The
+allows up to fifteen minutes for first dependency initialization. A fresh local Empty package on the
+acceptance host took about ten and a half minutes for Keycloak's initial Quarkus augmentation,
+database initialization and realm import; later starts reuse its initialized local volume. This
+ordering keeps dependency initialization from competing with the application's bounded FHIR
+standards-profile initialization. The
 application may then take several minutes to become ready; the launcher reports progress and waits
 up to ten minutes before returning a readiness diagnostic. If a configured loopback port is unavailable, change the corresponding `AYUVAHAK_HTTP_PORT` or
 `AYUVAHAK_KEYCLOAK_PORT` in `.env` and retry.
@@ -52,10 +54,57 @@ If the local app is running, the helper stops it briefly while the isolated non-
 process initializes, then restarts it and waits for readiness. The database and identity provider
 remain running. If the result is unknown, inspect the local state before trying again.
 
-Synthetic Demo sign-in is `synthetic.person` with the local-only password
-`local-only-not-a-secret`. This fixed demonstration credential is intentionally public and is valid
-only in the loopback-bound Synthetic Demo realm. Never use it outside that disposable mode. Empty
-mode contains no default human identity or shared application password.
+Synthetic Demo identities use the local-only password `local-only-not-a-secret`. This fixed
+demonstration credential is intentionally public and is valid only in the loopback-bound Synthetic
+Demo realm. Never use it outside that disposable mode. `synthetic.system-admin` is the bootstrap access
+administrator; `synthetic.demo-seeder` is a separate fixture operator. The role-specific browser
+personas are `synthetic.org-admin`, `synthetic.referral-coordinator`,
+`synthetic.receiving-coordinator`, `synthetic.capacity-manager`,
+`synthetic.transport-coordinator`, and `synthetic.analyst`. Each persona receives only its declared
+organization or facility grants when the Demo seed completes. These identities and grants exist
+only to demonstrate the real capability projection and server authorization using fictional local
+records. Empty mode contains no default human identity or shared application password.
+
+## Seed the Synthetic Demo workflows
+
+After the one-shot grant above succeeds, run:
+
+```powershell
+scripts/local/Seed-AyuVahakDemo.ps1
+```
+
+The command is available only for the dedicated `SYNTHETIC_DEMO` installation and sends requests
+only to its configured localhost AyuVahak and Keycloak ports. It uses the audited grant API and the
+Directory, Capacity, Referral, Matching, Transfer, Transport, and Analytics owner APIs; it does not
+write business rows directly. The versioned dataset is in `demo-data/demo-manifest.json`. Its
+accounts, organizations, facilities, capability, observation, Referral and Patient reference are
+fictional `SYN-*` records. The seed command is safe to re-run after it completes; it reports the
+existing completion marker without changing data. An interrupted seed is marked `IN_PROGRESS` and
+is not replayed automatically because a request may have committed before a local failure. After
+confirming `.local-state/installation.json` and `.local-state/demo-seed-state.json` identify the same
+dedicated Demo installation and manifest, resume with:
+
+```powershell
+scripts/local/Seed-AyuVahakDemo.ps1 -ResumeInProgress
+```
+
+The resume option is restricted to the exact manifest version and installation ID and reuses the
+persisted request timestamps and idempotency keys. If the seed state or installation identity cannot
+be verified, use the explicitly confirmed Demo reset before starting again.
+
+The Demo realm includes a separate `synthetic.demo-seeder` browser identity for the seed workflow.
+Its public local-only credential is the same fixed demonstration string shown above and is usable
+only through the loopback-bound Demo realm. A Demo-only public OIDC client enables the local command
+to use that identity; it is absent from Empty and production configuration. The bootstrap
+administrator, role-specific browser personas and seed identity are separate, so the initial
+administrator does not grant new authority to itself.
+
+The seed provisions one Referral → deterministic Matching → receiving assessment/Acceptance →
+Transport request flow and one aggregate Referral submission indicator. It intentionally leaves
+federation and external export as `NOT_CONFIGURED`; it creates no peer, DHIS2 partner, target
+metadata, or outbound operation, and contacts no external system. Capacity becomes stale under its
+owner freshness policy; the interface must keep that state distinct from zero. The persistent demo
+banner remains visible after seeding.
 
 ## Add Directory setup access
 
@@ -69,9 +118,10 @@ Use Access management again to grant each stakeholder only the existing authorit
 or facility scopes they need. Role templates expand to normal backend grants; the server remains the
 authorization authority. AyuVahak does not create or manage production IdP accounts.
 
-Synthetic Demo business records are not currently auto-seeded. The realm manifest identifies the
-local synthetic bootstrap user and records `businessData: NOT_SEEDED`; no workflow data is implied
-by choosing Demo. Empty mode remains free of synthetic business records.
+Choosing Demo still does not seed business records during application startup. The realm manifest
+identifies the local bootstrap and seed identities, and the owner-API seed is a separate explicit
+operator action. Empty mode remains free of synthetic business records and the Demo seed command
+refuses to run against it.
 
 ## Stop and reset
 

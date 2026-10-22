@@ -6,8 +6,10 @@ Docker Compose downloads the pinned runtime images on first use.
 
 On Windows, run `scripts/local/Start-AyuVahak.cmd` and explicitly choose Synthetic Demo or Empty.
 Then follow `docs/installation/local-first-run.md` to establish the first one-shot AyuVahak grant.
-The Synthetic Demo identity is local-only and has no business records seeded yet. Empty mode has no
-synthetic identity or business records.
+Demo business records are created only by the separate versioned `scripts/local/Seed-AyuVahakDemo.cmd`
+command, which uses synthetic `SYN-*` data through owner APIs. Empty mode has no synthetic identity
+or business records. For the optional, disabled-by-default documentation support provider profile,
+see `docs/installation/operator-support-provider.md`.
 
 The application, database and identity provider publish ports on loopback only. This is a local
 reference installation, not a production deployment. Do not expose these services to a network.

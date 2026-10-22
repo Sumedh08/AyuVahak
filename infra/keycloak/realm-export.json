@@ -60,12 +60,36 @@
           }
         }
       ]
+    },
+    {
+      "clientId": "ayuvahak-demo-seed-client",
+      "name": "AyuVahak loopback Synthetic Demo seeder only",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "protocolMappers": [
+        {
+          "name": "AyuVahak API audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "ayuvahak-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        }
+      ]
     }
   ],
   "users": [
     {
       "id": "5c9cb463-0000-4000-8000-000000000014",
-      "username": "synthetic.person",
+      "username": "synthetic.system-admin",
+      "firstName": "Synthetic",
+      "lastName": "Coordinator",
+      "email": "synthetic.system-admin@example.invalid",
       "enabled": true,
       "emailVerified": true,
       "credentials": [
@@ -75,6 +99,82 @@
           "temporary": false
         }
       ]
+    },
+    {
+      "id": "5c9cb463-0000-4000-8000-000000000015",
+      "username": "synthetic.demo-seeder",
+      "firstName": "Synthetic",
+      "lastName": "Demo Seeder",
+      "email": "synthetic.demo-seeder@example.invalid",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "local-only-not-a-secret",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "id": "5c9cb463-0000-4000-8000-000000000016",
+      "username": "synthetic.org-admin",
+      "firstName": "Synthetic",
+      "lastName": "Organization Administrator",
+      "email": "synthetic.org-admin@example.invalid",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [{ "type": "password", "value": "local-only-not-a-secret", "temporary": false }]
+    },
+    {
+      "id": "5c9cb463-0000-4000-8000-000000000017",
+      "username": "synthetic.referral-coordinator",
+      "firstName": "Synthetic",
+      "lastName": "Referral Coordinator",
+      "email": "synthetic.referral-coordinator@example.invalid",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [{ "type": "password", "value": "local-only-not-a-secret", "temporary": false }]
+    },
+    {
+      "id": "5c9cb463-0000-4000-8000-000000000018",
+      "username": "synthetic.receiving-coordinator",
+      "firstName": "Synthetic",
+      "lastName": "Receiving Coordinator",
+      "email": "synthetic.receiving-coordinator@example.invalid",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [{ "type": "password", "value": "local-only-not-a-secret", "temporary": false }]
+    },
+    {
+      "id": "5c9cb463-0000-4000-8000-000000000019",
+      "username": "synthetic.capacity-manager",
+      "firstName": "Synthetic",
+      "lastName": "Capacity Manager",
+      "email": "synthetic.capacity-manager@example.invalid",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [{ "type": "password", "value": "local-only-not-a-secret", "temporary": false }]
+    },
+    {
+      "id": "5c9cb463-0000-4000-8000-000000000020",
+      "username": "synthetic.transport-coordinator",
+      "firstName": "Synthetic",
+      "lastName": "Transport Coordinator",
+      "email": "synthetic.transport-coordinator@example.invalid",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [{ "type": "password", "value": "local-only-not-a-secret", "temporary": false }]
+    },
+    {
+      "id": "5c9cb463-0000-4000-8000-000000000021",
+      "username": "synthetic.analyst",
+      "firstName": "Synthetic",
+      "lastName": "Operational Analyst",
+      "email": "synthetic.analyst@example.invalid",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [{ "type": "password", "value": "local-only-not-a-secret", "temporary": false }]
     }
   ]
 }

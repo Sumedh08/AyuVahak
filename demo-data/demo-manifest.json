@@ -1,0 +1,77 @@
+{
+  "version": 2,
+  "manifestId": "SYN-AYUVAHAK-DEMO-V2",
+  "mode": "SYNTHETIC_DEMO",
+  "description": "Fictional local demonstration records created only through authenticated owner APIs.",
+  "organizations": [
+    {
+      "key": "origin",
+      "id": "SYN-ORG-ORIGIN",
+      "name": "SYN-ORG-ORIGIN — Synthetic Referral Network"
+    },
+    {
+      "key": "receiving",
+      "id": "SYN-ORG-RECEIVING",
+      "name": "SYN-ORG-RECEIVING — Synthetic Receiving Network"
+    }
+  ],
+  "facilities": [
+    {
+      "key": "origin",
+      "id": "SYN-FACILITY-ORIGIN",
+      "organizationKey": "origin",
+      "name": "SYN-FACILITY-ORIGIN — Synthetic Origin Facility"
+    },
+    {
+      "key": "receiving",
+      "id": "SYN-FACILITY-RECEIVING",
+      "organizationKey": "receiving",
+      "name": "SYN-FACILITY-RECEIVING — Synthetic Receiving Facility"
+    }
+  ],
+  "location": {
+    "name": "SYN-LOCATION-DEMO",
+    "origin": { "longitude": 72.8, "latitude": 19.1 },
+    "receiving": { "longitude": 72.82, "latitude": 19.11 }
+  },
+  "capabilities": [
+    {
+      "code": "SYN-CAP-EMERGENCY-SUPPORT",
+      "displayName": "SYN-CAP-EMERGENCY-SUPPORT — Synthetic emergency support"
+    }
+  ],
+  "capacity": {
+    "dimension": "SYN-TRANSFER-SLOT",
+    "displayName": "SYN-TRANSFER-SLOT — Synthetic coordination reservation slot",
+    "unit": "slot",
+    "quantity": 4,
+    "observationSource": "manual"
+  },
+  "referral": {
+    "patientReference": {
+      "issuer": "urn:ayuvahak:synthetic:demo",
+      "resourceType": "Patient",
+      "identifier": "SYN-PATIENT-DEMO-001",
+      "encounterReference": null
+    },
+    "priorityCode": "ROUTINE",
+    "permittedGeographyCodes": []
+  },
+  "analytics": {
+    "indicatorKey": "SYN-DEMO-REFERRAL-SUBMISSIONS",
+    "description": "Synthetic Demo submitted Referral count",
+    "formula": "SUM",
+    "reportingTimeZone": "UTC",
+    "measureOwner": "REFERRAL",
+    "measureKey": "SUBMITTED_COUNT",
+    "attribution": "NONE"
+  },
+  "export": {
+    "state": "NOT_CONFIGURED",
+    "reason": "No target partner, disclosure policy, or external system is configured by the local Demo seed."
+  },
+  "federation": {
+    "state": "NOT_CONFIGURED",
+    "reason": "The local Demo seed does not create a federation peer or contact another deployment."
+  }
+}

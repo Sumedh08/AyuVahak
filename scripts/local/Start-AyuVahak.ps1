@@ -7,6 +7,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+Import-Module (Join-Path $PSScriptRoot "LocalPortOwnership.psm1") -Force
 $environmentPath = Join-Path $repositoryRoot ".env"
 $stateDirectory = Join-Path $repositoryRoot ".local-state"
 $statePath = Join-Path $stateDirectory "installation.json"
@@ -37,7 +38,7 @@ function Read-EnvironmentFile([string] $Path) {
 
 function Select-DeploymentMode([string] $RequestedMode, $ExistingValues) {
   if (Test-Path -LiteralPath $statePath) {
-    $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+    $state = Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($state.mode -notin @("SYNTHETIC_DEMO", "EMPTY") -or $state.installationId -notmatch '^[a-f0-9]{12}$') {
       throw "The local installation marker is invalid. Preserve it and ask an operator to inspect the installation."
     }
@@ -140,6 +141,30 @@ $defaults = [ordered]@{
 foreach ($key in $defaults.Keys) {
   if (-not $values[$key]) { $values[$key] = $defaults[$key] }
 }
+# The local profiles need explicit grantable identities for in-process owner adapters.
+# Only transfer-agent is an OAuth client in the local realm; the other identifiers do not
+# receive credentials or Keycloak clients. Preserve any operator-supplied local service IDs.
+$applicationServiceIdentities = @(
+  "ayuvahak-matching-owner-read",
+  "ayuvahak-transfer-reservation-worker",
+  "ayuvahak-transfer-owner-event-consumer",
+  "ayuvahak-transport-worker",
+  "ayuvahak-capacity-reservation-lifecycle-worker",
+  "ayuvahak-transfer-outcome-consumer",
+  "ayuvahak-transfer-amendment-guard",
+  "ayuvahak-transfer-expiry-worker"
+)
+$serviceIdentityList = [System.Collections.Generic.List[string]]::new()
+foreach ($serviceIdentity in @(([string]$values["AYUVAHAK_OIDC_SERVICE_CLIENT_IDS"] -split ',') + $applicationServiceIdentities)) {
+  $normalizedServiceIdentity = $serviceIdentity.Trim()
+  if ($normalizedServiceIdentity -and $normalizedServiceIdentity -notmatch '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$') {
+    throw "A local trusted service identity is malformed. No services were started."
+  }
+  if ($normalizedServiceIdentity -and -not $serviceIdentityList.Contains($normalizedServiceIdentity)) {
+    $serviceIdentityList.Add($normalizedServiceIdentity)
+  }
+}
+$values["AYUVAHAK_OIDC_SERVICE_CLIENT_IDS"] = $serviceIdentityList -join ","
 # The generated local issuer follows the selected loopback Keycloak port. Preserve an
 # administrator-specified issuer, but repair the original launcher default when the port changes.
 if ([string]$values["AYUVAHAK_OIDC_ISSUER"] -eq "http://localhost:8081/realms/ayuvahak" -and
@@ -182,7 +207,7 @@ $realmSourcePath = Join-Path $repositoryRoot "infra\keycloak\realm-empty-export.
 if ($selectedMode -eq "SYNTHETIC_DEMO") {
   $realmSourcePath = Join-Path $repositoryRoot "infra\keycloak\realm-export.json"
 }
-$realmConfiguration = Get-Content -LiteralPath $realmSourcePath -Raw | ConvertFrom-Json
+$realmConfiguration = Get-Content -LiteralPath $realmSourcePath -Raw -Encoding UTF8 | ConvertFrom-Json
 $humanClients = @($realmConfiguration.clients | Where-Object { $_.clientId -eq $clientId })
 if ($humanClients.Count -ne 1) {
   throw "The selected local identity realm must define exactly one configured human client. No services were started."
@@ -198,6 +223,12 @@ $runtimeConfiguration = [ordered]@{
   oidcScope = $oidcScope
 } | ConvertTo-Json -Compress
 Set-Content -LiteralPath (Join-Path $stateDirectory "ui-runtime-config.js") -Value "window.ayuvahakRuntimeConfig = $runtimeConfiguration;" -Encoding ascii
+if ($selectedMode -eq "SYNTHETIC_DEMO") {
+  $demoApplicationConfiguration = Join-Path $stateDirectory "demo-application.yml"
+  if (-not (Test-Path -LiteralPath $demoApplicationConfiguration)) {
+    Set-Content -LiteralPath $demoApplicationConfiguration -Value "ayuvahak: {}" -Encoding ascii
+  }
+}
 
 $environmentLines = foreach ($key in $values.Keys) { "$key=$($values[$key])" }
 Set-Content -LiteralPath $environmentPath -Value $environmentLines -Encoding ascii
@@ -219,13 +250,35 @@ try {
     Write-Host "Plan-only verification succeeded; no containers were started."
     exit 0
   }
-  foreach ($port in @($appPort, $identityPort)) {
+  $publishedPorts = @(
+    [pscustomobject]@{ HostPort = $appPort; ServiceName = "app"; ContainerPort = "8080/tcp" },
+    [pscustomobject]@{ HostPort = $identityPort; ServiceName = "keycloak"; ContainerPort = "8080/tcp" }
+  )
+  foreach ($portBinding in $publishedPorts) {
+    $port = [int]$portBinding.HostPort
     $listener = $null
     try {
       $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $port)
       $listener.Start()
     } catch {
-      throw "Local port $port is unavailable. Set distinct AYUVAHAK_HTTP_PORT and AYUVAHAK_KEYCLOAK_PORT values in .env, then retry. No containers were started."
+      $containerIds = @(& docker @dockerArguments ps --all --quiet $portBinding.ServiceName 2>$null)
+      $containers = @()
+      if ($LASTEXITCODE -eq 0 -and $containerIds.Count -gt 0) {
+        $containerIdList = @($containerIds | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ })
+        if ($containerIdList.Count -gt 0) {
+          $inspectOutput = @(& docker inspect @containerIdList 2>$null)
+          if ($LASTEXITCODE -eq 0 -and $inspectOutput.Count -gt 0) {
+            try { $containers = @(($inspectOutput -join "`n") | ConvertFrom-Json -ErrorAction Stop) } catch { $containers = @() }
+          }
+        }
+      }
+      $portBelongsToThisInstallation = Test-AyuVahakOwnedComposePort -Containers $containers `
+        -ProjectName $projectName -ServiceName $portBinding.ServiceName `
+        -ContainerPort $portBinding.ContainerPort -HostPort $port
+      if (-not $portBelongsToThisInstallation) {
+        throw "Local port $port is unavailable. Set distinct AYUVAHAK_HTTP_PORT and AYUVAHAK_KEYCLOAK_PORT values in .env, then retry. No containers were started."
+      }
+      Write-Host "Reusing the already-running local $($portBinding.ServiceName) service for this installation."
     } finally {
       if ($listener) { $listener.Stop() }
     }
@@ -239,9 +292,9 @@ try {
   $databaseName = [string]$values["AYUVAHAK_DATABASE_NAME"]
   $databaseUsername = [string]$values["AYUVAHAK_DATABASE_USERNAME"]
   $discoveryUri = "$($issuerUri.AbsoluteUri.TrimEnd('/'))/.well-known/openid-configuration"
-  # Clean Keycloak realm and schema initialization took just over five minutes on the
-  # measured local cold-start path. Keep the wait finite, with room for that observed case.
-  $dependencyDeadline = (Get-Date).AddMinutes(8)
+  # Cold local Keycloak initialization took 10.5 minutes on the measured clean-package path.
+  # Keep the wait finite but long enough to include that observed Quarkus build/import sequence.
+  $dependencyDeadline = (Get-Date).AddMinutes(15)
   $nextDependencyProgress = (Get-Date).AddSeconds(30)
   $databaseReady = $false
   $identityReady = $false
@@ -260,7 +313,7 @@ try {
     Start-Sleep -Seconds 3
   }
   if (-not $databaseReady -or -not $identityReady) {
-    throw "The local database and identity provider did not both become ready within eight minutes. Inspect their Compose health and logs. No credentials were printed."
+    throw "The local database and identity provider did not both become ready within fifteen minutes. Inspect their Compose health and logs. No credentials were printed."
   }
 
   & docker @dockerArguments up --detach app
@@ -287,8 +340,8 @@ try {
   $url = "http://localhost:$port"
   Write-Host "AyuVahak is ready at $url"
   if ($selectedMode -eq "SYNTHETIC_DEMO") {
-    Write-Host "Before first sign-in, establish the one-shot grant with scripts/local/Initialize-AyuVahak.ps1."
-    Write-Host "Demo business workflows are not auto-seeded yet; see docs/installation/local-first-run.md."
+    Write-Host "Before first sign-in, establish the one-shot grant with scripts/local/Initialize-AyuVahak.ps1, then run scripts/local/Seed-AyuVahakDemo.ps1."
+    Write-Host "The synthetic owner-API seed is a separate, explicit local command; no business data was seeded during startup."
   } else {
     Write-Host "Configure a human identity, then establish its first grant with scripts/local/Initialize-AyuVahak.ps1 -GranteeIdentifier <OIDC subject>."
   }

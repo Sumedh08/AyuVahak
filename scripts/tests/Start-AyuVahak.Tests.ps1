@@ -27,6 +27,12 @@ Describe "Start-AyuVahak local port defaults" {
       $environment = Get-Content -LiteralPath (Join-Path $testRoot ".env")
       $environment -contains "AYUVAHAK_OIDC_ISSUER=http://localhost:18081/realms/ayuvahak" |
         Should Be $true
+      $serviceIdentityLine = $environment | Where-Object { $_ -like "AYUVAHAK_OIDC_SERVICE_CLIENT_IDS=*" }
+      $serviceIdentities = @($serviceIdentityLine.Substring("AYUVAHAK_OIDC_SERVICE_CLIENT_IDS=".Length) -split ',')
+      ($serviceIdentities -contains "ayuvahak-matching-owner-read") | Should Be $true
+      ($serviceIdentities -contains "ayuvahak-transfer-reservation-worker") | Should Be $true
+      ($serviceIdentities -contains "ayuvahak-transfer-owner-event-consumer") | Should Be $true
+      ($serviceIdentities -contains "ayuvahak-transport-worker") | Should Be $true
       $realm = Get-Content -LiteralPath (Join-Path $testRoot ".local-state\keycloak-realm-import.json") -Raw |
         ConvertFrom-Json
       $humanClient = @($realm.clients | Where-Object { $_.clientId -eq "ayuvahak-local-client" })
@@ -38,6 +44,8 @@ Describe "Start-AyuVahak local port defaults" {
       )
       $humanClient[0].protocolMappers.config.'included.custom.audience' |
         Should Be "ayuvahak-api"
+      (@($realm.clients.clientId) -contains "ayuvahak-matching-owner-read") | Should Be $false
+      (@($realm.clients.clientId) -contains "ayuvahak-transfer-reservation-worker") | Should Be $false
       ($output -join "`n") | Should Match "Plan-only verification succeeded"
     } finally {
       if (Test-Path -LiteralPath $testRoot) {
