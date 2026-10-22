@@ -9,7 +9,7 @@ import org.springframework.validation.annotation.Validated;
 @ConfigurationProperties("ayuvahak.deployment")
 public class DeploymentModeProperties {
 
-  @NotNull private DeploymentMode mode = DeploymentMode.EMPTY;
+  @NotNull private DeploymentMode mode;
 
   public DeploymentMode getMode() {
     return mode;

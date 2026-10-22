@@ -21,13 +21,8 @@ class DeploymentModePropertiesTest {
           .withUserConfiguration(DeploymentModeTestConfiguration.class);
 
   @Test
-  void defaultsToEmptyMode() {
-    runner.run(
-        context -> {
-          assertThat(context).hasNotFailed();
-          assertThat(context.getBean(DeploymentModeProperties.class).getMode())
-              .isEqualTo(DeploymentMode.EMPTY);
-        });
+  void requiresAnExplicitDeploymentMode() {
+    runner.run(context -> assertThat(context).hasFailed());
   }
 
   @Test
