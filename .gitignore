@@ -5,6 +5,8 @@ ui/dist/
 ui/test-results/
 ui/playwright-report/
 test-results/
+__pycache__/
+*.py[cod]
 
 # Local planning/scratch, tooling and editor state
 /.scratch/
