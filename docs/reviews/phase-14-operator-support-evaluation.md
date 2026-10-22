@@ -6,7 +6,7 @@
 
 The versioned synthetic case set is [operator-support-evaluation-v1.json](../../src/test/resources/evaluation/phase14/operator-support-evaluation-v1.json), and the current capability is described by [operator-support-capability-v1.json](../../src/test/resources/evaluation/phase14/operator-support-capability-v1.json). The cases exercise the current `OperatorSupportService.answer` boundary and the finite-topic request parser. No model, network provider, external service, or operational data is used. A test verifies that the manifest keeps the capability disabled by default, records no external inference or action authority, excludes raw prompt/answer retention, and lists the changes that require re-evaluation.
 
-The machine-readable evaluation contract names its owner, no-model baseline, measurement method, and acceptance rule. The cases cover exact source/citation provenance, disabled capability, unsupported topic, provider failure and timeout, unapproved citation, malformed output, oversized output, and rejection of synthetic patient-like, secret-like, and injection-like request fields. The JUnit runner maps every scenario to an executable assertion rather than treating descriptive evidence strings as acceptance. It emits one named dynamic test per case, so test reports retain per-case pass/fail outcomes using stable case IDs without recording prompts or answers. Existing workspace tests separately verify that an operator can close an advisory and that disabled assistance leaves the application available.
+The machine-readable evaluation contract names its owner, no-model baseline, measurement method, and acceptance rule. The cases cover exact source/citation provenance, disabled capability, unsupported topic, provider failure and timeout, unapproved citation, malformed output, oversized output, and rejection of synthetic patient-like, secret-like, and injection-like request fields. The JUnit runner maps every scenario to an executable assertion rather than treating descriptive evidence strings as acceptance. Each corpus case has a separate test method whose Surefire XML name includes its stable case ID; the XML was inspected to confirm the IDs appear in the report without recording prompts or answers. Existing workspace tests separately verify that an operator can close an advisory and that disabled assistance leaves the application available.
 
 ## Local result
 
@@ -15,9 +15,9 @@ On Temurin 25.0.4.1+1, the focused Maven run passed:
 ```text
 OperatorSupportControllerTest                 3 passed
 OperatorSupportInputBoundaryEvaluationTest     1 passed
-OperatorSupportEvaluationCorpusTest            9 passed (8 named cases + manifest)
+OperatorSupportEvaluationCorpusTest           10 passed (8 case-ID methods + corpus contract + manifest)
 OperatorSupportServiceTest                    11 passed
-Total                                         24 passed
+Total                                         25 passed
 Failures                                       0
 Errors                                         0
 Skipped                                        0

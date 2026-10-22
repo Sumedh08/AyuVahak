@@ -6,7 +6,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.stream.Stream;
+import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
 import org.ayuvahak.platform.authorization.application.AuthorizationService;
 import org.ayuvahak.platform.authorization.domain.FunctionalAuthorityCatalog;
@@ -17,9 +17,7 @@ import org.ayuvahak.platform.core.IssuerId;
 import org.ayuvahak.platform.executioncontext.ExecutionContextFactory;
 import org.ayuvahak.platform.executioncontext.RequestedExecutionScope;
 import org.ayuvahak.platform.operatorsupport.OperatorSupportEvaluationFixture;
-import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestFactory;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -33,8 +31,8 @@ class OperatorSupportEvaluationCorpusTest {
   private static final ActorReference OPERATOR =
       ActorReference.human(new IssuerId("urn:synthetic:operator-support-eval"), "SYN-OPERATOR-01");
 
-  @TestFactory
-  Stream<DynamicTest> versionedSyntheticCasesMatchTheSupportContract() throws IOException {
+  @Test
+  void versionedSyntheticCorpusDefinesTheExpectedEvaluationContract() throws IOException {
     JsonNode root = OperatorSupportEvaluationFixture.read();
     assertThat(root.get("version").stringValue()).isEqualTo("1.0.0");
     assertThat(root.get("purpose").stringValue())
@@ -48,12 +46,63 @@ class OperatorSupportEvaluationCorpusTest {
     JsonNode cases = root.get("cases");
     assertThat(cases.isArray()).isTrue();
     assertThat(cases.size()).isEqualTo(8);
+    assertThat(
+            StreamSupport.stream(cases.spliterator(), false)
+                .map(scenario -> scenario.get("id").stringValue())
+                .collect(Collectors.toSet()))
+        .hasSize(8);
+  }
 
+  @Test
+  void case_SUPPORTED_SOURCE_BACKED_ANSWER() throws IOException {
+    assertScenarioById("SUPPORTED_SOURCE_BACKED_ANSWER");
+  }
+
+  @Test
+  void case_DISABLED_NO_PROVIDER_CALL() throws IOException {
+    assertScenarioById("DISABLED_NO_PROVIDER_CALL");
+  }
+
+  @Test
+  void case_UNSUPPORTED_TOPIC_ABSTAINS() throws IOException {
+    assertScenarioById("UNSUPPORTED_TOPIC_ABSTAINS");
+  }
+
+  @Test
+  void case_PROVIDER_UNAVAILABLE_ABSTAINS() throws IOException {
+    assertScenarioById("PROVIDER_UNAVAILABLE_ABSTAINS");
+  }
+
+  @Test
+  void case_PROVIDER_TIMEOUT_ABSTAINS() throws IOException {
+    assertScenarioById("PROVIDER_TIMEOUT_ABSTAINS");
+  }
+
+  @Test
+  void case_FOREIGN_CITATION_ABSTAINS() throws IOException {
+    assertScenarioById("FOREIGN_CITATION_ABSTAINS");
+  }
+
+  @Test
+  void case_MALFORMED_PROVIDER_OUTPUT_ABSTAINS() throws IOException {
+    assertScenarioById("MALFORMED_PROVIDER_OUTPUT_ABSTAINS");
+  }
+
+  @Test
+  void case_OVERSIZED_PROVIDER_OUTPUT_ABSTAINS() throws IOException {
+    assertScenarioById("OVERSIZED_PROVIDER_OUTPUT_ABSTAINS");
+  }
+
+  private void assertScenarioById(String scenarioId) throws IOException {
+    assertScenario(readScenario(scenarioId));
+  }
+
+  private static JsonNode readScenario(String scenarioId) throws IOException {
+    JsonNode cases = OperatorSupportEvaluationFixture.read().get("cases");
     return StreamSupport.stream(cases.spliterator(), false)
-        .map(
-            scenario ->
-                DynamicTest.dynamicTest(
-                    scenario.get("id").stringValue(), () -> assertScenario(scenario)));
+        .filter(candidate -> candidate.get("id").stringValue().equals(scenarioId))
+        .findFirst()
+        .orElseThrow(() -> new AssertionError("Missing evaluation case: " + scenarioId));
   }
 
   private void assertScenario(JsonNode scenario) {
