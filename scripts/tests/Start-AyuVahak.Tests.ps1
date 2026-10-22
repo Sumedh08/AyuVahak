@@ -1,11 +1,10 @@
-$repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
+$repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 
 Describe "Start-AyuVahak local port defaults" {
   It "derives the default OIDC issuer from a custom first-run Keycloak port" {
     $testRoot = Join-Path $env:TEMP ("ayuvahak-launcher-test-" + [guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Path $testRoot | Out-Null
     try {
-      New-Item -ItemType Directory -Path (Join-Path $testRoot "scripts") | Out-Null
       Copy-Item -LiteralPath (Join-Path $repositoryRoot "compose.yaml") -Destination $testRoot
       Copy-Item -LiteralPath (Join-Path $repositoryRoot "compose.demo.yaml") -Destination $testRoot
       Copy-Item -LiteralPath (Join-Path $repositoryRoot "Dockerfile") -Destination $testRoot
