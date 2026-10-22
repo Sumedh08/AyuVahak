@@ -412,6 +412,49 @@ p {
   font-size: 1.05rem;
 }
 
+.dashboard-workspace-list {
+  display: grid;
+  gap: 0.65rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dashboard-workspace-list a {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.2rem 0.8rem;
+  align-items: center;
+  padding: 0.8rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 0.65rem;
+  color: var(--ink);
+  background: var(--surface);
+  text-decoration: none;
+}
+
+.dashboard-workspace-list a:hover {
+  border-color: #6faabd;
+  background: #f5fbfc;
+}
+
+.dashboard-workspace-list a:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 3px;
+}
+
+.dashboard-workspace-list a span:not([aria-hidden="true"]) {
+  color: #405864;
+  font-size: 0.9rem;
+}
+
+.dashboard-workspace-list a span[aria-hidden="true"] {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  color: #145c76;
+  font-size: 1.25rem;
+}
+
 .text-button {
   padding: 0;
   border: 0;

@@ -117,7 +117,10 @@ test("Synthetic Demo role identities get only their scoped workspaces and APIs",
         await expect(page.getByRole("link", { name: workspace, exact: true })).toHaveCount(0);
       }
       if (persona.username === "synthetic.analyst") {
-        await page.goto(`${baseUrl}/referrals`);
+        await page.evaluate(() => {
+          window.history.pushState(null, "", "/referrals");
+          window.dispatchEvent(new PopStateEvent("popstate"));
+        });
         await expect(
           page.getByRole("heading", { name: "Workspace access is not listed for this session" }),
         ).toBeVisible();
