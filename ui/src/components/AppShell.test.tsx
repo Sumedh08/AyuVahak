@@ -93,6 +93,44 @@ describe("capability-aware application shell", () => {
     expect(screen.queryByRole("link", { name: "Receiving work" })).not.toBeInTheDocument();
   });
 
+  it("does not expose Transport from generic transfer visibility alone", () => {
+    const transferCoordinator: SessionProjection = {
+      ...session,
+      capabilities: [
+        {
+          authorityCode: "TransferViewAuthority",
+          scopes: [
+            {
+              kind: "FACILITY",
+              organization: {
+                issuer: "urn:ayuvahak:directory",
+                identifierType: "Organization",
+                identifier: "SYN-ORG-ORIGIN",
+              },
+              facility: {
+                issuer: "urn:ayuvahak:directory",
+                identifierType: "Facility",
+                identifier: "SYN-FACILITY-ORIGIN",
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    render(
+      <AppShell
+        session={transferCoordinator}
+        currentPath="/"
+        onSignOut={vi.fn()}
+        onNavigate={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("link", { name: "Transfers" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Transport" })).not.toBeInTheDocument();
+  });
+
   it("exposes receiving work for a receiving decision capability scoped to a facility", () => {
     const receivingCoordinator: SessionProjection = {
       ...session,

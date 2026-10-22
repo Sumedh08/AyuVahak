@@ -53,7 +53,6 @@ export const WORKSPACES: readonly WorkspaceDefinition[] = [
     href: "/transport",
     label: "Transport",
     authorities: [
-      "TransferViewAuthority",
       "TransportRequestAuthority",
       "TransportDispatchCoordinationAuthority",
       "TransportStatusAuthority",
