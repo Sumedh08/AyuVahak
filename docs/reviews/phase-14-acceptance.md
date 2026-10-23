@@ -1,10 +1,10 @@
 # Phase 14 Acceptance Record
 
-**Disposition:** PHASE 14 PASS — accepted and frozen by the Phase 14 freeze commit in Git history. Integrated local Volume V acceptance also passes. GitHub `main` integration and the annotated `v0.1.0` tag are verified; release asset publication and downloaded-asset smoke remain pending.
+**Disposition:** PHASE 14 PASS — accepted and frozen by the Phase 14 freeze commit in Git history. Integrated local Volume V acceptance also passes. GitHub `main` integration, the annotated `v0.1.0` tag, published release assets, and the clean downloaded-package Demo/Empty smoke are verified.
 **Branch:** `codex/phase-14-volume-v-closeout`.
 **Phase 13 baseline:** Complete and frozen at `57b949ab8c5fa28e95243e83df0910731dbec800`; the sanitized `phase-13-freeze` checkpoint remains in its ancestry and on GitHub.
 **Candidate:** `cd75fb24956a6f79572abe9d68acaab73e6ae69e` at the time of the package acceptance runs below.
-**Release source commit/tag:** `fd1b4720e8bdef558a4376f2bb2c49ec5dc9ebd9` (`v0.1.0`). The release candidate provenance and annotated tag resolve to this commit. The remote `main` and closeout branch now include the documentation-only checkpoint `f42a52e2cb4ccff78bae5132fdfa740e58447c62`; the repository default branch still requires an authenticated GitHub settings session.
+**Release source commit/tag:** `fd1b4720e8bdef558a4376f2bb2c49ec5dc9ebd9` (`v0.1.0`). The release candidate provenance and annotated tag resolve to this commit. The remote `main` and closeout branch are integrated; the repository default branch is `main`.
 **Data policy:** Local, unmistakably synthetic fixtures only. No external healthcare system or model provider was used.
 
 This record preserves historical failures as history and reports the latest evidence separately. Focused frontend/package checks supplement the canonical Java verification; they do not replace it.
@@ -17,7 +17,7 @@ This record preserves historical failures as history and reports the latest evid
 | Product-path remediation | Owner-API Synthetic Demo data, capability-scoped workspaces, an Empty first-run path, and the external-provider review gate were implemented and exercised. | Accepted by the fresh-package E2Es below. |
 | Application build baseline | `7bb5ea2130134b642e48cb363030d9baf338ba6c`; Temurin 25.0.4.1+1, Maven 3.10.0, Spring Boot 4.1.1, 93 Flyway migrations; Surefire 561 and Failsafe 423, with 0 failures, errors, or skips; Maven exit 0. | Canonical Java verification PASS. |
 | Package and release-evidence candidate | Candidate `cd75fb24956a6f79572abe9d68acaab73e6ae69e`; changes after the application baseline are release-evidence tooling and documentation only. The packaged application JAR SHA-256 is `A723686F51E349DB0FD91100A3AB9C4171D037E53C66101CBDD499048E60075C`. | JAR is byte-bound to package and evidence; no backend rebuild is indicated by the helper/docs-only changes. |
-| Current remaining gates | Final independent review, acceptance-record reconciliation, freeze, Volume V integrated closeout, and normal GitHub integration/release. | Open; no freeze or publication claim is made yet. |
+| Current final disposition | Independent review, acceptance reconciliation, Phase 14 and Volume V freezes, normal GitHub integration, release publication, and downloaded-package smoke. | PASS; the release source tag remains the exact commit bound by provenance. |
 
 ## Product and clean-package acceptance
 
@@ -81,7 +81,18 @@ The package tested by the complete Demo/Empty/persona/operator-support browser s
 | Local signature | Acceptance-only evidence bundle verified against ephemeral signer fingerprint `db08279384f66c24ffe1e2cc8995fb7b5c5df5b3eb287691227dd82be8eff134`; bundle SHA-256 `a2c954906f0653a5823712ee6efc599ba08651cb059b04a6a7e62fac8a892493`. It is not a production signing identity and is not selected as a public trust signature; the private test keystore is excluded from all release assets. |
 | Release eligibility | Manifest reports `eligible=false`: this local build does not have a trusted production signer/verified release authorization. Publishing a downloadable reference package does not change that status or imply production approval. |
 
-The release-evidence helper was verified by 32 passing tests and 1 symlink-permission skip. The final local release candidate is ready for GitHub asset attachment. Do not publish the acceptance-only private signer or raw vulnerability database.
+The release-evidence helper was verified by 32 passing tests and 1 symlink-permission skip. The release candidate was published as [AyuVahak v0.1.0](https://github.com/Sumedh08/AyuVahak/releases/tag/v0.1.0), with the [local ZIP](https://github.com/Sumedh08/AyuVahak/releases/download/v0.1.0/AyuVahak-0.1.0-local.zip) and [SHA-256 list](https://github.com/Sumedh08/AyuVahak/releases/download/v0.1.0/SHA256SUMS.txt). Do not publish the acceptance-only private signer or raw vulnerability database.
+
+### Published-download smoke — PASS
+
+The ZIP was downloaded from the published GitHub Release into a fresh temporary directory outside the repository/build tree. Its SHA-256 was `ff4c383dbcdc0828d8de8fcf76e4d5d0a21413095c441dbc53b25076e5251df4`, matching both the attached `SHA256SUMS.txt` and GitHub's asset digest. The downloaded ZIP's 33 entries were extracted without Maven, Node, or a source checkout.
+
+| Mode | Result | Evidence |
+|---|---|---|
+| Empty | PASS | Started from a fresh extraction on loopback ports 18080/18081; application returned HTTP 200; 93 Flyway migrations were present; organization, facility, Capacity observation, Referral revision, Transfer, Transport, Analytics snapshot, and authorization-grant counts were all zero. |
+| Synthetic Demo | PASS | Started from a second fresh extraction on loopback ports 18082/18083; application returned HTTP 200; the one-shot local grant and versioned seed completed. Owner-owned counts were 2 organizations, 2 facilities, 1 Capacity observation, 1 Referral revision, 1 Matching snapshot, 1 Transfer, 1 Transport request, and 1 Analytics snapshot. No federation peer or DHIS2 export operation was created or contacted. |
+
+Both isolated Compose installations were stopped after the smoke. Credentials and state were generated only in temporary local test directories; no credential values were recorded. The seven published assets report GitHub SHA-256 digests matching the local evidence pack. This verifies the published local reference bundle, not production deployment eligibility.
 
 ## Remaining gates
 
@@ -91,7 +102,7 @@ The release-evidence helper was verified by 32 passing tests and 1 symlink-permi
 | Phase 14 acceptance reconciliation | PASS | Final release source, ZIP, checksums, SPDX 3.0.1, provenance, and verified vulnerability inventory are recorded above. |
 | Phase 14 freeze | PASS | Local freeze commit follows this acceptance record; independent review found 0 BLOCKER and 0 MAJOR. |
 | Volume V integrated closeout | PASS | `docs/reviews/volume-5-final-acceptance.md` records the Phase 13 + Phase 14 boundary review and the Volume V local freeze. |
-| Main integration and annotated tag | PASS | Remote `main` and closeout branch include documentation-only follow-up `f42a52e2cb4ccff78bae5132fdfa740e58447c62`; annotated `v0.1.0` tag remains on release source commit `fd1b4720e8bdef558a4376f2bb2c49ec5dc9ebd9`. Phase 13 branch/tag remain unchanged. |
-| GitHub Release and published-download smoke | PENDING AUTHENTICATED SESSION | The GitHub in-app browser is signed out, and the available GitHub connector has no release-creation or asset-upload operation. Do not automate credentials. After an owner-authenticated browser session is available, create the release, attach the listed assets, download the ZIP back, verify checksums, and smoke-test Demo/Empty startup. |
+| Main integration and annotated tag | PASS | Remote `main` and closeout branch are integrated at the same current project history; GitHub's default branch is `main`. Annotated `v0.1.0` remains on release source commit `fd1b4720e8bdef558a4376f2bb2c49ec5dc9ebd9`; Phase 13 branch/tag remain unchanged. |
+| GitHub Release and published-download smoke | PASS | [AyuVahak v0.1.0](https://github.com/Sumedh08/AyuVahak/releases/tag/v0.1.0) is published with seven assets. GitHub asset digests match the local evidence pack; the downloaded ZIP checksum passed and both fresh Empty and Synthetic Demo installations reached HTTP 200. |
 
 This is a local acceptance record, not a DPG certification, production deployment approval, clinical-safety certification, or legal-compliance assessment.
