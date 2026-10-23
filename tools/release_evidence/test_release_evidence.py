@@ -26,6 +26,7 @@ from release_evidence import (
 from spdx_normalize import normalize_spdx_document
 from spdx_sbom import (
     SbomGenerationError,
+    _build_cdxgen_command,
     _check_trace,
     _local_only_environment,
     _validate_repository_maven_settings,
@@ -237,6 +238,19 @@ class ReleaseEvidenceTests(unittest.TestCase):
             self.assertNotIn("HTTPS_PROXY", environment)
             self.assertNotIn("PYTHONPATH", environment)
             self.assertNotIn("NODE_OPTIONS", environment)
+
+    def test_distribution_sbom_scans_locked_java_and_frontend_dependencies(self):
+        command = _build_cdxgen_command(
+            Path("cdxgen.exe"), Path("repository"), Path("sbom.json"), "0.1.0"
+        )
+
+        self.assertEqual(
+            [["--type", "java"], ["--type", "js"]],
+            [command[index : index + 2] for index, value in enumerate(command) if value == "--type"],
+        )
+        self.assertIn("--recurse", command)
+        self.assertIn("--no-install-deps", command)
+        self.assertIn("--no-cache", command)
 
     def test_spdx_generation_requires_credential_free_repository_maven_settings(self):
         with tempfile.TemporaryDirectory(prefix="ayuvahak-spdx-settings-") as tmp:

@@ -1,4 +1,4 @@
-"""Generate and validate an offline SPDX 3.0.1 SBOM for the Maven release JAR."""
+"""Generate and validate an offline SPDX 3.0.1 SBOM for the local distribution."""
 
 from __future__ import annotations
 
@@ -198,6 +198,26 @@ def _check_trace(trace_path: Path, wrapper: str) -> None:
         raise SbomGenerationError("cdxgen attempted remote network access; refusing the SBOM")
 
 
+def _build_cdxgen_command(
+    generator: Path, project_root: Path, output: Path, version: str
+) -> list[str]:
+    """Inventory backend and locked browser dependency graphs in one document."""
+    return [
+        str(generator),
+        "--type", "java",
+        "--type", "js",
+        "--format", "spdx",
+        "--recurse",
+        "--no-install-deps",
+        "--fail-on-error",
+        "--no-cache",
+        "--project-name", "AyuVahak",
+        "--project-version", version,
+        "--output", str(output),
+        str(project_root),
+    ]
+
+
 def generate_and_validate_spdx(
     *,
     generator: Path,
@@ -271,19 +291,7 @@ def generate_and_validate_spdx(
             environment["JAVA_HOME"] = str(java_home.resolve())
 
         version = application_purl.split("@", 1)[1].split("?", 1)[0]
-        command = [
-            str(generator),
-            "--type", "java",
-            "--format", "spdx",
-            "--no-install-deps",
-            "--no-recurse",
-            "--fail-on-error",
-            "--no-cache",
-            "--project-name", "AyuVahak",
-            "--project-version", version,
-            "--output", str(raw_output),
-            str(project_root),
-        ]
+        command = _build_cdxgen_command(generator, project_root, raw_output, version)
         generated = subprocess.run(
             command,
             cwd=project_root,
