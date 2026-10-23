@@ -4,7 +4,7 @@
 **Branch:** `codex/phase-14-volume-v-closeout`.
 **Phase 13 baseline:** Complete and frozen at `57b949ab8c5fa28e95243e83df0910731dbec800`; the sanitized `phase-13-freeze` checkpoint remains in its ancestry and on GitHub.
 **Candidate:** `cd75fb24956a6f79572abe9d68acaab73e6ae69e` at the time of the package acceptance runs below.
-**Release source commit/tag:** `fd1b4720e8bdef558a4376f2bb2c49ec5dc9ebd9` (`v0.1.0`); remote `main`, the closeout branch, and the annotated tag resolve to this commit. The repository default branch still requires an authenticated GitHub settings session.
+**Release source commit/tag:** `fd1b4720e8bdef558a4376f2bb2c49ec5dc9ebd9` (`v0.1.0`). The release candidate provenance and annotated tag resolve to this commit. The remote `main` and closeout branch now include the documentation-only checkpoint `f42a52e2cb4ccff78bae5132fdfa740e58447c62`; the repository default branch still requires an authenticated GitHub settings session.
 **Data policy:** Local, unmistakably synthetic fixtures only. No external healthcare system or model provider was used.
 
 This record preserves historical failures as history and reports the latest evidence separately. Focused frontend/package checks supplement the canonical Java verification; they do not replace it.
@@ -91,7 +91,7 @@ The release-evidence helper was verified by 32 passing tests and 1 symlink-permi
 | Phase 14 acceptance reconciliation | PASS | Final release source, ZIP, checksums, SPDX 3.0.1, provenance, and verified vulnerability inventory are recorded above. |
 | Phase 14 freeze | PASS | Local freeze commit follows this acceptance record; independent review found 0 BLOCKER and 0 MAJOR. |
 | Volume V integrated closeout | PASS | `docs/reviews/volume-5-final-acceptance.md` records the Phase 13 + Phase 14 boundary review and the Volume V local freeze. |
-| Main integration and annotated tag | PASS | Remote `main`, closeout branch, and annotated `v0.1.0` tag point to `fd1b4720e8bdef558a4376f2bb2c49ec5dc9ebd9`; Phase 13 branch/tag remain unchanged. |
+| Main integration and annotated tag | PASS | Remote `main` and closeout branch include documentation-only follow-up `f42a52e2cb4ccff78bae5132fdfa740e58447c62`; annotated `v0.1.0` tag remains on release source commit `fd1b4720e8bdef558a4376f2bb2c49ec5dc9ebd9`. Phase 13 branch/tag remain unchanged. |
 | GitHub Release and published-download smoke | PENDING AUTHENTICATED SESSION | The GitHub in-app browser is signed out, and the available GitHub connector has no release-creation or asset-upload operation. Do not automate credentials. After an owner-authenticated browser session is available, create the release, attach the listed assets, download the ZIP back, verify checksums, and smoke-test Demo/Empty startup. |
 
 This is a local acceptance record, not a DPG certification, production deployment approval, clinical-safety certification, or legal-compliance assessment.
