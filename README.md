@@ -95,6 +95,33 @@ AyuVahak uses standards including FHIR R4, mCSD, IPS and aggregate DHIS2 exchang
 
 There is no root `LICENSE` file. Licensing has not been designated by the repository owner; the public repository must not be understood as granting reuse rights. Deployment organizations remain responsible for identity, TLS, secrets, backup/restore, retention, legal/privacy review, monitoring, incident response and capacity validation.
 
+## Screenshots
+
+These screenshots were captured from the local Synthetic Demo using fictional records. They are product illustrations, not clinical guidance or production data.
+
+<details>
+<summary>View Synthetic Demo workspaces</summary>
+
+![Synthetic Demo overview with role-aware workspaces and safety banner](docs/assets/screenshots/overview.png)
+
+![Synthetic Demo Directory workspace](docs/assets/screenshots/directory.png)
+
+![Synthetic Demo Capacity evidence with freshness semantics](docs/assets/screenshots/capacity.png)
+
+![Synthetic Demo Referral workspace](docs/assets/screenshots/referrals.png)
+
+![Synthetic Demo deterministic Matching workspace](docs/assets/screenshots/matching.png)
+
+![Synthetic Demo Transfer coordination workspace](docs/assets/screenshots/transfers.png)
+
+![Synthetic Demo Transport coordination workspace](docs/assets/screenshots/transport.png)
+
+![Synthetic Demo aggregate Analytics workspace](docs/assets/screenshots/analytics.png)
+
+![Synthetic Demo advisory Operator Support with external profile paused pending review](docs/assets/screenshots/operator-support.png)
+
+</details>
+
 ## Contributing
 
 Read [AGENTS.md](AGENTS.md), [CONTRIBUTING.md](CONTRIBUTING.md), the [contributor guide](docs/development/contributor-guide.md), and the applicable frozen specification before changing code. See the [security policy](SECURITY.md) for safe vulnerability reporting and testing boundaries. Do not add patient-facing features or allow advisory AI to acquire workflow authority. External healthcare systems are never acceptance targets.
