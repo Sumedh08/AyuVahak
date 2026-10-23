@@ -253,6 +253,9 @@ class TransferJourneyCommandsApiIT {
     jdbc.update("DELETE FROM identity_access.bootstrap_marker");
     jdbc.update("DELETE FROM identity_access.authorization_grant");
     transferProperties.setRequestDeadline(java.time.Duration.ofHours(1));
+    // Test cases that exercise reservation expiry mutate this shared Spring-bound property.
+    // Restore the @SpringBootTest fixture value so later cases receive the configured two-hour hold.
+    transferProperties.setReservationDuration(java.time.Duration.ofHours(2));
     transferProperties.setReservationPollInterval(java.time.Duration.ofSeconds(15));
     matching.reset();
     capacityPort.reset();
