@@ -50,7 +50,7 @@ The published release is [AyuVahak v0.1.0](https://github.com/Sumedh08/AyuVahak/
 
 The published ZIP was downloaded from GitHub into a clean temporary directory outside the repository and build tree. The checksum matched. In a fresh Empty installation, the app reached HTTP 200, all 93 migrations were present, and core organization/facility/Capacity/Referral/Transfer/Transport/Analytics/grant tables had zero rows. In a second clean Synthetic Demo extraction, the app reached HTTP 200, the explicit one-shot grant and versioned owner-API seed completed, and counts were 2 organizations, 2 facilities, 1 Capacity observation, 1 Referral revision, 1 Matching snapshot, 1 Transfer, 1 Transport request, and 1 Analytics snapshot. No federation peer or DHIS2 export operation was created. Both installations bound to loopback and were stopped afterward.
 
-This acceptance-record update is documentation-only and will be integrated to the already-verified `main` and closeout branch with a normal fast-forward push. The release source tag and all freeze history remain unchanged.
+This acceptance-record update was integrated to `main` and the closeout branch at documentation-only commit `d950be2e3a7b4ba6b099734a6ddacadbe9c55def` with normal fast-forward pushes. The release source tag and all freeze history remain unchanged.
 
 The Phase 13 tag and all earlier freeze history must remain unchanged. Never force-push or move a published tag. If remote `main` appears or diverges before integration, reconcile by a normal merge/PR or stop without overwriting it.
 
