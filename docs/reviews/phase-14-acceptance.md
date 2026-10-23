@@ -1,6 +1,6 @@
 # Phase 14 Acceptance Record
 
-**Disposition:** PHASE 14 PASS — accepted and frozen by the Phase 14 freeze commit in Git history. Volume V integrated closeout and GitHub publication remain pending.
+**Disposition:** PHASE 14 PASS — accepted and frozen by the Phase 14 freeze commit in Git history. Integrated local Volume V acceptance also passes; GitHub main integration, release publication, and downloaded-asset smoke remain pending.
 **Branch:** `codex/phase-14-volume-v-closeout`.
 **Phase 13 baseline:** Complete and frozen at `57b949ab8c5fa28e95243e83df0910731dbec800`; the sanitized `phase-13-freeze` checkpoint remains in its ancestry and on GitHub.
 **Candidate:** `cd75fb24956a6f79572abe9d68acaab73e6ae69e` at the time of the package acceptance runs below.
@@ -88,7 +88,7 @@ The release-evidence helper was verified by 32 passing tests and 1 symlink-permi
 | Phase 14 independent two-axis review | PASS | 0 BLOCKER and 0 MAJOR on both axes; one non-blocking MINOR. |
 | Phase 14 acceptance reconciliation | IN PROGRESS | Current clean-package E2Es, evidence digests, canonical build, and review results are recorded; perform final tracked-tree and release revalidation before freeze. |
 | Phase 14 freeze | PASS | Local freeze commit follows this acceptance record; independent review found 0 BLOCKER and 0 MAJOR. |
-| Volume V integrated closeout | OPEN | Review Phase 13 + Phase 14 boundaries and create the Volume V final acceptance record/freeze. |
+| Volume V integrated closeout | PASS | `docs/reviews/volume-5-final-acceptance.md` records the Phase 13 + Phase 14 boundary review and the Volume V local freeze. |
 | Main integration and GitHub Release | NOT STARTED | Re-fetch and inspect the remote; integrate normally without overwriting divergent work; create the annotated SemVer tag/release and verify downloaded assets. |
 
 This is a local acceptance record, not a DPG certification, production deployment approval, clinical-safety certification, or legal-compliance assessment.
