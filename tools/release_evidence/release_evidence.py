@@ -105,6 +105,7 @@ def load_vulnerability_report(
     database_path: Path | None = None,
     scan_result_path: Path | None = None,
     scanned_sbom_path: Path | None = None,
+    expected_release_sbom_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Load a reviewed inventory and verify the exact local bytes used by the scan."""
     try:
@@ -126,6 +127,13 @@ def load_vulnerability_report(
     if not isinstance(database, dict) or not isinstance(scan, dict):
         raise ReleaseEvidenceError(
             "vulnerability report must identify its database and scan result"
+        )
+    if (
+        expected_release_sbom_sha256 is not None
+        and scan.get("releaseSpdxSha256") != expected_release_sbom_sha256
+    ):
+        raise ReleaseEvidenceError(
+            "vulnerability report release SPDX digest does not match validated SBOM"
         )
     input_verification: dict[str, str] = {"status": "UNVERIFIED"}
     if (
@@ -436,6 +444,7 @@ def release_eligibility(evidence: dict[str, Any]) -> dict[str, Any]:
         == vulnerability_scan.get("sbomSha256")
         and re.fullmatch(r"[0-9a-f]{64}", str(vulnerability_scan.get("sbomSha256", "")))
         and vulnerability_scan.get("artifactSha256") == artifact_digest
+        and vulnerability_scan.get("releaseSpdxSha256") == sbom.get("sha256")
         and re.fullmatch(r"[0-9a-f]{64}", str(vulnerability_scan.get("resultSha256", "")))
         and isinstance(component_count, int)
         and component_count > 0
@@ -938,6 +947,7 @@ def main(argv: list[str] | None = None) -> int:
                         database_path=arguments.vulnerability_database,
                         scan_result_path=arguments.vulnerability_scan_result,
                         scanned_sbom_path=arguments.vulnerability_scan_sbom,
+                        expected_release_sbom_sha256=actual_sbom_digest,
                     )
                 sbom_evidence = {
                     "requiredFormat": "SPDX-3.0",

@@ -34,7 +34,9 @@ from spdx_sbom import (
 )
 
 
-def reviewed_vulnerability_report(*, sbom_sha256: str, artifact_sha256: str) -> dict:
+def reviewed_vulnerability_report(
+    *, sbom_sha256: str, artifact_sha256: str, release_spdx_sha256: str | None = None
+) -> dict:
     return {
         "schemaVersion": "ayuvahak.vulnerability-inventory/v1",
         "status": "REVIEWED",
@@ -50,6 +52,7 @@ def reviewed_vulnerability_report(*, sbom_sha256: str, artifact_sha256: str) -> 
         },
         "scan": {
             "sbomSha256": sbom_sha256,
+            "releaseSpdxSha256": release_spdx_sha256 or sbom_sha256,
             "artifactSha256": artifact_sha256,
             "resultSha256": "8" * 64,
             "componentCount": 194,
@@ -137,6 +140,43 @@ class ReleaseEvidenceTests(unittest.TestCase):
 
         self.assertEqual(hashlib.sha256(report_bytes).hexdigest(), report["reportSha256"])
         self.assertEqual([], report["findings"])
+
+    def test_vulnerability_report_loader_binds_the_release_spdx_document(self):
+        with tempfile.TemporaryDirectory(prefix="ayuvahak-vulnerability-spdx-") as tmp:
+            root = Path(tmp)
+            database = root / "osv-database.json"
+            scan_result = root / "osv-scan.json"
+            scanned_sbom = root / "scanner-input.cdx.json"
+            database.write_bytes(b"synthetic local OSV snapshot\n")
+            scan_result.write_bytes(b'{"synthetic":"local scan"}\n')
+            scanned_sbom.write_bytes(b'{"synthetic":"CycloneDX scanner input"}\n')
+            report = reviewed_vulnerability_report(
+                sbom_sha256=hashlib.sha256(scanned_sbom.read_bytes()).hexdigest(),
+                artifact_sha256="b" * 64,
+                release_spdx_sha256="c" * 64,
+            )
+            report["database"]["sha256"] = hashlib.sha256(database.read_bytes()).hexdigest()
+            report["scan"]["resultSha256"] = hashlib.sha256(scan_result.read_bytes()).hexdigest()
+            report_path = root / "reviewed-inventory.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "release SPDX digest"):
+                load_vulnerability_report(
+                    report_path,
+                    database_path=database,
+                    scan_result_path=scan_result,
+                    scanned_sbom_path=scanned_sbom,
+                    expected_release_sbom_sha256="d" * 64,
+                )
+
+            verified = load_vulnerability_report(
+                report_path,
+                database_path=database,
+                scan_result_path=scan_result,
+                scanned_sbom_path=scanned_sbom,
+                expected_release_sbom_sha256="c" * 64,
+            )
+            self.assertEqual("c" * 64, verified["scan"]["releaseSpdxSha256"])
 
     def test_vulnerability_report_loader_verifies_database_and_scan_bytes(self):
         with tempfile.TemporaryDirectory(prefix="ayuvahak-vulnerability-inputs-") as tmp:
@@ -537,7 +577,9 @@ class ReleaseEvidenceTests(unittest.TestCase):
             "licenseList": {"sha256": license_list_digest},
         }
         vulnerability_report = reviewed_vulnerability_report(
-            sbom_sha256="c" * 64, artifact_sha256="1" * 64
+            sbom_sha256="c" * 64,
+            artifact_sha256="1" * 64,
+            release_spdx_sha256=digest,
         )
         result = release_eligibility(
             {

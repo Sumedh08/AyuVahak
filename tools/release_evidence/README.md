@@ -151,6 +151,11 @@ exception; unresolved findings fail closed. A zero-finding scan is valid only
 when it is bound to the exact current SBOM/JAR and the matching local database
 snapshot. A database miss is not proof that a component is safe.
 
+When the scanner consumes a CycloneDX input while the release uses SPDX 3.0.1,
+record both digests: `scan.sbomSha256` is the exact CycloneDX scanner input and
+`scan.releaseSpdxSha256` is the exact validated release SBOM. Manifest creation
+rejects a mismatch between `releaseSpdxSha256` and the validated SPDX bytes.
+
 ## Safety boundary
 
 Examples and tests use synthetic identifiers and local ephemeral keys. The
