@@ -64,6 +64,41 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def sha256_tree(path: Path) -> str:
+    """Hash every file in a directory by ordinal relative path and exact bytes."""
+    if path.is_symlink() or not path.is_dir():
+        raise ReleaseEvidenceError("artifact tree must be a directory, not a symbolic link")
+    entries: list[tuple[str, Path]] = []
+    for item in path.rglob("*"):
+        if item.is_symlink():
+            raise ReleaseEvidenceError("artifact tree cannot contain a symbolic link")
+        if item.is_file():
+            entries.append((item.relative_to(path).as_posix(), item))
+
+    digest = hashlib.sha256()
+    for relative_path, item in sorted(entries, key=lambda entry: entry[0]):
+        encoded_path = relative_path.encode("utf-8")
+        size = item.stat().st_size
+        digest.update(len(encoded_path).to_bytes(4, "big"))
+        digest.update(encoded_path)
+        digest.update(size.to_bytes(8, "big"))
+        with item.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+    return digest.hexdigest()
+
+
+def sha256_artifact(path: Path) -> str:
+    """Hash a file by bytes or a build-output directory by its deterministic tree."""
+    if path.is_symlink():
+        raise ReleaseEvidenceError("artifact cannot be a symbolic link")
+    if path.is_dir():
+        return sha256_tree(path)
+    if path.is_file():
+        return sha256_file(path)
+    raise ReleaseEvidenceError("artifact path does not exist as a file or directory")
+
+
 def load_vulnerability_report(
     path: Path,
     *,
@@ -808,7 +843,7 @@ def main(argv: list[str] | None = None) -> int:
                 if not separator or not key:
                     raise ReleaseEvidenceError("build parameters must use KEY=VALUE")
                 parameters[key] = value
-            artifacts = {name: sha256_file(Path(path)) for name, path in arguments.artifact}
+            artifacts = {name: sha256_artifact(Path(path)) for name, path in arguments.artifact}
             result = build_provenance(
                 source_revision=arguments.source_revision,
                 builder_id=arguments.builder_id,
@@ -857,7 +892,7 @@ def main(argv: list[str] | None = None) -> int:
                 if not separator or not key:
                     raise ReleaseEvidenceError("build parameters must use KEY=VALUE")
                 parameters[key] = value
-            artifacts = {name: sha256_file(Path(path)) for name, path in arguments.artifact}
+            artifacts = {name: sha256_artifact(Path(path)) for name, path in arguments.artifact}
             if arguments.sbom is None:
                 manifest = build_incomplete_manifest(
                     version=arguments.version,

@@ -16,6 +16,7 @@ from release_evidence import (
     build_incomplete_manifest,
     load_vulnerability_report,
     release_eligibility,
+    sha256_tree,
     signer_fingerprint,
     _finding_has_review_disposition,
     validate_version,
@@ -71,6 +72,43 @@ def reviewed_vulnerability_report(*, sbom_sha256: str, artifact_sha256: str) -> 
 
 
 class ReleaseEvidenceTests(unittest.TestCase):
+    def test_frontend_tree_digest_binds_relative_paths_and_file_bytes(self):
+        with tempfile.TemporaryDirectory(prefix="ayuvahak-frontend-tree-") as tmp:
+            root = Path(tmp)
+            web = root / "web"
+            (web / "assets").mkdir(parents=True)
+            (web / "index.html").write_text("<html>SYN</html>\n", encoding="utf-8")
+            (web / "assets" / "app.js").write_text("console.log('SYN');\n", encoding="utf-8")
+
+            first_digest = sha256_tree(web)
+            self.assertEqual(first_digest, sha256_tree(web))
+
+            (web / "assets" / "app.js").write_text("console.log('changed');\n", encoding="utf-8")
+            content_changed_digest = sha256_tree(web)
+            self.assertNotEqual(first_digest, content_changed_digest)
+
+            (web / "assets" / "app.js").unlink()
+            (web / "assets" / "renamed.js").write_text("console.log('SYN');\n", encoding="utf-8")
+            self.assertNotEqual(first_digest, sha256_tree(web))
+
+    def test_frontend_tree_digest_rejects_missing_directory_and_symlinks(self):
+        with tempfile.TemporaryDirectory(prefix="ayuvahak-frontend-tree-") as tmp:
+            root = Path(tmp)
+            with self.assertRaisesRegex(ValueError, "directory"):
+                sha256_tree(root / "missing")
+
+            web = root / "web"
+            web.mkdir()
+            link = web / "linked.js"
+            target = root / "target.js"
+            target.write_text("synthetic", encoding="utf-8")
+            try:
+                link.symlink_to(target)
+            except (OSError, NotImplementedError):
+                self.skipTest("filesystem does not permit symlink creation")
+            with self.assertRaisesRegex(ValueError, "symbolic link"):
+                sha256_tree(web)
+
     def test_vulnerability_report_loader_binds_exact_local_file_bytes(self):
         with tempfile.TemporaryDirectory(prefix="ayuvahak-vulnerability-evidence-") as tmp:
             root = Path(tmp)

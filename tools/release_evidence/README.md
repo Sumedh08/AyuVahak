@@ -74,9 +74,13 @@ and narrow; all other SHACL violations fail validation.
 
 ## Provenance and manifest
 
-Write local provenance for the current source/build artifacts. This records
-source, builder, build type, parameters, and output digests; it is
-SLSA-informed evidence and does not claim a SLSA level.
+Write local provenance for the current source/build artifacts. Artifact paths
+may be files or build-output directories. A directory digest binds every
+non-link file by its ordinal relative path and exact bytes. For the local
+distribution, include both the application JAR and the completed frontend tree
+as outputs named `ayuvahak.jar` and `frontend-dist`. This records source,
+builder, build type, parameters, and output digests; it is SLSA-informed
+evidence and does not claim a SLSA level.
 
 ```powershell
 python tools/release_evidence/release_evidence.py provenance `
@@ -86,6 +90,7 @@ python tools/release_evidence/release_evidence.py provenance `
   --version 1.2.3-rc.1 `
   --parameter migrationRange=V1-V99 `
   --artifact ayuvahak.jar=target/ayuvahak-platform-0.1.0.jar `
+  --artifact frontend-dist=ui/dist `
   --output .scratch/release-evidence/provenance.json
 ```
 
@@ -101,6 +106,7 @@ python tools/release_evidence/release_evidence.py manifest `
   --builder-id local://SYN-BUILDER-001 `
   --build-type maven-package `
   --artifact ayuvahak.jar=target/ayuvahak-platform-0.1.0.jar `
+  --artifact frontend-dist=ui/dist `
   --migration-range V1-V99 `
   --supported-upgrade-path '0.1.x to 1.2.3' `
   --sbom .scratch/release-evidence/ayuvahak.spdx.json `

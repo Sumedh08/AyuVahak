@@ -42,11 +42,13 @@ $gitStatus = @(& git -C $repositoryRoot status --porcelain --untracked-files=nor
 if ($LASTEXITCODE -ne 0) { throw "The source tree status could not be checked." }
 $sourceTreeClean = $gitStatus.Count -eq 0
 $jarHash = (Get-FileHash -LiteralPath $resolvedJar.Path -Algorithm SHA256).Hash.ToLowerInvariant()
+$frontendHash = Get-ReleaseDirectorySha256 -Path $webDirectory
 $provenance = Get-Content -LiteralPath $resolvedProvenance.Path -Raw -Encoding UTF8 | ConvertFrom-Json
 Assert-ReleaseArtifactEvidence `
   -Provenance $provenance `
   -SourceRevision $sourceRevision `
   -JarSha256 $jarHash `
+  -FrontendTreeSha256 $frontendHash `
   -SourceTreeClean $sourceTreeClean
 
 $outputPath = if ([System.IO.Path]::IsPathRooted($OutputDirectory)) {
@@ -76,6 +78,8 @@ Copy-Item -LiteralPath (Join-Path $repositoryRoot "docs\installation\operator-su
 
 $packagedJarHash = (Get-FileHash -LiteralPath (Join-Path $packagePath "app.jar") -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($packagedJarHash -ne $jarHash) { throw "The staged application artifact changed during packaging." }
+$packagedFrontendHash = Get-ReleaseDirectorySha256 -Path (Join-Path $packagePath "web")
+if ($packagedFrontendHash -ne $frontendHash) { throw "The staged frontend artifact changed during packaging." }
 $manifest = [ordered]@{
   version = $Version
   sourceRevision = $sourceRevision
@@ -84,6 +88,7 @@ $manifest = [ordered]@{
   provenance = "provenance.json"
   provenanceSha256 = (Get-FileHash -LiteralPath (Join-Path $packagePath "provenance.json") -Algorithm SHA256).Hash.ToLowerInvariant()
   frontend = "web/"
+  frontendTreeSha256 = $packagedFrontendHash
   deploymentModeChoice = @("SYNTHETIC_DEMO", "EMPTY")
   createdAtUtc = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
   license = "NOT_DESIGNATED_BY_REPOSITORY_OWNER"
