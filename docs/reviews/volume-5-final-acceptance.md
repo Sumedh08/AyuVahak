@@ -28,6 +28,15 @@
 | External safety | PASS | No public healthcare/DHIS2/FHIR target, cloud, external model, registry publication, PHI/PII, production credential, DPG submission, or external security probe was used. |
 | Phase 14 scope | PASS | No patient portal, clinical AI, AI mutation/tool authority, Phase 15/VI, or unauthorized later-phase implementation. |
 
+## Retrospective
+
+- Fresh-package acceptance found issues that source-tree browser tests could not establish: mode isolation, launcher behavior, and whether the release bundle actually contains the UI and required local services.
+- Demo business data must be visibly synthetic and seeded by an explicit owner-API command. Empty-mode acceptance is strongest when it inventories the actual clean database after onboarding rather than inferring emptiness from a startup screen.
+- A configured external provider is not an approved active provider. Keeping the exact-profile review fingerprint fail-closed made it possible to exercise the configuration UX while proving that acceptance emitted no external request.
+- Release evidence must bind the JAR, frontend tree, SBOM, vulnerability inventory, and source revision; package provenance that covers only the backend is incomplete for a full-stack distribution.
+- Re-read remote branches, tags, and default-branch metadata at integration time. The Phase 13 remote checkpoint was intact, while the expected `main` branch was absent and the default still pointed to the Phase 13 branch.
+- Preserve evidence chronologically: a passing targeted test, a passing canonical build, a clean-package run, a freeze, and a public downloaded-asset smoke test are distinct claims.
+
 ## Product boundary and residual limits
 
 The downloadable artifact is a local/reference distribution. It is not evidence of universal production readiness, legal compliance, clinical-safety certification, DPG registration, or provider quality. Institutional deployment still requires organization-specific identity, TLS, secrets, backup/restore, retention, privacy/legal review, monitoring, incident response, and capacity validation. The external provider connection has not been activated or called; the acceptance seam proves fail-closed configuration and no egress under the paused/unreviewed profile. There is no native Windows EXE: Docker Compose and its dependencies are required, so the ZIP with Windows launcher scripts is the honest supported package.
