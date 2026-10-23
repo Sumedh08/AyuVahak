@@ -24,6 +24,10 @@ class Phase1ArchitectureTest {
     assertThat(productionClasses).isNotEmpty();
     Phase1ArchitectureRules.productionPackagesArePlatformOnly().check(productionClasses);
     Phase1ArchitectureRules.applicationPackagesMustNotDependOnAdapters().check(productionClasses);
+    Phase1ArchitectureRules.operatorSupportApplicationMustNotDependOnProviderAdapter()
+        .check(productionClasses);
+    Phase1ArchitectureRules.openAiCompatibleWireAdapterMustRemainOutsideApplicationLayer()
+        .check(productionClasses);
     Phase1ArchitectureRules.fhirTypesMustRemainInApprovedAdapterPackages().check(productionClasses);
     Phase1ArchitectureRules.notificationHintsMustNotDependOnSseTypes().check(productionClasses);
     Phase1ArchitectureRules.notificationHintsMustNotDependOnPatientReference()

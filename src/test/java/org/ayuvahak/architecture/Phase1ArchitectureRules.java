@@ -98,6 +98,28 @@ final class Phase1ArchitectureRules {
         .allowEmptyShould(true);
   }
 
+  static ArchRule operatorSupportApplicationMustNotDependOnProviderAdapter() {
+    return noClasses()
+        .that()
+        .resideInAnyPackage("org.ayuvahak.platform.operatorsupport.application..")
+        .should()
+        .dependOnClassesThat()
+        .resideInAnyPackage("org.ayuvahak.platform.operatorsupport.adapter.openai..")
+        .as(
+            "Operator Support application policy must stay independent of OpenAI wire protocol types")
+        .allowEmptyShould(true);
+  }
+
+  static ArchRule openAiCompatibleWireAdapterMustRemainOutsideApplicationLayer() {
+    return classes()
+        .that()
+        .haveSimpleName("OpenAiCompatibleOperatorSupportProvider")
+        .should()
+        .resideInAnyPackage("org.ayuvahak.platform.operatorsupport.adapter.openai..")
+        .as("Provider-specific Chat Completions protocol code belongs in its outbound adapter")
+        .allowEmptyShould(true);
+  }
+
   static ArchRule domainCodeMustNotDependOnFrameworks() {
     return noClasses()
         .that()

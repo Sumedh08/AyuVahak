@@ -1,4 +1,4 @@
-package org.ayuvahak.platform.operatorsupport.application;
+package org.ayuvahak.platform.operatorsupport.adapter.openai;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -11,6 +11,11 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.ayuvahak.platform.configuration.OperatorSupportProperties;
 import org.ayuvahak.platform.exchange.application.PartnerSecretMaterial;
 import org.ayuvahak.platform.exchange.application.PartnerSecretProvider;
+import org.ayuvahak.platform.operatorsupport.application.ApprovedOperatorSupportSource;
+import org.ayuvahak.platform.operatorsupport.application.OperatorSupportHttpTransport;
+import org.ayuvahak.platform.operatorsupport.application.OperatorSupportQuestionKey;
+import org.ayuvahak.platform.operatorsupport.application.OperatorSupportResponse;
+import org.ayuvahak.platform.operatorsupport.application.ProviderResponse;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.json.JsonMapper;
 
