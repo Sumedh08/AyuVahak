@@ -9,7 +9,7 @@ SLSA, SPDX, or DPG certification. Use synthetic fixtures and local artifacts.
 - Python 3.12 or newer.
 - A local JDK providing `keytool` and `jarsigner` for signing tests and bundles.
 - The pinned cdxgen v13.4.0 Windows AMD64 executable at
-  `.scratch/local-toolchain/spdx-3-acceptance/cdxgen-windows-amd64.exe` for the
+  `.scratch/phase14-tools/release-evidence/cdxgen-v13.4.0-windows-amd64.exe` for the
   current Windows workflow. Its SHA-256 is
   `0b4a6ec411a70127d72e2f6fc45277f03fa64d4237a40325d0ff117634b76375`.
 - The local SPDX validator environment installed from the pinned requirements
@@ -51,17 +51,17 @@ package representing the application. Unknown/ambiguous POM license names are
 omitted rather than guessed.
 
 ```powershell
-$python = '.scratch/local-toolchain/spdx3-validate-env/Scripts/python.exe'
+$python = '.scratch/phase14-tools/spdx3-validate-env/Scripts/python.exe'
 & $python tools/release_evidence/release_evidence.py sbom `
-  --generator .scratch/local-toolchain/spdx-3-acceptance/cdxgen-windows-amd64.exe `
+  --generator .scratch/phase14-tools/release-evidence/cdxgen-v13.4.0-windows-amd64.exe `
   --project-root . `
   --artifact target/ayuvahak-platform-0.1.0.jar `
   --application-purl 'pkg:maven/org.ayuvahak/ayuvahak-platform@0.1.0?type=jar' `
   --maven-repository "$env:USERPROFILE/.m2/repository" `
   --validator-python $python `
   --java-home $env:JAVA_HOME `
-  --output .scratch/release-evidence/ayuvahak.spdx.json `
-  --validation-report .scratch/release-evidence/ayuvahak.spdx-validation.json
+  --output .scratch/phase14-artifacts/ayuvahak.spdx.json `
+  --validation-report .scratch/phase14-artifacts/ayuvahak.spdx-validation.json
 ```
 
 The validation report records SPDX 3.0.1 format, generator digest, application
@@ -91,7 +91,7 @@ python tools/release_evidence/release_evidence.py provenance `
   --parameter migrationRange=V1-V99 `
   --artifact ayuvahak.jar=target/ayuvahak-platform-0.1.0.jar `
   --artifact frontend-dist=ui/dist `
-  --output .scratch/release-evidence/provenance.json
+  --output .scratch/phase14-artifacts/provenance.json
 ```
 
 Create a manifest bound to the actual SPDX SBOM and its offline validation
@@ -109,10 +109,10 @@ python tools/release_evidence/release_evidence.py manifest `
   --artifact frontend-dist=ui/dist `
   --migration-range V1-V99 `
   --supported-upgrade-path '0.1.x to 1.2.3' `
-  --sbom .scratch/release-evidence/ayuvahak.spdx.json `
-  --sbom-report .scratch/release-evidence/ayuvahak.spdx-validation.json `
-  --validator-python .scratch/local-toolchain/spdx3-validate-env/Scripts/python.exe `
-  --output .scratch/release-evidence/manifest.json
+  --sbom .scratch/phase14-artifacts/ayuvahak.spdx.json `
+  --sbom-report .scratch/phase14-artifacts/ayuvahak.spdx-validation.json `
+  --validator-python .scratch/phase14-tools/spdx3-validate-env/Scripts/python.exe `
+  --output .scratch/phase14-artifacts/manifest.json
 ```
 
 Release eligibility still requires verified provenance, a signer-pinned signed
