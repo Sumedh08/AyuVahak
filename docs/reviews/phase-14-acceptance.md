@@ -1,9 +1,10 @@
 # Phase 14 Acceptance Record
 
-**Disposition:** PHASE 14 PASS — accepted and frozen by the Phase 14 freeze commit in Git history. Integrated local Volume V acceptance also passes; GitHub main integration, release publication, and downloaded-asset smoke remain pending.
+**Disposition:** PHASE 14 PASS — accepted and frozen by the Phase 14 freeze commit in Git history. Integrated local Volume V acceptance also passes. GitHub `main` integration and the annotated `v0.1.0` tag are verified; release asset publication and downloaded-asset smoke remain pending.
 **Branch:** `codex/phase-14-volume-v-closeout`.
 **Phase 13 baseline:** Complete and frozen at `57b949ab8c5fa28e95243e83df0910731dbec800`; the sanitized `phase-13-freeze` checkpoint remains in its ancestry and on GitHub.
 **Candidate:** `cd75fb24956a6f79572abe9d68acaab73e6ae69e` at the time of the package acceptance runs below.
+**Release source commit/tag:** `fd1b4720e8bdef558a4376f2bb2c49ec5dc9ebd9` (`v0.1.0`); remote `main`, the closeout branch, and the annotated tag resolve to this commit. The repository default branch still requires an authenticated GitHub settings session.
 **Data policy:** Local, unmistakably synthetic fixtures only. No external healthcare system or model provider was used.
 
 This record preserves historical failures as history and reports the latest evidence separately. Focused frontend/package checks supplement the canonical Java verification; they do not replace it.
@@ -65,30 +66,32 @@ At `7bb5ea2130134b642e48cb363030d9baf338ba6c`, `.\mvnw.cmd -B -ntp clean verify`
 - External provider configuration was tested only in paused, unresolved-secret, no-egress state. Actual external provider connectivity remains unexercised and requires future explicit deployment review/configuration; no external inference service is required for the product.
 - The external profile gate includes an administrator-controlled exact-profile fingerprint/review seam. The external profile is not active solely because it is configured.
 
-## Package and local release evidence candidate
+## Final local release candidate
 
-The clean-user package candidate is `AyuVahak-0.1.0-local.zip`, built from the tracked tree at candidate `cd75fb24956a6f79572abe9d68acaab73e6ae69e` and used for the Demo and Empty package tests above.
+The package tested by the complete Demo/Empty/persona/operator-support browser suite was generated from the same application JAR, frontend tree, and local runtime files. The final publication ZIP was regenerated from release source commit `fd1b4720e8bdef558a4376f2bb2c49ec5dc9ebd9` after the product-entry documentation update. It contains the same runtime payload, with updated source provenance and release manifest. The exact final ZIP still requires the post-publication download/startup smoke below.
 
 | Evidence | Value / disposition |
 |---|---|
-| ZIP SHA-256 | `E40518053A9F8EF0188BA598B26FE1779067DA39A9F845620A2A58806094F582` |
+| ZIP SHA-256 | `FF4C383DBCDC0828D8DE8FCF76E4D5D0A21413095C441DBC53B25076E5251DF4` |
 | Application JAR SHA-256 | `A723686F51E349DB0FD91100A3AB9C4171D037E53C66101CBDD499048E60075C` |
 | SPDX | SPDX 3.0.1; validation PASS; 325 package nodes / 324 runtime dependency entries. SHA-256 `21d38b9f7fe074d1745046136e1588017d263bd161be47e338a2bb9e8cb70550`. |
-| Local dependency review | OSV Scanner 2.7.0 strict local/offline match; 324 dependency occurrences, 0 findings in the retrieved snapshots. OSV/Maven/npm and CISA KEV snapshot manifest SHA-256 `f5c5dd27ab8250282e9008403eddae72ad1f3fb3d7abdecd55b38f5dc7b3b9bb`; retrieved 2026-10-23. A zero-finding result is not a claim of vulnerability-free software. |
-| Provenance | Local machine-verifiable provenance binds source candidate, JAR, frontend and package digests. SLSA level is not claimed. |
-| Local signature | Ephemeral acceptance-only test signer verified; fingerprint `8465b2859f654536479e475733799b2e9341e1a2f8f94a7d23a8b11ea5bdb9d2`; signed evidence bundle SHA-256 `49ec3b41c5ede1c611cccf96f1a59abd381672823138a713ba3cf8953ea44530`. It is not a production signing identity. Private test key is excluded from publication. |
-| Release eligibility | Local acceptance evidence is complete for this candidate. Production release authorization is not inferred; production signer, deployment-specific governance, and external institutional controls remain outside this local acceptance. |
+| Local dependency review | OSV Scanner 2.7.0 strict local/offline match; 324 dependency occurrences, 0 findings in the retrieved snapshots. The final evidence manifest re-hashes and verifies the OSV/Maven/npm and CISA KEV snapshot, raw scan result, CycloneDX scan input, release SPDX, and JAR bindings. Snapshot manifest SHA-256 `f5c5dd27ab8250282e9008403eddae72ad1f3fb3d7abdecd55b38f5dc7b3b9bb`; retrieved 2026-10-23. A zero-finding result is not a claim of vulnerability-free software. Inventory SHA-256 `e8aeeb30ea2f4223febe2074f4711b57c5ed0e0be492652fedcce8b5270a2882`. |
+| Provenance | Provenance SHA-256 `75470b6b609ead407807aef95e32b3fc49afbb5b893a20123359618dd0542b4f`; source revision is `fd1b4720e8bdef558a4376f2bb2c49ec5dc9ebd9`; it binds the exact JAR and frontend tree. The release manifest binds the ZIP, JAR, frontend, SPDX, and verified vulnerability inventory; manifest SHA-256 `a0fb7d72aeee07d657a488519468d73cafb83bd1bb46639cce26de88e826949e`. SLSA level is not claimed. |
+| Validation | SPDX validation report SHA-256 `c768f4fd092a84da341843361b6cdcfd44a25b0675b7108c761662cc0af7b4cb`; all six entries in `SHA256SUMS.txt` verified locally. The 33-entry ZIP contains no `.scratch`, `.env`, database, log, keystore, or private key entry. |
+| Local signature | Acceptance-only evidence bundle verified against ephemeral signer fingerprint `db08279384f66c24ffe1e2cc8995fb7b5c5df5b3eb287691227dd82be8eff134`; bundle SHA-256 `a2c954906f0653a5823712ee6efc599ba08651cb059b04a6a7e62fac8a892493`. It is not a production signing identity and is not selected as a public trust signature; the private test keystore is excluded from all release assets. |
+| Release eligibility | Manifest reports `eligible=false`: this local build does not have a trusted production signer/verified release authorization. Publishing a downloadable reference package does not change that status or imply production approval. |
 
-The release-evidence helper was verified by 32 passing tests and 1 symlink-permission skip. The candidate is a local acceptance artifact, not a published release. Before publication, regenerate the final bundle and evidence from the final tracked release source and re-run its digest/checksum validation; do not publish the acceptance-only private signer or raw vulnerability database.
+The release-evidence helper was verified by 32 passing tests and 1 symlink-permission skip. The final local release candidate is ready for GitHub asset attachment. Do not publish the acceptance-only private signer or raw vulnerability database.
 
 ## Remaining gates
 
 | Gate | Status | Closure requirement |
 |---|---|---|
 | Phase 14 independent two-axis review | PASS | 0 BLOCKER and 0 MAJOR on both axes; one non-blocking MINOR. |
-| Phase 14 acceptance reconciliation | IN PROGRESS | Current clean-package E2Es, evidence digests, canonical build, and review results are recorded; perform final tracked-tree and release revalidation before freeze. |
+| Phase 14 acceptance reconciliation | PASS | Final release source, ZIP, checksums, SPDX 3.0.1, provenance, and verified vulnerability inventory are recorded above. |
 | Phase 14 freeze | PASS | Local freeze commit follows this acceptance record; independent review found 0 BLOCKER and 0 MAJOR. |
 | Volume V integrated closeout | PASS | `docs/reviews/volume-5-final-acceptance.md` records the Phase 13 + Phase 14 boundary review and the Volume V local freeze. |
-| Main integration and GitHub Release | NOT STARTED | Re-fetch and inspect the remote; integrate normally without overwriting divergent work; create the annotated SemVer tag/release and verify downloaded assets. |
+| Main integration and annotated tag | PASS | Remote `main`, closeout branch, and annotated `v0.1.0` tag point to `fd1b4720e8bdef558a4376f2bb2c49ec5dc9ebd9`; Phase 13 branch/tag remain unchanged. |
+| GitHub Release and published-download smoke | PENDING AUTHENTICATED SESSION | The GitHub in-app browser is signed out, and the available GitHub connector has no release-creation or asset-upload operation. Do not automate credentials. After an owner-authenticated browser session is available, create the release, attach the listed assets, download the ZIP back, verify checksums, and smoke-test Demo/Empty startup. |
 
 This is a local acceptance record, not a DPG certification, production deployment approval, clinical-safety certification, or legal-compliance assessment.

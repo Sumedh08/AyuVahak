@@ -1,6 +1,6 @@
 # Volume V Final Acceptance
 
-**Disposition:** VOLUME V IMPLEMENTATION ACCEPTANCE PASS; the local Volume V freeze is recorded below. GitHub main integration, release publication, and published-download smoke test remain separate pending release operations.
+**Disposition:** VOLUME V IMPLEMENTATION ACCEPTANCE PASS; local Phase 14 and Volume V freezes are recorded below. GitHub `main` integration and the annotated `v0.1.0` tag are verified. GitHub Release asset publication and the published-download smoke test remain pending an authenticated browser session.
 **Candidate branch:** `codex/phase-14-volume-v-closeout`.
 **Phase 13 freeze:** `57b949ab8c5fa28e95243e83df0910731dbec800` (sanitized checkpoint tag remains unchanged).
 **Phase 14 freeze:** `9fb8085235b18e0734be1033e498b86327c61976`.
@@ -43,15 +43,16 @@ The downloadable artifact is a local/reference distribution. It is not evidence 
 
 ## GitHub integration and release
 
-The inspected remote is `https://github.com/Sumedh08/AyuVahak.git`, authenticated owner `Sumedh08`. At this checkpoint the remote contains the sanitized Phase 13 branch/tag but has no `main` branch; the GitHub repository default still names `codex/phase-13-production-hardening`. This closeout does not overwrite the existing branch. Create `main` only as a normal new branch from the accepted Volume V release commit, verify the exact remote SHA, and change the repository default only after confirming the new branch exists and using a supported owner-authorized settings path.
+The remote is `https://github.com/Sumedh08/AyuVahak.git`; the authenticated GitHub identity is `Sumedh08`, and the repository API confirms the exact public repository and write permission. The sanitized Phase 13 branch/tag remain unchanged. The Phase 14 closeout branch and newly created `main` both point to release source commit `fd1b4720e8bdef558a4376f2bb2c49ec5dc9ebd9`. Annotated tag `v0.1.0` resolves to that same commit. These were normal pushes; no force operation was used. The GitHub repository's default branch still points to `codex/phase-13-production-hardening` because changing it requires an owner-authenticated browser settings session.
 
-The following are intentionally left pending in this local acceptance snapshot and must be appended with concrete evidence after remote publication:
+The exact local release ZIP is `AyuVahak-0.1.0-local.zip`, SHA-256 `FF4C383DBCDC0828D8DE8FCF76E4D5D0A21413095C441DBC53B25076E5251DF4`. Its six checksum entries verified locally. SPDX 3.0.1, provenance, vulnerability inventory, and release evidence manifest digests are recorded in `docs/reviews/phase-14-acceptance.md`. The signed evidence bundle uses a synthetic ephemeral identity and is acceptance-only, not a public release trust signature.
 
-- normal `main` integration and exact public commit URL;
-- immutable annotated `v0.1.0` tag if no existing SemVer release has appeared;
-- GitHub Release URL and published asset links;
-- downloaded asset checksum verification and clean temporary-directory launch/health smoke;
-- post-publication README/documentation-link and repository hygiene check.
+The following remain pending until an owner-authenticated GitHub browser session is available:
+
+- set GitHub's default branch to `main`;
+- create the GitHub Release for existing tag `v0.1.0` and attach the approved public assets;
+- download the published ZIP, verify its checksum, and smoke-test a clean Demo/Empty install;
+- append the release URL, asset links, download-smoke evidence, and final repository hygiene result.
 
 The Phase 13 tag and all earlier freeze history must remain unchanged. Never force-push or move a published tag. If remote `main` appears or diverges before integration, reconcile by a normal merge/PR or stop without overwriting it.
 
