@@ -4,9 +4,9 @@ This roadmap records current work without promising a delivery date or deploymen
 
 ## Current
 
-- Volumes I–IV: complete and frozen.
-- Phase 13 production hardening and Digital Public Goods readiness: complete and frozen. This is not DPG registration or certification.
-- Phase 14: productization, role-aware local experience, synthetic Demo/Empty modes, deterministic semantic-equivalence evidence, and bounded optional operator-support assistance are in progress.
+- Volumes I–V: complete and frozen.
+- Phases 13 and 14: complete and frozen; see their acceptance records and the [v0.1.0 local reference release](https://github.com/Sumedh08/AyuVahak/releases/tag/v0.1.0).
+- Digital Public Goods work is a readiness assessment only. This project is not DPG registered or certified.
 
 ## Phase 14 boundaries
 
@@ -16,4 +16,4 @@ This roadmap records current work without promising a delivery date or deploymen
 - Demo records are fictional, unmistakably synthetic, explicitly selected, and separate from Empty mode.
 - Performance results characterize a declared local workload; they are not production capacity promises.
 
-No later phase is authorized by this roadmap. Scope beyond Phase 14 requires a separate project decision and safety review.
+No later phase is authorized by this roadmap. Scope beyond Volume V requires a separate project decision and safety review.

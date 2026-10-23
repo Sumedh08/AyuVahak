@@ -6,7 +6,13 @@ AyuVahak is a healthcare care-coordination platform. It connects existing organi
 
 ## Project status
 
-Volumes I–IV and Phase 13 are complete and frozen. The Volume V design is frozen; Phase 14 productization is in progress. There is no final downloadable release yet. Do not treat this working branch or the developer Compose stack as a production deployment.
+Volumes I–V and Phases 13–14 are complete and frozen. The v0.1.0 local reference distribution is available from [GitHub Releases](https://github.com/Sumedh08/AyuVahak/releases/tag/v0.1.0). It is a locally operated demonstration/reference package, not a production deployment or certification. Institutional deployment still requires organization-specific security, privacy, identity, recovery, retention, and operational review.
+
+## Download and try AyuVahak
+
+Download **AyuVahak-0.1.0-local.zip** from the [v0.1.0 release](https://github.com/Sumedh08/AyuVahak/releases/tag/v0.1.0), extract it, and run `scripts/local/Start-AyuVahak.cmd` on Windows. The package includes the prebuilt application and UI; you do not need Java, Maven, Node.js, or a source checkout. You do need Docker Engine with Docker Compose v2. On first run, explicitly choose **Synthetic Demo** or **Empty**. Services bind to loopback. See the [packaged first-run guide](docs/installation/local-first-run.md) for bootstrap and workflow setup.
+
+The Synthetic Demo uses fictional `SYN-*` identities and facts and requires a separate explicit owner-API seed command after startup. Empty starts without synthetic business records. Neither mode is a clinical environment. Verify the release checksums in `SHA256SUMS.txt` before use.
 
 ## Try the local developer installation
 
